@@ -1,1 +1,11 @@
-# lssp
+# The Lattice Surgery Scheduling Problem (LSSP)
+
+
+
+The lattice surgery scheduling problem (LSSP) we wish to address is the problem of scheduling a circuit on a logical map, which is topology consisting of logical qubits, or patches, of which some are data, some are bus, some are magic state and some are ancillary. Figure 4b from the LSSP paper shows a topology that is easily parallelizable. The green patches are bus qubits, the blue patches are data qubits, the orange patches are magic state qubits and the pink patches are ancillary qubits.
+
+![lssp-example-layout](images/lssp-topo.png)
+
+The circuits are expressed as a set of Pauli rotation measurements with dependencies that form a DAG. Following the paper, we can assume the circuits are always transpiled, which reduces both the number of operations and the potential parallelism. The latter is bad but for the circuits looked at in the paper, the benefits of shorter circuits were always greater than the loss of parallelism. Transpilation removes all the PI/4 rotations by commuting them past the qubit measurements. This simplifies the problem because we are left with only PI/8 rotations, for which we require only magic state qubits, not ancillary qubits. So the pink patches in the figure can be replaced by orange or purple patches. Because of the transpilation, each operator can require multiple qubits, so we have to use a Steiner tree to connect the magic qubit to the required data qubits over the bus qubits, with no overlapping paths (i.e. bus qubits can only be used for one operator).
+
+So the basic algorithm is to iterate through the circuit DAG, taking the current set of root operators as the set to schedule simultaneously, if possible. When the operators are scheduled, they can be removed from the DAG to expose a new set of root operators. The current set of operators will need to be scheduled as a forest of trees, with no overlapping or qubit reuse between the trees. This scheduling problem is NP-hard and is the problem we will be tackling. In the LSSP paper they use a simple greedy algorithm to do this, so there is a lot of room for improvement.
