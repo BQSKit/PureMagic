@@ -8,68 +8,123 @@ import argparse
 import sys
 
 
+def get_args():
+    parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
+    parser.add_argument("--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits")
+    parser.add_argument(
+        "--qubits-per-operator",
+        "-q",
+        type=float,
+        default=0.1,
+        help="Mean fraction data qubits per operator (normal distribution)",
+    )
+    parser.add_argument("--num-operators", "-m", type=int, default=50, help="Number of operators to generate")
+    parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
+    args = parser.parse_args()
+    print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
+    return args
+
+
+def get_topo_dims(min_num_qubits):
+    # the rows dimension needs to be a multiple of 3, and a minimum of 6
+    # the columns dimension needs to be a multiple of 2, with 1 added (so 3, 5, 7, 9, ...)
+    sq_dim = int(np.floor(np.sqrt(min_num_qubits)))
+    patch_rows = int(sq_dim / 2) + sq_dim % 2
+    num_rows = 3 * patch_rows + 3
+    qubits_per_col = 2 * patch_rows
+    num_cols = 2 * int(np.ceil(min_num_qubits / qubits_per_col)) + 1
+    print("Layout dimensions:", num_cols, num_rows)
+    return num_cols, num_rows
+
+
+def is_magic_node(node):
+    assert node[0] in ["m", "b", "d"]
+    return node[0] == "m"
+
+
+def is_data_node(node):
+    assert node[0] in ["m", "b", "d"]
+    return node[0] == "d"
+
+
+def is_bus_node(node):
+    assert node[0] in ["m", "b", "d"]
+    return node[0] == "b"
+
+
 def get_node_label(label, col, row):
     return label + str(math.ceil(col)) + "-" + str(math.ceil(row))
 
 
-def add_node(label, col, row, num_rows, node_pos, node_colors):
+def operator_str(operator):
+    return "".join(operator)
+
+
+def print_circuit(circuit):
+    for i, operator in enumerate(circuit):
+        print(i, operator_str(operator))
+
+
+def add_node(topo_graph, label, col, row, num_rows):
+    node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
     node_label = get_node_label(label, col, row)
-    node_pos[node_label] = [col, num_rows - 1 - row]
-    if label == "m":
-        node_colors.append("#FFBB99")
-    elif label == "b":
-        node_colors.append("#B3FFBF")
-    elif label.startswith("d"):
-        node_colors.append("#9999FF")
+    topo_graph.add_node(node_label, pos=[col, num_rows - 1 - row], color=node_colors[label])
     return node_label
+
+
+def plot_steiner_tree(topo_graph):
+    terminal_nodes = []
+    for node in topo_graph.nodes:
+        if not is_bus_node(node):
+            terminal_nodes.append(node)
+    print(terminal_nodes)
+    steiner_graph = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes)
+    stree_fname = "lssp-steiner"
+    plt.clf()
+    nx.draw_networkx(steiner_graph, pos=node_pos, node_size=1000, font_size=10)
+    nx.draw_networkx_edge_labels(steiner_graph, node_pos, edge_labels, rotate=False)
+    plt.tight_layout()
+    plt.savefig(stree_fname + ".pdf")
 
 
 def build_parallel_topo(num_cols, num_rows):
     topo_graph = nx.Graph()
-    node_pos = {}
-    node_colors = []
-    edge_labels = {}
     for col in range(num_cols):
         if col % 2 != 0:
             continue
-        node_label = add_node("m", col, 0, num_rows, node_pos, node_colors)
+        node_label = add_node(topo_graph, "m", col, 0, num_rows)
         topo_graph.add_edge(node_label, get_node_label("b", col, 1))
         for row in range(1, num_rows - 2):
-            node_label = add_node("b", col, row, num_rows, node_pos, node_colors)
+            node_label = add_node(topo_graph, "b", col, row, num_rows)
             topo_graph.add_edge(node_label, get_node_label("b", col, row + 1))
-        prev_node_label = add_node("b", col, num_rows - 2, num_rows, node_pos, node_colors)
-        node_label = add_node("m", col, num_rows - 1, num_rows, node_pos, node_colors)
+        prev_node_label = add_node(topo_graph, "b", col, num_rows - 2, num_rows)
+        node_label = add_node(topo_graph, "m", col, num_rows - 1, num_rows)
         topo_graph.add_edge(node_label, prev_node_label)
     for col in range(num_cols):
         if col % 2 == 0:
             continue
         for row in range(1, num_rows - 1):
             if row % 3 == 1:
-                node_label = add_node("b", col, row, num_rows, node_pos, node_colors)
+                node_label = add_node(topo_graph, "b", col, row, num_rows)
                 topo_graph.add_edge(node_label, get_node_label("b", col - 1, row))
                 topo_graph.add_edge(node_label, get_node_label("b", col + 1, row))
             else:
-                node_label = add_node("d", col, row, num_rows, node_pos, node_colors)
+                node_label = add_node(topo_graph, "d", col, row, num_rows)
                 if row % 3 == 2:
-                    topo_graph.add_edge(node_label, get_node_label("b", col - 1, row))
-                    edge_labels[(node_label, get_node_label("b", col - 1, row))] = "X"
-                    topo_graph.add_edge(node_label, get_node_label("b", col + 1, row))
-                    edge_labels[(node_label, get_node_label("b", col + 1, row))] = "X"
-                    topo_graph.add_edge(node_label, get_node_label("b", col, row - 1))
-                    edge_labels[(node_label, get_node_label("b", col, row - 1))] = "Z"
+                    topo_graph.add_edge(node_label, get_node_label("b", col - 1, row), label="X")
+                    topo_graph.add_edge(node_label, get_node_label("b", col + 1, row), label="X")
+                    topo_graph.add_edge(node_label, get_node_label("b", col, row - 1), label="Z")
                 else:
-                    topo_graph.add_edge(node_label, get_node_label("b", col - 1, row))
-                    edge_labels[(node_label, get_node_label("b", col - 1, row))] = "Z"
-                    topo_graph.add_edge(node_label, get_node_label("b", col + 1, row))
-                    edge_labels[(node_label, get_node_label("b", col + 1, row))] = "Z"
-                    topo_graph.add_edge(node_label, get_node_label("b", col, row + 1))
-                    edge_labels[(node_label, get_node_label("b", col, row + 1))] = "X"
+                    topo_graph.add_edge(node_label, get_node_label("b", col - 1, row), label="Z")
+                    topo_graph.add_edge(node_label, get_node_label("b", col + 1, row), label="Z")
+                    topo_graph.add_edge(node_label, get_node_label("b", col, row + 1), label="X")
+
     # print(topo_graph.nodes)
     # print(topo_graph.edges)
 
-    num_data_qubits = sum([node[0] == "d" for node in topo_graph.nodes])
-    num_magic_qubits = sum([node[0] == "m" for node in topo_graph.nodes])
-    num_bus_qubits = sum([node[0] == "b" for node in topo_graph.nodes])
+    num_data_qubits = sum([is_data_node(node) for node in topo_graph.nodes])
+    num_magic_qubits = sum([is_magic_node(node) for node in topo_graph.nodes])
+    num_bus_qubits = sum([is_bus_node(node) for node in topo_graph.nodes])
     print("Number of qubits:")
     print("  magic:", num_magic_qubits)
     print("  data: ", num_data_qubits)
@@ -80,33 +135,19 @@ def build_parallel_topo(num_cols, num_rows):
     print("Plotting topology to", topo_fname, "...")
     # print("Generated topology with", num_qubits, "data qubits and ")
     plt.rc("figure", figsize=[num_cols, num_rows])
+    node_pos = nx.get_node_attributes(topo_graph, "pos")
+    node_colors = nx.get_node_attributes(topo_graph, "color").values()
     nx.draw_networkx(topo_graph, pos=node_pos, node_size=1000, node_color=node_colors, font_size=10)
+    edge_labels = nx.get_edge_attributes(topo_graph, "label")
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
     plt.savefig(topo_fname + ".png")
 
-    terminal_nodes = []
-    terminal_nodes.append("m0-0")
-    # node_pos = {}
-    for node in topo_graph.nodes:
-        if node[0] == "d":
-            terminal_nodes.append(node)
-            col, row = node[1:].split("-")
-            # node_pos[node] = [int(col), num_rows - 1 - int(row)]
-    print(terminal_nodes)
-    steiner_graph = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes)
-    stree_fname = "lssp-steiner"
-    plt.clf()
-    nx.draw_networkx(steiner_graph, pos=node_pos, node_size=1000, font_size=10)
-    # nx.draw_networkx_edge_labels(steiner_graph, node_pos, edge_labels, rotate=False)
-    plt.tight_layout()
-    plt.savefig(stree_fname + ".pdf")
-    return num_data_qubits
+    return num_data_qubits, topo_graph
 
 
-def gen_rnd_circuit(rseed, num_qubits, qubits_per_operator, num_operators):
-    rng = np.random.default_rng(seed=rseed)
+def gen_rnd_circuit(rng, num_qubits, qubits_per_operator, num_operators):
     mean_qubits = float(num_qubits) * qubits_per_operator
     sigma_qubits = 2.0
     operators = []
@@ -142,41 +183,64 @@ def gen_rnd_circuit(rseed, num_qubits, qubits_per_operator, num_operators):
     plt.tight_layout()
     plt.savefig(hist_fname + ".pdf")
     plt.savefig(hist_fname + ".png")
+    return operators
 
 
-def get_args():
-    parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
-    parser.add_argument("--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits")
-    parser.add_argument(
-        "--qubits-per-operator",
-        "-q",
-        type=float,
-        default=0.1,
-        help="Mean fraction data qubits per operator (normal distribution)",
-    )
-    parser.add_argument("--num-operators", "-m", type=int, default=50, help="Number of operators to generate")
-    parser.add_argument("--rnd-seed", "-r", type=int, default=29, help="Random seed")
-    args = parser.parse_args()
-    print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
-    return args
+def schedule_operator_rnd(rng, topo_graph, operator):
+    print("Trying to schedule operator", operator_str(operator))
+    # random walk to find terminals
+    root_node = None
+    for node in topo_graph.nodes:
+        if is_magic_node(node):
+            # get first magic node available
+            root_node = node
+            break
+    else:
+        print("Could not find starting node for operator", operator_str(operator))
+        return False
+    if root_node != None:
+        print("Starting at node", root_node)
+        visited = set()
+        visited.add(root_node)
+        stack = [(root_node, topo_graph.neighbors(root_node))]
+        while stack:
+            parent, children = stack[-1]
+            for child in children:
+                if child not in visited:
+                    if is_data_node(child):
+                        edge_data = topo_graph[parent][child]
+                        print(child, edge_data)
+                    else:
+                        print(child)
+                    visited.add(child)
+                    stack.append((child, topo_graph.neighbors(child)))
+                    break
+            else:
+                stack.pop()
+        topo_graph.remove_node(node)
+
+        return True
 
 
-def get_topo_dims(min_num_qubits):
-    # the rows dimension needs to be a multiple of 3, and a minimum of 6
-    # the columns dimension needs to be a multiple of 2, with 1 added (so 3, 5, 7, 9, ...)
-    sq_dim = int(np.floor(np.sqrt(min_num_qubits)))
-    patch_rows = int(sq_dim / 2) + sq_dim % 2
-    num_rows = 3 * patch_rows + 3
-    qubits_per_col = 2 * patch_rows
-    num_cols = 2 * int(np.ceil(min_num_qubits / qubits_per_col)) + 1
-    print("Layout dimensions:", num_cols, num_rows)
-    return num_cols, num_rows
+def schedule_circuit(rng, topo_graph, circuit):
+    # How do we choose the order in which to process the operators?
+    # random, shortest first, longest first
+    # How do we allocate qubits to operators?
+    # random walk, dfs, bfs
+    # print_circuit(circuit)
+    rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
+    # print_circuit(rnd_order_circuit)
+    for operator in rnd_order_circuit:
+        if schedule_operator_rnd(rng, topo_graph, operator) == False:
+            break
 
 
 if __name__ == "__main__":
     args = get_args()
+    rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims(args.min_num_qubits)
-    num_data_qubits = build_parallel_topo(num_cols, num_rows)
+    num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
-    gen_rnd_circuit(args.rnd_seed, num_data_qubits, args.qubits_per_operator, args.num_operators)
+    circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_operator, args.num_operators)
+    schedule_circuit(rng, topo_graph, circuit)
