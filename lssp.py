@@ -73,18 +73,66 @@ def add_node(topo_graph, label, col, row, num_rows):
 
 
 def plot_steiner_tree(topo_graph):
-    terminal_nodes = []
+    terminal_nodes = ["m0-0"]
     for node in topo_graph.nodes:
-        if not is_bus_node(node):
+        if is_data_node(node):
             terminal_nodes.append(node)
-    print(terminal_nodes)
     steiner_graph = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes)
     stree_fname = "lssp-steiner"
-    plt.clf()
+    plt.close()
+    node_pos = nx.get_node_attributes(topo_graph, "pos")
+    node_colors = nx.get_node_attributes(topo_graph, "color").values()
+    nx.draw_networkx(topo_graph, pos=node_pos, node_size=1000, node_color=node_colors, font_size=10)
+    edge_labels = nx.get_edge_attributes(topo_graph, "label")
     nx.draw_networkx(steiner_graph, pos=node_pos, node_size=1000, font_size=10)
     nx.draw_networkx_edge_labels(steiner_graph, node_pos, edge_labels, rotate=False)
     plt.tight_layout()
     plt.savefig(stree_fname + ".pdf")
+
+
+def plot_topology(topo_graph, topo_fname, num_cols, num_rows, path_graph=None, ops=None):
+    print("Plotting topology to", topo_fname, "...")
+    # print("Generated topology with", num_qubits, "data qubits and ")
+    plt.close()
+    plt.rc("figure", figsize=[num_cols, num_rows])
+    node_pos = nx.get_node_attributes(topo_graph, "pos")
+    node_colors = nx.get_node_attributes(topo_graph, "color").values()
+    edge_labels = nx.get_edge_attributes(topo_graph, "label")
+    edge_colors = ["black"] * topo_graph.number_of_edges()
+    edge_width = [1] * topo_graph.number_of_edges()
+    node_edge_colors = ["white"] * topo_graph.number_of_nodes()
+    if path_graph != None:
+        for i, edge in enumerate(topo_graph.edges):
+            if path_graph.has_edge(*edge):
+                edge_colors[i] = "red"
+                edge_width[i] = 3
+        root_node = None
+        for i, node in enumerate(topo_graph.nodes):
+            if path_graph.has_node(node):
+                node_edge_colors[i] = "red"
+                if is_magic_node(node):
+                    root_node = node
+        col, row = root_node[1:].split("-")
+        col = float(col) - 0.2
+        if row == "0":
+            row = float(num_rows) - 0.5
+        else:
+            row = -0.5
+        plt.text(col, row, ops, color="red")
+    nx.draw_networkx(
+        topo_graph,
+        pos=node_pos,
+        node_size=1000,
+        node_color=node_colors,
+        font_size=10,
+        edge_color=edge_colors,
+        width=edge_width,
+        edgecolors=node_edge_colors,
+    )
+    nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
+    plt.tight_layout()
+    plt.savefig(topo_fname + ".pdf")
+    plt.savefig(topo_fname + ".png")
 
 
 def build_parallel_topo(num_cols, num_rows):
@@ -131,18 +179,6 @@ def build_parallel_topo(num_cols, num_rows):
     print("  bus:  ", num_bus_qubits)
     print("Space efficiency: %.2f" % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits)))
     print("Magic state ratio: %.2f" % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits)))
-    topo_fname = "lssp-topo"
-    print("Plotting topology to", topo_fname, "...")
-    # print("Generated topology with", num_qubits, "data qubits and ")
-    plt.rc("figure", figsize=[num_cols, num_rows])
-    node_pos = nx.get_node_attributes(topo_graph, "pos")
-    node_colors = nx.get_node_attributes(topo_graph, "color").values()
-    nx.draw_networkx(topo_graph, pos=node_pos, node_size=1000, node_color=node_colors, font_size=10)
-    edge_labels = nx.get_edge_attributes(topo_graph, "label")
-    nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
-    plt.tight_layout()
-    plt.savefig(topo_fname + ".pdf")
-    plt.savefig(topo_fname + ".png")
 
     return num_data_qubits, topo_graph
 
@@ -151,7 +187,8 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_operator, num_operators):
     mean_qubits = float(num_qubits) * qubits_per_operator
     sigma_qubits = 2.0
     operators = []
-    basis_options = ["X", "Z", "Y"]
+    # basis_options = ["X", "Z", "Y"]
+    basis_options = ["X", "Z"]
     counts = []
     for _ in range(num_operators):
         operator = []
@@ -164,30 +201,31 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_operator, num_operators):
             print("Couldn't generate a random number in range [0, %d], using %d" % (num_qubits, mean_qubits), file=sys.stderr)
             operator_qubits = mean_qubits
         for _ in range(operator_qubits):
-            operator.append(basis_options[int(np.floor(rng.uniform(0, 3)))])
+            operator.append(basis_options[int(np.floor(rng.uniform(0, len(basis_options))))])
         operators.append(operator)
         counts.append(len(operator))
 
-    # for operator in operators:
-    #    print(operator)
-    hist_fname = "lssp-operator-freqs"
-    print("Plotting circuit histogram to", hist_fname, "...")
-    plt.clf()
-    plt.rcParams.update({"font.size": 20})
-    plt.xlabel("number of qubits")
-    plt.ylabel("Frequency")
-    _, bins, _ = plt.hist(counts, num_qubits, density=True)
-    # counts, bins = np.histogram(counts, 20)
-    density = 1 / (sigma_qubits * np.sqrt(2 * np.pi)) * np.exp(-((bins - mean_qubits) ** 2) / (2 * sigma_qubits**2))
-    plt.plot(bins, density)
-    plt.tight_layout()
-    plt.savefig(hist_fname + ".pdf")
-    plt.savefig(hist_fname + ".png")
+    plot_circuit_histogram = False
+    if plot_circuit_histogram:
+        hist_fname = "lssp-operator-freqs"
+        print("Plotting circuit histogram to", hist_fname, "...")
+        plt.close()
+        plt.rcParams.update({"font.size": 20})
+        plt.xlabel("number of qubits")
+        plt.ylabel("Frequency")
+        _, bins, _ = plt.hist(counts, num_qubits, density=True)
+        # counts, bins = np.histogram(counts, 20)
+        density = 1 / (sigma_qubits * np.sqrt(2 * np.pi)) * np.exp(-((bins - mean_qubits) ** 2) / (2 * sigma_qubits**2))
+        plt.plot(bins, density)
+        plt.tight_layout()
+        plt.savefig(hist_fname + ".pdf")
+        plt.savefig(hist_fname + ".png")
     return operators
 
 
 def schedule_operator_rnd(rng, topo_graph, operator):
-    print("Trying to schedule operator", operator_str(operator))
+    ops = operator_str(operator)
+    print("Trying to schedule operator", ops)
     # random walk to find terminals
     root_node = None
     for node in topo_graph.nodes:
@@ -196,30 +234,55 @@ def schedule_operator_rnd(rng, topo_graph, operator):
             root_node = node
             break
     else:
-        print("Could not find starting node for operator", operator_str(operator))
+        print("Could not find starting node for operator", ops)
         return False
-    if root_node != None:
-        print("Starting at node", root_node)
-        visited = set()
-        visited.add(root_node)
-        stack = [(root_node, topo_graph.neighbors(root_node))]
-        while stack:
-            parent, children = stack[-1]
-            for child in children:
-                if child not in visited:
-                    if is_data_node(child):
-                        edge_data = topo_graph[parent][child]
-                        print(child, edge_data)
-                    else:
-                        print(child)
-                    visited.add(child)
-                    stack.append((child, topo_graph.neighbors(child)))
-                    break
-            else:
-                stack.pop()
-        topo_graph.remove_node(node)
 
-        return True
+    print("Starting at node", root_node)
+    visited = {root_node}
+    for node in topo_graph.nodes():
+        if is_magic_node(node):
+            visited.add(node)
+    queue = [root_node]
+    operator_graph = nx.Graph()
+    while len(queue):
+        node = queue.pop(0)
+        operator_graph.add_node(node)
+        # look for data nodes first
+        for nb in topo_graph[node]:
+            if is_data_node(nb):
+                qubit_basis = topo_graph[node][nb]["label"]
+                nb_with_basis = nb + qubit_basis
+                if nb_with_basis not in visited:
+                    visited.add(nb_with_basis)
+                    if qubit_basis in operator:
+                        print("Found basis", qubit_basis, "at node", nb)
+                        operator_graph.add_edge(node, nb)
+                        # we have used this, so ensure that this node cannot be visited again in another basis
+                        visited.add(nb + ("X" if qubit_basis == "Z" else "Z"))
+                        operator.remove(qubit_basis)
+                        if len(operator) == 0:
+                            queue = []
+                            break
+        # now extend along the bus
+        for nb in topo_graph[node]:
+            if not is_data_node(nb) and nb not in visited:
+                visited.add(nb)
+                queue.append(nb)
+                operator_graph.add_edge(node, nb)
+
+    print(operator_graph.edges)
+    while True:
+        dangling_nodes = []
+        for node in operator_graph.nodes:
+            if is_bus_node(node) and operator_graph.degree(node) == 1:
+                dangling_nodes.append(node)
+        if len(dangling_nodes) == 0:
+            break
+        print("Dangling nodes:", dangling_nodes)
+        operator_graph.remove_nodes_from(dangling_nodes)
+
+    plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, path_graph=operator_graph, ops=ops)
+    return True
 
 
 def schedule_circuit(rng, topo_graph, circuit):
@@ -231,7 +294,7 @@ def schedule_circuit(rng, topo_graph, circuit):
     rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
     # print_circuit(rnd_order_circuit)
     for operator in rnd_order_circuit:
-        if schedule_operator_rnd(rng, topo_graph, operator) == False:
+        if schedule_operator_rnd(rng, topo_graph, operator.tolist()) == False:
             break
 
 
@@ -240,6 +303,8 @@ if __name__ == "__main__":
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims(args.min_num_qubits)
     num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
+    plot_topology(topo_graph, "lssp-topo", num_cols, num_rows)
+    # plot_steiner_tree(topo_graph)
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
     circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_operator, args.num_operators)
