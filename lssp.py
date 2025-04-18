@@ -6,6 +6,7 @@ import math
 import numpy as np
 import argparse
 import sys
+import copy
 
 
 def get_args():
@@ -90,7 +91,7 @@ def plot_steiner_tree(topo_graph):
     plt.savefig(stree_fname + ".pdf")
 
 
-def plot_topology(topo_graph, topo_fname, num_cols, num_rows, path_graph=None, ops=None):
+def plot_topology(topo_graph, topo_fname, num_cols, num_rows, operator_paths=[]):
     print("Plotting topology to", topo_fname, "...")
     # print("Generated topology with", num_qubits, "data qubits and ")
     plt.close()
@@ -101,15 +102,18 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, path_graph=None, o
     edge_colors = ["black"] * topo_graph.number_of_edges()
     edge_width = [1] * topo_graph.number_of_edges()
     node_edge_colors = ["white"] * topo_graph.number_of_nodes()
-    if path_graph != None:
-        for i, edge in enumerate(topo_graph.edges):
+    colors = ["red", "magenta", "blue", "orange", "cyan"]
+    for pi, operator_path in enumerate(operator_paths):
+        ops = operator_path[0]
+        path_graph = operator_path[1]
+        for ei, edge in enumerate(topo_graph.edges):
             if path_graph.has_edge(*edge):
-                edge_colors[i] = "red"
-                edge_width[i] = 3
+                edge_colors[ei] = colors[pi]
+                edge_width[ei] = 3
         root_node = None
-        for i, node in enumerate(topo_graph.nodes):
+        for ni, node in enumerate(topo_graph.nodes):
             if path_graph.has_node(node):
-                node_edge_colors[i] = "red"
+                node_edge_colors[ni] = colors[pi]
                 if is_magic_node(node):
                     root_node = node
         col, row = root_node[1:].split("-")
@@ -118,7 +122,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, path_graph=None, o
             row = float(num_rows) - 0.5
         else:
             row = -0.5
-        plt.text(col, row, ops, color="red")
+        plt.text(col, row, ops, color=colors[pi])
     nx.draw_networkx(
         topo_graph,
         pos=node_pos,
@@ -223,54 +227,56 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_operator, num_operators):
     return operators
 
 
-def schedule_operator_rnd(rng, topo_graph, operator):
+def schedule_operator_dfs(topo_graph, operator):
     ops = operator_str(operator)
     print("Trying to schedule operator", ops)
-    # random walk to find terminals
-    root_node = None
+    magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
-            # get first magic node available
-            root_node = node
-            break
-    else:
+            magic_nodes.append(node)
+    if len(magic_nodes) == 0:
         print("Could not find starting node for operator", ops)
-        return False
+        return None
+    for root_node in magic_nodes:
+        print("Starting at node", root_node)
+        visited = {root_node}
+        for node in topo_graph.nodes():
+            if is_magic_node(node):
+                visited.add(node)
+        queue = [root_node]
+        operator_graph = nx.Graph()
+        while len(queue):
+            node = queue.pop(0)
+            operator_graph.add_node(node)
+            # look for data nodes first
+            for nb in topo_graph[node]:
+                if is_data_node(nb):
+                    qubit_basis = topo_graph[node][nb]["label"]
+                    nb_with_basis = nb + qubit_basis
+                    if nb_with_basis not in visited:
+                        visited.add(nb_with_basis)
+                        if qubit_basis in operator:
+                            # print("Found basis", qubit_basis, "at node", nb)
+                            operator_graph.add_edge(node, nb)
+                            # we have used this, so ensure that this node cannot be visited again in another basis
+                            visited.add(nb + ("X" if qubit_basis == "Z" else "Z"))
+                            operator.remove(qubit_basis)
+                            if len(operator) == 0:
+                                queue = []
+                                break
+            # now extend along the bus
+            for nb in topo_graph[node]:
+                if not is_data_node(nb) and nb not in visited:
+                    visited.add(nb)
+                    queue.append(nb)
+                    operator_graph.add_edge(node, nb)
+        break
 
-    print("Starting at node", root_node)
-    visited = {root_node}
-    for node in topo_graph.nodes():
-        if is_magic_node(node):
-            visited.add(node)
-    queue = [root_node]
-    operator_graph = nx.Graph()
-    while len(queue):
-        node = queue.pop(0)
-        operator_graph.add_node(node)
-        # look for data nodes first
-        for nb in topo_graph[node]:
-            if is_data_node(nb):
-                qubit_basis = topo_graph[node][nb]["label"]
-                nb_with_basis = nb + qubit_basis
-                if nb_with_basis not in visited:
-                    visited.add(nb_with_basis)
-                    if qubit_basis in operator:
-                        print("Found basis", qubit_basis, "at node", nb)
-                        operator_graph.add_edge(node, nb)
-                        # we have used this, so ensure that this node cannot be visited again in another basis
-                        visited.add(nb + ("X" if qubit_basis == "Z" else "Z"))
-                        operator.remove(qubit_basis)
-                        if len(operator) == 0:
-                            queue = []
-                            break
-        # now extend along the bus
-        for nb in topo_graph[node]:
-            if not is_data_node(nb) and nb not in visited:
-                visited.add(nb)
-                queue.append(nb)
-                operator_graph.add_edge(node, nb)
+    if len(operator) > 0:
+        # could not schedule all components
+        return None
 
-    print(operator_graph.edges)
+    # print(operator_graph.edges)
     while True:
         dangling_nodes = []
         for node in operator_graph.nodes:
@@ -278,11 +284,10 @@ def schedule_operator_rnd(rng, topo_graph, operator):
                 dangling_nodes.append(node)
         if len(dangling_nodes) == 0:
             break
-        print("Dangling nodes:", dangling_nodes)
+        # print("Dangling nodes:", dangling_nodes)
         operator_graph.remove_nodes_from(dangling_nodes)
 
-    plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, path_graph=operator_graph, ops=ops)
-    return True
+    return (ops, operator_graph)
 
 
 def schedule_circuit(rng, topo_graph, circuit):
@@ -293,9 +298,28 @@ def schedule_circuit(rng, topo_graph, circuit):
     # print_circuit(circuit)
     rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
     # print_circuit(rnd_order_circuit)
+    operator_paths = []
+    working_topo_graph = copy.deepcopy(topo_graph)
     for operator in rnd_order_circuit:
-        if schedule_operator_rnd(rng, topo_graph, operator.tolist()) == False:
+        if len(rnd_order_circuit) == 1:
+            operator = operator.tolist()
+        # operator_path = schedule_operator_rnd(rng, working_topo_graph, operator.tolist())
+        operator_path = schedule_operator_dfs(working_topo_graph, operator)
+        if operator_path == None:
+            print("Could not schedule operator", operator_str(operator))
             break
+        operator_paths.append(operator_path)
+        # now remove the operator path from the graph
+        working_topo_graph.remove_nodes_from(operator_path[1].nodes)
+        orphaned_nodes = []
+        for node in working_topo_graph.nodes:
+            if working_topo_graph.degree(node) == 0:
+                orphaned_nodes.append(node)
+        working_topo_graph.remove_nodes_from(orphaned_nodes)
+
+    if len(operator_paths) > 0:
+        plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, operator_paths=operator_paths)
+        plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
 
 
 if __name__ == "__main__":
