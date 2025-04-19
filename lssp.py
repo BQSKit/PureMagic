@@ -246,6 +246,39 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth):
     return pauli_products
 
 
+def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
+    print("Starting at node", root_node)
+    visited = {root_node}
+    num_found_operators = 0
+    for node in topo_graph.nodes():
+        if is_magic_node(node):
+            visited.add(node)
+    queue = [root_node]
+    pauli_product_graph = nx.Graph()
+    while len(queue):
+        node = queue.pop(0)
+        pauli_product_graph.add_node(node)
+        # look for data nodes first
+        for nb in topo_graph[node]:
+            if nb not in visited and is_data_node(nb):
+                visited.add(nb)
+                qubit_index = int(nb[1:-1])
+                qubit_basis = nb[-1]
+                if pauli_product.operators[qubit_index] == qubit_basis:
+                    # print("Found basis", qubit_basis, "at node", nb)
+                    pauli_product_graph.add_edge(node, nb)
+                    num_found_operators += 1
+                    if num_found_operators == pauli_product.qubits_used:
+                        return pauli_product_graph
+        # now extend along the bus
+        for nb in topo_graph[node]:
+            if not is_data_node(nb) and nb not in visited:
+                visited.add(nb)
+                queue.append(nb)
+                pauli_product_graph.add_edge(node, nb)
+    return None
+
+
 def schedule_pauli_product(topo_graph, pauli_product):
     print("Trying to schedule Pauli product", pauli_product.__str__())
     magic_nodes = []
@@ -256,39 +289,11 @@ def schedule_pauli_product(topo_graph, pauli_product):
         print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
     # schedule from each available magic node in turn, and take the one that uses the fewest nodes
-    num_found_operators = 0
     for root_node in magic_nodes:
-        print("Starting at node", root_node)
-        visited = {root_node}
-        for node in topo_graph.nodes():
-            if is_magic_node(node):
-                visited.add(node)
-        queue = [root_node]
-        pauli_product_graph = nx.Graph()
-        while len(queue):
-            node = queue.pop(0)
-            pauli_product_graph.add_node(node)
-            # look for data nodes first
-            for nb in topo_graph[node]:
-                if nb not in visited and is_data_node(nb):
-                    visited.add(nb)
-                    qubit_index = int(nb[1:-1])
-                    qubit_basis = nb[-1]
-                    if pauli_product.operators[qubit_index] == qubit_basis:
-                        # print("Found basis", qubit_basis, "at node", nb)
-                        pauli_product_graph.add_edge(node, nb)
-                        num_found_operators += 1
-                        if num_found_operators == pauli_product.qubits_used:
-                            break
-            # now extend along the bus
-            for nb in topo_graph[node]:
-                if not is_data_node(nb) and nb not in visited:
-                    visited.add(nb)
-                    queue.append(nb)
-                    pauli_product_graph.add_edge(node, nb)
+        pauli_product_graph = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
         break
 
-    if num_found_operators != pauli_product.qubits_used:
+    if pauli_product_graph == None:
         # could not schedule all components
         return None
 
