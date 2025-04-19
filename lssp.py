@@ -247,7 +247,6 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth):
 
 
 def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
-    print("Starting at node", root_node)
     visited = {root_node}
     num_found_operators = 0
     for node in topo_graph.nodes():
@@ -289,9 +288,15 @@ def schedule_pauli_product(topo_graph, pauli_product):
         print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
     # schedule from each available magic node in turn, and take the one that uses the fewest nodes
+    pauli_product_graph = None
     for root_node in magic_nodes:
-        pauli_product_graph = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
-        break
+        g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
+        if g == None:
+            continue
+        # print("Found path with", g.number_of_nodes(), "nodes")
+        if pauli_product_graph == None or pauli_product_graph.number_of_nodes() > g.number_of_nodes():
+            # print("Found new best graph with nodes", g.number_of_nodes())
+            pauli_product_graph = copy.deepcopy(g)
 
     if pauli_product_graph == None:
         # could not schedule all components
@@ -311,20 +316,20 @@ def schedule_pauli_product(topo_graph, pauli_product):
     return pauli_product_graph
 
 
-def schedule_circuit(rng, topo_graph, circuit):
+def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
     # How do we choose the order in which to process the Pauli products?
     # We start with the given order. Other mappings are possible.
     # rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
     pauli_product_paths = []
     working_topo_graph = copy.deepcopy(topo_graph)
+    num_qubits_scheduled = 0
     for pauli_product in circuit:
         pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product)
         if pauli_product_graph == None:
-            print(
-                "Could not schedule Pauli product",
-            )
-            break
+            print("Could not schedule Pauli product", pauli_product)
+            continue
         pauli_product_paths.append((pauli_product, pauli_product_graph))
+        num_qubits_scheduled += pauli_product.qubits_used
         # now remove the Pauli product path from the graph
         working_topo_graph.remove_nodes_from(pauli_product_graph.nodes)
         orphaned_nodes = []
@@ -332,6 +337,15 @@ def schedule_circuit(rng, topo_graph, circuit):
             if working_topo_graph.degree(node) == 0:
                 orphaned_nodes.append(node)
         working_topo_graph.remove_nodes_from(orphaned_nodes)
+
+    print("Scheduling results:")
+    print(
+        "  Pauli products:  %d/%d (%.2f)"
+        % (len(pauli_product_paths), len(circuit), float(len(pauli_product_paths)) / len(circuit))
+    )
+    print(
+        "  qubits:        %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, float(num_qubits_scheduled) / num_data_qubits)
+    )
 
     if len(pauli_product_paths) > 0:
         plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, pauli_product_paths=pauli_product_paths)
@@ -348,4 +362,4 @@ if __name__ == "__main__":
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
     circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.circuit_depth)
-    schedule_circuit(rng, topo_graph, circuit)
+    schedule_circuit(rng, topo_graph, circuit, num_data_qubits)
