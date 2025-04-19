@@ -13,13 +13,13 @@ def get_args():
     parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
     parser.add_argument("--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits")
     parser.add_argument(
-        "--qubits-per-operator",
+        "--qubits-per-pauli-product",
         "-q",
         type=float,
         default=0.1,
-        help="Mean fraction data qubits per operator (normal distribution)",
+        help="Mean fraction data qubits per Pauli product (normal distribution)",
     )
-    parser.add_argument("--num-operators", "-m", type=int, default=50, help="Number of operators to generate")
+    parser.add_argument("--num-pauli-products", "-m", type=int, default=50, help="Number of Pauli products to generate")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
@@ -57,13 +57,42 @@ def get_node_label(label, col, row):
     return label + str(math.ceil(col)) + "-" + str(math.ceil(row))
 
 
-def operator_str(operator):
-    return "".join(operator)
+class PauliProduct:
+    # basis_options = ["X", "Z", "Y"]
+    basis_options = ["X", "Z"]
+
+    def __init__(self, rng, num_qubits, pauli_product_qubits):
+        self.operators = []
+        self.num_qubits = num_qubits
+        for _ in range(pauli_product_qubits):
+            self.operators.append(self.basis_options[int(np.floor(rng.uniform(0, len(self.basis_options))))])
+        self.qubits = sorted(rng.choice(num_qubits, pauli_product_qubits, replace=False))
+
+    def __str__(self):
+        s = ""
+        print_all = False
+        if print_all:
+            qubits = copy.deepcopy(self.qubits)
+            operators = copy.deepcopy(self.operators)
+            for i in range(self.num_qubits):
+                if len(qubits) == 0:
+                    break
+                if i == qubits[0]:
+                    s += operators.pop(0)
+                    qubits.pop(0)
+                else:
+                    s += "I"
+        else:
+            for i in range(len(self.operators)):
+                s += str(self.qubits[i]) + self.operators[i]
+                if i != len(self.operators) - 1:
+                    s += " "
+        return s
 
 
 def print_circuit(circuit):
-    for i, operator in enumerate(circuit):
-        print(i, operator_str(operator))
+    for i, pauli_product in enumerate(circuit):
+        print(i, pauli_product)
 
 
 def add_node(topo_graph, label, col, row, num_rows):
@@ -91,7 +120,7 @@ def plot_steiner_tree(topo_graph):
     plt.savefig(stree_fname + ".pdf")
 
 
-def plot_topology(topo_graph, topo_fname, num_cols, num_rows, operator_paths=[]):
+def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_paths=[]):
     print("Plotting topology to", topo_fname, "...")
     # print("Generated topology with", num_qubits, "data qubits and ")
     plt.close()
@@ -103,16 +132,15 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, operator_paths=[])
     edge_width = [1] * topo_graph.number_of_edges()
     node_edge_colors = ["white"] * topo_graph.number_of_nodes()
     colors = ["red", "magenta", "blue", "orange", "cyan"]
-    for pi, operator_path in enumerate(operator_paths):
-        ops = operator_path[0]
-        path_graph = operator_path[1]
+    for pi, pauli_path in enumerate(pauli_product_paths):
+        pauli_product, pauli_product_graph = pauli_path
         for ei, edge in enumerate(topo_graph.edges):
-            if path_graph.has_edge(*edge):
+            if pauli_product_graph.has_edge(*edge):
                 edge_colors[ei] = colors[pi]
                 edge_width[ei] = 3
         root_node = None
         for ni, node in enumerate(topo_graph.nodes):
-            if path_graph.has_node(node):
+            if pauli_product_graph.has_node(node):
                 node_edge_colors[ni] = colors[pi]
                 if is_magic_node(node):
                     root_node = node
@@ -122,7 +150,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, operator_paths=[])
             row = float(num_rows) - 0.5
         else:
             row = -0.5
-        plt.text(col, row, ops, color=colors[pi])
+        plt.text(col, row, pauli_product, color=colors[pi])
     nx.draw_networkx(
         topo_graph,
         pos=node_pos,
@@ -132,7 +160,15 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, operator_paths=[])
         edge_color=edge_colors,
         width=edge_width,
         edgecolors=node_edge_colors,
+        with_labels=False,
     )
+    node_labels = {}
+    for node in topo_graph.nodes():
+        if "di" in topo_graph.nodes[node]:
+            node_labels[node] = node + "\n" + str(topo_graph.nodes[node]["di"])
+        else:
+            node_labels[node] = node
+    nx.draw_networkx_labels(topo_graph, pos=node_pos, labels=node_labels, font_size=10)
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
@@ -152,6 +188,7 @@ def build_parallel_topo(num_cols, num_rows):
         prev_node_label = add_node(topo_graph, "b", col, num_rows - 2, num_rows)
         node_label = add_node(topo_graph, "m", col, num_rows - 1, num_rows)
         topo_graph.add_edge(node_label, prev_node_label)
+    data_qubit_i = 0
     for col in range(num_cols):
         if col % 2 == 0:
             continue
@@ -162,14 +199,16 @@ def build_parallel_topo(num_cols, num_rows):
                 topo_graph.add_edge(node_label, get_node_label("b", col + 1, row))
             else:
                 node_label = add_node(topo_graph, "d", col, row, num_rows)
+                topo_graph.nodes[node_label]["di"] = data_qubit_i
+                data_qubit_i += 1
                 if row % 3 == 2:
                     topo_graph.add_edge(node_label, get_node_label("b", col - 1, row), label="X")
                     topo_graph.add_edge(node_label, get_node_label("b", col + 1, row), label="X")
-                    topo_graph.add_edge(node_label, get_node_label("b", col, row - 1), label="Z")
+                    # topo_graph.add_edge(node_label, get_node_label("b", col, row - 1), label="Z")
                 else:
                     topo_graph.add_edge(node_label, get_node_label("b", col - 1, row), label="Z")
                     topo_graph.add_edge(node_label, get_node_label("b", col + 1, row), label="Z")
-                    topo_graph.add_edge(node_label, get_node_label("b", col, row + 1), label="X")
+                    # topo_graph.add_edge(node_label, get_node_label("b", col, row + 1), label="X")
 
     # print(topo_graph.nodes)
     # print(topo_graph.edges)
@@ -187,27 +226,23 @@ def build_parallel_topo(num_cols, num_rows):
     return num_data_qubits, topo_graph
 
 
-def gen_rnd_circuit(rng, num_qubits, qubits_per_operator, num_operators):
-    mean_qubits = float(num_qubits) * qubits_per_operator
+def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, num_pauli_products):
+    mean_qubits = float(num_qubits) * qubits_per_pauli_product
     sigma_qubits = 2.0
-    operators = []
-    # basis_options = ["X", "Z", "Y"]
-    basis_options = ["X", "Z"]
+    pauli_products = []
     counts = []
-    for _ in range(num_operators):
-        operator = []
+    for _ in range(num_pauli_products):
         # this is a hack to ensure only positive numbers for the normal sampling
         for _ in range(100):
-            operator_qubits = int(np.floor(rng.normal(mean_qubits, sigma_qubits)))
-            if operator_qubits > 0 and operator_qubits <= num_qubits:
+            pauli_product_qubits = int(np.floor(rng.normal(mean_qubits, sigma_qubits)))
+            if pauli_product_qubits > 0 and pauli_product_qubits <= num_qubits:
                 break
         else:
             print("Couldn't generate a random number in range [0, %d], using %d" % (num_qubits, mean_qubits), file=sys.stderr)
-            operator_qubits = mean_qubits
-        for _ in range(operator_qubits):
-            operator.append(basis_options[int(np.floor(rng.uniform(0, len(basis_options))))])
-        operators.append(operator)
-        counts.append(len(operator))
+            pauli_product_qubits = mean_qubits
+
+        pauli_products.append(PauliProduct(rng, num_qubits, pauli_product_qubits))
+        counts.append(pauli_product_qubits)
 
     plot_circuit_histogram = False
     if plot_circuit_histogram:
@@ -224,19 +259,19 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_operator, num_operators):
         plt.tight_layout()
         plt.savefig(hist_fname + ".pdf")
         plt.savefig(hist_fname + ".png")
-    return operators
+    return pauli_products
 
 
-def schedule_operator_dfs(topo_graph, operator):
-    ops = operator_str(operator)
-    print("Trying to schedule operator", ops)
+def schedule_operator_dfs(topo_graph, pauli_product):
+    print("Trying to schedule Pauli product", pauli_product.__str__())
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
             magic_nodes.append(node)
     if len(magic_nodes) == 0:
-        print("Could not find starting node for operator", ops)
+        print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
+    operators = copy.deepcopy(pauli_product.operators)
     for root_node in magic_nodes:
         print("Starting at node", root_node)
         visited = {root_node}
@@ -244,24 +279,25 @@ def schedule_operator_dfs(topo_graph, operator):
             if is_magic_node(node):
                 visited.add(node)
         queue = [root_node]
-        operator_graph = nx.Graph()
+        pauli_product_graph = nx.Graph()
         while len(queue):
             node = queue.pop(0)
-            operator_graph.add_node(node)
+            pauli_product_graph.add_node(node)
             # look for data nodes first
             for nb in topo_graph[node]:
                 if is_data_node(nb):
                     qubit_basis = topo_graph[node][nb]["label"]
+                    qubit_di = topo_graph.nodes[nb]["di"]
                     nb_with_basis = nb + qubit_basis
                     if nb_with_basis not in visited:
                         visited.add(nb_with_basis)
-                        if qubit_basis in operator:
+                        if qubit_basis in operators:
                             # print("Found basis", qubit_basis, "at node", nb)
-                            operator_graph.add_edge(node, nb)
+                            pauli_product_graph.add_edge(node, nb)
                             # we have used this, so ensure that this node cannot be visited again in another basis
                             visited.add(nb + ("X" if qubit_basis == "Z" else "Z"))
-                            operator.remove(qubit_basis)
-                            if len(operator) == 0:
+                            operators.remove(qubit_basis)
+                            if len(operators) == 0:
                                 queue = []
                                 break
             # now extend along the bus
@@ -269,56 +305,52 @@ def schedule_operator_dfs(topo_graph, operator):
                 if not is_data_node(nb) and nb not in visited:
                     visited.add(nb)
                     queue.append(nb)
-                    operator_graph.add_edge(node, nb)
+                    pauli_product_graph.add_edge(node, nb)
         break
 
-    if len(operator) > 0:
+    if len(operators) > 0:
         # could not schedule all components
         return None
 
     # print(operator_graph.edges)
     while True:
         dangling_nodes = []
-        for node in operator_graph.nodes:
-            if is_bus_node(node) and operator_graph.degree(node) == 1:
+        for node in pauli_product_graph.nodes:
+            if is_bus_node(node) and pauli_product_graph.degree(node) == 1:
                 dangling_nodes.append(node)
         if len(dangling_nodes) == 0:
             break
         # print("Dangling nodes:", dangling_nodes)
-        operator_graph.remove_nodes_from(dangling_nodes)
+        pauli_product_graph.remove_nodes_from(dangling_nodes)
 
-    return (ops, operator_graph)
+    return pauli_product_graph
 
 
 def schedule_circuit(rng, topo_graph, circuit):
-    # How do we choose the order in which to process the operators?
+    # How do we choose the order in which to process the Pauli products?
     # random, shortest first, longest first
-    # How do we allocate qubits to operators?
-    # random walk, dfs, bfs
-    # print_circuit(circuit)
     rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
     # print_circuit(rnd_order_circuit)
-    operator_paths = []
+    pauli_product_paths = []
     working_topo_graph = copy.deepcopy(topo_graph)
-    for operator in rnd_order_circuit:
-        if len(rnd_order_circuit) == 1:
-            operator = operator.tolist()
-        # operator_path = schedule_operator_rnd(rng, working_topo_graph, operator.tolist())
-        operator_path = schedule_operator_dfs(working_topo_graph, operator)
-        if operator_path == None:
-            print("Could not schedule operator", operator_str(operator))
+    for pauli_product in rnd_order_circuit:
+        pauli_product_graph = schedule_operator_dfs(working_topo_graph, pauli_product)
+        if pauli_product_graph == None:
+            print(
+                "Could not schedule Pauli product",
+            )
             break
-        operator_paths.append(operator_path)
-        # now remove the operator path from the graph
-        working_topo_graph.remove_nodes_from(operator_path[1].nodes)
+        pauli_product_paths.append((pauli_product, pauli_product_graph))
+        # now remove the Pauli product path from the graph
+        working_topo_graph.remove_nodes_from(pauli_product_graph.nodes)
         orphaned_nodes = []
         for node in working_topo_graph.nodes:
             if working_topo_graph.degree(node) == 0:
                 orphaned_nodes.append(node)
         working_topo_graph.remove_nodes_from(orphaned_nodes)
 
-    if len(operator_paths) > 0:
-        plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, operator_paths=operator_paths)
+    if len(pauli_product_paths) > 0:
+        plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, pauli_product_paths=pauli_product_paths)
         plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
 
 
@@ -331,5 +363,5 @@ if __name__ == "__main__":
     # plot_steiner_tree(topo_graph)
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
-    circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_operator, args.num_operators)
+    circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.num_pauli_products)
     schedule_circuit(rng, topo_graph, circuit)
