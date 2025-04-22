@@ -23,6 +23,13 @@ def get_args():
     parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
     parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
+    parser.add_argument(
+        "--path-method",
+        type=str,
+        default="steiner",
+        choices=["steiner", "bfs"],
+        help="Method to use for finding paths: steiner, bfs",
+    )
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
@@ -75,7 +82,7 @@ class PauliProduct:
         for i in range(len(self.operators)):
             if self.operators[i] != " ":
                 s += str(i) + self.operators[i] + " "
-        return s
+        return s.strip()
 
 
 def print_circuit(circuit):
@@ -89,24 +96,6 @@ def add_node(topo_graph, label, col, row, num_rows):
     node_label = get_node_label(label, col, row)
     topo_graph.add_node(node_label, pos=[col, num_rows - 1 - row], color=node_colors[label])
     return node_label
-
-
-def plot_steiner_tree(topo_graph):
-    terminal_nodes = ["m0-0"]
-    for node in topo_graph.nodes:
-        if is_data_node(node):
-            terminal_nodes.append(node)
-    steiner_graph = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes)
-    stree_fname = "lssp-steiner"
-    plt.close()
-    node_pos = nx.get_node_attributes(topo_graph, "pos")
-    node_colors = nx.get_node_attributes(topo_graph, "color").values()
-    nx.draw_networkx(topo_graph, pos=node_pos, node_size=1000, node_color=node_colors, font_size=10)
-    edge_labels = nx.get_edge_attributes(topo_graph, "label")
-    nx.draw_networkx(steiner_graph, pos=node_pos, node_size=1000, font_size=10)
-    nx.draw_networkx_edge_labels(steiner_graph, node_pos, edge_labels, rotate=False)
-    plt.tight_layout()
-    plt.savefig(stree_fname + ".pdf")
 
 
 def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_paths=[]):
@@ -124,6 +113,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
     node_labels = {}
     for i, node in enumerate(topo_graph.nodes()):
         node_labels[node] = "" if is_bus_node(node) else node
+        node_labels[node] = node
     cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
     for pi, pauli_path in enumerate(pauli_product_paths):
         pauli_product, pauli_product_graph = pauli_path
@@ -132,6 +122,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
                 edge_colors[ei] = cmap(pi)
                 edge_width[ei] = 6
         root_node = None
+        # print(pauli_product_graph.nodes)
         for ni, node in enumerate(topo_graph.nodes):
             if pauli_product_graph.has_node(node):
                 node_edge_colors[ni] = cmap(pi)
@@ -301,6 +292,17 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth, ga
     return pauli_products
 
 
+def trim_dangling_nodes(g):
+    while True:
+        dangling_nodes = []
+        for node in g.nodes:
+            if is_bus_node(node) and g.degree(node) == 1:
+                dangling_nodes.append(node)
+        if len(dangling_nodes) == 0:
+            break
+        g.remove_nodes_from(dangling_nodes)
+
+
 def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
     visited = {root_node}
     num_found_operators = 0
@@ -323,6 +325,7 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
                     pauli_product_graph.add_edge(node, nb)
                     num_found_operators += 1
                     if num_found_operators == pauli_product.qubits_used:
+                        trim_dangling_nodes(pauli_product_graph)
                         return pauli_product_graph
         # now extend along the bus
         for nb in topo_graph[node]:
@@ -331,6 +334,30 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
                 queue.append(nb)
                 pauli_product_graph.add_edge(node, nb)
     return None
+
+
+def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
+    terminal_nodes = [root_node]
+    for oi, operator in enumerate(pauli_product.operators):
+        if operator != " ":
+            node = "d" + str(oi) + operator
+            if node not in topo_graph.nodes():
+                return None
+            terminal_nodes.append(node)
+    # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
+    while True:
+        try:
+            g = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes, method="mehlhorn")
+            has_terminals = [node in g for node in terminal_nodes]
+            if not all(has_terminals):
+                # print("Missing terminals from root", root_node)
+                return None
+            return g
+        except KeyError as err:
+            # we have a disconnected node, so we need to reschedule without that node
+            missing_node = err.args[0]
+            # print("Key error", missing_node, "found?", missing_node in topo_graph)
+            topo_graph.remove_nodes_from([missing_node])
 
 
 def schedule_pauli_product(topo_graph, pauli_product):
@@ -344,28 +371,18 @@ def schedule_pauli_product(topo_graph, pauli_product):
     # schedule from each available magic node in turn, and take the one that uses the fewest nodes
     pauli_product_graph = None
     for root_node in magic_nodes:
-        g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
+        # g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
+        g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
         if g == None:
             continue
         # print("Found path with", g.number_of_nodes(), "nodes")
-        if pauli_product_graph == None or pauli_product_graph.number_of_nodes() > g.number_of_nodes():
+        if pauli_product_graph == None or g.number_of_nodes() < pauli_product_graph.number_of_nodes():
             # print("Found new best graph with nodes", g.number_of_nodes())
             pauli_product_graph = copy.deepcopy(g)
 
     if pauli_product_graph == None:
         # could not schedule all components
         return None
-
-    # print(operator_graph.edges)
-    while True:
-        dangling_nodes = []
-        for node in pauli_product_graph.nodes:
-            if is_bus_node(node) and pauli_product_graph.degree(node) == 1:
-                dangling_nodes.append(node)
-        if len(dangling_nodes) == 0:
-            break
-        # print("Dangling nodes:", dangling_nodes)
-        pauli_product_graph.remove_nodes_from(dangling_nodes)
 
     return pauli_product_graph
 
@@ -404,7 +421,7 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
 
     if len(pauli_product_paths) > 0:
         plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, pauli_product_paths=pauli_product_paths)
-        plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
+        # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
 
 
 if __name__ == "__main__":
