@@ -150,7 +150,8 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
         labels=node_labels,
     )
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
-    plt.title(topo_fname.split("-")[-1])
+    plt.box(False)
+    plt.title(topo_fname.split("-")[-1]).set_fontsize(24)
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
     plt.savefig(topo_fname + ".png")
@@ -339,15 +340,15 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
 
 
 def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
-    terminal_nodes = [root_node]
-    for oi, operator in enumerate(pauli_product.operators):
-        if operator != " ":
-            node = "d" + str(oi) + operator
-            if node not in topo_graph.nodes():
-                return None
-            terminal_nodes.append(node)
     # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
     while True:
+        terminal_nodes = [root_node]
+        for oi, operator in enumerate(pauli_product.operators):
+            if operator != " ":
+                node = "d" + str(oi) + operator
+                if node not in topo_graph:
+                    return None
+                terminal_nodes.append(node)
         try:
             g = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes, method="mehlhorn")
             has_terminals = [node in g for node in terminal_nodes]
@@ -360,6 +361,9 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
             missing_node = err.args[0]
             # print("Key error", missing_node, "found?", missing_node in topo_graph)
             topo_graph.remove_nodes_from([missing_node])
+        except nx.NodeNotFound as err:
+            print("Node not found", err)
+            return None
 
 
 def schedule_pauli_product(topo_graph, pauli_product, method):
