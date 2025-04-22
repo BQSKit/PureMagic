@@ -150,6 +150,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
         labels=node_labels,
     )
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
+    plt.title(topo_fname.split("-")[-1])
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
     plt.savefig(topo_fname + ".png")
@@ -232,10 +233,11 @@ def plot_circuit(circuit):
                 ry_start = i
             ry_end = i
         rect_height = ry_end - ry_start
-        rect_shift = 0.1 * math.sqrt(num_rows)
+        top_shift = 0.12 * math.sqrt(num_rows)
+        height_shift = 0.1 * math.sqrt(num_rows) + top_shift
         ax.add_patch(
             patches.Rectangle(
-                (-0.1, ry_start - rect_shift), 0.45, rect_height + 2 * rect_shift, edgecolor="black", facecolor="lightgreen"
+                (-0.1, ry_start - top_shift), 0.45, rect_height + height_shift, edgecolor="black", facecolor="lightgreen"
             )
         )
     plt.xlim(-1.8, 10)
@@ -360,7 +362,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
             topo_graph.remove_nodes_from([missing_node])
 
 
-def schedule_pauli_product(topo_graph, pauli_product):
+def schedule_pauli_product(topo_graph, pauli_product, method):
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
@@ -371,8 +373,12 @@ def schedule_pauli_product(topo_graph, pauli_product):
     # schedule from each available magic node in turn, and take the one that uses the fewest nodes
     pauli_product_graph = None
     for root_node in magic_nodes:
-        # g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
-        g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
+        if method == "bfs":
+            g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
+        elif method == "steiner":
+            g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
+        else:
+            raise ValueError("Unknown path method " + method)
         if g == None:
             continue
         # print("Found path with", g.number_of_nodes(), "nodes")
@@ -387,7 +393,7 @@ def schedule_pauli_product(topo_graph, pauli_product):
     return pauli_product_graph
 
 
-def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
+def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
     # How do we choose the order in which to process the Pauli products?
     # We start with the given order. Other mappings are possible.
     # rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
@@ -395,11 +401,11 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
     working_topo_graph = copy.deepcopy(topo_graph)
     num_qubits_scheduled = 0
     for pauli_product in circuit:
-        pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product)
+        pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product, method)
         if pauli_product_graph == None:
             print("* Could not schedule Pauli product", pauli_product)
             continue
-        print("Scheduled Pauli product", pauli_product.__str__())
+        print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
         pauli_product_paths.append((pauli_product, pauli_product_graph))
         num_qubits_scheduled += pauli_product.qubits_used
         # now remove the Pauli product path from the graph
@@ -420,7 +426,7 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
     )
 
     if len(pauli_product_paths) > 0:
-        plot_topology(topo_graph, "lssp-topo-path", num_cols, num_rows, pauli_product_paths=pauli_product_paths)
+        plot_topology(topo_graph, "lssp-topo-path-" + method, num_cols, num_rows, pauli_product_paths=pauli_product_paths)
         # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
 
 
@@ -435,4 +441,4 @@ if __name__ == "__main__":
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
     circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.circuit_depth, args.gap_prob)
     plot_circuit(circuit)
-    schedule_circuit(rng, topo_graph, circuit, num_data_qubits)
+    schedule_circuit(rng, topo_graph, circuit, num_data_qubits, args.path_method)
