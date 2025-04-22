@@ -2,6 +2,7 @@
 
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import math
 import numpy as np
 import argparse
@@ -21,6 +22,7 @@ def get_args():
     )
     parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
+    parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
@@ -82,7 +84,8 @@ def print_circuit(circuit):
 
 
 def add_node(topo_graph, label, col, row, num_rows):
-    node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
+    # node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
+    node_colors = {"m": "#FFBB99", "b": "#cccccc", "d": "#9999FF"}
     node_label = get_node_label(label, col, row)
     topo_graph.add_node(node_label, pos=[col, num_rows - 1 - row], color=node_colors[label])
     return node_label
@@ -117,17 +120,22 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
     edge_colors = ["black"] * topo_graph.number_of_edges()
     edge_width = [1] * topo_graph.number_of_edges()
     node_edge_colors = ["white"] * topo_graph.number_of_nodes()
-    colors = ["red", "magenta", "blue", "orange", "cyan"]
+    node_line_widths = [1] * topo_graph.number_of_nodes()
+    node_labels = {}
+    for i, node in enumerate(topo_graph.nodes()):
+        node_labels[node] = "" if is_bus_node(node) else node
+    cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
     for pi, pauli_path in enumerate(pauli_product_paths):
         pauli_product, pauli_product_graph = pauli_path
         for ei, edge in enumerate(topo_graph.edges):
             if pauli_product_graph.has_edge(*edge):
-                edge_colors[ei] = colors[pi]
-                edge_width[ei] = 3
+                edge_colors[ei] = cmap(pi)
+                edge_width[ei] = 6
         root_node = None
         for ni, node in enumerate(topo_graph.nodes):
             if pauli_product_graph.has_node(node):
-                node_edge_colors[ni] = colors[pi]
+                node_edge_colors[ni] = cmap(pi)
+                node_line_widths[ni] = 3
                 if is_magic_node(node):
                     root_node = node
         col, row = root_node[1:].split("-")
@@ -136,7 +144,8 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
             row = float(num_rows) - 0.5
         else:
             row = -0.5
-        plt.text(col, row, pauli_product, color=colors[pi])
+        t = plt.text(col, row, pauli_product, color="black")
+        t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
     nx.draw_networkx(
         topo_graph,
         pos=node_pos,
@@ -146,6 +155,8 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
         edge_color=edge_colors,
         width=edge_width,
         edgecolors=node_edge_colors,
+        linewidths=node_line_widths,
+        labels=node_labels,
     )
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
     plt.tight_layout()
@@ -204,7 +215,47 @@ def build_parallel_topo(num_cols, num_rows):
     return num_data_qubits, topo_graph
 
 
-def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth):
+def plot_circuit(circuit):
+    circuit_fname = "lssp-circuit"
+    print("Drawing circuit...", circuit_fname)
+
+    plt.close()
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    num_rows = len(circuit[0].operators)
+    # scale the fontsize
+    fs_slope = 10.0 / (56.0 - 4.0)
+    fontsize = int(np.ceil(16.0 - (num_rows - 4.0) * fs_slope))
+    for i in range(num_rows):
+        ax.text(0 - 1.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
+    for pauli_product in circuit:
+        for start_pos in range(num_rows):
+            if pauli_product.operators[start_pos] != " ":
+                break
+        ry_start = None
+        for i in range(start_pos, num_rows):
+            if pauli_product.operators[i] == " ":
+                break
+            ax.text(0, i, pauli_product.operators[i], va="center", fontsize=fontsize)
+            if ry_start == None:
+                ry_start = i
+            ry_end = i
+        rect_height = ry_end - ry_start
+        rect_shift = 0.1 * math.sqrt(num_rows)
+        ax.add_patch(
+            patches.Rectangle(
+                (-0.1, ry_start - rect_shift), 0.45, rect_height + 2 * rect_shift, edgecolor="black", facecolor="lightgreen"
+            )
+        )
+    plt.xlim(-1.8, 10)
+    plt.ylim(num_rows, -1)
+    plt.tick_params(axis="y", left=False, labelleft=False)
+    plt.box(False)
+    plt.tight_layout()
+    plt.savefig(circuit_fname + ".pdf")
+
+
+def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth, gap_prob):
     mean_qubits = float(num_qubits) * qubits_per_pauli_product
     sigma_qubits = 2.0
     pauli_products = []
@@ -227,6 +278,10 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth):
         counts.append(pauli_product_qubits)
         print(" ", pauli_products[-1])
         start_qubit += pauli_product_qubits
+        if rng.uniform(0, 1) < gap_prob:
+            start_qubit += 1
+            if start_qubit >= num_qubits:
+                break
 
     plot_circuit_histogram = False
     if plot_circuit_histogram:
@@ -279,7 +334,6 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
 
 
 def schedule_pauli_product(topo_graph, pauli_product):
-    print("Trying to schedule Pauli product", pauli_product.__str__())
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
@@ -326,8 +380,9 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
     for pauli_product in circuit:
         pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product)
         if pauli_product_graph == None:
-            print("Could not schedule Pauli product", pauli_product)
+            print("* Could not schedule Pauli product", pauli_product)
             continue
+        print("Scheduled Pauli product", pauli_product.__str__())
         pauli_product_paths.append((pauli_product, pauli_product_graph))
         num_qubits_scheduled += pauli_product.qubits_used
         # now remove the Pauli product path from the graph
@@ -357,9 +412,10 @@ if __name__ == "__main__":
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims(args.min_num_qubits)
     num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
-    plot_topology(topo_graph, "lssp-topo", num_cols, num_rows)
+    # plot_topology(topo_graph, "lssp-topo", num_cols, num_rows)
     # plot_steiner_tree(topo_graph)
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
-    circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.circuit_depth)
+    circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.circuit_depth, args.gap_prob)
+    plot_circuit(circuit)
     schedule_circuit(rng, topo_graph, circuit, num_data_qubits)
