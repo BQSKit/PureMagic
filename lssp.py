@@ -98,7 +98,7 @@ def add_node(topo_graph, label, col, row, num_rows):
     return node_label
 
 
-def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_paths=[]):
+def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_paths=[], title_str=""):
     print("Plotting topology to", topo_fname, "...")
     # print("Generated topology with", num_qubits, "data qubits and ")
     plt.close()
@@ -151,7 +151,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
     )
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
     plt.box(False)
-    plt.title(topo_fname.split("-")[-1]).set_fontsize(24)
+    plt.title(title_str).set_fontsize(24)
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
     plt.savefig(topo_fname + ".png")
@@ -421,16 +421,14 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
         working_topo_graph.remove_nodes_from(orphaned_nodes)
 
     print("Scheduling results:")
-    print(
-        "  Pauli products:  %d/%d (%.2f)"
-        % (len(pauli_product_paths), len(circuit), float(len(pauli_product_paths)) / len(circuit))
-    )
-    print(
-        "  qubits:        %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, float(num_qubits_scheduled) / num_data_qubits)
-    )
+    frac_paths = float(len(pauli_product_paths)) / len(circuit)
+    frac_qubits = float(num_qubits_scheduled) / num_data_qubits
+    print("  Pauli products:  %d/%d (%.2f)" % (len(pauli_product_paths), len(circuit), frac_paths))
+    print("  qubits:          %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, frac_qubits))
 
     if len(pauli_product_paths) > 0:
-        plot_topology(topo_graph, "lssp-topo-path-" + method, num_cols, num_rows, pauli_product_paths=pauli_product_paths)
+        title_str = method + " (products %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
+        plot_topology(topo_graph, "lssp-topo-path-" + method, num_cols, num_rows, pauli_product_paths, title_str)
         # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
 
 
