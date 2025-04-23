@@ -148,16 +148,18 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
         edgecolors=node_edge_colors,
         linewidths=node_line_widths,
         labels=node_labels,
+        connectionstyle="angle3,angleA=90,angleB=0",
+        arrows=True,
     )
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
     plt.box(False)
-    plt.title(title_str).set_fontsize(24)
+    plt.title(title_str).set_fontsize(6 * math.sqrt(num_rows))
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
     plt.savefig(topo_fname + ".png")
 
 
-def build_parallel_topo(num_cols, num_rows):
+def build_parallel_topo(num_cols, num_rows, path_method):
     topo_graph = nx.Graph()
     for col in range(num_cols):
         if col % 2 != 0:
@@ -183,9 +185,16 @@ def build_parallel_topo(num_cols, num_rows):
                 if row % 3 == 2:
                     node_label1 = "d" + str(int(qi / 2)) + "X"
                     node_label2 = "d" + str(int(qi / 2) + 1) + "X"
+                    # currently, these top and bottom connections only work for BFS not for Steiner trees
+                    if path_method == "bfs":
+                        topo_graph.add_edge(get_node_label("b", col, row + 2), node_label1)
+                        topo_graph.add_edge(get_node_label("b", col, row + 2), node_label2)
                 else:
                     node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
                     node_label2 = "d" + str(int(qi / 2)) + "Z"
+                    if path_method == "bfs":
+                        topo_graph.add_edge(get_node_label("b", col, row - 2), node_label1)
+                        topo_graph.add_edge(get_node_label("b", col, row - 2), node_label2)
                 topo_graph.add_node(node_label1, pos=[float(col) - 0.35, num_rows - 1 - row], color="#9999FF")
                 topo_graph.add_edge(node_label1, get_node_label("b", col - 1, row))
                 topo_graph.add_node(node_label2, pos=[float(col) + 0.35, num_rows - 1 - row], color="#9999FF")
@@ -234,8 +243,8 @@ def plot_circuit(circuit):
                 ry_start = i
             ry_end = i
         rect_height = ry_end - ry_start
-        top_shift = 0.12 * math.sqrt(num_rows)
-        height_shift = 0.1 * math.sqrt(num_rows) + top_shift
+        top_shift = 0.11 * math.sqrt(num_rows)
+        height_shift = 0.08 * math.sqrt(num_rows) + top_shift
         ax.add_patch(
             patches.Rectangle(
                 (-0.1, ry_start - top_shift), 0.45, rect_height + height_shift, edgecolor="black", facecolor="lightgreen"
@@ -401,10 +410,12 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
     # How do we choose the order in which to process the Pauli products?
     # We start with the given order. Other mappings are possible.
     # rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
+    # rnd_order_circuit = sorted(circuit, key=lambda x: x.qubits_used, reverse=True)
+    rnd_order_circuit = circuit
     pauli_product_paths = []
     working_topo_graph = copy.deepcopy(topo_graph)
     num_qubits_scheduled = 0
-    for pauli_product in circuit:
+    for pauli_product in rnd_order_circuit:
         pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product, method)
         if pauli_product_graph == None:
             print("* Could not schedule Pauli product", pauli_product)
@@ -436,7 +447,7 @@ if __name__ == "__main__":
     args = get_args()
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims(args.min_num_qubits)
-    num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
+    num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows, args.path_method)
     # plot_topology(topo_graph, "lssp-topo", num_cols, num_rows)
     # plot_steiner_tree(topo_graph)
     if num_data_qubits != args.min_num_qubits:
