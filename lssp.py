@@ -27,8 +27,8 @@ def get_args():
         "--path-method",
         type=str,
         default="steiner",
-        choices=["steiner", "bfs"],
-        help="Method to use for finding paths: steiner, bfs",
+        choices=["steiner", "bfs", "shortestpaths"],
+        help="Method to use for finding paths: steiner, bfs, shortestpaths",
     )
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
@@ -185,26 +185,18 @@ def build_parallel_topo(num_cols, num_rows, path_method):
                 if row % 3 == 2:
                     node_label1 = "d" + str(int(qi / 2)) + "X"
                     node_label2 = "d" + str(int(qi / 2) + 1) + "X"
-                    # currently, these top and bottom connections only work for BFS, not for Steiner trees
-                    # because the Steiner tree algorithm follows doesn't treat the data nodes as leaf nodes, so a path
-                    # can keep going through a data node
-                    if path_method == "bfs":
-                        topo_graph.add_edge(get_node_label("b", col, row + 2), node_label1)
-                        topo_graph.add_edge(get_node_label("b", col, row + 2), node_label2)
+                    topo_graph.add_edge(get_node_label("b", col, row + 2), node_label1)
+                    topo_graph.add_edge(get_node_label("b", col, row + 2), node_label2)
                 else:
                     node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
                     node_label2 = "d" + str(int(qi / 2)) + "Z"
-                    if path_method == "bfs":
-                        topo_graph.add_edge(get_node_label("b", col, row - 2), node_label1)
-                        topo_graph.add_edge(get_node_label("b", col, row - 2), node_label2)
+                    topo_graph.add_edge(get_node_label("b", col, row - 2), node_label1)
+                    topo_graph.add_edge(get_node_label("b", col, row - 2), node_label2)
                 topo_graph.add_node(node_label1, pos=[float(col) - 0.35, num_rows - 1 - row], color="#9999FF")
-                topo_graph.add_edge(node_label1, get_node_label("b", col - 1, row))
+                topo_graph.add_edge(get_node_label("b", col - 1, row), node_label1)
                 topo_graph.add_node(node_label2, pos=[float(col) + 0.35, num_rows - 1 - row], color="#9999FF")
-                topo_graph.add_edge(node_label2, get_node_label("b", col + 1, row))
+                topo_graph.add_edge(get_node_label("b", col + 1, row), node_label2)
                 qi += 2
-
-    # print(topo_graph.nodes)
-    # print(topo_graph.edges)
 
     num_data_qubits = int(sum([is_data_node(node) for node in topo_graph.nodes]) / 2)
     num_magic_qubits = sum([is_magic_node(node) for node in topo_graph.nodes])
@@ -358,10 +350,22 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
     return None
 
 
-def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
-    # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
+def get_topo_digraph(topo_graph):
+    topo_digraph = topo_graph.to_directed()
+    # now strip the directed edges coming out of the data nodes, to prevent paths that go into then out of data nodes
+    edges_to_remove = []
+    for edge in topo_digraph.edges():
+        if is_data_node(edge[0]):
+            edges_to_remove.append(edge)
+    topo_digraph.remove_edges_from(edges_to_remove)
+    return topo_digraph
+
+
+def schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node):
+    topo_digraph = get_topo_digraph(topo_graph)
+
     while True:
-        terminal_nodes = [root_node]
+        terminal_nodes = []
         for oi, operator in enumerate(pauli_product.operators):
             if operator != " ":
                 ops = ["X", "Z"] if operator == "Y" else [operator]
@@ -370,21 +374,86 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
                     if node not in topo_graph:
                         return None
                     terminal_nodes.append(node)
+        paths = nx.multi_source_dijkstra_path(topo_digraph, terminal_nodes)
+        tree_g = nx.Graph()
+        for terminal_node in terminal_nodes:
+            try:
+                path_nodes = nx.shortest_path(topo_digraph, root_node, terminal_node)
+            except nx.NetworkXNoPath as err:
+                return None
+            tree_g.add_edge(root_node, path_nodes[0])
+            for i in range(len(path_nodes) - 1):
+                tree_g.add_edge(path_nodes[i], path_nodes[i + 1])
+        return tree_g
+
+
+def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
+    # this is exactly like the steiner tree computation in the networkx liblary, except that for the dijkstra path calculation
+    # and the shortest path, we use a digraph with the edges that go from the data nodes outwards removed. This prevents trees
+    # that pass through the data nodes, instead of just terminating at the data nodes
+    topo_digraph = get_topo_digraph(topo_graph)
+    paths = nx.multi_source_dijkstra_path(topo_digraph, terminal_nodes)
+
+    d_1 = {}
+    s = {}
+    for v in topo_graph.nodes():
+        s[v] = paths[v][0]
+        d_1[(v, s[v])] = len(paths[v]) - 1
+
+    # G1-G4 names match those from the Mehlhorn 1988 paper.
+    G_1_prime = nx.Graph()
+    for u, v, data in topo_graph.edges(data=True):
+        su, sv = s[u], s[v]
+        weight_here = d_1[(u, su)] + data.get("weight", 1) + d_1[(v, sv)]
+        if not G_1_prime.has_edge(su, sv):
+            G_1_prime.add_edge(su, sv, weight=weight_here)
+        else:
+            new_weight = min(weight_here, G_1_prime[su][sv]["weight"])
+            G_1_prime.add_edge(su, sv, weight=new_weight)
+
+    G_2 = nx.minimum_spanning_edges(G_1_prime, data=True)
+
+    G_3 = nx.Graph()
+    for u, v, d in G_2:
+        path = nx.shortest_path(topo_digraph, u, v, "weight")
+        for n1, n2 in nx.utils.pairwise(path):
+            G_3.add_edge(n1, n2)
+
+    G_3_mst = list(nx.minimum_spanning_edges(G_3, data=False))
+    G_4 = topo_graph.edge_subgraph(G_3_mst).copy()
+    nx.approximation.steinertree._remove_nonterminal_leaves(G_4, terminal_nodes)
+    edges = G_4.edges()
+    T = topo_graph.edge_subgraph(edges)
+    for node in T.nodes():
+        if is_data_node(node) and T.degree(node) > 1:
+            print("Failure in tree construction: data node", node, "has degree", T.degree(node))
+    return T
+
+
+def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
+    working_graph = copy.deepcopy(topo_graph)
+    # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
+    while True:
+        terminal_nodes = [root_node]
+        for oi, operator in enumerate(pauli_product.operators):
+            if operator != " ":
+                ops = ["X", "Z"] if operator == "Y" else [operator]
+                for op in ops:
+                    node = "d" + str(oi) + op
+                    if node not in working_graph:
+                        return None
+                    terminal_nodes.append(node)
         try:
-            g = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes, method="mehlhorn")
-            has_terminals = [node in g for node in terminal_nodes]
-            if not all(has_terminals):
-                # print("Missing terminals from root", root_node)
+            # g = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes)
+            g = mehlhorn_steiner_tree(working_graph, terminal_nodes)
+            if not all([node in g for node in terminal_nodes]):
                 return None
             return g
         except KeyError as err:
             # we have a disconnected node, so we need to reschedule without that node
             missing_node = err.args[0]
             # print("Key error", missing_node, "found?", missing_node in topo_graph)
-            topo_graph.remove_nodes_from([missing_node])
-        except nx.NodeNotFound as err:
-            print("Node not found", err)
-            return None
+            working_graph.remove_nodes_from([missing_node])
 
 
 def schedule_pauli_product(topo_graph, pauli_product, method):
@@ -402,6 +471,8 @@ def schedule_pauli_product(topo_graph, pauli_product, method):
             g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
         elif method == "steiner":
             g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
+        elif method == "shortestpaths":
+            g = schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node)
         else:
             raise ValueError("Unknown path method " + method)
         if g == None:
