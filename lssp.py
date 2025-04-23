@@ -69,8 +69,8 @@ def get_node_label(label, col, row):
 class PauliProduct:
 
     def __init__(self, rng, num_qubits, pauli_product_qubits, start_qubit):
-        # basis_options = ["X", "Z", "Y"]
-        self.basis_options = ["X", "Z"]
+        self.basis_options = ["X", "Z", "Y"]
+        # self.basis_options = ["X", "Z"]
         self.operators = [" "] * num_qubits
         self.start_qubit = start_qubit
         self.qubits_used = pauli_product_qubits
@@ -185,14 +185,16 @@ def build_parallel_topo(num_cols, num_rows, path_method):
                 if row % 3 == 2:
                     node_label1 = "d" + str(int(qi / 2)) + "X"
                     node_label2 = "d" + str(int(qi / 2) + 1) + "X"
-                    # currently, these top and bottom connections only work for BFS not for Steiner trees
-                    if path_method == "bfs":
+                    # currently, these top and bottom connections only work for BFS, not for Steiner trees
+                    # because the Steiner tree algorithm follows doesn't treat the data nodes as leaf nodes, so a path
+                    # can keep going through a data node
+                    if path_method == "bfs***":
                         topo_graph.add_edge(get_node_label("b", col, row + 2), node_label1)
                         topo_graph.add_edge(get_node_label("b", col, row + 2), node_label2)
                 else:
                     node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
                     node_label2 = "d" + str(int(qi / 2)) + "Z"
-                    if path_method == "bfs":
+                    if path_method == "bfs***":
                         topo_graph.add_edge(get_node_label("b", col, row - 2), node_label1)
                         topo_graph.add_edge(get_node_label("b", col, row - 2), node_label2)
                 topo_graph.add_node(node_label1, pos=[float(col) - 0.35, num_rows - 1 - row], color="#9999FF")
@@ -323,6 +325,10 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
             visited.add(node)
     queue = [root_node]
     pauli_product_graph = nx.Graph()
+    num_expected_ops = pauli_product.qubits_used
+    for op in pauli_product.operators:
+        if op == "Y":
+            num_expected_ops += 1
     while len(queue):
         node = queue.pop(0)
         pauli_product_graph.add_node(node)
@@ -332,11 +338,14 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
                 visited.add(nb)
                 qubit_index = int(nb[1:-1])
                 qubit_basis = nb[-1]
-                if pauli_product.operators[qubit_index] == qubit_basis:
+                qbs = [pauli_product.operators[qubit_index]]
+                if qbs[0] == "Y":
+                    qbs = ["X", "Z"]
+                if qubit_basis in qbs:
                     # print("Found basis", qubit_basis, "at node", nb)
                     pauli_product_graph.add_edge(node, nb)
                     num_found_operators += 1
-                    if num_found_operators == pauli_product.qubits_used:
+                    if num_found_operators == num_expected_ops:
                         trim_dangling_nodes(pauli_product_graph)
                         return pauli_product_graph
         # now extend along the bus
@@ -354,10 +363,12 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
         terminal_nodes = [root_node]
         for oi, operator in enumerate(pauli_product.operators):
             if operator != " ":
-                node = "d" + str(oi) + operator
-                if node not in topo_graph:
-                    return None
-                terminal_nodes.append(node)
+                ops = ["X", "Z"] if operator == "Y" else [operator]
+                for op in ops:
+                    node = "d" + str(oi) + op
+                    if node not in topo_graph:
+                        return None
+                    terminal_nodes.append(node)
         try:
             g = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes, method="mehlhorn")
             has_terminals = [node in g for node in terminal_nodes]
@@ -438,7 +449,7 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
     print("  qubits:          %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, frac_qubits))
 
     if len(pauli_product_paths) > 0:
-        title_str = method + " (products %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
+        title_str = method + " (pps %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
         plot_topology(topo_graph, "lssp-topo-path-" + method, num_cols, num_rows, pauli_product_paths, title_str)
         # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
 
