@@ -188,13 +188,13 @@ def build_parallel_topo(num_cols, num_rows, path_method):
                     # currently, these top and bottom connections only work for BFS, not for Steiner trees
                     # because the Steiner tree algorithm follows doesn't treat the data nodes as leaf nodes, so a path
                     # can keep going through a data node
-                    if path_method == "bfs***":
+                    if path_method == "bfs":
                         topo_graph.add_edge(get_node_label("b", col, row + 2), node_label1)
                         topo_graph.add_edge(get_node_label("b", col, row + 2), node_label2)
                 else:
                     node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
                     node_label2 = "d" + str(int(qi / 2)) + "Z"
-                    if path_method == "bfs***":
+                    if path_method == "bfs":
                         topo_graph.add_edge(get_node_label("b", col, row - 2), node_label1)
                         topo_graph.add_edge(get_node_label("b", col, row - 2), node_label2)
                 topo_graph.add_node(node_label1, pos=[float(col) - 0.35, num_rows - 1 - row], color="#9999FF")
@@ -258,6 +258,7 @@ def plot_circuit(circuit):
     plt.box(False)
     plt.tight_layout()
     plt.savefig(circuit_fname + ".pdf")
+    plt.savefig(circuit_fname + ".png")
 
 
 def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth, gap_prob):
