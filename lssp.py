@@ -291,13 +291,30 @@ def gen_rnd_circuit_cycle(rng, num_qubits):
         counts.append(pauli_product_qubits)
         # print(" ", pauli_products[-1])
         start_qubit += pauli_product_qubits
-        if rng.uniform(0, 1) < args.gap_prob:
+        gap_prob = args.gap_prob
+        while rng.uniform(0, 1) < gap_prob:
             start_qubit += 1
             if start_qubit >= num_qubits:
                 break
+            gap_prob /= 2.0
 
     if args.verbose:
         print("Generated", len(pauli_products), "Pauli products in cycle")
+    return pauli_products
+
+
+def gen_rnd_circuit(rng, num_qubits):
+    circuit = []
+    num_pauli_products = 0
+    for i in range(args.circuit_depth):
+        circuit.append(gen_rnd_circuit_cycle(rng, num_qubits))
+        num_pauli_products += len(circuit[-1])
+    print(
+        "Generated",
+        num_pauli_products,
+        "Pauli products, an average of %.3f per cycle" % (float(num_pauli_products) / args.circuit_depth),
+    )
+
     plot_circuit_histogram = False
     if plot_circuit_histogram:
         hist_fname = "lssp-operator-freqs"
@@ -313,20 +330,7 @@ def gen_rnd_circuit_cycle(rng, num_qubits):
         plt.tight_layout()
         plt.savefig(hist_fname + ".pdf")
         plt.savefig(hist_fname + ".png")
-    return pauli_products
 
-
-def gen_rnd_circuit(rng, num_qubits):
-    circuit = []
-    num_pauli_products = 0
-    for i in range(args.circuit_depth):
-        circuit.append(gen_rnd_circuit_cycle(rng, num_qubits))
-        num_pauli_products += len(circuit[-1])
-    print(
-        "Generated",
-        num_pauli_products,
-        "Pauli products, an average of %.3f per cycle" % (float(num_pauli_products) / args.circuit_depth),
-    )
     return circuit
 
 
