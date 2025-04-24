@@ -8,6 +8,21 @@ import numpy as np
 import argparse
 import sys
 import copy
+import time
+import functools
+
+
+def timer(func):
+    @functools.wraps(func)
+    def wrapper_timer(*args, **kwargs):
+        tic = time.perf_counter()
+        value = func(*args, **kwargs)
+        toc = time.perf_counter()
+        elapsed_time = toc - tic
+        print(f"[{func.__name__}: {elapsed_time:0.4f} s]")
+        return value
+
+    return wrapper_timer
 
 
 def get_args():
@@ -111,6 +126,7 @@ def add_node(topo_graph, label, col, row, num_rows):
     return node_label
 
 
+@timer
 def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_paths=[], title_str=""):
     print("Plotting topology to", topo_fname, "...")
     # print("Generated topology with", num_qubits, "data qubits and ")
@@ -172,6 +188,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
     plt.savefig(topo_fname + ".png")
 
 
+@timer
 def build_parallel_topo(num_cols, num_rows):
     topo_graph = nx.Graph()
     for col in range(num_cols):
@@ -224,6 +241,7 @@ def build_parallel_topo(num_cols, num_rows):
     return num_data_qubits, topo_graph
 
 
+@timer
 def plot_circuit(circuit):
     circuit_fname = "lssp-circuit"
     print("Drawing circuit...", circuit_fname)
@@ -300,6 +318,7 @@ def gen_rnd_circuit_cycle(rng, num_qubits, mean_qubits, sigma_qubits):
     return pauli_products
 
 
+@timer
 def gen_rnd_circuit(rng, num_qubits):
     mean_qubits = float(num_qubits) * args.qubits_per_pauli_product
     sigma_qubits = 2.0
@@ -589,17 +608,27 @@ def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qub
     return i + 1
 
 
-if __name__ == "__main__":
-    args = get_args()
+@timer
+def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
+    num_steps = 0
+    for ci, circuit_cycle in enumerate(circuit):
+        num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits)
+    print("Scheduled full circuit in", num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / num_steps))
+
+
+@timer
+def main():
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims()
     num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
-    num_steps = 0
     circuit = gen_rnd_circuit(rng, num_data_qubits)
     if args.plot in ["circuit", "all"]:
         plot_circuit(circuit)
-    for ci, circuit_cycle in enumerate(circuit):
-        num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits)
-    print("Scheduled full circuit in", num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / num_steps))
+    schedule_circuit(rng, topo_graph, circuit, num_data_qubits)
+
+
+if __name__ == "__main__":
+    args = get_args()
+    main()
