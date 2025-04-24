@@ -324,7 +324,7 @@ def gen_rnd_circuit(rng, num_qubits):
         plt.rcParams.update({"font.size": 10})
         plt.xlabel("number of qubits")
         plt.ylabel("Frequency")
-        bins = range(num_qubits)
+        bins = range(max(counts) + 1)
         _, bins, _ = plt.hist(counts, bins, density=True, align="right")
         density = 1.0 / (sigma_qubits * np.sqrt(2 * np.pi)) * np.exp(-((bins - mean_qubits) ** 2) / (2 * sigma_qubits**2))
         plt.plot(bins, density)
