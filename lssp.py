@@ -23,27 +23,38 @@ def get_args():
     parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
     parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
+    path_methods = ["steiner", "bfs", "shortestpaths"]
     parser.add_argument(
         "--path-method",
         type=str,
-        default="steiner",
-        choices=["steiner", "bfs", "shortestpaths"],
-        help="Method to use for finding paths: steiner, bfs, shortestpaths",
+        default="bfs",
+        choices=path_methods,
+        help="Method to use for finding paths: " + ", ".join(path_methods),
+    )
+    sort_orders = ["none", "random", "ascending", "descending"]
+    parser.add_argument(
+        "--sort-order",
+        "-s",
+        type=str,
+        default="none",
+        choices=sort_orders,
+        help="Sorting Pauli products before scheduling: " + ", ".join(sort_orders),
     )
     parser.add_argument("--plot", "-p", action="store_true", help="Plot topology and circuits")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
 
 
-def get_topo_dims(min_num_qubits):
+def get_topo_dims():
     # the rows dimension needs to be a multiple of 3, and a minimum of 6
     # the columns dimension needs to be a multiple of 2, with 1 added (so 3, 5, 7, 9, ...)
-    sq_dim = int(np.floor(np.sqrt(min_num_qubits)))
+    sq_dim = int(np.floor(np.sqrt(args.min_num_qubits)))
     patch_rows = int(sq_dim / 2) + sq_dim % 2
     num_rows = 3 * patch_rows + 3
     qubits_per_col = 2 * patch_rows
-    num_cols = 2 * int(np.ceil(min_num_qubits / qubits_per_col)) + 1
+    num_cols = 2 * int(np.ceil(args.min_num_qubits / qubits_per_col)) + 1
     print("Layout dimensions:", num_cols, num_rows)
     return num_cols, num_rows
 
@@ -160,7 +171,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
     plt.savefig(topo_fname + ".png")
 
 
-def build_parallel_topo(num_cols, num_rows, path_method):
+def build_parallel_topo(num_cols, num_rows):
     topo_graph = nx.Graph()
     for col in range(num_cols):
         if col % 2 != 0:
@@ -219,49 +230,51 @@ def plot_circuit(circuit):
     plt.close()
     fig = plt.figure()
     ax = fig.add_subplot(111)
-    num_rows = len(circuit[0].operators)
+    num_rows = len(circuit[0][0].operators)
     # scale the fontsize
     fs_slope = 10.0 / (56.0 - 4.0)
     fontsize = int(np.ceil(16.0 - (num_rows - 4.0) * fs_slope))
     for i in range(num_rows):
         ax.text(0 - 1.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
-    for pauli_product in circuit:
-        for start_pos in range(num_rows):
-            if pauli_product.operators[start_pos] != " ":
-                break
-        ry_start = None
-        for i in range(start_pos, num_rows):
-            if pauli_product.operators[i] == " ":
-                break
-            ax.text(0, i, pauli_product.operators[i], va="center", fontsize=fontsize)
-            if ry_start == None:
-                ry_start = i
-            ry_end = i
-        rect_height = ry_end - ry_start
-        top_shift = 0.11 * math.sqrt(num_rows)
-        height_shift = 0.08 * math.sqrt(num_rows) + top_shift
-        ax.add_patch(
-            patches.Rectangle(
-                (-0.1, ry_start - top_shift), 0.45, rect_height + height_shift, edgecolor="black", facecolor="lightgreen"
+    for col, circuit_cycle in enumerate(circuit):
+        for pauli_product in circuit_cycle:
+            for start_pos in range(num_rows):
+                if pauli_product.operators[start_pos] != " ":
+                    break
+            ry_start = None
+            for i in range(start_pos, num_rows):
+                if pauli_product.operators[i] == " ":
+                    break
+                ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
+                if ry_start == None:
+                    ry_start = i
+                ry_end = i
+            rect_height = ry_end - ry_start
+            top_shift = 0.11 * math.sqrt(num_rows)
+            height_shift = 0.08 * math.sqrt(num_rows) + top_shift
+            ax.add_patch(
+                patches.Rectangle(
+                    (col - 0.1, ry_start - top_shift), 0.45, rect_height + height_shift, edgecolor="black", facecolor="lightgreen"
+                )
             )
-        )
-    plt.xlim(-1.8, 10)
+    plt.xlim(-1.8, len(circuit))
     plt.ylim(num_rows, -1)
     plt.tick_params(axis="y", left=False, labelleft=False)
+    plt.tick_params(axis="x", bottom=False, labelbottom=False)
     plt.box(False)
     plt.tight_layout()
     plt.savefig(circuit_fname + ".pdf")
     plt.savefig(circuit_fname + ".png")
 
 
-def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth, gap_prob):
-    mean_qubits = float(num_qubits) * qubits_per_pauli_product
+def gen_rnd_circuit_cycle(rng, num_qubits):
+    mean_qubits = float(num_qubits) * args.qubits_per_pauli_product
     sigma_qubits = 2.0
     pauli_products = []
     counts = []
     start_qubit = 0
-    print("Pauli products to schedule:")
-    while True:
+    # print("Pauli products to schedule:")
+    for tries in range(10000):
         # this is a hack to ensure only positive numbers for the normal sampling
         for _ in range(100):
             pauli_product_qubits = int(np.floor(rng.normal(mean_qubits, sigma_qubits)))
@@ -272,16 +285,19 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth, ga
             pauli_product_qubits = mean_qubits
 
         if start_qubit + pauli_product_qubits > num_qubits:
-            break
+            # retry to generate a smaller Pauli product
+            continue
         pauli_products.append(PauliProduct(rng, num_qubits, pauli_product_qubits, start_qubit))
         counts.append(pauli_product_qubits)
-        print(" ", pauli_products[-1])
+        # print(" ", pauli_products[-1])
         start_qubit += pauli_product_qubits
-        if rng.uniform(0, 1) < gap_prob:
+        if rng.uniform(0, 1) < args.gap_prob:
             start_qubit += 1
             if start_qubit >= num_qubits:
                 break
 
+    if args.verbose:
+        print("Generated", len(pauli_products), "Pauli products in cycle")
     plot_circuit_histogram = False
     if plot_circuit_histogram:
         hist_fname = "lssp-operator-freqs"
@@ -298,6 +314,20 @@ def gen_rnd_circuit(rng, num_qubits, qubits_per_pauli_product, circuit_depth, ga
         plt.savefig(hist_fname + ".pdf")
         plt.savefig(hist_fname + ".png")
     return pauli_products
+
+
+def gen_rnd_circuit(rng, num_qubits):
+    circuit = []
+    num_pauli_products = 0
+    for i in range(args.circuit_depth):
+        circuit.append(gen_rnd_circuit_cycle(rng, num_qubits))
+        num_pauli_products += len(circuit[-1])
+    print(
+        "Generated",
+        num_pauli_products,
+        "Pauli products, an average of %.3f per cycle" % (float(num_pauli_products) / args.circuit_depth),
+    )
+    return circuit
 
 
 def trim_dangling_nodes(g):
@@ -457,25 +487,25 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
             working_graph.remove_nodes_from([missing_node])
 
 
-def schedule_pauli_product(topo_graph, pauli_product, method):
+def schedule_pauli_product(topo_graph, pauli_product):
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
             magic_nodes.append(node)
     if len(magic_nodes) == 0:
-        print("Could not find starting node for Pauli product", pauli_product.__str__())
+        # print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
     # schedule from each available magic node in turn, and take the one that uses the fewest nodes
     pauli_product_graph = None
     for root_node in magic_nodes:
-        if method == "bfs":
+        if args.path_method == "bfs":
             g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
-        elif method == "steiner":
+        elif args.path_method == "steiner":
             g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
-        elif method == "shortestpaths":
+        elif args.path_method == "shortestpaths":
             g = schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node)
         else:
-            raise ValueError("Unknown path method " + method)
+            raise ValueError("Unknown path method " + args.path_method)
         if g == None:
             continue
         # print("Found path with", g.number_of_nodes(), "nodes")
@@ -490,21 +520,29 @@ def schedule_pauli_product(topo_graph, pauli_product, method):
     return pauli_product_graph
 
 
-def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
+def schedule_cycle(rng, topo_graph, circuit, num_data_qubits):
     # How do we choose the order in which to process the Pauli products?
     # We start with the given order. Other mappings are possible.
-    # rnd_order_circuit = rng.permutation(np.array(circuit, dtype="object"))
-    # rnd_order_circuit = sorted(circuit, key=lambda x: x.qubits_used, reverse=True)
-    rnd_order_circuit = circuit
+    if args.sort_order == "none":
+        ordered_circuit = circuit
+    elif args.sort_order == "random":
+        ordered_circuit = rng.permutation(np.array(circuit, dtype="object"))
+    elif args.sort_order == "descending":
+        ordered_circuit = sorted(circuit, key=lambda x: x.qubits_used, reverse=True)
+    elif args.sort_order == "ascending":
+        ordered_circuit = sorted(circuit, key=lambda x: x.qubits_used, reverse=False)
+
     pauli_product_paths = []
     working_topo_graph = copy.deepcopy(topo_graph)
     num_qubits_scheduled = 0
-    for pauli_product in rnd_order_circuit:
-        pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product, method)
+    remaining_circuit = []
+    for pauli_product in ordered_circuit:
+        pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product)
         if pauli_product_graph == None:
-            print("* Could not schedule Pauli product", pauli_product)
+            # print("* Could not schedule Pauli product", pauli_product)
+            remaining_circuit.append(pauli_product)
             continue
-        print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
+        # print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
         pauli_product_paths.append((pauli_product, pauli_product_graph))
         num_qubits_scheduled += pauli_product.qubits_used
         # now remove the Pauli product path from the graph
@@ -515,31 +553,47 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
                 orphaned_nodes.append(node)
         working_topo_graph.remove_nodes_from(orphaned_nodes)
 
-    print("Scheduling results:")
+    if args.verbose:
+        print("Scheduling results:")
     frac_paths = float(len(pauli_product_paths)) / len(circuit)
     frac_qubits = float(num_qubits_scheduled) / num_data_qubits
-    print("  Pauli products:  %d/%d (%.2f)" % (len(pauli_product_paths), len(circuit), frac_paths))
-    print("  qubits:          %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, frac_qubits))
+    if args.verbose:
+        print("  Pauli products:  %d/%d (%.2f)" % (len(pauli_product_paths), len(circuit), frac_paths))
+        print("  qubits:          %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, frac_qubits))
 
     if len(pauli_product_paths) > 0:
-        title_str = method + " (pps %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
-        return title_str, pauli_product_paths
+        title_str = args.path_method + " (pps %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
+        return title_str, pauli_product_paths, remaining_circuit
         # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
-    return None, None
+    return None, None, remaining_circuit
+
+
+def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qubits):
+    remaining_circuit_cycle = circuit_cycle
+    for i in range(100):
+        title_str, pauli_product_paths, remaining_circuit_cycle = schedule_cycle(rng, topo_graph, circuit_cycle, num_data_qubits)
+        if title_str is not None and args.plot:
+            fname = "lssp-topo-path-" + str(i) + "-" + str(cycle_i) + "-" + args.path_method
+            plot_topology(topo_graph, fname, num_cols, num_rows, pauli_product_paths, title_str)
+        circuit_cycle = remaining_circuit_cycle
+        if len(circuit_cycle) == 0:
+            break
+    if args.verbose:
+        print("Scheduled full circuit cycle in", i + 1, "time steps")
+    return i + 1
 
 
 if __name__ == "__main__":
     args = get_args()
     rng = np.random.default_rng(seed=args.rseed)
-    num_cols, num_rows = get_topo_dims(args.min_num_qubits)
-    num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows, args.path_method)
-    # plot_topology(topo_graph, "lssp-topo", num_cols, num_rows)
-    # plot_steiner_tree(topo_graph)
+    num_cols, num_rows = get_topo_dims()
+    num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
-    circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.circuit_depth, args.gap_prob)
+    num_steps = 0
+    circuit = gen_rnd_circuit(rng, num_data_qubits)
     if args.plot:
         plot_circuit(circuit)
-    title_str, pauli_product_paths = schedule_circuit(rng, topo_graph, circuit, num_data_qubits, args.path_method)
-    if title_str is not None and args.plot:
-        plot_topology(topo_graph, "lssp-topo-path-" + args.path_method, num_cols, num_rows, pauli_product_paths, title_str)
+    for ci, circuit_cycle in enumerate(circuit):
+        num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits)
+    print("Scheduled full circuit in", num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / num_steps))
