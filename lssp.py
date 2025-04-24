@@ -40,7 +40,8 @@ def get_args():
         choices=sort_orders,
         help="Sorting Pauli products before scheduling: " + ", ".join(sort_orders),
     )
-    parser.add_argument("--plot", "-p", action="store_true", help="Plot topology and circuits")
+    plot_options = ["none", "all", "circuit", "paths", "freqs"]
+    parser.add_argument("--plot", "-p", type=str, default="none", choices=plot_options, help="Plot: " + ", ".join(plot_options))
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
@@ -267,11 +268,8 @@ def plot_circuit(circuit):
     plt.savefig(circuit_fname + ".png")
 
 
-def gen_rnd_circuit_cycle(rng, num_qubits):
-    mean_qubits = float(num_qubits) * args.qubits_per_pauli_product
-    sigma_qubits = 2.0
+def gen_rnd_circuit_cycle(rng, num_qubits, mean_qubits, sigma_qubits):
     pauli_products = []
-    counts = []
     start_qubit = 0
     # print("Pauli products to schedule:")
     for tries in range(10000):
@@ -288,7 +286,6 @@ def gen_rnd_circuit_cycle(rng, num_qubits):
             # retry to generate a smaller Pauli product
             continue
         pauli_products.append(PauliProduct(rng, num_qubits, pauli_product_qubits, start_qubit))
-        counts.append(pauli_product_qubits)
         # print(" ", pauli_products[-1])
         start_qubit += pauli_product_qubits
         gap_prob = args.gap_prob
@@ -304,29 +301,34 @@ def gen_rnd_circuit_cycle(rng, num_qubits):
 
 
 def gen_rnd_circuit(rng, num_qubits):
+    mean_qubits = float(num_qubits) * args.qubits_per_pauli_product
+    sigma_qubits = 2.0
     circuit = []
     num_pauli_products = 0
+    counts = []
     for i in range(args.circuit_depth):
-        circuit.append(gen_rnd_circuit_cycle(rng, num_qubits))
+        circuit.append(gen_rnd_circuit_cycle(rng, num_qubits, mean_qubits, sigma_qubits))
         num_pauli_products += len(circuit[-1])
+        for pp in circuit[-1]:
+            counts.append(pp.qubits_used)
     print(
         "Generated",
         num_pauli_products,
         "Pauli products, an average of %.3f per cycle" % (float(num_pauli_products) / args.circuit_depth),
     )
 
-    plot_circuit_histogram = False
-    if plot_circuit_histogram:
+    if args.plot in ["freqs", "all"]:
         hist_fname = "lssp-operator-freqs"
         print("Plotting circuit histogram to", hist_fname, "...")
         plt.close()
-        plt.rcParams.update({"font.size": 20})
+        plt.rcParams.update({"font.size": 10})
         plt.xlabel("number of qubits")
         plt.ylabel("Frequency")
-        _, bins, _ = plt.hist(counts, num_qubits, density=True)
-        # counts, bins = np.histogram(counts, 20)
-        density = 1 / (sigma_qubits * np.sqrt(2 * np.pi)) * np.exp(-((bins - mean_qubits) ** 2) / (2 * sigma_qubits**2))
+        bins = range(num_qubits)
+        _, bins, _ = plt.hist(counts, bins, density=True, align="right")
+        density = 1.0 / (sigma_qubits * np.sqrt(2 * np.pi)) * np.exp(-((bins - mean_qubits) ** 2) / (2 * sigma_qubits**2))
         plt.plot(bins, density)
+        plt.grid()
         plt.tight_layout()
         plt.savefig(hist_fname + ".pdf")
         plt.savefig(hist_fname + ".png")
@@ -576,7 +578,7 @@ def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qub
     remaining_circuit_cycle = circuit_cycle
     for i in range(100):
         title_str, pauli_product_paths, remaining_circuit_cycle = schedule_cycle(rng, topo_graph, circuit_cycle, num_data_qubits)
-        if title_str is not None and args.plot:
+        if title_str is not None and args.plot in ["paths", "all"]:
             fname = "lssp-topo-path-" + str(i) + "-" + str(cycle_i) + "-" + args.path_method
             plot_topology(topo_graph, fname, num_cols, num_rows, pauli_product_paths, title_str)
         circuit_cycle = remaining_circuit_cycle
@@ -596,7 +598,7 @@ if __name__ == "__main__":
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
     num_steps = 0
     circuit = gen_rnd_circuit(rng, num_data_qubits)
-    if args.plot:
+    if args.plot in ["circuit", "all"]:
         plot_circuit(circuit)
     for ci, circuit_cycle in enumerate(circuit):
         num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits)
