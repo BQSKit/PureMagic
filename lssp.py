@@ -593,7 +593,7 @@ def schedule_cycle(rng, topo_graph, circuit, num_data_qubits):
     return None, None, remaining_circuit
 
 
-def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qubits):
+def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qubits, num_cols, num_rows):
     remaining_circuit_cycle = circuit_cycle
     for i in range(100):
         title_str, pauli_product_paths, remaining_circuit_cycle = schedule_cycle(rng, topo_graph, circuit_cycle, num_data_qubits)
@@ -609,10 +609,10 @@ def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qub
 
 
 @timer
-def schedule_circuit(rng, topo_graph, circuit, num_data_qubits):
+def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
     num_steps = 0
     for ci, circuit_cycle in enumerate(circuit):
-        num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits)
+        num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits, num_cols, num_rows)
     print("Scheduled full circuit in", num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / num_steps))
 
 
@@ -626,7 +626,7 @@ def main():
     circuit = gen_rnd_circuit(rng, num_data_qubits)
     if args.plot in ["circuit", "all"]:
         plot_circuit(circuit)
-    schedule_circuit(rng, topo_graph, circuit, num_data_qubits)
+    schedule_circuit(rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
 
 
 if __name__ == "__main__":
