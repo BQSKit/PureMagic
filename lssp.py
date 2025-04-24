@@ -30,6 +30,7 @@ def get_args():
         choices=["steiner", "bfs", "shortestpaths"],
         help="Method to use for finding paths: steiner, bfs, shortestpaths",
     )
+    parser.add_argument("--plot", "-p", action="store_true", help="Plot topology and circuits")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
@@ -452,7 +453,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
         except KeyError as err:
             # we have a disconnected node, so we need to reschedule without that node
             missing_node = err.args[0]
-            # print("Key error", missing_node, "found?", missing_node in topo_graph)
+            # print("Key error", missing_node, "found?", missing_node in working_graph)
             working_graph.remove_nodes_from([missing_node])
 
 
@@ -522,8 +523,9 @@ def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, method):
 
     if len(pauli_product_paths) > 0:
         title_str = method + " (pps %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
-        plot_topology(topo_graph, "lssp-topo-path-" + method, num_cols, num_rows, pauli_product_paths, title_str)
+        return title_str, pauli_product_paths
         # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
+    return None, None
 
 
 if __name__ == "__main__":
@@ -536,5 +538,8 @@ if __name__ == "__main__":
     if num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
     circuit = gen_rnd_circuit(rng, num_data_qubits, args.qubits_per_pauli_product, args.circuit_depth, args.gap_prob)
-    plot_circuit(circuit)
-    schedule_circuit(rng, topo_graph, circuit, num_data_qubits, args.path_method)
+    if args.plot:
+        plot_circuit(circuit)
+    title_str, pauli_product_paths = schedule_circuit(rng, topo_graph, circuit, num_data_qubits, args.path_method)
+    if title_str is not None and args.plot:
+        plot_topology(topo_graph, "lssp-topo-path-" + args.path_method, num_cols, num_rows, pauli_product_paths, title_str)
