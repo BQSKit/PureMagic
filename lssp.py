@@ -663,15 +663,14 @@ def main():
     print("Running on", num_ranks, "cores")
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims()
-    # num_data_qubits, num_bus_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
     topo_graph = TopoGraph(num_cols, num_rows)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
     circuit = gen_rnd_circuit(rng, topo_graph.num_data_qubits)
     if args.plot in ["circuit", "all"]:
         plot_circuit(circuit)
-    tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit)
-    # tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
+    # tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit)
+    tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
     print("Scheduled full circuit in", tot_num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / tot_num_steps))
 
 
