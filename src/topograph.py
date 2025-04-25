@@ -94,7 +94,7 @@ class TopoGraph(nx.Graph):
 
     @timer
     def plot(self, topo_fname, pauli_product_paths=[], title_str=""):
-        print("Plotting topology to", topo_fname, "...")
+        print("Plotting topology to", topo_fname, title_str, "...")
         # print("Generated topology with", num_qubits, "data qubits and ")
         plt.close()
         plt.rc("figure", figsize=[self.num_cols, self.num_rows])

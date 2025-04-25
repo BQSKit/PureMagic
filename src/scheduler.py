@@ -169,8 +169,7 @@ def schedule_pauli_product(args, topo_graph, pauli_product):
     if len(magic_nodes) == 0:
         # print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
-    # schedule from each available magic node in turn, and take the one that uses the fewest nodes
-    pauli_product_graph = None
+    # schedule from each available magic node in turn to find the first that works
     for root_node in magic_nodes:
         if args.path_method == "bfs":
             g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
@@ -182,16 +181,11 @@ def schedule_pauli_product(args, topo_graph, pauli_product):
             raise ValueError("Unknown path method " + args.path_method)
         if g == None:
             continue
-        # print("Found path with", g.number_of_nodes(), "nodes")
-        if pauli_product_graph == None or g.number_of_nodes() < pauli_product_graph.number_of_nodes():
-            # print("Found new best graph with nodes", g.number_of_nodes())
-            pauli_product_graph = copy.deepcopy(g)
-
-    if pauli_product_graph == None:
-        # could not schedule all components
+        # return the first one we find - far more efficient and seems to give similar results to trying to find the shortest
+        # return copy.deepcopy(g)
+        return g
+    else:
         return None
-
-    return pauli_product_graph
 
 
 class Scheduler:
