@@ -242,7 +242,10 @@ class Scheduler:
             # print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
             pauli_product_paths.append((pauli_product, pauli_product_graph))
             num_qubits_scheduled += pauli_product.qubits_used
-            num_bus_qubits_scheduled += pauli_product_graph.number_of_nodes() - pauli_product.qubits_used - 1
+            for node in pauli_product_graph.nodes():
+                if is_bus_node(node):
+                    num_bus_qubits_scheduled += 1
+            # num_bus_qubits_scheduled += pauli_product_graph.number_of_nodes() - pauli_product.qubits_used - 1
             # now remove the Pauli product path from the graph
             working_topo_graph.remove_nodes_from(pauli_product_graph.nodes)
             orphaned_nodes = []
