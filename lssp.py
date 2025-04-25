@@ -120,20 +120,12 @@ def print_circuit(circuit):
         print(i, pauli_product)
 
 
-def add_node(topo_graph, label, col, row, num_rows):
-    # node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
-    node_colors = {"m": "#FFBB99", "b": "#cccccc", "d": "#9999FF"}
-    node_label = get_node_label(label, col, row)
-    topo_graph.add_node(node_label, pos=[col, num_rows - 1 - row], color=node_colors[label])
-    return node_label
-
-
 @timer
-def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_paths=[], title_str=""):
+def plot_topology(topo_graph, topo_fname, pauli_product_paths=[], title_str=""):
     print("Plotting topology to", topo_fname, "...")
     # print("Generated topology with", num_qubits, "data qubits and ")
     plt.close()
-    plt.rc("figure", figsize=[num_cols, num_rows])
+    plt.rc("figure", figsize=[topo_graph.num_cols, topo_graph.num_rows])
     node_pos = nx.get_node_attributes(topo_graph, "pos")
     node_colors = nx.get_node_attributes(topo_graph, "color").values()
     edge_labels = nx.get_edge_attributes(topo_graph, "label")
@@ -163,7 +155,7 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
         col, row = root_node[1:].split("-")
         col = float(col) - 0.2
         if row == "0":
-            row = float(num_rows) - 0.5
+            row = float(topo_graph.num_rows) - 0.5
         else:
             row = -0.5
         t = plt.text(col, row, pauli_product, color="black")
@@ -184,63 +176,78 @@ def plot_topology(topo_graph, topo_fname, num_cols, num_rows, pauli_product_path
     )
     nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
     plt.box(False)
-    plt.title(title_str).set_fontsize(6 * math.sqrt(num_rows))
+    plt.title(title_str).set_fontsize(6 * math.sqrt(topo_graph.num_rows))
     plt.tight_layout()
     plt.savefig(topo_fname + ".pdf")
     plt.savefig(topo_fname + ".png")
 
 
-@timer
-def build_parallel_topo(num_cols, num_rows):
-    topo_graph = nx.Graph()
-    for col in range(num_cols):
-        if col % 2 != 0:
-            continue
-        node_label = add_node(topo_graph, "m", col, 0, num_rows)
-        topo_graph.add_edge(node_label, get_node_label("b", col, 1))
-        for row in range(1, num_rows - 2):
-            node_label = add_node(topo_graph, "b", col, row, num_rows)
-            topo_graph.add_edge(node_label, get_node_label("b", col, row + 1))
-        prev_node_label = add_node(topo_graph, "b", col, num_rows - 2, num_rows)
-        node_label = add_node(topo_graph, "m", col, num_rows - 1, num_rows)
-        topo_graph.add_edge(node_label, prev_node_label)
-    qi = 0
-    for col in range(num_cols):
-        if col % 2 == 0:
-            continue
-        for row in range(1, num_rows - 1):
-            if row % 3 == 1:
-                node_label = add_node(topo_graph, "b", col, row, num_rows)
-                topo_graph.add_edge(node_label, get_node_label("b", col - 1, row))
-                topo_graph.add_edge(node_label, get_node_label("b", col + 1, row))
-            else:
-                if row % 3 == 2:
-                    node_label1 = "d" + str(int(qi / 2)) + "X"
-                    node_label2 = "d" + str(int(qi / 2) + 1) + "X"
-                    topo_graph.add_edge(get_node_label("b", col, row + 2), node_label1)
-                    topo_graph.add_edge(get_node_label("b", col, row + 2), node_label2)
+class TopoGraph(nx.Graph):
+    def __init__(self, num_cols=0, num_rows=0):
+        nx.Graph.__init__(self)
+        self.num_cols = num_cols
+        self.num_rows = num_rows
+        if num_cols > 0 and num_rows > 0:
+            self.gen_topo()
+
+    @timer
+    def gen_topo(self):
+        for col in range(self.num_cols):
+            if col % 2 != 0:
+                continue
+            node_label = self.add_labeled_node("m", col, 0)
+            self.add_edge(node_label, get_node_label("b", col, 1))
+            for row in range(1, self.num_rows - 2):
+                node_label = self.add_labeled_node("b", col, row)
+                self.add_edge(node_label, get_node_label("b", col, row + 1))
+            prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
+            node_label = self.add_labeled_node("m", col, self.num_rows - 1)
+            self.add_edge(node_label, prev_node_label)
+        qi = 0
+        for col in range(self.num_cols):
+            if col % 2 == 0:
+                continue
+            for row in range(1, self.num_rows - 1):
+                if row % 3 == 1:
+                    node_label = self.add_labeled_node("b", col, row)
+                    self.add_edge(node_label, get_node_label("b", col - 1, row))
+                    self.add_edge(node_label, get_node_label("b", col + 1, row))
                 else:
-                    node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
-                    node_label2 = "d" + str(int(qi / 2)) + "Z"
-                    topo_graph.add_edge(get_node_label("b", col, row - 2), node_label1)
-                    topo_graph.add_edge(get_node_label("b", col, row - 2), node_label2)
-                topo_graph.add_node(node_label1, pos=[float(col) - 0.35, num_rows - 1 - row], color="#9999FF")
-                topo_graph.add_edge(get_node_label("b", col - 1, row), node_label1)
-                topo_graph.add_node(node_label2, pos=[float(col) + 0.35, num_rows - 1 - row], color="#9999FF")
-                topo_graph.add_edge(get_node_label("b", col + 1, row), node_label2)
-                qi += 2
+                    if row % 3 == 2:
+                        node_label1 = "d" + str(int(qi / 2)) + "X"
+                        node_label2 = "d" + str(int(qi / 2) + 1) + "X"
+                        self.add_edge(get_node_label("b", col, row + 2), node_label1)
+                        self.add_edge(get_node_label("b", col, row + 2), node_label2)
+                    else:
+                        node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
+                        node_label2 = "d" + str(int(qi / 2)) + "Z"
+                        self.add_edge(get_node_label("b", col, row - 2), node_label1)
+                        self.add_edge(get_node_label("b", col, row - 2), node_label2)
+                    self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF")
+                    self.add_edge(get_node_label("b", col - 1, row), node_label1)
+                    self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF")
+                    self.add_edge(get_node_label("b", col + 1, row), node_label2)
+                    qi += 2
 
-    num_data_qubits = int(sum([is_data_node(node) for node in topo_graph.nodes]) / 2)
-    num_magic_qubits = sum([is_magic_node(node) for node in topo_graph.nodes])
-    num_bus_qubits = sum([is_bus_node(node) for node in topo_graph.nodes])
-    print("Number of qubits:")
-    print("  magic:", num_magic_qubits)
-    print("  data: ", num_data_qubits)
-    print("  bus:  ", num_bus_qubits)
-    print("Space efficiency: %.2f" % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits)))
-    print("Magic state ratio: %.2f" % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits)))
+        num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
+        num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
+        num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
+        print("Number of qubits:")
+        print("  magic:", num_magic_qubits)
+        print("  data: ", num_data_qubits)
+        print("  bus:  ", num_bus_qubits)
+        print("Space efficiency: %.2f" % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits)))
+        print("Magic state ratio: %.2f" % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits)))
+        self.num_data_qubits = num_data_qubits
+        self.num_magic_qubits = num_magic_qubits
+        self.num_bus_qubits = num_bus_qubits
 
-    return num_data_qubits, topo_graph
+    def add_labeled_node(self, label, col, row):
+        # node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
+        node_colors = {"m": "#FFBB99", "b": "#cccccc", "d": "#9999FF"}
+        node_label = get_node_label(label, col, row)
+        self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
+        return node_label
 
 
 @timer
@@ -547,7 +554,7 @@ def schedule_pauli_product(topo_graph, pauli_product):
     return pauli_product_graph
 
 
-def schedule_cycle(rng, topo_graph, circuit, num_data_qubits):
+def schedule_cycle(rng, topo_graph, circuit):
     # How do we choose the order in which to process the Pauli products?
     # We start with the given order. Other mappings are possible.
     if args.sort_order == "none":
@@ -562,6 +569,7 @@ def schedule_cycle(rng, topo_graph, circuit, num_data_qubits):
     pauli_product_paths = []
     working_topo_graph = copy.deepcopy(topo_graph)
     num_qubits_scheduled = 0
+    num_bus_qubits_scheduled = 0
     remaining_circuit = []
     for pauli_product in ordered_circuit:
         pauli_product_graph = schedule_pauli_product(working_topo_graph, pauli_product)
@@ -572,6 +580,7 @@ def schedule_cycle(rng, topo_graph, circuit, num_data_qubits):
         # print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
         pauli_product_paths.append((pauli_product, pauli_product_graph))
         num_qubits_scheduled += pauli_product.qubits_used
+        num_bus_qubits_scheduled += pauli_product_graph.number_of_nodes() - pauli_product.qubits_used - 1
         # now remove the Pauli product path from the graph
         working_topo_graph.remove_nodes_from(pauli_product_graph.nodes)
         orphaned_nodes = []
@@ -583,25 +592,27 @@ def schedule_cycle(rng, topo_graph, circuit, num_data_qubits):
     if args.verbose:
         print("Scheduling results:")
     frac_paths = float(len(pauli_product_paths)) / len(circuit)
-    frac_qubits = float(num_qubits_scheduled) / num_data_qubits
+    frac_data_qubits = float(num_qubits_scheduled) / topo_graph.num_data_qubits
+    frac_bus_qubits = float(num_bus_qubits_scheduled) / topo_graph.num_bus_qubits
     if args.verbose:
         print("  Pauli products:  %d/%d (%.2f)" % (len(pauli_product_paths), len(circuit), frac_paths))
-        print("  qubits:          %d/%d (%.2f)" % (num_qubits_scheduled, num_data_qubits, frac_qubits))
+        print("  data qubits:     %d/%d (%.2f)" % (num_qubits_scheduled, topo_graph.num_data_qubits, frac_data_qubits))
+        print("  bus qubits:     %d/%d (%.2f)" % (num_bus_qubits_scheduled, topo_graph.num_bus_qubits, frac_bus_qubits))
 
     if len(pauli_product_paths) > 0:
-        title_str = args.path_method + " (pps %.2f, qubits %.2f)" % (frac_paths, frac_qubits)
+        title_str = args.path_method + " (pps %.2f, data %.2f, bus %.2f)" % (frac_paths, frac_data_qubits, frac_bus_qubits)
         return title_str, pauli_product_paths, remaining_circuit
         # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
     return None, None, remaining_circuit
 
 
-def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qubits, num_cols, num_rows):
+def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i):
     remaining_circuit_cycle = circuit_cycle
     for i in range(100):
-        title_str, pauli_product_paths, remaining_circuit_cycle = schedule_cycle(rng, topo_graph, circuit_cycle, num_data_qubits)
+        title_str, pauli_product_paths, remaining_circuit_cycle = schedule_cycle(rng, topo_graph, circuit_cycle)
         if title_str is not None and args.plot in ["paths", "all"]:
             fname = "lssp-topo-path-" + str(i) + "-" + str(cycle_i) + "-" + args.path_method
-            plot_topology(topo_graph, fname, num_cols, num_rows, pauli_product_paths, title_str)
+            plot_topology(topo_graph, fname, pauli_product_paths, title_str)
         circuit_cycle = remaining_circuit_cycle
         if len(circuit_cycle) == 0:
             break
@@ -610,16 +621,16 @@ def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qub
     return i + 1
 
 
-def schedule_circuit(rank, num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
+def schedule_circuit(rank, num_ranks, rng, topo_graph, circuit):
     num_steps = 0
     for ci, circuit_cycle in enumerate(circuit):
         if ci % num_ranks == rank:
-            num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits, num_cols, num_rows)
+            num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci)
     return num_steps
 
 
 class ScheduleProcess(mp.Process):
-    def __init__(self, rank, num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
+    def __init__(self, rank, num_ranks, rng, topo_graph, circuit):
         mp.Process.__init__(self)
         self.num_steps = mp.Value("i", 0)
         self.rank = rank
@@ -627,28 +638,16 @@ class ScheduleProcess(mp.Process):
         self.rng = rng
         self.topo_graph = topo_graph
         self.circuit = circuit
-        self.num_data_qubits = num_data_qubits
-        self.num_cols = num_cols
-        self.num_rows = num_rows
 
     def run(self):
-        self.num_steps.value = schedule_circuit(
-            self.rank,
-            self.num_ranks,
-            self.rng,
-            self.topo_graph,
-            self.circuit,
-            self.num_data_qubits,
-            self.num_cols,
-            self.num_rows,
-        )
+        self.num_steps.value = schedule_circuit(self.rank, self.num_ranks, self.rng, self.topo_graph, self.circuit)
 
 
 @timer
-def schedule_multiprocessing(num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
+def schedule_multiprocessing(num_ranks, rng, topo_graph, circuit):
     proc = [None] * num_ranks
     for rank in range(num_ranks):
-        proc[rank] = ScheduleProcess(0, num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
+        proc[rank] = ScheduleProcess(0, num_ranks, rng, topo_graph, circuit)
         proc[rank].start()
     for rank in range(num_ranks):
         proc[rank].join()
@@ -664,14 +663,15 @@ def main():
     print("Running on", num_ranks, "cores")
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims()
-    num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
-    if num_data_qubits != args.min_num_qubits:
-        print("Adjusted number of data qubits from", args.min_num_qubits, "to", num_data_qubits)
-    circuit = gen_rnd_circuit(rng, num_data_qubits)
+    # num_data_qubits, num_bus_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
+    topo_graph = TopoGraph(num_cols, num_rows)
+    if topo_graph.num_data_qubits != args.min_num_qubits:
+        print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
+    circuit = gen_rnd_circuit(rng, topo_graph.num_data_qubits)
     if args.plot in ["circuit", "all"]:
         plot_circuit(circuit)
-    # tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
-    tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
+    tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit)
+    # tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
     print("Scheduled full circuit in", tot_num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / tot_num_steps))
 
 
