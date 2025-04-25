@@ -10,6 +10,7 @@ import sys
 import copy
 import time
 import functools
+import multiprocessing as mp
 
 
 def timer(func):
@@ -19,7 +20,7 @@ def timer(func):
         value = func(*args, **kwargs)
         toc = time.perf_counter()
         elapsed_time = toc - tic
-        print(f"[{func.__name__}: {elapsed_time:0.4f} s]")
+        print(f"[{func.__name__}: {elapsed_time:0.4f} s]", flush=True)
         return value
 
     return wrapper_timer
@@ -55,6 +56,7 @@ def get_args():
         choices=sort_orders,
         help="Sorting Pauli products before scheduling: " + ", ".join(sort_orders),
     )
+    parser.add_argument("--threads", "-t", type=int, default=0, help="Number of processes for multiprocessing")
     plot_options = ["none", "all", "circuit", "paths", "freqs"]
     parser.add_argument("--plot", "-p", type=str, default="none", choices=plot_options, help="Plot: " + ", ".join(plot_options))
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
@@ -608,16 +610,58 @@ def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i, num_data_qub
     return i + 1
 
 
-@timer
-def schedule_circuit(rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
+def schedule_circuit(rank, num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
     num_steps = 0
     for ci, circuit_cycle in enumerate(circuit):
-        num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits, num_cols, num_rows)
-    print("Scheduled full circuit in", num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / num_steps))
+        if ci % num_ranks == rank:
+            num_steps += schedule_circuit_cycle(rng, topo_graph, circuit_cycle, ci, num_data_qubits, num_cols, num_rows)
+    return num_steps
+
+
+class ScheduleProcess(mp.Process):
+    def __init__(self, rank, num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
+        mp.Process.__init__(self)
+        self.num_steps = mp.Value("i", 0)
+        self.rank = rank
+        self.num_ranks = num_ranks
+        self.rng = rng
+        self.topo_graph = topo_graph
+        self.circuit = circuit
+        self.num_data_qubits = num_data_qubits
+        self.num_cols = num_cols
+        self.num_rows = num_rows
+
+    def run(self):
+        self.num_steps.value = schedule_circuit(
+            self.rank,
+            self.num_ranks,
+            self.rng,
+            self.topo_graph,
+            self.circuit,
+            self.num_data_qubits,
+            self.num_cols,
+            self.num_rows,
+        )
+
+
+@timer
+def schedule_multiprocessing(num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows):
+    proc = [None] * num_ranks
+    for rank in range(num_ranks):
+        proc[rank] = ScheduleProcess(0, num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
+        proc[rank].start()
+    for rank in range(num_ranks):
+        proc[rank].join()
+    tot_num_steps = 0
+    for rank in range(num_ranks):
+        tot_num_steps += proc[rank].num_steps.value
+    return tot_num_steps
 
 
 @timer
 def main():
+    num_ranks = mp.cpu_count() if args.threads == 0 else args.threads
+    print("Running on", num_ranks, "cores")
     rng = np.random.default_rng(seed=args.rseed)
     num_cols, num_rows = get_topo_dims()
     num_data_qubits, topo_graph = build_parallel_topo(num_cols, num_rows)
@@ -626,7 +670,9 @@ def main():
     circuit = gen_rnd_circuit(rng, num_data_qubits)
     if args.plot in ["circuit", "all"]:
         plot_circuit(circuit)
-    schedule_circuit(rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
+    # tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
+    tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit, num_data_qubits, num_cols, num_rows)
+    print("Scheduled full circuit in", tot_num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / tot_num_steps))
 
 
 if __name__ == "__main__":
