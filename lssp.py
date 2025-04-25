@@ -1,8 +1,6 @@
 #!/usr/bin/env -S python -u
 
 import networkx as nx
-import matplotlib.pyplot as plt
-import math
 import numpy as np
 import argparse
 import copy
@@ -44,8 +42,10 @@ def get_args():
         help="Sorting Pauli products before scheduling: " + ", ".join(sort_orders),
     )
     parser.add_argument("--threads", "-t", type=int, default=0, help="Number of processes for multiprocessing")
-    plot_options = ["none", "all", "circuit", "paths", "freqs"]
-    parser.add_argument("--plot", "-p", type=str, default="none", choices=plot_options, help="Plot: " + ", ".join(plot_options))
+    plot_options = ["none", "circuit", "paths", "freqs"]
+    parser.add_argument(
+        "--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plot: " + ", ".join(plot_options)
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
@@ -62,92 +62,6 @@ def get_topo_dims():
     num_cols = 2 * int(np.ceil(args.min_num_qubits / qubits_per_col)) + 1
     print("Layout dimensions:", num_cols, num_rows)
     return num_cols, num_rows
-
-
-class PauliProduct:
-
-    def __init__(self, rng, num_qubits, pauli_product_qubits, start_qubit):
-        self.basis_options = ["X", "Z", "Y"]
-        # self.basis_options = ["X", "Z"]
-        self.operators = [" "] * num_qubits
-        self.start_qubit = start_qubit
-        self.qubits_used = pauli_product_qubits
-        for i in range(start_qubit, start_qubit + pauli_product_qubits):
-            self.operators[i] = self.basis_options[int(np.floor(rng.uniform(0, len(self.basis_options))))]
-
-    def __str__(self):
-        s = ""
-        for i in range(len(self.operators)):
-            if self.operators[i] != " ":
-                s += str(i) + self.operators[i] + " "
-        return s.strip()
-
-
-def print_circuit(circuit):
-    for i, pauli_product in enumerate(circuit):
-        print(i, pauli_product)
-
-
-@timer
-def plot_topology(topo_graph, topo_fname, pauli_product_paths=[], title_str=""):
-    print("Plotting topology to", topo_fname, "...")
-    # print("Generated topology with", num_qubits, "data qubits and ")
-    plt.close()
-    plt.rc("figure", figsize=[topo_graph.num_cols, topo_graph.num_rows])
-    node_pos = nx.get_node_attributes(topo_graph, "pos")
-    node_colors = nx.get_node_attributes(topo_graph, "color").values()
-    edge_labels = nx.get_edge_attributes(topo_graph, "label")
-    edge_colors = ["black"] * topo_graph.number_of_edges()
-    edge_width = [1] * topo_graph.number_of_edges()
-    node_edge_colors = ["white"] * topo_graph.number_of_nodes()
-    node_line_widths = [1] * topo_graph.number_of_nodes()
-    node_labels = {}
-    for i, node in enumerate(topo_graph.nodes()):
-        node_labels[node] = "" if is_bus_node(node) else node
-        node_labels[node] = node
-    cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
-    for pi, pauli_path in enumerate(pauli_product_paths):
-        pauli_product, pauli_product_graph = pauli_path
-        for ei, edge in enumerate(topo_graph.edges):
-            if pauli_product_graph.has_edge(*edge):
-                edge_colors[ei] = cmap(pi)
-                edge_width[ei] = 6
-        root_node = None
-        # print(pauli_product_graph.nodes)
-        for ni, node in enumerate(topo_graph.nodes):
-            if pauli_product_graph.has_node(node):
-                node_edge_colors[ni] = cmap(pi)
-                node_line_widths[ni] = 3
-                if is_magic_node(node):
-                    root_node = node
-        col, row = root_node[1:].split("-")
-        col = float(col) - 0.2
-        if row == "0":
-            row = float(topo_graph.num_rows) - 0.5
-        else:
-            row = -0.5
-        t = plt.text(col, row, pauli_product, color="black")
-        t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
-    nx.draw_networkx(
-        topo_graph,
-        pos=node_pos,
-        node_size=1000,
-        node_color=node_colors,
-        font_size=10,
-        edge_color=edge_colors,
-        width=edge_width,
-        edgecolors=node_edge_colors,
-        linewidths=node_line_widths,
-        labels=node_labels,
-        connectionstyle="angle3,angleA=90,angleB=0",
-        arrows=True,
-    )
-    nx.draw_networkx_edge_labels(topo_graph, node_pos, edge_labels, rotate=False)
-    plt.box(False)
-    plt.title(title_str).set_fontsize(6 * math.sqrt(topo_graph.num_rows))
-    plt.tight_layout()
-    plt.savefig(topo_fname + ".pdf")
-    plt.savefig(topo_fname + ".png")
 
 
 def trim_dangling_nodes(g):
@@ -388,7 +302,7 @@ def schedule_cycle(rng, topo_graph, circuit):
     if len(pauli_product_paths) > 0:
         title_str = args.path_method + " (pps %.2f, data %.2f, bus %.2f)" % (frac_paths, frac_data_qubits, frac_bus_qubits)
         return title_str, pauli_product_paths, remaining_circuit
-        # plot_topology(working_topo_graph, "lssp-working-topo", num_cols, num_rows)
+        # working_top_graph.plot("lssp-working-topo", num_cols, num_rows)
     return None, None, remaining_circuit
 
 
@@ -396,9 +310,9 @@ def schedule_circuit_cycle(rng, topo_graph, circuit_cycle, cycle_i):
     remaining_circuit_cycle = circuit_cycle
     for i in range(100):
         title_str, pauli_product_paths, remaining_circuit_cycle = schedule_cycle(rng, topo_graph, circuit_cycle)
-        if title_str is not None and args.plot in ["paths", "all"]:
+        if title_str is not None and "paths" in args.plot:
             fname = "lssp-topo-path-" + str(i) + "-" + str(cycle_i) + "-" + args.path_method
-            plot_topology(topo_graph, fname, pauli_product_paths, title_str)
+            topo_graph.plot(fname, pauli_product_paths, title_str)
         circuit_cycle = remaining_circuit_cycle
         if len(circuit_cycle) == 0:
             break
@@ -453,9 +367,13 @@ def main():
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
 
-    circuit = rndcircuit.gen_rnd_circuit(args, rng, topo_graph.num_data_qubits)
-    if args.plot in ["circuit", "all"]:
-        rndcircuit.plot_circuit(circuit)
+    # circuit = rndcircuit.gen_rnd_circuit(args, rng, topo_graph.num_data_qubits)
+    circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
+    if "circuit" in args.plot:
+        circuit.plot()
+    if "freqs" in args.plot:
+        circuit.plot_freqs()
+
     # tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit)
     tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
     print("Scheduled full circuit in", tot_num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / tot_num_steps))
