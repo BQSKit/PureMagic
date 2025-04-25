@@ -182,8 +182,7 @@ def schedule_pauli_product(args, topo_graph, pauli_product):
         if g == None:
             continue
         # return the first one we find - far more efficient and seems to give similar results to trying to find the shortest
-        # return copy.deepcopy(g)
-        return g
+        return copy.deepcopy(g)
     else:
         return None
 
