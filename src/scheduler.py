@@ -95,7 +95,7 @@ def schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node):
 
 
 def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
-    # this is exactly like the steiner tree computation in the networkx liblary, except that for the dijkstra path calculation
+    # this is exactly like the steiner tree computation in the networkx library, except that for the dijkstra path calculation
     # and the shortest path, we use a digraph with the edges that go from the data nodes outwards removed. This prevents trees
     # that pass through the data nodes, instead of just terminating at the data nodes
     topo_digraph = get_topo_digraph(topo_graph)
@@ -104,12 +104,16 @@ def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
     d_1 = {}
     s = {}
     for v in topo_graph.nodes():
+        if v not in paths:
+            continue
         s[v] = paths[v][0]
         d_1[(v, s[v])] = len(paths[v]) - 1
 
     # G1-G4 names match those from the Mehlhorn 1988 paper.
     G_1_prime = nx.Graph()
     for u, v, data in topo_graph.edges(data=True):
+        if u not in s or v not in s:
+            continue
         su, sv = s[u], s[v]
         weight_here = d_1[(u, su)] + data.get("weight", 1) + d_1[(v, sv)]
         if not G_1_prime.has_edge(su, sv):
@@ -138,29 +142,23 @@ def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
 
 
 def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
-    working_graph = copy.deepcopy(topo_graph)
     # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
-    while True:
-        terminal_nodes = [root_node]
-        for oi, operator in enumerate(pauli_product.operators):
-            if operator != " ":
-                ops = ["X", "Z"] if operator == "Y" else [operator]
-                for op in ops:
-                    node = "d" + str(oi) + op
-                    if node not in working_graph:
-                        return None
-                    terminal_nodes.append(node)
-        try:
-            # g = nx.algorithms.approximation.steiner_tree(topo_graph, terminal_nodes)
-            g = mehlhorn_steiner_tree(working_graph, terminal_nodes)
-            if not all([node in g for node in terminal_nodes]):
-                return None
-            return g
-        except KeyError as err:
-            # we have a disconnected node, so we need to reschedule without that node
-            missing_node = err.args[0]
-            # print("Key error", missing_node, "found?", missing_node in working_graph)
-            working_graph.remove_nodes_from([missing_node])
+    terminal_nodes = [root_node]
+    for oi, operator in enumerate(pauli_product.operators):
+        if operator != " ":
+            ops = ["X", "Z"] if operator == "Y" else [operator]
+            for op in ops:
+                node = "d" + str(oi) + op
+                if node not in topo_graph:
+                    return None
+                terminal_nodes.append(node)
+    for terminal_node in terminal_nodes[1:]:
+        if not nx.has_path(topo_graph, root_node, terminal_node):
+            return None
+    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes)
+    if not all([node in g for node in terminal_nodes]):
+        return None
+    return g
 
 
 def schedule_pauli_product(args, topo_graph, pauli_product):
