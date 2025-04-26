@@ -25,7 +25,7 @@ def get_args():
     parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
     parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
-    path_methods = ["steiner", "bfs", "shortestpaths"]
+    path_methods = ["steiner", "bfs"]
     parser.add_argument(
         "--path-method",
         type=str,
