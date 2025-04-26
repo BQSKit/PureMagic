@@ -68,32 +68,6 @@ def get_topo_digraph(topo_graph):
     return topo_digraph
 
 
-def schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node):
-    topo_digraph = get_topo_digraph(topo_graph)
-
-    while True:
-        terminal_nodes = []
-        for oi, operator in enumerate(pauli_product.operators):
-            if operator != " ":
-                ops = ["X", "Z"] if operator == "Y" else [operator]
-                for op in ops:
-                    node = "d" + str(oi) + op
-                    if node not in topo_graph:
-                        return None
-                    terminal_nodes.append(node)
-        paths = nx.multi_source_dijkstra_path(topo_digraph, terminal_nodes)
-        tree_g = nx.Graph()
-        for terminal_node in terminal_nodes:
-            try:
-                path_nodes = nx.shortest_path(topo_digraph, root_node, terminal_node)
-            except nx.NetworkXNoPath as err:
-                return None
-            tree_g.add_edge(root_node, path_nodes[0])
-            for i in range(len(path_nodes) - 1):
-                tree_g.add_edge(path_nodes[i], path_nodes[i + 1])
-        return tree_g
-
-
 def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
     # this is exactly like the steiner tree computation in the networkx library, except that for the dijkstra path calculation
     # and the shortest path, we use a digraph with the edges that go from the data nodes outwards removed. This prevents trees
@@ -196,13 +170,6 @@ def find_best_magic_node(topo_graph, pauli_product):
 
 
 def schedule_pauli_product(args, topo_graph, pauli_product):
-    # magic_nodes = []
-    # for node in topo_graph.nodes:
-    #    if is_magic_node(node):
-    #        magic_nodes.append(node)
-    # if len(magic_nodes) == 0:
-    # print("Could not find starting node for Pauli product", pauli_product.__str__())
-    #    return None
     root_node = find_best_magic_node(topo_graph, pauli_product)
     if root_node == None:
         return None
@@ -212,8 +179,6 @@ def schedule_pauli_product(args, topo_graph, pauli_product):
         g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
     elif args.path_method == "steiner":
         g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
-    elif args.path_method == "shortestpaths":
-        g = schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node)
     else:
         raise ValueError("Unknown path method " + args.path_method)
     if g == None:
