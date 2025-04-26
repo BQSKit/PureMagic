@@ -1,5 +1,6 @@
 #!/usr/bin/env -S python -u
 
+import numpy as np
 import networkx as nx
 import math
 import matplotlib.pyplot as plt
@@ -25,12 +26,23 @@ def get_node_label(label, col, row):
     return label + str(math.ceil(col)) + "-" + str(math.ceil(row))
 
 
+def get_topo_dims(args):
+    # the rows dimension needs to be a multiple of 3, and a minimum of 6
+    # the columns dimension needs to be a multiple of 2, with 1 added (so 3, 5, 7, 9, ...)
+    sq_dim = int(np.floor(np.sqrt(args.min_num_qubits)))
+    patch_rows = int(sq_dim / 2) + sq_dim % 2
+    num_rows = 3 * patch_rows + 3
+    qubits_per_col = 2 * patch_rows
+    num_cols = 2 * int(np.ceil(args.min_num_qubits / qubits_per_col)) + 1
+    print("Layout dimensions:", num_cols, num_rows)
+    return num_cols, num_rows
+
+
 class TopoGraph(nx.Graph):
-    def __init__(self, num_cols=0, num_rows=0):
+    def __init__(self, args):
         nx.Graph.__init__(self)
-        self.num_cols = num_cols
-        self.num_rows = num_rows
-        if num_cols > 0 and num_rows > 0:
+        self.num_cols, self.num_rows = get_topo_dims(args)
+        if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
 
     @timer
