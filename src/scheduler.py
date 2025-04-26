@@ -169,7 +169,33 @@ def find_best_magic_node(topo_graph, pauli_product):
     return best_magic_node
 
 
+def add_double_edges(topo_graph, pauli_product):
+    for i in range(0, len(pauli_product.operators), 2):
+        operators = pauli_product.operators
+        if operators[i] == " " or operators[i + 1] == " ":
+            continue
+        if operators[i] == operators[i + 1]:
+            # print("found matching operators", operators[i], "at positions", i, i + 1)
+            node = "d" + str(i) + operators[i]
+            if not topo_graph.has_node(node):
+                return topo_graph
+            other_node = topo_graph.nodes[node]["other"]
+            # print("adding edge", node, other_node)
+            topo_graph.add_edge(node, other_node)
+            node = "d" + str(i + 1) + operators[i + 1]
+            # print("adding edge", node, other_node)
+            topo_graph.add_edge(node, other_node)
+        if operators[i] == "Y" or operators[i + 1] == "Y":
+            # not sure how exactly to handle this
+            continue
+            print("found Y operators", operators[i], operators[i + 1], "at positions", i, i + 1)
+    return topo_graph
+
+
 def schedule_pauli_product(args, topo_graph, pauli_product):
+    if args.verbose:
+        print(pauli_product.__str__())
+    topo_graph = add_double_edges(topo_graph, pauli_product)
     root_node = find_best_magic_node(topo_graph, pauli_product)
     if root_node == None:
         return None
@@ -186,8 +212,6 @@ def schedule_pauli_product(args, topo_graph, pauli_product):
         return None
     # return the first one we find - far more efficient and seems to give similar results to trying to find the shortest
     return copy.deepcopy(g)
-    # else:
-    #    return None
 
 
 class Scheduler:
