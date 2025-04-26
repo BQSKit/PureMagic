@@ -45,7 +45,7 @@ class TopoGraph(nx.Graph):
                 self.add_edge(node_label, get_node_label("b", col, row + 1))
             prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
             node_label = self.add_labeled_node("m", col, self.num_rows - 1)
-            self.add_edge(node_label, prev_node_label)
+            self.add_edge(node_label, prev_node_label, other="")
         qi = 0
         for col in range(self.num_cols):
             if col % 2 == 0:
@@ -59,16 +59,18 @@ class TopoGraph(nx.Graph):
                     if row % 3 == 2:
                         node_label1 = "d" + str(int(qi / 2)) + "X"
                         node_label2 = "d" + str(int(qi / 2) + 1) + "X"
-                        self.add_edge(get_node_label("b", col, row + 2), node_label1)
-                        self.add_edge(get_node_label("b", col, row + 2), node_label2)
+                        other = get_node_label("b", col, row + 2)
+                        # self.add_edge(get_node_label("b", col, row + 2), node_label1)
+                        # self.add_edge(get_node_label("b", col, row + 2), node_label2)
                     else:
                         node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
                         node_label2 = "d" + str(int(qi / 2)) + "Z"
-                        self.add_edge(get_node_label("b", col, row - 2), node_label1)
-                        self.add_edge(get_node_label("b", col, row - 2), node_label2)
-                    self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF")
+                        other = get_node_label("b", col, row - 2)
+                        # self.add_edge(get_node_label("b", col, row - 2), node_label1)
+                        # self.add_edge(get_node_label("b", col, row - 2), node_label2)
+                    self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
                     self.add_edge(get_node_label("b", col - 1, row), node_label1)
-                    self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF")
+                    self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
                     self.add_edge(get_node_label("b", col + 1, row), node_label2)
                     qi += 2
 
