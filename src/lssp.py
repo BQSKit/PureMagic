@@ -39,6 +39,7 @@ def get_args():
         "--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plot: " + ", ".join(plot_options)
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args

@@ -195,7 +195,8 @@ def add_double_edges(topo_graph, pauli_product):
 def schedule_pauli_product(args, topo_graph, pauli_product):
     if args.verbose:
         print(pauli_product.__str__())
-    topo_graph = add_double_edges(topo_graph, pauli_product)
+    if args.topbottom:
+        topo_graph = add_double_edges(topo_graph, pauli_product)
     root_node = find_best_magic_node(topo_graph, pauli_product)
     if root_node == None:
         return None
