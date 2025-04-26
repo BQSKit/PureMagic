@@ -1,7 +1,6 @@
 #!/usr/bin/env -S python -u
 
 import networkx as nx
-import numpy as np
 import copy
 from topograph import is_bus_node, is_data_node, is_magic_node
 

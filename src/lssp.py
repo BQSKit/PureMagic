@@ -1,12 +1,9 @@
 #!/usr/bin/env -S python -u
 
-import networkx as nx
 import numpy as np
 import argparse
-import copy
 import multiprocessing as mp
 import topograph
-from topograph import is_bus_node, is_data_node, is_magic_node
 import rndcircuit
 import scheduler
 from utils import timer
@@ -45,18 +42,6 @@ def get_args():
     return args
 
 
-def get_topo_dims():
-    # the rows dimension needs to be a multiple of 3, and a minimum of 6
-    # the columns dimension needs to be a multiple of 2, with 1 added (so 3, 5, 7, 9, ...)
-    sq_dim = int(np.floor(np.sqrt(args.min_num_qubits)))
-    patch_rows = int(sq_dim / 2) + sq_dim % 2
-    num_rows = 3 * patch_rows + 3
-    qubits_per_col = 2 * patch_rows
-    num_cols = 2 * int(np.ceil(args.min_num_qubits / qubits_per_col)) + 1
-    print("Layout dimensions:", num_cols, num_rows)
-    return num_cols, num_rows
-
-
 class ScheduleProcess(mp.Process):
     def __init__(self, rank, num_ranks, rng, topo_graph, circuit):
         mp.Process.__init__(self)
@@ -88,8 +73,7 @@ def main():
     num_ranks = mp.cpu_count() if args.threads == 0 else args.threads
     print("Running on", num_ranks, "cores")
     rng = np.random.default_rng(seed=args.rseed)
-    num_cols, num_rows = get_topo_dims()
-    topo_graph = topograph.TopoGraph(num_cols, num_rows)
+    topo_graph = topograph.TopoGraph(args)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
 
