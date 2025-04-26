@@ -33,15 +33,6 @@ def get_args():
         choices=path_methods,
         help="Method to use for finding paths: " + ", ".join(path_methods),
     )
-    sort_orders = ["none", "random", "ascending", "descending"]
-    parser.add_argument(
-        "--sort-order",
-        "-s",
-        type=str,
-        default="none",
-        choices=sort_orders,
-        help="Sorting Pauli products before scheduling: " + ", ".join(sort_orders),
-    )
     parser.add_argument("--threads", "-t", type=int, default=0, help="Number of processes for multiprocessing")
     plot_options = ["none", "circuit", "paths", "freqs"]
     parser.add_argument(

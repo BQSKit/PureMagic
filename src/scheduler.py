@@ -161,7 +161,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
     return g
 
 
-def schedule_pauli_product(args, topo_graph, pauli_product):
+def find_best_magic_node(topo_graph, pauli_product):
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
@@ -169,22 +169,60 @@ def schedule_pauli_product(args, topo_graph, pauli_product):
     if len(magic_nodes) == 0:
         # print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
-    # schedule from each available magic node in turn to find the first that works
-    for root_node in magic_nodes:
-        if args.path_method == "bfs":
-            g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
-        elif args.path_method == "steiner":
-            g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
-        elif args.path_method == "shortestpaths":
-            g = schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node)
-        else:
-            raise ValueError("Unknown path method " + args.path_method)
-        if g == None:
+    terminal_nodes = []
+    for oi, operator in enumerate(pauli_product.operators):
+        if operator != " ":
+            ops = ["X", "Z"] if operator == "Y" else [operator]
+            for op in ops:
+                node = "d" + str(oi) + op
+                if node not in topo_graph:
+                    return None
+                terminal_nodes.append(node)
+    # as the magic node, choose the one that connects to all terminals with the summed shortest path
+    best_path_len = None
+    best_magic_node = None
+    for magic_node in magic_nodes:
+        try:
+            sum_path_len = 0.0
+            for terminal_node in terminal_nodes:
+                sum_path_len += nx.shortest_path_length(topo_graph, magic_node, terminal_node)
+            if best_path_len == None or sum_path_len < best_path_len:
+                best_path_len = sum_path_len
+                best_magic_node = magic_node
+        except nx.NetworkXNoPath:
+            # path not found - can't use this magic node
             continue
-        # return the first one we find - far more efficient and seems to give similar results to trying to find the shortest
-        return copy.deepcopy(g)
-    else:
+    return best_magic_node
+
+
+def schedule_pauli_product(args, topo_graph, pauli_product):
+    # magic_nodes = []
+    # for node in topo_graph.nodes:
+    #    if is_magic_node(node):
+    #        magic_nodes.append(node)
+    # if len(magic_nodes) == 0:
+    # print("Could not find starting node for Pauli product", pauli_product.__str__())
+    #    return None
+    root_node = find_best_magic_node(topo_graph, pauli_product)
+    if root_node == None:
         return None
+    # schedule from each available magic node in turn to find the first that works
+    # for root_node in magic_nodes:
+    if args.path_method == "bfs":
+        g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
+    elif args.path_method == "steiner":
+        g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
+    elif args.path_method == "shortestpaths":
+        g = schedule_pauli_product_shortest_paths(topo_graph, pauli_product, root_node)
+    else:
+        raise ValueError("Unknown path method " + args.path_method)
+    if g == None:
+        # continue
+        return None
+    # return the first one we find - far more efficient and seems to give similar results to trying to find the shortest
+    return copy.deepcopy(g)
+    # else:
+    #    return None
 
 
 class Scheduler:
@@ -219,21 +257,12 @@ class Scheduler:
     def schedule_cycle(self, circuit):
         # How do we choose the order in which to process the Pauli products?
         # We start with the given order. Other mappings are possible.
-        if self.args.sort_order == "none":
-            ordered_circuit = circuit
-        elif self.args.sort_order == "random":
-            ordered_circuit = self.rng.permutation(np.array(circuit, dtype="object"))
-        elif self.args.sort_order == "descending":
-            ordered_circuit = sorted(circuit, key=lambda x: x.qubits_used, reverse=True)
-        elif self.args.sort_order == "ascending":
-            ordered_circuit = sorted(circuit, key=lambda x: x.qubits_used, reverse=False)
-
         pauli_product_paths = []
         working_topo_graph = copy.deepcopy(self.topo_graph)
         num_qubits_scheduled = 0
         num_bus_qubits_scheduled = 0
         remaining_circuit = []
-        for pauli_product in ordered_circuit:
+        for pauli_product in circuit:
             pauli_product_graph = schedule_pauli_product(self.args, working_topo_graph, pauli_product)
             if pauli_product_graph == None:
                 # print("* Could not schedule Pauli product", pauli_product)
@@ -271,5 +300,4 @@ class Scheduler:
                 frac_bus_qubits,
             )
             return title_str, pauli_product_paths, remaining_circuit
-            # working_top_graph.plot("lssp-working-topo", num_cols, num_rows)
         return None, None, remaining_circuit
