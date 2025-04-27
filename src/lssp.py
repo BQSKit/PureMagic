@@ -35,6 +35,10 @@ def get_args():
     parser.add_argument(
         "--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plot: " + ", ".join(plot_options)
     )
+    layout_options = ["spaced", "compact"]
+    parser.add_argument(
+        "--layout", "-l", type=str, default="spaced", choices=layout_options, help="Layout, one of " + ", ".join(plot_options)
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     args = parser.parse_args()
@@ -73,10 +77,11 @@ def main():
     num_ranks = mp.cpu_count() if args.threads == 0 else args.threads
     print("Running on", num_ranks, "cores")
     rng = np.random.default_rng(seed=args.rseed)
-    topo_graph = topograph.TopoGraph(args)
+    topo_graph = topograph.TopoGraph()
+    topo_graph.set_dims(args)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
-
+    # topo_graph.plot("lssp-topo")
     # circuit = rndcircuit.gen_rnd_circuit(args, rng, topo_graph.num_data_qubits)
     circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
     if "circuit" in args.plot:

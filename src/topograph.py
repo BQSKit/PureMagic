@@ -31,7 +31,12 @@ def get_topo_dims(args):
     # the columns dimension needs to be a multiple of 2, with 1 added (so 3, 5, 7, 9, ...)
     sq_dim = int(np.floor(np.sqrt(args.min_num_qubits)))
     patch_rows = int(sq_dim / 2) + sq_dim % 2
-    num_rows = 3 * patch_rows + 3
+    if args.layout == "spaced":
+        # two rows per patch, a bus row above and below each patch, and 2 rows for magic states
+        num_rows = 2 * patch_rows + patch_rows + 1 + 2
+    elif args.layout == "compact":
+        # two rows per patch, plus bus rows at the top and bottom, and 2 rows for magic states
+        num_rows = 2 * patch_rows + 2 + 2
     qubits_per_col = 2 * patch_rows
     num_cols = 2 * int(np.ceil(args.min_num_qubits / qubits_per_col)) + 1
     print("Layout dimensions:", num_cols, num_rows)
@@ -39,8 +44,11 @@ def get_topo_dims(args):
 
 
 class TopoGraph(nx.Graph):
-    def __init__(self, args):
+    def __init__(self):
         nx.Graph.__init__(self)
+
+    def set_dims(self, args):
+        self.args = args
         self.num_cols, self.num_rows = get_topo_dims(args)
         if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
@@ -63,23 +71,21 @@ class TopoGraph(nx.Graph):
             if col % 2 == 0:
                 continue
             for row in range(1, self.num_rows - 1):
-                if row % 3 == 1:
+                if (self.args.layout == "spaced" and row % 3 == 1) or (
+                    self.args.layout == "compact" and row == 1 or row == self.num_rows - 2
+                ):
                     node_label = self.add_labeled_node("b", col, row)
                     self.add_edge(node_label, get_node_label("b", col - 1, row))
                     self.add_edge(node_label, get_node_label("b", col + 1, row))
                 else:
-                    if row % 3 == 2:
+                    if (self.args.layout == "spaced" and row % 3 == 2) or (self.args.layout == "compact" and row % 2 == 0):
                         node_label1 = "d" + str(int(qi / 2)) + "X"
                         node_label2 = "d" + str(int(qi / 2) + 1) + "X"
                         other = get_node_label("b", col, row + 2)
-                        # self.add_edge(get_node_label("b", col, row + 2), node_label1)
-                        # self.add_edge(get_node_label("b", col, row + 2), node_label2)
                     else:
                         node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
                         node_label2 = "d" + str(int(qi / 2)) + "Z"
                         other = get_node_label("b", col, row - 2)
-                        # self.add_edge(get_node_label("b", col, row - 2), node_label1)
-                        # self.add_edge(get_node_label("b", col, row - 2), node_label2)
                     self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
                     self.add_edge(get_node_label("b", col - 1, row), node_label1)
                     self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
