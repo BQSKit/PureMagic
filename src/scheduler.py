@@ -2,6 +2,7 @@
 
 import networkx as nx
 import copy
+import numpy as np
 from topograph import is_bus_node, is_data_node, is_magic_node
 
 
@@ -192,8 +193,8 @@ def add_double_edges(topo_graph, pauli_product):
 
 
 def schedule_pauli_product(args, topo_graph, pauli_product):
-    if args.verbose:
-        print(pauli_product.__str__())
+    # if args.verbose:
+    #    print(pauli_product.__str__())
     if args.topbottom:
         topo_graph = add_double_edges(topo_graph, pauli_product)
     root_node = find_best_magic_node(topo_graph, pauli_product)
@@ -223,39 +224,63 @@ class Scheduler:
         self.topo_graph = topo_graph
 
     def schedule_circuit(self, circuit):
+        all_cycles = []
+        for cycle in circuit:
+            all_cycles.extend(cycle)
+        num_steps = 0
+        while len(all_cycles) > 0:
+            title_str, pauli_product_paths, remaining_circuit_cycle = self.schedule_cycle(all_cycles)
+            all_cycles = remaining_circuit_cycle
+            if title_str is not None and "paths" in self.args.plot:
+                fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
+                self.topo_graph.plot(fname, pauli_product_paths, title_str)
+            num_steps += 1
+        return num_steps
+
+    def schedule_circuit_barrier(self, circuit):
         num_steps = 0
         for ci, circuit_cycle in enumerate(circuit):
             if ci % self.num_ranks == self.rank:
-                num_steps += self.schedule_circuit_cycle(circuit_cycle, ci)
+                remaining_circuit_cycle = circuit_cycle
+                for i in range(100):
+                    title_str, pauli_product_paths, remaining_circuit_cycle = self.schedule_cycle(circuit_cycle)
+                    if title_str is not None and "paths" in self.args.plot:
+                        fname = "lssp-topo-path-" + str(i) + "-" + str(ci) + "-" + self.args.path_method
+                        self.topo_graph.plot(fname, pauli_product_paths, title_str)
+                    circuit_cycle = remaining_circuit_cycle
+                    if len(circuit_cycle) == 0:
+                        break
+                    # now add products from the next cycle
+                if self.args.verbose:
+                    print("Scheduled full circuit cycle in", i + 1, "time steps")
+                num_steps += i + 1
         return num_steps
 
-    def schedule_circuit_cycle(self, circuit_cycle, cycle_i):
-        remaining_circuit_cycle = circuit_cycle
-        for i in range(100):
-            title_str, pauli_product_paths, remaining_circuit_cycle = self.schedule_cycle(circuit_cycle)
-            if title_str is not None and "paths" in self.args.plot:
-                fname = "lssp-topo-path-" + str(i) + "-" + str(cycle_i) + "-" + self.args.path_method
-                self.topo_graph.plot(fname, pauli_product_paths, title_str)
-            circuit_cycle = remaining_circuit_cycle
-            if len(circuit_cycle) == 0:
-                break
-        if self.args.verbose:
-            print("Scheduled full circuit cycle in", i + 1, "time steps")
-        return i + 1
-
     def schedule_cycle(self, circuit):
-        # How do we choose the order in which to process the Pauli products?
-        # We start with the given order. Other mappings are possible.
         pauli_product_paths = []
         working_topo_graph = copy.deepcopy(self.topo_graph)
         num_qubits_scheduled = 0
         num_bus_qubits_scheduled = 0
         remaining_circuit = []
+        num_dependent_nodes = 0
         for pauli_product in circuit:
+            if working_topo_graph.number_of_nodes() == 0:
+                # print("No more nodes")
+                break
             pauli_product_graph = schedule_pauli_product(self.args, working_topo_graph, pauli_product)
             if pauli_product_graph == None:
                 # print("* Could not schedule Pauli product", pauli_product)
                 remaining_circuit.append(pauli_product)
+                # now the circuit could include multiple cycles, so we need to ensure dependencies are met
+                # if the product couldn't be scheduled, then every qubit in that product is now out of bounds so remove from
+                # the graph
+                nodes_to_remove = []
+                for i, operator in enumerate(pauli_product.operators):
+                    if operator != " ":
+                        nodes_to_remove.append("d" + str(i) + operator)
+                if len(nodes_to_remove) > 0:
+                    num_dependent_nodes += len(nodes_to_remove)
+                    working_topo_graph.remove_nodes_from(nodes_to_remove)
                 continue
             # print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
             pauli_product_paths.append((pauli_product, pauli_product_graph))
@@ -263,7 +288,6 @@ class Scheduler:
             for node in pauli_product_graph.nodes():
                 if is_bus_node(node):
                     num_bus_qubits_scheduled += 1
-            # num_bus_qubits_scheduled += pauli_product_graph.number_of_nodes() - pauli_product.qubits_used - 1
             # now remove the Pauli product path from the graph
             working_topo_graph.remove_nodes_from(pauli_product_graph.nodes)
             orphaned_nodes = []
@@ -281,6 +305,7 @@ class Scheduler:
             print("  Pauli products:  %d/%d (%.2f)" % (len(pauli_product_paths), len(circuit), frac_paths))
             print("  data qubits:     %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits))
             print("  bus qubits:     %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits))
+            print("Removed", num_dependent_nodes, "dependent nodes")
 
         if len(pauli_product_paths) > 0:
             title_str = self.args.path_method + " (pps %.2f, data %.2f, bus %.2f)" % (

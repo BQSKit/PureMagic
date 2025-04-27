@@ -41,7 +41,11 @@ def get_args():
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
+    parser.add_argument("--barrier", "-b", action="store_true", help="Use barrier after every cycle")
     args = parser.parse_args()
+    if args.barrier == False:
+        args.threads = 1
+        print("No barrier used: setting threads to 1 because multithreading doesn't work without the barrier")
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
 
@@ -52,10 +56,13 @@ class ScheduleProcess(mp.Process):
         self.num_steps = mp.Value("i", 0)
         self.circuit = circuit
         self.scheduler = scheduler.Scheduler(args, rank, num_ranks, rng, topo_graph)
+        self.use_barrier = args.barrier
 
     def run(self):
-        # self.num_steps.value = schedule_circuit(self.rank, self.num_ranks, self.rng, self.topo_graph, self.circuit)
-        self.num_steps.value = self.scheduler.schedule_circuit(self.circuit)
+        if self.use_barrier == True:
+            self.num_steps.value = self.scheduler.schedule_circuit_barrier(self.circuit)
+        else:
+            self.num_steps.value = self.scheduler.schedule_circuit(self.circuit)
 
 
 @timer
