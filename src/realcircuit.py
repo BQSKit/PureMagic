@@ -1,15 +1,17 @@
 #!/usr/bin/env -S python -u
 
+import sys
+import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import math
 import numpy as np
-import sys
+import pickle
 from utils import timer
 import pauliproduct
 
 
-class RndCircuit(list):
+class RealCircuit(list):
     def __init__(self, args, rng, num_qubits):
         list.__init__(self)
         self.args = args
@@ -19,54 +21,51 @@ class RndCircuit(list):
         self.counts = []
         self.rng = rng
         self.num_qubits = num_qubits
-        self.gen_rnd_circuit()
+        self.load_circuit()
 
-    @timer
-    def gen_rnd_circuit(self):
-        for i in range(self.args.circuit_depth):
-            self.append(self.gen_rnd_circuit_cycle())
-            self.num_pauli_products += len(self[-1])
-            for pp in self[-1]:
-                self.counts.append(pp.qubits_used)
-        print(
-            "Generated",
-            self.num_pauli_products,
-            "Pauli products, an average of %.3f per cycle" % (float(self.num_pauli_products) / self.args.circuit_depth),
-        )
+    def load_circuit(self):
+        f = open(self.args.circuit, "rb")
+        dag = pickle.load(f)
+        dag.print(self.args.circuit + ".txt")
 
-    def gen_rnd_circuit_cycle(self):
-        pauli_products = []
-        start_qubit = 0
-        # print("Pauli products to schedule:")
-        for _ in range(10000):
-            # this is a hack to ensure only positive numbers for the normal sampling
-            for _ in range(100):
-                pauli_product_qubits = int(np.floor(self.rng.normal(self.mean_qubits, self.sigma_qubits)))
-                if pauli_product_qubits > 0 and pauli_product_qubits <= self.num_qubits:
-                    break
-            else:
-                print(
-                    "Couldn't generate a random number in range [0, %d], using %d" % (self.num_qubits, self.mean_qubits),
-                    file=sys.stderr,
-                )
-                pauli_product_qubits = self.mean_qubits
+        g = nx.DiGraph()
+        # for i, node_id in enumerate(dag.topological_order.values()):
+        for i, node in enumerate(dag.nodes.values()):
+            # if i == 100:
+            #    break
+            for child in dag.children(node):
+                g.add_edge(node.id, child.id)
 
-            if start_qubit + pauli_product_qubits > self.num_qubits:
-                # retry to generate a smaller Pauli product
-                continue
-            pauli_products.append(pauliproduct.PauliProduct(self.rng, self.num_qubits, pauli_product_qubits, start_qubit))
-            # print(" ", pauli_products[-1])
-            start_qubit += pauli_product_qubits
-            gap_prob = self.args.gap_prob
-            while self.rng.uniform(0, 1) < gap_prob:
-                start_qubit += 1
-                if start_qubit >= self.num_qubits:
-                    break
-                gap_prob /= 2.0
+        layer_i = 0
+        nodes_used = set()
+        nodes_left = set()
+        pos = {}
+        max_qubit = 0
+        for node in dag.nodes.values():
+            nodes_left.add(node)
+            max_qubit = max(max_qubit, node.product.qubits[-1])
+        print("Max qubit", max_qubit)
+        while nodes_left:
+            layer = []
+            nodes_left_copy = nodes_left.copy()
+            nodes_used_copy = nodes_used.copy()
+            for node in nodes_left_copy:
+                for parent in dag.parents(node):
+                    if parent not in nodes_used_copy:
+                        break
+                else:
+                    g.nodes[node.id]["layer"] = layer_i
+                    layer.append((node.id, node.product, node.product.qubits))
+                    pos[node.id] = [layer_i, max_qubit - node.product.qubits[0]]
+                    nodes_used.add(node)
+                    nodes_left.remove(node)
+            layer_i += 1
+            # print(layer)
+        print("Number of layers", layer_i)
 
-        if self.args.verbose:
-            print("Generated", len(pauli_products), "Pauli products in cycle")
-        return pauli_products
+        print("Number of nodes", g.number_of_nodes())
+        nx.draw_networkx(g, pos=pos)
+        plt.show()
 
     def __str__(self):
         s = ""

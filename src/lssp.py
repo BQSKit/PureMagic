@@ -1,12 +1,20 @@
 #!/usr/bin/env -S python -u
 
+import os
+import sys
 import numpy as np
 import argparse
 import multiprocessing as mp
 import topograph
 import rndcircuit
+import realcircuit
 import scheduler
 from utils import timer
+
+exec_path = os.path.dirname(os.path.realpath(__file__))
+print(exec_path)
+sys.path.insert(0, exec_path + "/../../quilt")
+import quilt
 
 
 def get_args():
@@ -39,6 +47,7 @@ def get_args():
     parser.add_argument(
         "--layout", "-l", type=str, default="spaced", choices=layout_options, help="Layout, one of " + ", ".join(plot_options)
     )
+    parser.add_argument("--circuit", "-c", type=str, default="random", help="Circuit: random or pickle file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--barrier", "-b", action="store_true", help="Use barrier after every cycle")
@@ -89,8 +98,11 @@ def main():
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
     # topo_graph.plot("lssp-topo")
-    # circuit = rndcircuit.gen_rnd_circuit(args, rng, topo_graph.num_data_qubits)
-    circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
+    if args.circuit == "random":
+        circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
+    else:
+        circuit = realcircuit.RealCircuit(args, rng, topo_graph.num_data_qubits)
+
     if "circuit" in args.plot:
         circuit.plot()
     if "freqs" in args.plot:
