@@ -11,9 +11,6 @@ import pickle
 from utils import timer
 import pauliproduct
 
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/../../quilt")
-import quilt
-
 
 class RealCircuit(list):
     def __init__(self, args):
@@ -36,21 +33,14 @@ class RealCircuit(list):
         for node in dag.nodes.values():
             self.append(pauliproduct.PauliProduct(self.num_qubits))
             self[-1].set(node.id, node.product, dag.parents(node), dag.children(node))
-            # print(self[-1])
 
-    def draw_graph(self):
-        g = nx.DiGraph()
-        for node in self:
-            for child in node.children:
-                g.add_edge(node.id, child)
-
+    def get_layers(self):
         layer_i = 0
         nodes_used = set()
         nodes_left = set()
-        pos = {}
-        max_qubit = 0
         for node in self:
             nodes_left.add(node.id)
+        layers = []
         while nodes_left:
             layer = []
             nodes_left_copy = nodes_left.copy()
@@ -61,15 +51,27 @@ class RealCircuit(list):
                     if parent not in nodes_used_copy:
                         break
                 else:
-                    g.nodes[node.id]["layer"] = layer_i
-                    layer.append((node.id, node.get_product_str(), node.get_qubits()))
-                    pos[node.id] = [layer_i, max_qubit - node.get_qubits()[0]]
+                    layer.append(node)
                     nodes_used.add(node.id)
                     nodes_left.remove(node.id)
             layer_i += 1
-            print(layer)
-        print("Number of layers", layer_i)
+            layers.append(layer)
+        return layers
 
+    def draw_graph(self):
+        g = nx.DiGraph()
+        for node in self:
+            g.add_node(node.id)
+            for child in node.children:
+                g.add_edge(node.id, child)
+
+        layers = self.get_layers()
+        print("Number of layers", len(layers))
+        pos = {}
+        for layer_i, layer in enumerate(layers):
+            for node in layer:
+                g.nodes[node.id]["layer"] = layer_i
+                pos[node.id] = [layer_i, self.num_qubits - node.get_qubits()[0]]
         print("Number of nodes", g.number_of_nodes())
         nx.draw_networkx(g, pos=pos)
         plt.show()
@@ -86,47 +88,63 @@ class RealCircuit(list):
         print("Drawing circuit...", circuit_fname)
 
         plt.close()
-        fig = plt.figure()
+        fig = plt.figure(figsize=(18, 9))
         ax = fig.add_subplot(111)
-        num_rows = len(self[0][0].operators)
+        num_rows = self.num_qubits
         # scale the fontsize
         fs_slope = 10.0 / (56.0 - 4.0)
         fontsize = int(np.ceil(16.0 - (num_rows - 4.0) * fs_slope))
-        for i in range(num_rows):
-            ax.text(0 - 1.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
-        for col, circuit_cycle in enumerate(self):
-            for pauli_product in circuit_cycle:
+        # for i in range(num_rows):
+        #    ax.text(0 - 2.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
+        layers = self.get_layers()
+        for col, layer in enumerate(layers):
+            # if col == 500:
+            #    break
+            for pauli_product in layer:
                 for start_pos in range(num_rows):
                     if pauli_product.operators[start_pos] != " ":
+                        ax.text(
+                            col,
+                            start_pos - 0.15,
+                            pauli_product.id,
+                            va="center",
+                            fontsize=fontsize * 0.8,
+                            stretch="condensed",
+                            rotation="vertical",
+                        )
                         break
-                ry_start = None
                 for i in range(start_pos, num_rows):
+                    if pauli_product.operators[i] != " ":
+                        end_pos = i
+                for i in range(start_pos, end_pos + 1):
                     if pauli_product.operators[i] == " ":
-                        break
+                        continue
                     ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
-                    if ry_start == None:
-                        ry_start = i
-                    ry_end = i
-                rect_height = ry_end - ry_start
+                rect_height = end_pos - start_pos
                 top_shift = 0.11 * math.sqrt(num_rows)
                 height_shift = 0.08 * math.sqrt(num_rows) + top_shift
                 ax.add_patch(
                     patches.Rectangle(
-                        (col - 0.1, ry_start - top_shift),
-                        0.45,
+                        (col - 0.1, start_pos - top_shift),
+                        0.8,
                         rect_height + height_shift,
                         edgecolor="black",
-                        facecolor="lightgreen",
+                        facecolor="#ffff99" if pauli_product.is_pi_over_four() else "#99ff99",
                     )
                 )
-        plt.xlim(-1.8, len(self))
-        plt.ylim(num_rows, -1)
-        plt.tick_params(axis="y", left=False, labelleft=False)
-        plt.tick_params(axis="x", bottom=False, labelbottom=False)
-        plt.box(False)
+        # plt.xlim(-1.8, len(self))
+        # plt.xlim(-2.7, col)
+        plt.xlim(0, col)
+        plt.ylim(num_rows - 0.5, -0.5)
+        plt.xlabel("Time Steps")
+        plt.ylabel("Qubits")
+        # plt.tick_params(axis="y", left=False, labelleft=False)
+        # plt.tick_params(axis="x", bottom=False, labelbottom=False)
+        # plt.box(False)
         plt.tight_layout()
         plt.savefig(circuit_fname + ".pdf")
-        plt.savefig(circuit_fname + ".png")
+        # plt.savefig(circuit_fname + ".png")
+        plt.show()
 
     def plot_freqs(self):
         hist_fname = "lssp-operator-freqs"

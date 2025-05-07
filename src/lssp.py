@@ -1,7 +1,5 @@
 #!/usr/bin/env -S python -u
 
-import os
-import sys
 import numpy as np
 import argparse
 import multiprocessing as mp
@@ -97,7 +95,6 @@ def main():
         circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
     else:
         circuit = realcircuit.RealCircuit(args)
-        circuit.draw_graph()
 
     if "circuit" in args.plot:
         circuit.plot()
