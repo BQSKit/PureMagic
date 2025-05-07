@@ -97,9 +97,16 @@ class RealCircuit(list):
         # for i in range(num_rows):
         #    ax.text(0 - 2.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
         layers = self.get_layers()
+        min_layer = 0
+        max_layer = len(layers)
+        if len(self.args.plot_circuit_range) > 0:
+            min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
+
         for col, layer in enumerate(layers):
-            # if col == 500:
-            #    break
+            if col < min_layer:
+                continue
+            if col == max_layer:
+                break
             for pauli_product in layer:
                 for start_pos in range(num_rows):
                     if pauli_product.operators[start_pos] != " ":
@@ -132,18 +139,13 @@ class RealCircuit(list):
                         facecolor="#ffff99" if pauli_product.is_pi_over_four() else "#99ff99",
                     )
                 )
-        # plt.xlim(-1.8, len(self))
-        # plt.xlim(-2.7, col)
-        plt.xlim(0, col)
+        plt.xlim(min_layer, max_layer)
         plt.ylim(num_rows - 0.5, -0.5)
         plt.xlabel("Time Steps")
         plt.ylabel("Qubits")
-        # plt.tick_params(axis="y", left=False, labelleft=False)
-        # plt.tick_params(axis="x", bottom=False, labelbottom=False)
-        # plt.box(False)
         plt.tight_layout()
         plt.savefig(circuit_fname + ".pdf")
-        # plt.savefig(circuit_fname + ".png")
+        plt.savefig(circuit_fname + ".png")
         plt.show()
 
     def plot_freqs(self):
