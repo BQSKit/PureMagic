@@ -3,6 +3,7 @@ import sys
 import os
 import numpy as np
 
+# hack to ensure we find the quilt files - could also set PYTHONPATH before executing
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/../../quilt")
 import quilt
 
@@ -38,6 +39,9 @@ class PauliProduct:
         self.parents = [parent.id for parent in parents]
         self.children = [child.id for child in children]
         self.id = pp_id
+
+    def is_pi_over_four(self):
+        return self.angle.numerator == 1 and self.angle.denominator == 4
 
     def get_product_str(self):
         s = ""
