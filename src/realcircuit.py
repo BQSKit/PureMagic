@@ -1,5 +1,6 @@
 #!/usr/bin/env -S python -u
 
+import os
 import sys
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -10,17 +11,17 @@ import pickle
 from utils import timer
 import pauliproduct
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/../../quilt")
+import quilt
+
 
 class RealCircuit(list):
-    def __init__(self, args, rng, num_qubits):
+    def __init__(self, args):
         list.__init__(self)
         self.args = args
-        self.mean_qubits = float(num_qubits) * args.qubits_per_pauli_product
-        self.sigma_qubits = 2.0
         self.num_pauli_products = 0
         self.counts = []
-        self.rng = rng
-        self.num_qubits = num_qubits
+        self.num_qubits = 0
         self.load_circuit()
 
     def load_circuit(self):
@@ -28,39 +29,45 @@ class RealCircuit(list):
         dag = pickle.load(f)
         dag.print(self.args.circuit + ".txt")
 
+        self.num_qubits = 0
+        for node in dag.nodes.values():
+            self.num_qubits = max(self.num_qubits, node.product.qubits[-1])
+        self.num_qubits += 1
+        for node in dag.nodes.values():
+            self.append(pauliproduct.PauliProduct(self.num_qubits))
+            self[-1].set(node.id, node.product, dag.parents(node), dag.children(node))
+            # print(self[-1])
+
+    def draw_graph(self):
         g = nx.DiGraph()
-        # for i, node_id in enumerate(dag.topological_order.values()):
-        for i, node in enumerate(dag.nodes.values()):
-            # if i == 100:
-            #    break
-            for child in dag.children(node):
-                g.add_edge(node.id, child.id)
+        for node in self:
+            for child in node.children:
+                g.add_edge(node.id, child)
 
         layer_i = 0
         nodes_used = set()
         nodes_left = set()
         pos = {}
         max_qubit = 0
-        for node in dag.nodes.values():
-            nodes_left.add(node)
-            max_qubit = max(max_qubit, node.product.qubits[-1])
-        print("Max qubit", max_qubit)
+        for node in self:
+            nodes_left.add(node.id)
         while nodes_left:
             layer = []
             nodes_left_copy = nodes_left.copy()
             nodes_used_copy = nodes_used.copy()
-            for node in nodes_left_copy:
-                for parent in dag.parents(node):
+            for node_id in nodes_left_copy:
+                node = self[node_id]
+                for parent in node.parents:
                     if parent not in nodes_used_copy:
                         break
                 else:
                     g.nodes[node.id]["layer"] = layer_i
-                    layer.append((node.id, node.product, node.product.qubits))
-                    pos[node.id] = [layer_i, max_qubit - node.product.qubits[0]]
-                    nodes_used.add(node)
-                    nodes_left.remove(node)
+                    layer.append((node.id, node.get_product_str(), node.get_qubits()))
+                    pos[node.id] = [layer_i, max_qubit - node.get_qubits()[0]]
+                    nodes_used.add(node.id)
+                    nodes_left.remove(node.id)
             layer_i += 1
-            # print(layer)
+            print(layer)
         print("Number of layers", layer_i)
 
         print("Number of nodes", g.number_of_nodes())

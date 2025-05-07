@@ -11,11 +11,6 @@ import realcircuit
 import scheduler
 from utils import timer
 
-exec_path = os.path.dirname(os.path.realpath(__file__))
-print(exec_path)
-sys.path.insert(0, exec_path + "/../../quilt")
-import quilt
-
 
 def get_args():
     parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
@@ -101,7 +96,8 @@ def main():
     if args.circuit == "random":
         circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
     else:
-        circuit = realcircuit.RealCircuit(args, rng, topo_graph.num_data_qubits)
+        circuit = realcircuit.RealCircuit(args)
+        circuit.draw_graph()
 
     if "circuit" in args.plot:
         circuit.plot()
