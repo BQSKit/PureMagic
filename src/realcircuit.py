@@ -65,7 +65,6 @@ class RealCircuit(list):
                 g.add_edge(node.id, child)
 
         layers = self.get_layers()
-        print("Number of layers", len(layers))
         pos = {}
         for layer_i, layer in enumerate(layers):
             for node in layer:
@@ -96,6 +95,7 @@ class RealCircuit(list):
         # for i in range(num_rows):
         #    ax.text(0 - 2.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
         layers = self.get_layers()
+        print("Number of layers", len(layers))
         min_layer = 0
         max_layer = len(layers)
         if len(self.args.plot_circuit_range) > 0:
@@ -145,7 +145,7 @@ class RealCircuit(list):
         plt.tight_layout()
         plt.savefig(circuit_fname + ".pdf")
         plt.savefig(circuit_fname + ".png")
-        plt.show()
+        # plt.show()
 
     def plot_freqs(self):
         hist_fname = "lssp-operator-freqs"

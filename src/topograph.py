@@ -150,7 +150,7 @@ class TopoGraph(nx.Graph):
                 row = float(self.num_rows) - 0.5
             else:
                 row = -0.5
-            t = plt.text(col, row, pauli_product, color="black")
+            t = plt.text(col, row, str(pauli_product.id) + ":" + pauli_product.get_product_str(), color="black")
             t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
         nx.draw_networkx(
             self,
