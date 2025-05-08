@@ -17,7 +17,6 @@ class RealCircuit(list):
         list.__init__(self)
         self.args = args
         self.num_pauli_products = 0
-        self.counts = []
         self.num_qubits = 0
         self.load_circuit()
 
@@ -155,14 +154,17 @@ class RealCircuit(list):
         plt.rcParams.update({"font.size": 10})
         plt.xlabel("number of qubits")
         plt.ylabel("Frequency")
-        bins = range(max(self.counts) + 1)
-        _, bins, _ = plt.hist(self.counts, bins, density=True, align="right")
-        density = (
-            1.0
-            / (self.sigma_qubits * np.sqrt(2 * np.pi))
-            * np.exp(-((bins - self.mean_qubits) ** 2) / (2 * self.sigma_qubits**2))
-        )
-        plt.plot(bins, density)
+        counts = []
+        for node in self:
+            counts.append(node.qubits_used)
+        bins = range(max(counts) + 1)
+        _, bins, _ = plt.hist(counts, bins, density=True, align="right")
+        # density = (
+        #    1.0
+        #    / (self.sigma_qubits * np.sqrt(2 * np.pi))
+        #    * np.exp(-((bins - self.mean_qubits) ** 2) / (2 * self.sigma_qubits**2))
+        # )
+        # plt.plot(bins, density)
         plt.grid()
         plt.tight_layout()
         plt.savefig(hist_fname + ".pdf")

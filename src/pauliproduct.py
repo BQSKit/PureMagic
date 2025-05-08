@@ -27,6 +27,7 @@ class PauliProduct:
 
     def set(self, pp_id, quilt_pp, parents, children):
         for q, b in quilt_pp.qubit_basis.items():
+            self.qubits_used += 1
             if isinstance(b, quilt.pauli.PauliX):
                 self.operators[q] = "X"
             elif isinstance(b, quilt.pauli.PauliZ):
