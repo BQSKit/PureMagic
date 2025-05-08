@@ -106,7 +106,9 @@ def main():
     else:
         single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
         tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
-    print("Scheduled", num_scheduled, "in", tot_num_steps, "(%.2f parallel speedup)" % (float(num_scheduled) / tot_num_steps))
+    num_layers = len(circuit.get_layers())
+    print("Scheduled", num_scheduled, "in", tot_num_steps, end=" ")
+    print("(%.3f speedup, optimal %.3f)" % (float(num_scheduled) / tot_num_steps, float(num_scheduled) / num_layers))
 
 
 if __name__ == "__main__":

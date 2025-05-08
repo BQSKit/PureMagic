@@ -240,6 +240,8 @@ class Scheduler:
         self.num_ranks = num_ranks
         self.rng = rng
         self.topo_graph = topo_graph
+        self.sum_data_qubits = 0
+        self.sum_bus_qubits = 0
 
     def schedule_circuit(self, real_circuit):
         to_schedule = []
@@ -257,7 +259,8 @@ class Scheduler:
             title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule, circuit, f)
             if prev_to_schedule == to_schedule:
                 raise RuntimeError("Cannot schedule on current layout")
-            if title_str is not None and "paths" in self.args.plot and num_steps > 1100:
+            if title_str is not None and "paths" in self.args.plot and num_steps < 20:
+                # don't plot too many steps
                 fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
                 self.topo_graph.plot(fname, pp_paths, title_str)
             if pp_paths is not None:
@@ -269,8 +272,9 @@ class Scheduler:
                         if parent_id not in scheduled:
                             raise RuntimeError("pp " + str(pp.id) + " scheduled before parent " + str(parent_id))
                     scheduled.add(pp.id)
-            # if num_steps == 3:
-            #    break
+        print("Scheduled", len(real_circuit), "products:")
+        print("  data qubit fraction: %.3f" % (float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps)))
+        print("  bus qubit fraction: %.3f" % (float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)))
         return num_steps, len(scheduled)
 
     def schedule_timestep(self, to_schedule, circuit, f):
@@ -322,16 +326,16 @@ class Scheduler:
                 if len(circuit[child_id].parents) == 0:
                     next_to_schedule.append(circuit[child_id])
 
-        if self.args.verbose:
-            print("Scheduling results:")
+        print("Scheduling results:", file=f)
         frac_paths = float(len(pp_paths)) / len(to_schedule)
         frac_data_qubits = float(num_qubits_scheduled) / self.topo_graph.num_data_qubits
         frac_bus_qubits = float(num_bus_qubits_scheduled) / self.topo_graph.num_bus_qubits
-        if self.args.verbose:
-            print("  Pauli products:  %d/%d (%.2f)" % (len(pp_paths), len(to_schedule), frac_paths))
-            print("  data qubits:     %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits))
-            print("  bus qubits:     %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits))
-            print("Removed", num_dependent_nodes, "dependent nodes")
+        print("  products:    %d/%d (%.2f)" % (len(pp_paths), len(to_schedule), frac_paths), file=f)
+        print("  data qubits: %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits), file=f)
+        print("  bus qubits:  %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits), file=f)
+        # print("Removed", num_dependent_nodes, "dependent nodes", file=f)
+        self.sum_data_qubits += num_qubits_scheduled
+        self.sum_bus_qubits += num_bus_qubits_scheduled
 
         if len(pp_paths) > 0:
             title_str = self.args.path_method + " (pps %.2f, data %.2f, bus %.2f)" % (
