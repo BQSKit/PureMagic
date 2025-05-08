@@ -1,8 +1,8 @@
 #!/usr/bin/env -S python -u
 
+import sys
 import networkx as nx
 import copy
-import numpy as np
 from topograph import is_bus_node, is_data_node, is_magic_node
 
 
@@ -32,6 +32,8 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
     while len(queue):
         node = queue.pop(0)
         pauli_product_graph.add_node(node)
+        if is_data_node(root_node) and num_expected_ops == 1:
+            return pauli_product_graph
         # look for data nodes first
         for nb in topo_graph[node]:
             if nb not in visited and is_data_node(nb):
@@ -128,6 +130,8 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
                 if node not in topo_graph:
                     return None
                 terminal_nodes.append(node)
+    if is_data_node(root_node):
+        raise RuntimeError("Currently no support for PI/4 rotations with Steiner trees")
     for terminal_node in terminal_nodes[1:]:
         if not nx.has_path(topo_graph, root_node, terminal_node):
             return None
@@ -154,6 +158,16 @@ def find_best_magic_node(topo_graph, pauli_product):
                 if node not in topo_graph:
                     return None
                 terminal_nodes.append(node)
+    # if this is a pi/4 rotation, we don't need a magic node
+    if pauli_product.is_pi_over_four():
+        if len(terminal_nodes) == 1:
+            return terminal_nodes[0]
+        # find the nearest bus qubit
+        for node in terminal_nodes:
+            for nb in topo_graph[node]:
+                if is_bus_node(nb):
+                    return nb
+
     # as the magic node, choose the one that connects to all terminals with the summed shortest path
     best_path_len = None
     best_magic_node = None
@@ -243,7 +257,7 @@ class Scheduler:
             title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule, circuit, f)
             if prev_to_schedule == to_schedule:
                 raise RuntimeError("Cannot schedule on current layout")
-            if title_str is not None and "paths" in self.args.plot and num_steps <= 20:
+            if title_str is not None and "paths" in self.args.plot and num_steps > 1100:
                 fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
                 self.topo_graph.plot(fname, pp_paths, title_str)
             if pp_paths is not None:
@@ -267,6 +281,8 @@ class Scheduler:
         num_dependent_nodes = 0
         next_to_schedule = []
         for pp in to_schedule:
+            if pp.is_pi_over_four():
+                print(pp.id, "PI/4 rotation", pp, file=f)
             if working_topo_graph.number_of_nodes() == 0:
                 print("No more nodes", file=f)
                 break
