@@ -56,20 +56,16 @@ class ScheduleProcess(mp.Process):
         self.num_scheduled = mp.Value("i", 0)
         self.circuit = circuit
         self.scheduler = scheduler.Scheduler(args, rank, num_ranks, rng, topo_graph)
-        self.use_barrier = args.barrier
 
     def run(self):
-        if self.use_barrier == True:
-            self.num_steps.value = self.scheduler.schedule_circuit_barrier(self.circuit)
-        else:
-            self.num_steps.value, self.num_scheduled.value = self.scheduler.schedule_circuit(self.circuit)
+        self.num_steps.value, self.num_scheduled.value = self.scheduler.schedule_circuit_barrier(self.circuit)
 
 
 @timer
 def schedule_multiprocessing(num_ranks, rng, topo_graph, circuit):
     proc = [None] * num_ranks
     for rank in range(num_ranks):
-        proc[rank] = ScheduleProcess(0, num_ranks, rng, topo_graph, circuit)
+        proc[rank] = ScheduleProcess(rank, num_ranks, rng, topo_graph, circuit)
         proc[rank].start()
     for rank in range(num_ranks):
         proc[rank].join()

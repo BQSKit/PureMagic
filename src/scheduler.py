@@ -242,6 +242,14 @@ class Scheduler:
         self.topo_graph = topo_graph
         self.sum_data_qubits = 0
         self.sum_bus_qubits = 0
+        self.sched_file = None
+
+    def check_dependencies(self, pp, scheduled):
+        if pp.id in scheduled:
+            raise RuntimeError("pp " + str(pp.id) + " already scheduled")
+        for parent_id in pp.parents:
+            if parent_id not in scheduled:
+                raise RuntimeError("pp " + str(pp.id) + " scheduled before parent " + str(parent_id))
 
     def schedule_circuit(self, real_circuit):
         to_schedule = []
@@ -249,35 +257,35 @@ class Scheduler:
         for pp in circuit:
             if len(pp.parents) == 0:
                 to_schedule.append(pp)
-        f = open("sched.txt", "w")
+        self.sched_file = open("sched.txt", "w")
         num_steps = 0
         scheduled = set()
         while len(to_schedule) > 0:
             num_steps += 1
-            print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=f)
-            prev_to_schedule = to_schedule.copy()
-            title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule, circuit, f)
-            if prev_to_schedule == to_schedule:
+            print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=self.sched_file)
+            title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule)
+            if pp_paths is None:
                 raise RuntimeError("Cannot schedule on current layout")
+            for pp, _ in pp_paths:
+                # now check if children should be added to following to_schedule
+                for child_id in pp.children:
+                    circuit[child_id].parents.remove(pp.id)
+                    if len(circuit[child_id].parents) == 0:
+                        to_schedule.append(circuit[child_id])
             if title_str is not None and "paths" in self.args.plot and num_steps < 20:
                 # don't plot too many steps
                 fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
                 self.topo_graph.plot(fname, pp_paths, title_str)
             if pp_paths is not None:
-                # check for failed dependencies
                 for pp, _ in pp_paths:
-                    if pp.id in scheduled:
-                        raise RuntimeError("pp " + str(pp.id) + " already scheduled")
-                    for parent_id in pp.parents:
-                        if parent_id not in scheduled:
-                            raise RuntimeError("pp " + str(pp.id) + " scheduled before parent " + str(parent_id))
+                    self.check_dependencies(pp, scheduled)
                     scheduled.add(pp.id)
         print("Scheduled", len(real_circuit), "products:")
         print("  data qubit fraction: %.3f" % (float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps)))
         print("  bus qubit fraction: %.3f" % (float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)))
         return num_steps, len(scheduled)
 
-    def schedule_timestep(self, to_schedule, circuit, f):
+    def schedule_timestep(self, to_schedule):
         pp_paths = []
         working_topo_graph = copy.deepcopy(self.topo_graph)
         num_qubits_scheduled = 0
@@ -286,13 +294,13 @@ class Scheduler:
         next_to_schedule = []
         for pp in to_schedule:
             if pp.is_pi_over_four():
-                print(pp.id, "PI/4 rotation", pp, file=f)
+                print(pp.id, "PI/4 rotation", pp, file=self.sched_file)
             if working_topo_graph.number_of_nodes() == 0:
                 print("No more nodes", file=f)
                 break
             pp_graph = schedule_pauli_product(self.args, working_topo_graph, pp)
             if pp_graph == None:
-                print("* Could not schedule", pp, file=f)
+                print("* Could not schedule", pp, file=self.sched_file)
                 next_to_schedule.append(pp)
                 # now the circuit could include multiple timeteps, so we need to ensure dependencies are met
                 # if the product couldn't be scheduled, then every qubit in that product is now out of bounds so remove from
@@ -305,7 +313,7 @@ class Scheduler:
                     num_dependent_nodes += len(nodes_to_remove)
                     working_topo_graph.remove_nodes_from(nodes_to_remove)
             else:
-                print("Scheduled", pp.__str__(), "with", pp_graph.number_of_nodes(), "nodes", file=f)
+                print("Scheduled", pp.__str__(), "with", pp_graph.number_of_nodes(), "nodes", file=self.sched_file)
                 pp_paths.append((pp, pp_graph))
                 num_qubits_scheduled += pp.qubits_used
                 for node in pp_graph.nodes():
@@ -319,20 +327,19 @@ class Scheduler:
                         orphaned_nodes.append(node)
                 working_topo_graph.remove_nodes_from(orphaned_nodes)
 
-        for pp, _ in pp_paths:
-            # now check if children should be added to next to schedule
-            for child_id in pp.children:
-                circuit[child_id].parents.remove(pp.id)
-                if len(circuit[child_id].parents) == 0:
-                    next_to_schedule.append(circuit[child_id])
-
-        print("Scheduling results:", file=f)
+        print("Scheduling results:", file=self.sched_file)
         frac_paths = float(len(pp_paths)) / len(to_schedule)
         frac_data_qubits = float(num_qubits_scheduled) / self.topo_graph.num_data_qubits
         frac_bus_qubits = float(num_bus_qubits_scheduled) / self.topo_graph.num_bus_qubits
-        print("  products:    %d/%d (%.2f)" % (len(pp_paths), len(to_schedule), frac_paths), file=f)
-        print("  data qubits: %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits), file=f)
-        print("  bus qubits:  %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits), file=f)
+        print("  products:    %d/%d (%.2f)" % (len(pp_paths), len(to_schedule), frac_paths), file=self.sched_file)
+        print(
+            "  data qubits: %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits),
+            file=self.sched_file,
+        )
+        print(
+            "  bus qubits:  %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits),
+            file=self.sched_file,
+        )
         # print("Removed", num_dependent_nodes, "dependent nodes", file=f)
         self.sum_data_qubits += num_qubits_scheduled
         self.sum_bus_qubits += num_bus_qubits_scheduled
@@ -346,95 +353,23 @@ class Scheduler:
             return title_str, pp_paths, next_to_schedule
         return None, None, next_to_schedule
 
-    def schedule_rnd_circuit(self, circuit):
-        all_cycles = []
-        for cycle in circuit:
-            all_cycles.extend(cycle)
-        num_steps = 0
-        while len(all_cycles) > 0:
-            title_str, pauli_product_paths, remaining_circuit_cycle = self.schedule_cycle(all_cycles)
-            all_cycles = remaining_circuit_cycle
-            if title_str is not None and "paths" in self.args.plot:
-                fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
-                self.topo_graph.plot(fname, pauli_product_paths, title_str)
-            num_steps += 1
-        return num_steps
-
     def schedule_circuit_barrier(self, circuit):
+        layers = circuit.get_layers()
         num_steps = 0
-        for ci, circuit_cycle in enumerate(circuit):
-            if ci % self.num_ranks == self.rank:
-                remaining_circuit_cycle = circuit_cycle
-                for i in range(100):
-                    title_str, pauli_product_paths, remaining_circuit_cycle = self.schedule_cycle(circuit_cycle)
-                    if title_str is not None and "paths" in self.args.plot:
-                        fname = "lssp-topo-path-" + str(i) + "-" + str(ci) + "-" + self.args.path_method
-                        self.topo_graph.plot(fname, pauli_product_paths, title_str)
-                    circuit_cycle = remaining_circuit_cycle
-                    if len(circuit_cycle) == 0:
-                        break
-                    # now add products from the next cycle
-                if self.args.verbose:
-                    print("Scheduled full circuit cycle in", i + 1, "time steps")
-                num_steps += i + 1
-        return num_steps
-
-    def schedule_cycle(self, circuit):
-        pauli_product_paths = []
-        working_topo_graph = copy.deepcopy(self.topo_graph)
-        num_qubits_scheduled = 0
-        num_bus_qubits_scheduled = 0
-        remaining_circuit = []
-        num_dependent_nodes = 0
-        for pauli_product in circuit:
-            if working_topo_graph.number_of_nodes() == 0:
-                # print("No more nodes")
-                break
-            pauli_product_graph = schedule_pauli_product(self.args, working_topo_graph, pauli_product)
-            if pauli_product_graph == None:
-                # print("* Could not schedule Pauli product", pauli_product)
-                remaining_circuit.append(pauli_product)
-                # now the circuit could include multiple cycles, so we need to ensure dependencies are met
-                # if the product couldn't be scheduled, then every qubit in that product is now out of bounds so remove from
-                # the graph
-                nodes_to_remove = []
-                for i, operator in enumerate(pauli_product.operators):
-                    if operator != " ":
-                        nodes_to_remove.append("d" + str(i) + operator)
-                if len(nodes_to_remove) > 0:
-                    num_dependent_nodes += len(nodes_to_remove)
-                    working_topo_graph.remove_nodes_from(nodes_to_remove)
+        num_scheduled = 0
+        self.sched_file = open("sched-" + str(self.rank) + ".txt", "w")
+        for ci, layer in enumerate(layers):
+            if ci % self.num_ranks != self.rank:
                 continue
-            # print("Scheduled Pauli product", pauli_product.__str__(), "with", pauli_product_graph.number_of_nodes(), "nodes")
-            pauli_product_paths.append((pauli_product, pauli_product_graph))
-            num_qubits_scheduled += pauli_product.qubits_used
-            for node in pauli_product_graph.nodes():
-                if is_bus_node(node):
-                    num_bus_qubits_scheduled += 1
-            # now remove the Pauli product path from the graph
-            working_topo_graph.remove_nodes_from(pauli_product_graph.nodes)
-            orphaned_nodes = []
-            for node in working_topo_graph.nodes:
-                if working_topo_graph.degree(node) == 0:
-                    orphaned_nodes.append(node)
-            working_topo_graph.remove_nodes_from(orphaned_nodes)
-
-        if self.args.verbose:
-            print("Scheduling results:")
-        frac_paths = float(len(pauli_product_paths)) / len(circuit)
-        frac_data_qubits = float(num_qubits_scheduled) / self.topo_graph.num_data_qubits
-        frac_bus_qubits = float(num_bus_qubits_scheduled) / self.topo_graph.num_bus_qubits
-        if self.args.verbose:
-            print("  Pauli products:  %d/%d (%.2f)" % (len(pauli_product_paths), len(circuit), frac_paths))
-            print("  data qubits:     %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits))
-            print("  bus qubits:     %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits))
-            print("Removed", num_dependent_nodes, "dependent nodes")
-
-        if len(pauli_product_paths) > 0:
-            title_str = self.args.path_method + " (pps %.2f, data %.2f, bus %.2f)" % (
-                frac_paths,
-                frac_data_qubits,
-                frac_bus_qubits,
-            )
-            return title_str, pauli_product_paths, remaining_circuit
-        return None, None, remaining_circuit
+            while len(layer) > 0:
+                num_steps += 1
+                print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in layer], file=self.sched_file)
+                title_str, pp_paths, layer = self.schedule_timestep(layer)
+                if pp_paths is None:
+                    raise RuntimeError("Cannot schedule on current layout")
+                if title_str is not None and "paths" in self.args.plot and num_steps < 20:
+                    # don't plot too many steps
+                    fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
+                    self.topo_graph.plot(fname, pp_paths, title_str)
+                num_scheduled += len(pp_paths)
+        return num_steps, num_scheduled
