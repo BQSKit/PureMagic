@@ -239,7 +239,10 @@ class Scheduler:
         while len(to_schedule) > 0:
             num_steps += 1
             print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=f)
+            prev_to_schedule = to_schedule.copy()
             title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule, circuit, f)
+            if prev_to_schedule == to_schedule:
+                raise RuntimeError("Cannot schedule on current layout")
             if title_str is not None and "paths" in self.args.plot and num_steps <= 20:
                 fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
                 self.topo_graph.plot(fname, pp_paths, title_str)

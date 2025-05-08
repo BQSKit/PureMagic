@@ -37,6 +37,9 @@ def get_topo_dims(args):
     elif args.layout == "compact":
         # two rows per patch, plus bus rows at the top and bottom, and 2 rows for magic states
         num_rows = 2 * patch_rows + 2 + 2
+    elif args.layout == "dense":
+        # two rows per patch plus 2 rows for magic states plus one extra bus row at the bottom
+        num_rows = 2 * patch_rows + 2 + 1
     qubits_per_col = 2 * patch_rows
     num_cols = 2 * int(np.ceil(args.min_num_qubits / qubits_per_col)) + 1
     print("Layout dimensions:", num_cols, num_rows)
@@ -53,8 +56,7 @@ class TopoGraph(nx.Graph):
         if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
 
-    @timer
-    def gen_topo(self):
+    def gen_magic_columns(self):
         for col in range(self.num_cols):
             if col % 2 != 0:
                 continue
@@ -66,19 +68,20 @@ class TopoGraph(nx.Graph):
             prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
             node_label = self.add_labeled_node("m", col, self.num_rows - 1)
             self.add_edge(node_label, prev_node_label, other="")
+
+    def gen_spaced(self):
+        self.gen_magic_columns()
         qi = 0
         for col in range(self.num_cols):
             if col % 2 == 0:
                 continue
             for row in range(1, self.num_rows - 1):
-                if (self.args.layout == "spaced" and row % 3 == 1) or (
-                    self.args.layout == "compact" and row == 1 or row == self.num_rows - 2
-                ):
+                if row % 3 == 1:
                     node_label = self.add_labeled_node("b", col, row)
                     self.add_edge(node_label, get_node_label("b", col - 1, row))
                     self.add_edge(node_label, get_node_label("b", col + 1, row))
                 else:
-                    if (self.args.layout == "spaced" and row % 3 == 2) or (self.args.layout == "compact" and row % 2 == 0):
+                    if row % 3 == 2:
                         node_label1 = "d" + str(int(qi / 2)) + "X"
                         node_label2 = "d" + str(int(qi / 2) + 1) + "X"
                         other = get_node_label("b", col, row + 2)
@@ -87,11 +90,68 @@ class TopoGraph(nx.Graph):
                         node_label2 = "d" + str(int(qi / 2)) + "Z"
                         other = get_node_label("b", col, row - 2)
                     self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
-                    self.add_edge(get_node_label("b", col - 1, row), node_label1)
                     self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
+                    self.add_edge(get_node_label("b", col - 1, row), node_label1)
                     self.add_edge(get_node_label("b", col + 1, row), node_label2)
                     qi += 2
 
+    def gen_compact(self):
+        self.gen_magic_columns()
+        qi = 0
+        for col in range(self.num_cols):
+            if col % 2 == 0:
+                continue
+            for row in range(1, self.num_rows - 1):
+                if row == 1 or row == self.num_rows - 2:
+                    node_label = self.add_labeled_node("b", col, row)
+                    self.add_edge(node_label, get_node_label("b", col - 1, row))
+                    self.add_edge(node_label, get_node_label("b", col + 1, row))
+                else:
+                    if row % 2 == 0:
+                        node_label1 = "d" + str(int(qi / 2)) + "X"
+                        node_label2 = "d" + str(int(qi / 2) + 1) + "X"
+                        other = get_node_label("b", col, row + 2)
+                    else:
+                        node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
+                        node_label2 = "d" + str(int(qi / 2)) + "Z"
+                        other = get_node_label("b", col, row - 2)
+                    self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
+                    self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
+                    self.add_edge(get_node_label("b", col - 1, row), node_label1)
+                    self.add_edge(get_node_label("b", col + 1, row), node_label2)
+                    qi += 2
+
+    def gen_dense(self):
+        self.gen_magic_columns()
+        qi = 0
+        for col in range(self.num_cols):
+            if col % 2 == 0:
+                continue
+            for row in range(1, self.num_rows - 2):
+                if row % 2 != 0:
+                    node_label1 = "d" + str(int(qi / 2)) + "X"
+                    node_label2 = "d" + str(int(qi / 2) + 1) + "X"
+                else:
+                    node_label1 = "d" + str(int(qi / 2) - 1) + "Z"
+                    node_label2 = "d" + str(int(qi / 2)) + "Z"
+                self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF")
+                self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF")
+                self.add_edge(get_node_label("b", col - 1, row), node_label1)
+                self.add_edge(get_node_label("b", col + 1, row), node_label2)
+                qi += 2
+            final_row = self.num_rows - 2
+            node_label = self.add_labeled_node("b", col, final_row)
+            self.add_edge(node_label, get_node_label("b", col - 1, final_row))
+            self.add_edge(node_label, get_node_label("b", col + 1, final_row))
+
+    @timer
+    def gen_topo(self):
+        if self.args.layout == "spaced":
+            self.gen_spaced()
+        elif self.args.layout == "compact":
+            self.gen_compact()
+        elif self.args.layout == "dense":
+            self.gen_dense()
         num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
         num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
         num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
@@ -104,6 +164,7 @@ class TopoGraph(nx.Graph):
         self.num_data_qubits = num_data_qubits
         self.num_magic_qubits = num_magic_qubits
         self.num_bus_qubits = num_bus_qubits
+        self.plot("lssp-topo")
 
     def add_labeled_node(self, label, col, row):
         # node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
