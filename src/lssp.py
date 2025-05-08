@@ -35,10 +35,8 @@ def get_args():
     plot_options = ["none", "circuit", "paths", "freqs"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
     parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
-    layout_options = ["spaced", "compact"]
-    parser.add_argument(
-        "--layout", "-l", type=str, default="spaced", choices=layout_options, help="Layout, one of " + ", ".join(plot_options)
-    )
+    layout_options = ["spaced", "compact", "dense"]
+    parser.add_argument("--layout", "-l", type=str, default="spaced", choices=layout_options, help="Layout")
     parser.add_argument("--circuit", "-c", type=str, default="random", help="Circuit: random or pickle file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
