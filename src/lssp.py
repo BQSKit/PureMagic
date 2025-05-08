@@ -55,6 +55,7 @@ class ScheduleProcess(mp.Process):
     def __init__(self, rank, num_ranks, rng, topo_graph, circuit):
         mp.Process.__init__(self)
         self.num_steps = mp.Value("i", 0)
+        self.num_scheduled = mp.Value("i", 0)
         self.circuit = circuit
         self.scheduler = scheduler.Scheduler(args, rank, num_ranks, rng, topo_graph)
         self.use_barrier = args.barrier
@@ -63,7 +64,7 @@ class ScheduleProcess(mp.Process):
         if self.use_barrier == True:
             self.num_steps.value = self.scheduler.schedule_circuit_barrier(self.circuit)
         else:
-            self.num_steps.value = self.scheduler.schedule_circuit(self.circuit)
+            self.num_steps.value, self.num_scheduled.value = self.scheduler.schedule_circuit(self.circuit)
 
 
 @timer
@@ -75,9 +76,11 @@ def schedule_multiprocessing(num_ranks, rng, topo_graph, circuit):
     for rank in range(num_ranks):
         proc[rank].join()
     tot_num_steps = 0
+    tot_num_scheduled = 0
     for rank in range(num_ranks):
         tot_num_steps += proc[rank].num_steps.value
-    return tot_num_steps
+        tot_num_scheduled += proc[rank].num_scheduled.value
+    return tot_num_steps, tot_num_scheduled
 
 
 @timer
@@ -100,9 +103,12 @@ def main():
     if "freqs" in args.plot:
         circuit.plot_freqs()
 
-    # tot_num_steps = schedule_circuit(0, 1, rng, topo_graph, circuit)
-    tot_num_steps = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
-    print("Scheduled full circuit in", tot_num_steps, "(%.2f efficiency)" % (float(args.circuit_depth) / tot_num_steps))
+    if args.barrier:
+        tot_num_steps, num_scheduled = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
+    else:
+        single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
+        tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
+    print("Scheduled", num_scheduled, "in", tot_num_steps, "(%.2f parallel speedup)" % (float(num_scheduled) / tot_num_steps))
 
 
 if __name__ == "__main__":
