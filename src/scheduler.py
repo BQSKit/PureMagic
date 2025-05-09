@@ -296,7 +296,7 @@ class Scheduler:
             if pp.is_pi_over_four():
                 print(pp.id, "PI/4 rotation", pp, file=self.sched_file)
             if working_topo_graph.number_of_nodes() == 0:
-                print("No more nodes", file=f)
+                print("No more nodes", file=self.sched_file)
                 break
             pp_graph = schedule_pauli_product(self.args, working_topo_graph, pp)
             if pp_graph == None:
