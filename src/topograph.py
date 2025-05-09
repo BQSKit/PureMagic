@@ -4,6 +4,7 @@ import numpy as np
 import networkx as nx
 import math
 import matplotlib.pyplot as plt
+import random
 from utils import timer
 
 
@@ -50,8 +51,9 @@ class TopoGraph(nx.Graph):
     def __init__(self):
         nx.Graph.__init__(self)
 
-    def set_dims(self, args):
+    def set_dims(self, args, rng):
         self.args = args
+        self.rng = rng
         self.num_cols, self.num_rows = get_topo_dims(args)
         if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
@@ -144,6 +146,25 @@ class TopoGraph(nx.Graph):
             self.add_edge(node_label, get_node_label("b", col - 1, final_row))
             self.add_edge(node_label, get_node_label("b", col + 1, final_row))
 
+    def shuffle_qubits(self):
+        qubit_order = list(range(self.num_data_qubits))
+        self.rng.shuffle(qubit_order)
+        # very good for grover 5 node
+        # qubit_order = [4, 1, 0, 5, 3, 2]
+        # very bad for grover 5 node
+        # qubit_order = [1, 0, 4, 2, 5, 3]
+        print("Using qubit order:", qubit_order)
+        qubit_map = {}
+        for i, new_i in enumerate(qubit_order):
+            qubit_map["d" + str(i) + "X"] = "dd" + str(new_i) + "X"
+            qubit_map["d" + str(i) + "Z"] = "dd" + str(new_i) + "Z"
+        nx.relabel_nodes(self, qubit_map, copy=False)
+        qubit_map = {}
+        for i in range(self.num_data_qubits):
+            qubit_map["dd" + str(i) + "X"] = "d" + str(i) + "X"
+            qubit_map["dd" + str(i) + "Z"] = "d" + str(i) + "Z"
+        nx.relabel_nodes(self, qubit_map, copy=False)
+
     @timer
     def gen_topo(self):
         if self.args.layout == "spaced":
@@ -164,7 +185,8 @@ class TopoGraph(nx.Graph):
         self.num_data_qubits = num_data_qubits
         self.num_magic_qubits = num_magic_qubits
         self.num_bus_qubits = num_bus_qubits
-        self.plot("lssp-topo")
+        if self.args.rnd_order:
+            self.shuffle_qubits()
 
     def add_labeled_node(self, label, col, row):
         # node_colors = {"m": "#FFBB99", "b": "#B3FFBF", "d": "#9999FF"}
