@@ -13,10 +13,11 @@ from bqskit.passes.control import ForEachBlockPass
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/../../quilt")
 
 from quilt.measurement import PauliProductDAG
+from timeit import default_timer as timer
 
 
 def num_qubits(name: str) -> int:
-    return int(findall(r"\d+", name)[0])
+    return int(findall(r"\d+", name.split("_")[1])[0])
 
 
 def main():
@@ -35,20 +36,20 @@ def main():
                 collection_filter=lambda x: x.num_qudits == 1,
             ),
         ]
+        print("Decomposed")
+        start_t = timer()
         with Compiler() as compiler:
+            circuit.remove_all_measurements()
+            print("Removed measurements")
             circuit = compiler.compile(circuit, passes)
             circuit.unfold_all()
-
-        from timeit import default_timer as timer
-
-        start_t = timer()
-        dag = PauliProductDAG(circuit)
         elapsed_t = timer() - start_t
-        print(f"Loading time for {file_name}: {elapsed_t:.2f} s")
+        print(f"Compiled in {elapsed_t:.2f} s")
+        dag = PauliProductDAG(circuit)
+        start_t = timer()
         dag.commute_all_cliffords()
-        stop = timer()
-        elapsed_t = timer() - start_t - elapsed_t
-        print(f"Transpilation time for {file_name}: {elapsed_t:.2f}")
+        elapsed_t = timer() - start_t
+        print(f"Transpiled in {elapsed_t:.2f}")
 
         # Save the transpiled DAG
         with open(f"{file_name}.dag", "wb") as f:
