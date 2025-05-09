@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python -u
 
-import sys
+import os
 import networkx as nx
 import copy
 from pathlib import Path
@@ -263,6 +263,8 @@ class Scheduler:
         self.sched_file = open(sched_fname, "w")
         num_steps = 0
         scheduled = set()
+        path_dir = Path(self.args.circuit).stem + ".paths"
+        Path(path_dir).mkdir(exist_ok=True)
         while len(to_schedule) > 0:
             num_steps += 1
             print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=self.sched_file)
@@ -278,7 +280,9 @@ class Scheduler:
             if title_str is not None and "paths" in self.args.plot and num_steps <= 10:
                 # don't plot too many steps
                 fname_added = "." + str(num_steps) + "-" + self.args.path_method
+                os.chdir(path_dir)
                 self.topo_graph.plot(fname_added, pp_paths, title_str)
+                os.chdir("..")
             if pp_paths is not None:
                 for pp, _ in pp_paths:
                     self.check_dependencies(pp, scheduled)
