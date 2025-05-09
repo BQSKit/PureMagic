@@ -40,6 +40,7 @@ def get_args():
     parser.add_argument("--circuit", "-c", type=str, default="random", help="Circuit: random or pickle file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
+    parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument("--barrier", "-b", action="store_true", help="Use barrier after every cycle")
     args = parser.parse_args()
     if args.barrier == False:
@@ -83,11 +84,12 @@ def main():
     print("Running on", num_ranks, "cores")
     rng = np.random.default_rng(seed=args.rseed)
     topo_graph = topograph.TopoGraph()
-    topo_graph.set_dims(args)
+    topo_graph.set_dims(args, rng)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
-    # topo_graph.plot("lssp-topo")
+    topo_graph.plot("lssp-topo")
     if args.circuit == "random":
+        raise RuntimeError("Random circuits are not currently supported")
         circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
     else:
         circuit = realcircuit.RealCircuit(args)
@@ -102,9 +104,11 @@ def main():
     else:
         single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
         tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
+    speedup = float(num_scheduled) / tot_num_steps
+    print(f"Scheduled {num_scheduled} in {tot_num_steps} time steps ({speedup:.3f} speedup)")
     num_layers = len(circuit.get_layers())
-    print("Scheduled", num_scheduled, "in", tot_num_steps, end=" ")
-    print("(%.3f speedup, optimal %.3f)" % (float(num_scheduled) / tot_num_steps, float(num_scheduled) / num_layers))
+    speedup = float(num_scheduled) / num_layers
+    print(f"Optimal time steps {num_layers} ({speedup:.3f} speedup)")
 
 
 if __name__ == "__main__":
