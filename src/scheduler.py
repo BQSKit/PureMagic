@@ -3,6 +3,7 @@
 import sys
 import networkx as nx
 import copy
+from pathlib import Path
 from topograph import is_bus_node, is_data_node, is_magic_node
 
 
@@ -257,7 +258,9 @@ class Scheduler:
         for pp in circuit:
             if len(pp.parents) == 0:
                 to_schedule.append(pp)
-        self.sched_file = open("sched.txt", "w")
+
+        sched_fname = Path(self.args.circuit).stem + ".sched"
+        self.sched_file = open(sched_fname, "w")
         num_steps = 0
         scheduled = set()
         while len(to_schedule) > 0:
@@ -274,8 +277,8 @@ class Scheduler:
                         to_schedule.append(circuit[child_id])
             if title_str is not None and "paths" in self.args.plot and num_steps < 20:
                 # don't plot too many steps
-                fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
-                self.topo_graph.plot(fname, pp_paths, title_str)
+                fname_added = "." + str(num_steps) + "-" + self.args.path_method
+                self.topo_graph.plot(fname_added, pp_paths, title_str)
             if pp_paths is not None:
                 for pp, _ in pp_paths:
                     self.check_dependencies(pp, scheduled)

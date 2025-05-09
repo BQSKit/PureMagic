@@ -3,6 +3,7 @@ import os
 import pickle
 from re import findall
 import argparse
+from pathlib import Path
 from bqskit.compiler import Compiler
 from bqskit.ir.circuit import Circuit
 from bqskit.passes import GroupSingleQuditGatePass
@@ -52,7 +53,8 @@ def main():
         print(f"Transpiled in {elapsed_t:.2f}")
 
         # Save the transpiled DAG
-        with open(f"{file_name}.dag", "wb") as f:
+        out_fname = Path(file_name).stem + ".dag"
+        with open(f"{out_fname}", "wb") as f:
             pickle.dump(dag, f)
 
 

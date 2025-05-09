@@ -4,6 +4,7 @@ import numpy as np
 import networkx as nx
 import math
 import matplotlib.pyplot as plt
+from pathlib import Path
 from utils import timer
 
 
@@ -195,7 +196,8 @@ class TopoGraph(nx.Graph):
         return node_label
 
     @timer
-    def plot(self, topo_fname, pauli_product_paths=[], title_str=""):
+    def plot(self, fname_added="", pauli_product_paths=[], title_str=""):
+        topo_fname = Path(self.args.circuit).stem + ".topo" + fname_added
         print("Plotting topology to", topo_fname, title_str, "...")
         # print("Generated topology with", num_qubits, "data qubits and ")
         plt.close()

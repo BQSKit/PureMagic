@@ -8,6 +8,7 @@ import matplotlib.patches as patches
 import math
 import numpy as np
 import pickle
+from pathlib import Path
 from utils import timer
 import pauliproduct
 
@@ -82,7 +83,7 @@ class RealCircuit(list):
 
     @timer
     def plot(self):
-        circuit_fname = "lssp-circuit"
+        circuit_fname = Path(self.args.circuit).stem + ".circuit"
         print("Drawing circuit...", circuit_fname)
 
         plt.close()
@@ -148,7 +149,7 @@ class RealCircuit(list):
         # plt.show()
 
     def plot_freqs(self):
-        hist_fname = "lssp-operator-freqs"
+        hist_fname = Path(self.args.circuit).stem + ".freqs"
         print("Plotting circuit histogram to", hist_fname, "...")
         plt.close()
         plt.rcParams.update({"font.size": 10})
