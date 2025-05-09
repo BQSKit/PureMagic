@@ -108,17 +108,19 @@ class RealCircuit(list):
             if col == max_layer:
                 break
             for pauli_product in layer:
+                show_product_ids = False
                 for start_pos in range(num_rows):
                     if pauli_product.operators[start_pos] != " ":
-                        ax.text(
-                            col,
-                            start_pos - 0.15,
-                            pauli_product.id,
-                            va="center",
-                            fontsize=fontsize * 0.8,
-                            stretch="condensed",
-                            rotation="vertical",
-                        )
+                        if show_product_ids:
+                            ax.text(
+                                col,
+                                start_pos - 0.15,
+                                pauli_product.id,
+                                va="center",
+                                fontsize=fontsize * 0.8,
+                                stretch="condensed",
+                                rotation="vertical",
+                            )
                         break
                 for i in range(start_pos, num_rows):
                     if pauli_product.operators[i] != " ":
