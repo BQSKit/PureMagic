@@ -32,7 +32,7 @@ def get_args():
         help="Method to use for finding paths: " + ", ".join(path_methods),
     )
     parser.add_argument("--threads", "-t", type=int, default=0, help="Number of processes for multiprocessing")
-    plot_options = ["none", "circuit", "paths", "freqs"]
+    plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
     parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
     layout_options = ["spaced", "compact", "dense"]
@@ -87,7 +87,8 @@ def main():
     topo_graph.set_dims(args, rng)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
-    topo_graph.plot(".topo")
+    if args.plot == "topo":
+        topo_graph.plot(".topo")
     if args.circuit == "random":
         raise RuntimeError("Random circuits are not currently supported")
         circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)

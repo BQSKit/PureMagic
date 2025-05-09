@@ -92,7 +92,7 @@ class RealCircuit(list):
         num_rows = self.num_qubits
         # scale the fontsize
         fs_slope = 10.0 / (56.0 - 4.0)
-        fontsize = int(np.ceil(16.0 - (num_rows - 4.0) * fs_slope))
+        fontsize = max(int(np.ceil(16.0 - (num_rows - 4.0) * fs_slope)), 6)
         # for i in range(num_rows):
         #    ax.text(0 - 2.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
         layers = self.get_layers()
@@ -128,7 +128,8 @@ class RealCircuit(list):
                 for i in range(start_pos, end_pos + 1):
                     if pauli_product.operators[i] == " ":
                         continue
-                    ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
+                    if len(layers) < 100:
+                        ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
                 rect_height = end_pos - start_pos
                 top_shift = 0.11 * math.sqrt(num_rows)
                 height_shift = 0.08 * math.sqrt(num_rows) + top_shift
@@ -137,8 +138,10 @@ class RealCircuit(list):
                         (col - 0.1, start_pos - top_shift),
                         0.8,
                         rect_height + height_shift,
-                        edgecolor="black",
-                        facecolor="#ffff99" if pauli_product.is_pi_over_four() else "#99ff99",
+                        # edgecolor="black",
+                        lw=0.2,
+                        edgecolor="none",
+                        facecolor="#cccc22" if pauli_product.is_pi_over_four() else "#22ff22",
                     )
                 )
         plt.xlim(min_layer, max_layer)
