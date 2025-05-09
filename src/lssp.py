@@ -87,7 +87,7 @@ def main():
     topo_graph.set_dims(args, rng)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
-    topo_graph.plot("lssp-topo")
+    topo_graph.plot(".topo")
     if args.circuit == "random":
         raise RuntimeError("Random circuits are not currently supported")
         circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
