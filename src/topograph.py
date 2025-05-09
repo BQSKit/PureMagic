@@ -197,7 +197,7 @@ class TopoGraph(nx.Graph):
 
     @timer
     def plot(self, fname_added="", pauli_product_paths=[], title_str=""):
-        topo_fname = Path(self.args.circuit).stem + ".topo" + fname_added
+        topo_fname = Path(self.args.circuit).stem + fname_added
         print("Plotting topology to", topo_fname, title_str, "...")
         # print("Generated topology with", num_qubits, "data qubits and ")
         plt.close()
@@ -255,4 +255,4 @@ class TopoGraph(nx.Graph):
         plt.title(title_str).set_fontsize(6 * math.sqrt(self.num_rows))
         plt.tight_layout()
         plt.savefig(topo_fname + ".pdf")
-        plt.savefig(topo_fname + ".png")
+        # plt.savefig(topo_fname + ".png")

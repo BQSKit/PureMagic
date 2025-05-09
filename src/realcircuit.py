@@ -145,7 +145,7 @@ class RealCircuit(list):
         plt.ylabel("Qubits")
         plt.tight_layout()
         plt.savefig(circuit_fname + ".pdf")
-        plt.savefig(circuit_fname + ".png")
+        # plt.savefig(circuit_fname + ".png")
         # plt.show()
 
     def plot_freqs(self):
@@ -169,4 +169,4 @@ class RealCircuit(list):
         plt.grid()
         plt.tight_layout()
         plt.savefig(hist_fname + ".pdf")
-        plt.savefig(hist_fname + ".png")
+        # plt.savefig(hist_fname + ".png")

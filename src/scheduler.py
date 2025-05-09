@@ -275,7 +275,7 @@ class Scheduler:
                     circuit[child_id].parents.remove(pp.id)
                     if len(circuit[child_id].parents) == 0:
                         to_schedule.append(circuit[child_id])
-            if title_str is not None and "paths" in self.args.plot and num_steps < 20:
+            if title_str is not None and "paths" in self.args.plot and num_steps <= 10:
                 # don't plot too many steps
                 fname_added = "." + str(num_steps) + "-" + self.args.path_method
                 self.topo_graph.plot(fname_added, pp_paths, title_str)
