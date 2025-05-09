@@ -13,16 +13,16 @@ from utils import timer
 def get_args():
     parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
     parser.add_argument("--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits")
-    parser.add_argument(
-        "--qubits-per-pauli-product",
-        "-q",
-        type=float,
-        default=0.1,
-        help="Mean fraction data qubits per Pauli product (normal distribution)",
-    )
-    parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
+    # parser.add_argument(
+    #    "--qubits-per-pauli-product",
+    #    "-q",
+    #    type=float,
+    #    default=0.1,
+    #    help="Mean fraction data qubits per Pauli product (normal distribution)",
+    # )
+    # parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
-    parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
+    # parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
     path_methods = ["steiner", "bfs"]
     parser.add_argument(
         "--path-method",
