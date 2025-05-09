@@ -99,8 +99,8 @@ class RealCircuit(list):
         print("Number of layers", len(layers))
         min_layer = 0
         max_layer = len(layers)
-        if len(self.args.plot_circuit_range) > 0:
-            min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
+        # if len(self.args.plot_circuit_range) > 0:
+        #    min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
 
         for col, layer in enumerate(layers):
             if col < min_layer:

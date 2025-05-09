@@ -22,14 +22,13 @@ def get_args():
         help="Method to use for finding paths: " + ", ".join(path_methods),
     )
     parser.add_argument("--threads", "-t", type=int, default=0, help="Number of processes for multiprocessing")
+    parser.add_argument("--bus-ratio", "-s", type=int, default=1, help="Ratio of double qubit rows to bus rows")
     plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
-    parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
-    layout_options = ["spaced", "compact", "dense"]
-    parser.add_argument("--layout", "-l", type=str, default="spaced", choices=layout_options, help="Layout")
+    # parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
     parser.add_argument("--circuit", "-c", type=str, required=True, default="None", help="Circuit pickle file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
+    # parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument("--barrier", "-b", action="store_true", help="Use barrier after every cycle")
     args = parser.parse_args()
