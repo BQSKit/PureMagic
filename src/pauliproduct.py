@@ -11,19 +11,11 @@ import quilt
 class PauliProduct:
     def __init__(self, num_qubits):
         self.operators = [" "] * num_qubits
-        self.start_qubit = 0
         self.qubits_used = 0
         self.parents = set()
         self.children = set()
         self.angle = 0
         self.id = -1
-
-    def set_rnd(self, rng, pauli_product_qubits, start_qubit):
-        self.basis_options = ["X", "Z", "Y"]
-        self.start_qubit = start_qubit
-        self.qubits_used = pauli_product_qubits
-        for i in range(start_qubit, start_qubit + pauli_product_qubits):
-            self.operators[i] = self.basis_options[int(np.floor(rng.uniform(0, len(self.basis_options))))]
 
     def set(self, pp_id, quilt_pp, parents, children):
         for q, b in quilt_pp.qubit_basis.items():

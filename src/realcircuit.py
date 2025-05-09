@@ -160,17 +160,12 @@ class RealCircuit(list):
         plt.rcParams.update({"font.size": 10})
         plt.xlabel("number of qubits")
         plt.ylabel("Frequency")
+        # plt.yscale("log")
         counts = []
         for node in self:
             counts.append(node.qubits_used)
         bins = range(max(counts) + 1)
-        _, bins, _ = plt.hist(counts, bins, density=True, align="right")
-        # density = (
-        #    1.0
-        #    / (self.sigma_qubits * np.sqrt(2 * np.pi))
-        #    * np.exp(-((bins - self.mean_qubits) ** 2) / (2 * self.sigma_qubits**2))
-        # )
-        # plt.plot(bins, density)
+        _, bins, _ = plt.hist(counts, bins, density=True, align="left")
         plt.grid()
         plt.tight_layout()
         plt.savefig(hist_fname + ".pdf")
