@@ -4,7 +4,6 @@ import numpy as np
 import argparse
 import multiprocessing as mp
 import topograph
-import rndcircuit
 import realcircuit
 import scheduler
 from utils import timer
@@ -13,16 +12,7 @@ from utils import timer
 def get_args():
     parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
     parser.add_argument("--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits")
-    # parser.add_argument(
-    #    "--qubits-per-pauli-product",
-    #    "-q",
-    #    type=float,
-    #    default=0.1,
-    #    help="Mean fraction data qubits per Pauli product (normal distribution)",
-    # )
-    # parser.add_argument("--circuit-depth", "-d", type=int, default=1, help="Depth of the circuit")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
-    # parser.add_argument("--gap-prob", "-g", type=float, default=0.5, help="Probability of a gap in the circuit at a qubit")
     path_methods = ["steiner", "bfs"]
     parser.add_argument(
         "--path-method",
@@ -37,7 +27,7 @@ def get_args():
     parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
     layout_options = ["spaced", "compact", "dense"]
     parser.add_argument("--layout", "-l", type=str, default="spaced", choices=layout_options, help="Layout")
-    parser.add_argument("--circuit", "-c", type=str, default="random", help="Circuit: random or pickle file name")
+    parser.add_argument("--circuit", "-c", type=str, required=True, default="None", help="Circuit pickle file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
@@ -87,19 +77,13 @@ def main():
     topo_graph.set_dims(args, rng)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
-    if args.plot == "topo":
+    if "topo" in args.plot:
         topo_graph.plot(".topo")
-    if args.circuit == "random":
-        raise RuntimeError("Random circuits are not currently supported")
-        circuit = rndcircuit.RndCircuit(args, rng, topo_graph.num_data_qubits)
-    else:
-        circuit = realcircuit.RealCircuit(args)
-
+    circuit = realcircuit.RealCircuit(args)
     if "circuit" in args.plot:
         circuit.plot()
     if "freqs" in args.plot:
         circuit.plot_freqs()
-
     if args.barrier:
         tot_num_steps, num_scheduled = schedule_multiprocessing(num_ranks, rng, topo_graph, circuit)
     else:
