@@ -35,7 +35,10 @@ class TopoGraph(nx.Graph):
         sq_dim = int(np.floor(np.sqrt(self.args.min_num_qubits)))
         patch_rows = int(sq_dim / 2) + sq_dim % 2
         qubits_per_col = 2 * patch_rows
-        num_cols = 2 * int(np.ceil(self.args.min_num_qubits / qubits_per_col)) + 1
+        num_data_cols = int(np.ceil(self.args.min_num_qubits / qubits_per_col))
+        num_cols = 2 * num_data_cols + 1
+        if self.args.double_bus:
+            num_cols += num_data_cols - 1
         # 2 rows for magic, 1 always for bus, 2 per patch row, rows for bus qubits
         num_rows = 2 + 1 + 2 * patch_rows + int(patch_rows / self.args.bus_ratio)
         print("Layout dimensions:", num_cols, num_rows)
@@ -50,13 +53,15 @@ class TopoGraph(nx.Graph):
 
     def gen_magic_columns(self):
         for col in range(self.num_cols):
-            if col % 2 != 0:
+            if (self.args.double_bus and col % 3 == 1) or (not self.args.double_bus and col % 2 == 1):
                 continue
             node_label = self.add_labeled_node("m", col, 0)
             self.add_edge(node_label, get_node_label("b", col, 1))
             for row in range(1, self.num_rows - 2):
                 node_label = self.add_labeled_node("b", col, row)
                 self.add_edge(node_label, get_node_label("b", col, row + 1))
+                if self.args.double_bus and col % 3 == 0 and col > 0:
+                    self.add_edge(node_label, get_node_label("b", col - 1, row))
             prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
             node_label = self.add_labeled_node("m", col, self.num_rows - 1)
             self.add_edge(node_label, prev_node_label, other="")
@@ -100,9 +105,8 @@ class TopoGraph(nx.Graph):
         self.gen_magic_columns()
         qi = 0
         spacing = self.args.bus_ratio * 2 + 1
-        print("spacing", spacing)
-        for col in range(self.num_cols):
-            if col % 2 == 0:
+        for col in range(1, self.num_cols, 1):
+            if (self.args.double_bus and col % 3 != 1) or (not self.args.double_bus and col % 2 != 1):
                 continue
             bus_rows = 0
             for row in range(1, self.num_rows - 1):
