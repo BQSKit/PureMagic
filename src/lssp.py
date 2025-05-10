@@ -23,6 +23,7 @@ def get_args():
     )
     parser.add_argument("--threads", "-t", type=int, default=0, help="Number of processes for multiprocessing")
     parser.add_argument("--bus-ratio", "-s", type=int, default=1, help="Ratio of double qubit rows to bus rows")
+    parser.add_argument("--double-bus", action="store_true", help="Double columns for bus qubits")
     plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
     # parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
