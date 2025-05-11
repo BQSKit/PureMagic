@@ -75,6 +75,7 @@ def main():
     rng = np.random.default_rng(seed=args.rseed)
     topo_graph = topograph.TopoGraph()
     topo_graph.set_dims(args, rng)
+    print("Layout dimensions:", topo_graph.num_cols, topo_graph.num_rows)
     if topo_graph.num_data_qubits != args.min_num_qubits:
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
     if "topo" in args.plot:
@@ -90,10 +91,16 @@ def main():
         single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
         tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
     speedup = float(num_scheduled) / tot_num_steps
-    print(f"Scheduled {num_scheduled} in {tot_num_steps} time steps ({speedup:.3f} speedup)")
+    tot_qubits = topo_graph.num_bus_qubits + topo_graph.num_data_qubits + topo_graph.num_magic_qubits
+    qubit_cost = tot_qubits * tot_num_steps
+    print(f"Scheduled {num_scheduled} in {tot_num_steps} time steps ({speedup:.3f} speedup) qubit cost {qubit_cost}")
     num_layers = len(circuit.get_layers())
     speedup = float(num_scheduled) / num_layers
     print(f"Optimal time steps {num_layers} ({speedup:.3f} speedup)")
+    opt_cols, opt_rows = topo_graph.get_topo_dims(1000, False)
+    opt_qubit_cost = num_layers * (opt_cols * opt_rows - int(opt_cols / 2) * 2)
+    efficiency = float(opt_qubit_cost) / qubit_cost
+    print(f"Optimal qubit cost {opt_qubit_cost}, efficiency {efficiency:.3f}")
 
 
 if __name__ == "__main__":
