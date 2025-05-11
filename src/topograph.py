@@ -31,23 +31,22 @@ class TopoGraph(nx.Graph):
     def __init__(self):
         nx.Graph.__init__(self)
 
-    def get_topo_dims(self):
+    def get_topo_dims(self, bus_ratio, double_bus):
         sq_dim = int(np.floor(np.sqrt(self.args.min_num_qubits)))
         patch_rows = int(sq_dim / 2) + sq_dim % 2
         qubits_per_col = 2 * patch_rows
         num_data_cols = int(np.ceil(self.args.min_num_qubits / qubits_per_col))
         num_cols = 2 * num_data_cols + 1
-        if self.args.double_bus:
+        if double_bus:
             num_cols += num_data_cols - 1
         # 2 rows for magic, 1 always for bus, 2 per patch row, rows for bus qubits
-        num_rows = 2 + 1 + 2 * patch_rows + int(patch_rows / self.args.bus_ratio)
-        print("Layout dimensions:", num_cols, num_rows)
+        num_rows = 2 + 1 + 2 * patch_rows + int(patch_rows / bus_ratio)
         return num_cols, num_rows
 
     def set_dims(self, args, rng):
         self.args = args
         self.rng = rng
-        self.num_cols, self.num_rows = self.get_topo_dims()
+        self.num_cols, self.num_rows = self.get_topo_dims(args.bus_ratio, args.double_bus)
         if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
 
@@ -88,6 +87,8 @@ class TopoGraph(nx.Graph):
         # qubit_order = [4, 1, 0, 5, 3, 2]
         # very bad for grover 5 node
         # qubit_order = [1, 0, 4, 2, 5, 3]
+        # qubit_order = list(range(0, self.num_data_qubits, 2))
+        # qubit_order.extend(list(range(1, self.num_data_qubits, 2)))
         print("Using qubit order:", qubit_order)
         qubit_map = {}
         for i, new_i in enumerate(qubit_order):
