@@ -69,6 +69,12 @@ class TopoGraph(nx.Graph):
         node_label = self.add_labeled_node("b", col, row)
         self.add_edge(node_label, get_node_label("b", col - 1, row))
         self.add_edge(node_label, get_node_label("b", col + 1, row))
+        # if col == 1:
+        #    node_label = self.add_labeled_node("m", -1, row)
+        #    self.add_edge(node_label, get_node_label("b", 0, row))
+        # if col == self.num_cols - 1:
+        #    node_label = self.add_labeled_node("m", self.num_cols, row)
+        #    self.add_edge(node_label, get_node_label("b", self.num_cols - 1, row))
 
     def add_data_row(self, qi, col, row, op):
         q = int(qi / 2) if op == "X" else int(qi / 2) - 1
