@@ -34,7 +34,8 @@ class PauliProduct:
         self.id = pp_id
 
     def is_pi_over_four(self):
-        return self.angle.numerator == 1 and self.angle.denominator == 4
+        return self.angle.is_clifford()
+        # return self.angle.numerator == 1 and self.angle.denominator == 4
 
     def get_product_str(self):
         s = ""

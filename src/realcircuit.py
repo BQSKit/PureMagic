@@ -148,9 +148,10 @@ class RealCircuit(list):
         plt.ylim(num_rows - 0.5, -0.5)
         plt.xlabel("Time Steps")
         plt.ylabel("Qubits")
+        plt.title(Path(self.args.circuit).stem)
         plt.tight_layout()
         plt.savefig(circuit_fname + ".pdf")
-        # plt.savefig(circuit_fname + ".png")
+        plt.savefig(circuit_fname + ".png")
         # plt.show()
 
     def plot_freqs(self):
