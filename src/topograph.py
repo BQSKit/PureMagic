@@ -1,7 +1,11 @@
 #!/usr/bin/env -S python -u
 
 import numpy as np
-import networkx as nx
+import warnings
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="networkx backend defined more than once")
+    import networkx as nx
 import math
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -143,6 +147,8 @@ class TopoGraph(nx.Graph):
         node_colors = {"m": "#FFBB99", "b": "#cccccc", "d": "#9999FF"}
         node_label = get_node_label(label, col, row)
         self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
+        if is_magic_node(node_label):
+            self.nodes[node_label]["busy_count"] = 0
         return node_label
 
     @timer
@@ -178,14 +184,15 @@ class TopoGraph(nx.Graph):
                     node_line_widths[ni] = 3
                     if is_magic_node(node):
                         root_node = node
-            col, row = root_node[1:].split("-")
-            col = float(col) - 0.2
-            if row == "0":
-                row = float(self.num_rows) - 0.5
-            else:
-                row = -0.5
-            t = plt.text(col, row, str(pauli_product.id) + ":" + pauli_product.get_product_str(), color="black")
-            t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
+            if root_node != None:
+                col, row = root_node[1:].split("-")
+                col = float(col) - 0.2
+                if row == "0":
+                    row = float(self.num_rows) - 0.5
+                else:
+                    row = -0.5
+                t = plt.text(col, row, str(pauli_product.id) + ":" + pauli_product.get_product_str(), color="black")
+                t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
         nx.draw_networkx(
             self,
             pos=node_pos,
@@ -204,5 +211,5 @@ class TopoGraph(nx.Graph):
         plt.box(False)
         plt.title(title_str).set_fontsize(6 * math.sqrt(self.num_rows))
         plt.tight_layout()
-        plt.savefig(topo_fname + ".pdf")
-        # plt.savefig(topo_fname + ".png")
+        # plt.savefig(topo_fname + ".pdf")
+        plt.savefig(topo_fname + ".png")
