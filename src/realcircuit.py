@@ -2,7 +2,11 @@
 
 import os
 import sys
-import networkx as nx
+import warnings
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="networkx backend defined more than once")
+    import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import math

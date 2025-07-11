@@ -32,6 +32,7 @@ def get_args():
     # parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument("--barrier", "-b", action="store_true", help="Use barrier after every cycle")
+    parser.add_argument("--magic-steps", "-m", type=int, default=1, help="Number of timesteps until a magic state is ready")
     args = parser.parse_args()
     if args.barrier == False:
         args.threads = 1

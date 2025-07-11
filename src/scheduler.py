@@ -1,9 +1,14 @@
 #!/usr/bin/env -S python -u
 
 import os
-import networkx as nx
 import copy
 from pathlib import Path
+import warnings
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="networkx backend defined more than once")
+    import networkx as nx
+
 from topograph import is_bus_node, is_data_node, is_magic_node
 
 
@@ -146,7 +151,8 @@ def find_best_magic_node(topo_graph, pauli_product):
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
-            magic_nodes.append(node)
+            if topo_graph.nodes[node]["busy_count"] == 0:
+                magic_nodes.append(node)
     if len(magic_nodes) == 0:
         # print("Could not find starting node for Pauli product", pauli_product.__str__())
         return None
@@ -159,31 +165,36 @@ def find_best_magic_node(topo_graph, pauli_product):
                 if node not in topo_graph:
                     return None
                 terminal_nodes.append(node)
-    # if this is a pi/4 rotation, we don't need a magic node
+    starting_nodes = []
     if pauli_product.is_pi_over_four():
+        # if this is a pi/4 rotation, we don't need a magic node so the starting nodes are bus qubits
         if len(terminal_nodes) == 1:
             return terminal_nodes[0]
+        candidates = set()
         # find the nearest bus qubit
         for node in terminal_nodes:
             for nb in topo_graph[node]:
                 if is_bus_node(nb):
-                    return nb
+                    candidates.add(nb)
+        starting_nodes = list(candidates)
+    else:
+        starting_nodes = magic_nodes
 
     # as the magic node, choose the one that connects to all terminals with the summed shortest path
     best_path_len = None
-    best_magic_node = None
-    for magic_node in magic_nodes:
+    best_start_node = None
+    for start_node in starting_nodes:
         try:
             sum_path_len = 0.0
             for terminal_node in terminal_nodes:
-                sum_path_len += nx.shortest_path_length(topo_graph, magic_node, terminal_node)
+                sum_path_len += nx.shortest_path_length(topo_graph, start_node, terminal_node)
             if best_path_len == None or sum_path_len < best_path_len:
                 best_path_len = sum_path_len
-                best_magic_node = magic_node
+                best_start_node = start_node
         except nx.NetworkXNoPath:
             # path not found - can't use this magic node
             continue
-    return best_magic_node
+    return best_start_node
 
 
 def add_double_edges(topo_graph, pauli_product):
@@ -268,14 +279,19 @@ class Scheduler:
             print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=self.sched_file)
             title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule)
             if pp_paths is None:
-                raise RuntimeError("Cannot schedule on current layout")
+                for node in self.topo_graph.nodes:
+                    if self.topo_graph.nodes[node]["busy_count"] > 0:
+                        break
+                else:
+                    raise RuntimeError("Cannot schedule on current layout")
+                continue
             for pp, _ in pp_paths:
                 # now check if children should be added to following to_schedule
                 for child_id in pp.children:
                     circuit[child_id].parents.remove(pp.id)
                     if len(circuit[child_id].parents) == 0:
                         to_schedule.append(circuit[child_id])
-            if title_str is not None and "paths" in self.args.plot and num_steps <= 10:
+            if title_str is not None and "paths" in self.args.plot and num_steps > 0 and num_steps < 30:
                 # don't plot too many steps
                 fname_added = "." + str(num_steps) + "-" + self.args.path_method
                 os.chdir(path_dir)
@@ -291,6 +307,9 @@ class Scheduler:
         return num_steps, len(scheduled)
 
     def schedule_timestep(self, to_schedule):
+        for node in self.topo_graph.nodes:
+            if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
+                self.topo_graph.nodes[node]["busy_count"] -= 1
         pp_paths = []
         working_topo_graph = copy.deepcopy(self.topo_graph)
         num_qubits_scheduled = 0
@@ -324,6 +343,9 @@ class Scheduler:
                 for node in pp_graph.nodes():
                     if is_bus_node(node):
                         num_bus_qubits_scheduled += 1
+                    if is_magic_node(node):
+                        self.topo_graph.nodes[node]["busy_count"] = self.args.magic_steps
+
                 # now remove the Pauli product path from the graph
                 working_topo_graph.remove_nodes_from(pp_graph.nodes)
                 orphaned_nodes = []
