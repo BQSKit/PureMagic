@@ -134,15 +134,27 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
             for op in ops:
                 node = "d" + str(oi) + op
                 if node not in topo_graph:
+                    if pauli_product.is_pi_over_four():
+                        print(f"node {node} not in topo graph for pp {pauli_product.get_product_str()}")
                     return None
-                terminal_nodes.append(node)
-    if is_data_node(root_node):
-        raise RuntimeError("Currently no support for PI/4 rotations with Steiner trees")
+                if node not in terminal_nodes:
+                    terminal_nodes.append(node)
+    if len(terminal_nodes) == 1:
+        g = nx.Graph()
+        g.add_node(terminal_nodes[0])
+        return g
+
     for terminal_node in terminal_nodes[1:]:
         if not nx.has_path(topo_graph, root_node, terminal_node):
+            if pauli_product.is_pi_over_four():
+                print(
+                    f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
+                )
             return None
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes)
     if not all([node in g for node in terminal_nodes]):
+        if pauli_product.is_pi_over_four():
+            print(f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}")
         return None
     return g
 
@@ -280,7 +292,7 @@ class Scheduler:
             title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule)
             if pp_paths is None:
                 for node in self.topo_graph.nodes:
-                    if self.topo_graph.nodes[node]["busy_count"] > 0:
+                    if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
                         break
                 else:
                     raise RuntimeError("Cannot schedule on current layout")
