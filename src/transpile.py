@@ -47,6 +47,9 @@ def main():
         elapsed_t = timer() - start_t
         print(f"Compiled in {elapsed_t:.2f} s")
         dag = PauliProductDAG(circuit)
+        dag_fname = Path(file_name).stem + ".dag.txt"
+        print("Printing DAG to", dag_fname)
+        dag.print(dag_fname)
         start_t = timer()
         dag.commute_all_cliffords()
         elapsed_t = timer() - start_t

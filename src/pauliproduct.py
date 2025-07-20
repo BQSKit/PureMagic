@@ -35,13 +35,12 @@ class PauliProduct:
 
     def is_pi_over_four(self):
         return self.angle.is_clifford()
-        # return self.angle.numerator == 1 and self.angle.denominator == 4
 
     def get_product_str(self):
         s = ""
         for i in range(len(self.operators)):
             if self.operators[i] != " ":
-                s += str(i) + self.operators[i] + " "
+                s += str(i) + self.operators[i]
         return s.strip()
 
     def get_qubits(self):
