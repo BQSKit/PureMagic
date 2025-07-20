@@ -87,6 +87,7 @@ class RealCircuit(list):
 
     @timer
     def plot(self):
+        plt.rcParams["font.size"] = 20
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
         print("Drawing circuit...", circuit_fname)
 
