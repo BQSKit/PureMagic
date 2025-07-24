@@ -20,6 +20,12 @@
 
 using namespace std;
 
+#if 1
+#define DBG cout
+#else
+#define DBG 0 && cout
+#endif
+
 void signal_handler(int signal) {
   void* array[10];
   size_t size;
@@ -51,13 +57,54 @@ struct PairHash {
 };
 
 ostream& operator<<(ostream& os, const vector<int>& v) {
-  os << "{";
+  os << "[";
   for (int i = 0; i < v.size(); i++) {
     os << v[i];
     if (i < v.size() - 1) { os << ", "; }
   }
+  os << "]";
+  return os;
+}
+
+ostream& operator<<(ostream& os, const set<int>& data) {
+  os << "[";
+  int i = 0;
+  for (auto x : data) {
+    os << x;
+    if (i < data.size() - 1) { os << ", "; }
+    i++;
+  }
+  os << "]";
+  return os;
+}
+
+ostream& operator<<(ostream& os, const unordered_set<int>& data) {
+  os << "[";
+  int i = 0;
+  for (auto x : data) {
+    os << x;
+    if (i < data.size() - 1) { os << ", "; }
+    i++;
+  }
+  os << "]";
+  return os;
+}
+
+ostream& operator<<(ostream& os, const unordered_map<int, int>& data) {
+  os << "{";
+  int i = 0;
+  for (auto [k, v] : data) {
+    os << k << ": " << v;
+    if (i < data.size() - 1) { os << ", "; }
+    i++;
+  }
   os << "}";
   return os;
+}
+
+template <class T>
+static bool contains(vector<T> const& v, T const& x) {
+  return find(v.begin(), v.end(), x) != v.end();
 }
 
 static bool basis_commutes_with(int b1, int b2) {
@@ -74,6 +121,7 @@ const static unordered_map<pair<char, char>, pair<char, int>, PairHash> TERM_MUL
         {{'X', 'X'}, {'I', 0}}, {{'X', 'I'}, {'X', 0}}, {{'X', 'Y'}, {'Z', 1}}, {{'X', 'Z'}, {'Y', 3}},  // X
         {{'Y', 'Y'}, {'I', 0}}, {{'Y', 'X'}, {'Z', 3}}, {{'Y', 'I'}, {'Y', 0}}, {{'Y', 'Z'}, {'X', 1}},  // Y
         {{'Z', 'Z'}, {'I', 0}}, {{'Z', 'I'}, {'Z', 0}}, {{'Z', 'X'}, {'Y', 1}}, {{'Z', 'Y'}, {'X', 3}}}; // Z
+
 class PauliTerm {
 
 public:
@@ -121,6 +169,7 @@ public:
     phase = add_phase(phase, phase2);
   }
 
+  // Assuming this PauliTerm is on the left, commute it to the right past another PauliTerm
   PauliTerm commute_right(PauliTerm* rhs, int angle_numerator, int angle_denominator) {
     if (qubit != rhs->qubit || basis_commutes_with(basis, rhs->basis)) { return *rhs; }
     PauliTerm new_term = {.basis = 'I', .phase = add_phase(phase, rhs->phase), .qubit = qubit};
@@ -134,12 +183,12 @@ public:
 };
 
 class PauliProduct {
-private:
+
+public:
   vector<PauliTerm> terms;
   int angle_numerator = 1;
   int angle_denominator = 1;
 
-public:
   bool is_clifford;
 
   void load_from_string(const string& s) {
@@ -194,10 +243,10 @@ public:
         if (!basis_commutes_with(term.basis, res->second)) { sum_signs++; }
       }
     }
-    // cout << "Sum signs " << sum_signs << " commutes with " << (sum_signs % 2 == 0) << "\n";
     return (sum_signs % 2 == 0);
   }
 
+  // Commute this measurement to the right past another
   PauliProduct commute_right(PauliProduct& rhs) {
     if (commutes_with(rhs)) { return rhs; }
     //  Ensure we're commuting a Clifford angle rotation
@@ -237,13 +286,13 @@ public:
 
 class PauliProductDAGNode {
 private:
-  vector<int> parse_id_list(const string& s) {
-    if (s == "set()") { return {}; }
-    vector<int> ids;
+  set<int> parse_id_list(const string& s) {
+    if (s == "[]") { return {}; }
+    set<int> ids;
     auto tokens = split_string(s.substr(1), ',');
     for (auto& token : tokens) {
       try {
-        ids.push_back(stoi(token));
+        ids.insert(stoi(token));
       } catch (const exception& ex) {
         cerr << __LINE__ << ": Exception: " << ex.what() << " s " << s << " " << token << "\n";
         throw ex;
@@ -255,8 +304,8 @@ private:
 public:
   int id;
   PauliProduct product;
-  vector<int> children;
-  vector<int> parents;
+  set<int> children;
+  set<int> parents;
 
   void load_from_string(string& s) {
     const int NUM_SPACE_TOKENS = 4;
@@ -278,23 +327,20 @@ public:
   }
 
   friend ostream& operator<<(ostream& os, const PauliProductDAGNode& node) {
-    os << node.id << " " << node.product << " ";
-    if (node.children.empty()) {
-      os << "set() ";
-    } else {
-      os << node.children << " ";
-    }
-    if (node.parents.empty()) {
-      os << "set()";
-    } else {
-      os << node.parents;
-    }
+    os << node.id << " " << node.product << " " << node.children << " " << node.parents;
     return os;
   }
 
   bool is_root() { return parents.empty(); }
 
   bool is_clifford() { return product.is_clifford; }
+
+  bool involves_qubit(int qubit) {
+    for (auto& term : product.terms) {
+      if (term.qubit == qubit) { return true; }
+    }
+    return false;
+  }
 };
 
 class PauliProductDAG {
@@ -355,6 +401,7 @@ public:
     return true;
   }
 
+  // Check if an indirect forward path exists from u -> ... -> v
   bool indirect_path_exists(int u, int v) {
     if (u == v) { return true; }
     int topo_index_u = topological_order[u];
@@ -369,7 +416,6 @@ public:
         visited.insert(child_id);
       }
     }
-    if (q.empty()) { return false; }
     while (!q.empty()) {
       int node_id = q.front();
       q.pop_front();
@@ -406,35 +452,222 @@ public:
     return youngest_id;
   }
 
-  void update_product(int node_id, PauliProduct& pp) {}
+  int oldest_child(vector<int>& related_nodes) {
+    int oldest_id = 0;
+    int max_val = numeric_limits<int>::min();
+    for (auto node_id : related_nodes) {
+      if (-topological_order[node_id] > max_val) {
+        max_val = -topological_order[node_id];
+        oldest_id = node_id;
+      }
+    }
+    return oldest_id;
+  }
 
-  void swap_nodes(int n1, int n2) {}
+  unordered_map<int, int> parents_by_qubit(int node_id) {
+    unordered_map<int, int> relation;
+    for (auto& term : nodes[node_id].product.terms) {
+      vector<int> parents_involving_q;
+      for (auto parent_id : nodes[node_id].parents) {
+        if (nodes[parent_id].involves_qubit(term.qubit)) { parents_involving_q.push_back(parent_id); }
+      }
+      if (!parents_involving_q.empty()) { relation[term.qubit] = youngest_parent(parents_involving_q); }
+    }
+    return relation;
+  }
 
-  void update_topological_order_starting_at(int start_node_id) {}
+  unordered_map<int, int> children_by_qubit(int node_id) {
+    unordered_map<int, int> relation;
+    for (auto& term : nodes[node_id].product.terms) {
+      vector<int> children_involving_q;
+      for (auto child_id : nodes[node_id].children) {
+        if (nodes[child_id].involves_qubit(term.qubit)) { children_involving_q.push_back(child_id); }
+      }
+      if (!children_involving_q.empty()) { relation[term.qubit] = oldest_child(children_involving_q); }
+    }
+    return relation;
+  }
 
+  // Swap two nodes in the graph
+  void swap_nodes(int node_id, int parent_id) {
+    /*
+          If commuting a clifford through, update the node products beforehand.
+
+          grandparents -> parent -> node -> children
+
+                               |-------?---------v
+          grandparents -?-> node -> *parent -?-> children
+                     |------?--------^
+    */
+
+    if (nodes[node_id].children.contains(parent_id)) {
+      swap(node_id, parent_id);
+      DBG << "    parent is child, swapped: " << nodes[node_id] << " " << nodes[parent_id] << "\n";
+    }
+    // Find the parents associated with each of node's qubits
+    unordered_map<int, int> parent_parents_by_qubit = parents_by_qubit(parent_id);
+    unordered_map<int, int> node_children_by_qubit = children_by_qubit(node_id);
+    DBG << "    parent_parents_by_qubit " << parent_parents_by_qubit << " node_children_by_qubit " << node_children_by_qubit
+        << "\n";
+
+    nodes[parent_id].children.erase(node_id);
+    nodes[parent_id].parents.insert(node_id);
+    nodes[node_id].parents.erase(parent_id);
+    nodes[node_id].children.insert(parent_id);
+
+    // Only shared qubits need to be updated
+    set<int> shared_qubits;
+    for (auto& term : nodes[node_id].product.terms) {
+      shared_qubits.insert(term.qubit);
+    }
+    for (auto& term : nodes[parent_id].product.terms) {
+      if (!shared_qubits.contains(term.qubit)) { continue; }
+    }
+    for (auto qubit : shared_qubits) {
+      // What grandparents should now point at node?
+      {
+        auto it = parent_parents_by_qubit.find(qubit);
+        if (it != parent_parents_by_qubit.end()) {
+          // Update the relationship between grandparent and parent
+          int grandparent_id = it->second;
+          if (nodes[grandparent_id].children.contains(parent_id)) {
+            // Qubits that relate grandparent and parent
+            vector<int> related_qubits;
+            for (auto [q, n] : children_by_qubit(grandparent_id)) {
+              if (n == parent_id) { related_qubits.push_back(q); }
+            }
+            bool all_in = true;
+            for (auto q : related_qubits) {
+              if (!nodes[node_id].involves_qubit(q)) {
+                all_in = false;
+                break;
+              }
+            }
+            if (all_in) {
+              nodes[grandparent_id].children.erase(parent_id);
+              nodes[parent_id].parents.erase(grandparent_id);
+            }
+          }
+          nodes[grandparent_id].children.insert(node_id);
+          nodes[node_id].parents.insert(grandparent_id);
+        }
+      }
+      {
+        // What children should now be pointed to by parent?
+        auto it = node_children_by_qubit.find(qubit);
+        if (it != node_children_by_qubit.end()) {
+          // Update the relationship between node and child
+          int child_id = it->second;
+          if (nodes[node_id].children.contains(child_id)) {
+            // Qubits that relate node and child
+            vector<int> related_qubits;
+            for (auto [q, n] : parents_by_qubit(child_id)) {
+              if (n == node_id) { related_qubits.push_back(q); }
+            }
+            bool all_in = true;
+            for (auto q : related_qubits) {
+              if (!nodes[parent_id].involves_qubit(q)) {
+                all_in = false;
+                break;
+              }
+            }
+            if (all_in) {
+              nodes[node_id].children.erase(child_id);
+              nodes[child_id].parents.erase(node_id);
+            }
+          }
+          nodes[parent_id].children.insert(child_id);
+          nodes[child_id].parents.insert(parent_id);
+        }
+      }
+      // Swap order
+      swap(topological_order[node_id], topological_order[parent_id]);
+      // Update roots
+      if (roots.contains(parent_id)) {
+        roots.erase(parent_id);
+        roots.insert(node_id);
+      } else if (nodes[node_id].parents.empty()) {
+        roots.insert(node_id);
+      }
+    }
+  }
+
+  // Topological sort starting at node
+  void update_topological_order_starting_at(int node_id) {
+    int offset = topological_order[node_id];
+    int num_nodes = topological_order.size();
+    // Step 1: Identify affected nodes
+    vector<int> indegrees(num_nodes, -1);
+    for (int ni = 0; ni < num_nodes; ni++) {
+      if (topological_order[ni] >= offset) { indegrees[ni] = 0; }
+    }
+    // Step 2: Compute in-degrees inside the affected subgraph
+    for (int ni = 0; ni < num_nodes; ni++) {
+      if (indegrees[ni] != -1) {
+        for (auto child_id : nodes[ni].children) {
+          if (indegrees[child_id] != -1) { indegrees[child_id]++; }
+        }
+      }
+    }
+    // Step 3: Start sorting from all zero in-degree nodes in affected subgraph
+    vector<int> new_order;
+    deque<int> q;
+    for (int ni = 0; ni < num_nodes; ni++) {
+      if (indegrees[ni] == 0) { q.push_back(ni); }
+    }
+    while (!q.empty()) {
+      node_id = q.front();
+      q.pop_front();
+      new_order.push_back(node_id);
+      for (auto child_id : nodes[node_id].children) {
+        if (indegrees[child_id] != -1) {
+          indegrees[child_id]--;
+          if (indegrees[child_id] == 0) { q.push_back(child_id); }
+        }
+      }
+    }
+    // Step 4: Update the topological order map
+    for (int ni = 0; ni < new_order.size(); ni++) {
+      topological_order[new_order[ni]] = ni + offset;
+    }
+  }
+
+  // Commute a clifford operator to the right past a child node.
   void commute_clifford_right(int clifford_id, int node_id) {
     if (!nodes[clifford_id].is_clifford()) { return; }
     auto& clifford = nodes[clifford_id];
     auto& node = nodes[node_id];
     PauliProduct new_node_prod = clifford.product.commute_right(node.product);
-    cout << "  new product " << new_node_prod << " old product " << node.product << "\n";
-    update_product(node_id, new_node_prod);
+    DBG << "  new product " << new_node_prod << " old product " << node.product << "\n";
+    node.product = new_node_prod;
+    DBG << "  before swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n";
+    DBG << "  topo order before " << topological_order << "\n";
     swap_nodes(clifford_id, node_id);
+    DBG << "  after swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n";
+    DBG << "  topo order after " << topological_order << "\n";
     // If node or clifford has a higher topological order than any of their children, we must recompute the topological order
+    bool do_update = false;
     for (auto child_id : node.children) {
       if (topological_order[child_id] > topological_order[node_id]) {
-        update_topological_order_starting_at(node_id);
-        return;
+        do_update = true;
+        break;
       }
     }
     for (auto child_id : clifford.children) {
       if (topological_order[child_id] > topological_order[clifford_id]) {
-        update_topological_order_starting_at(node_id);
-        return;
+        do_update = true;
+        break;
       }
     }
+    if (do_update) {
+      DBG << "  Updating topo order starting at " << node_id << "\n";
+      update_topological_order_starting_at(node_id);
+      DBG << "  topo order updated " << topological_order << "\n";
+    }
+    exit(0);
   }
 
+  // Commute Clifford operators to the right past non-Clifford operators
   void commute_all_cliffords() {
     set<int> uncommuted_noncliffords;
     for (auto& node : nodes) {
@@ -469,18 +702,16 @@ public:
         for (auto parent_id : parent_cliffords) {
           dbg_f << "  valid_parent_id " << parent_id << "\n";
         }
-        if (parent_cliffords.size() > 1) { cout << "parents " << parent_cliffords.size() << "\n"; }
+        if (parent_cliffords.size() > 1) { DBG << "parents " << parent_cliffords.size() << "\n"; }
         // check for loops
         for (auto parent_id : node.parents) {
-          for (auto child_id : node.children) {
-            if (child_id == parent_id) { throw runtime_error(to_string(__LINE__) + ": loop detected"); }
-          }
+          if (node.children.contains(parent_id)) { throw runtime_error(to_string(__LINE__) + ": loop detected"); }
         }
         int parent_id = youngest_parent(parent_cliffords);
-        cout << "Commute " << parent_id << " past " << node_id << " (" << parent_cliffords.size() << ")\n";
+        DBG << "Commute " << parent_id << " past " << node_id << " (" << parent_cliffords.size() << ")\n";
         commute_clifford_right(parent_id, node_id);
-        cout << "parent: " << nodes[parent_id] << "\n";
-        cout << "node: " << node << "\n";
+        // cout << "parent: " << nodes[parent_id] << "\n";
+        // cout << "node: " << node << "\n";
       }
       for (auto nonclifford_id : finished_noncliffords) {
         uncommuted_noncliffords.erase(nonclifford_id);
