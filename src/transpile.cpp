@@ -420,16 +420,15 @@ public:
   }
 
   bool done_commuting_nonclifford(int node_id, set<int>& uncommuted_noncliffords) {
+#ifdef DBGTRACE
     DBG("check for done for " << node_id << " parents " << nodes[node_id].parents << "\n");
     for (auto parent_id : nodes[node_id].parents) {
       DBG("  parent " << parent_id << " clifford " << (nodes[parent_id].is_clifford() ? "True" : "False") << " uncommuted "
                       << (uncommuted_noncliffords.contains(parent_id) ? "True" : "False") << "\n");
     }
+#endif
     for (auto parent_id : nodes[node_id].parents) {
-      if (nodes[parent_id].is_clifford()) { return false; }
-    }
-    for (auto parent_id : nodes[node_id].parents) {
-      if (uncommuted_noncliffords.contains(parent_id)) { return false; }
+      if (nodes[parent_id].is_clifford() || uncommuted_noncliffords.contains(parent_id)) { return false; }
     }
     return true;
   }
@@ -661,6 +660,7 @@ public:
       if (indegrees[ni] == 0) { q.push_back(ni); }
     }
     while (!q.empty()) {
+      assert(q.size() <= num_nodes);
       node_id = q.front();
       q.pop_front();
       new_order.push_back(node_id);
@@ -774,10 +774,8 @@ public:
           }
         }
 #endif
-        // if (parent_id == 237 && node_id == 370) { traceon = true; }
         DBG("Commute " << nodes[parent_id] << " past " << nodes[node_id] << "\n");
         commute_clifford_right(parent_id, node_id);
-        // if (parent_id == 298 && node_id == 429) { exit(0); }
       }
       for (auto nonclifford_id : finished_noncliffords) {
         DBG("finished nonclifford " << nonclifford_id << "\n");
