@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <chrono>
 #include <deque>
 #include <execinfo.h>
 #include <fstream>
@@ -18,6 +17,10 @@
 #include <unordered_set>
 #include <vector>
 
+#define USE_COLORS
+
+#include "utils.hpp"
+
 using namespace std;
 
 // #define DBGTRACE
@@ -31,7 +34,7 @@ static bool traceon = true;
 #define DBG(x)
 #endif
 
-#define NOW chrono::high_resolution_clock::now
+static IntermittentTimer update_topo_timer("update_topo");
 
 void signal_handler(int signal) {
   void* array[10];
@@ -635,6 +638,7 @@ public:
 
   // Topological sort starting at node
   void update_topological_order_starting_at(int node_id) {
+    update_topo_timer.start();
     int offset = topological_order[node_id];
     int num_nodes = topological_order.size();
     // Step 1: Identify affected nodes
@@ -671,6 +675,7 @@ public:
     for (int ni = 0; ni < new_order.size(); ni++) {
       topological_order[new_order[ni]] = ni + offset;
     }
+    update_topo_timer.stop();
   }
 
   // Commute a clifford operator to the right past a child node.
@@ -709,6 +714,7 @@ public:
 
   // Commute Clifford operators to the right past non-Clifford operators
   void commute_all_cliffords() {
+    Timer timer(__func__);
     set<int> uncommuted_noncliffords;
     for (auto& node : nodes) {
       is_uncommuted_nonclifford(node.id, uncommuted_noncliffords);
@@ -784,12 +790,14 @@ public:
       // if (loops == 51) { break; }
 #endif
     }
+    cout << "\n";
   }
 };
 
 int main(int argc, char* argv[]) {
   signal(SIGABRT, signal_handler);
   signal(SIGSEGV, signal_handler);
+  Timer timer(__func__);
   PauliProductDAG dag;
   string fname(argv[1]);
   dag.load_from_file(fname);
@@ -798,13 +806,11 @@ int main(int argc, char* argv[]) {
     f << dag;
     f.close();
   }
-  auto start_t = NOW();
   dag.commute_all_cliffords();
-  chrono::duration<double> elapsed_t = NOW() - start_t;
-  cout << "\nTranspiled in " << std::setprecision(2) << std::fixed << elapsed_t.count() << " s\n";
   {
     ofstream f(fname + "-transpiled.txt");
     f << dag;
     f.close();
   }
+  update_topo_timer.done();
 }
