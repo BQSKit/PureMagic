@@ -59,7 +59,7 @@ def main():
         out_fname = Path(file_name).stem + ".dag"
         with open(f"{out_fname}", "wb") as f:
             pickle.dump(dag, f)
-            dag.print(out_fname + ".done.csv")
+            dag.print(out_fname + ".transpiled.txt")
 
 
 if __name__ == "__main__":
