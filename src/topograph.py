@@ -8,6 +8,7 @@ with warnings.catch_warnings():
     import networkx as nx
 import math
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from pathlib import Path
 from utils import timer
 
@@ -85,8 +86,8 @@ class TopoGraph(nx.Graph):
         node_label1 = "d" + str(q) + op
         node_label2 = "d" + str(q + 1) + op
         other = None
-        self.add_node(node_label1, pos=[float(col) - 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
-        self.add_node(node_label2, pos=[float(col) + 0.35, self.num_rows - 1 - row], color="#9999FF", other=other)
+        self.add_node(node_label1, pos=[float(col) - 0.25, self.num_rows - 1 - row], color="#9999FF", other=other)
+        self.add_node(node_label2, pos=[float(col) + 0.25, self.num_rows - 1 - row], color="#9999FF", other=other)
         self.add_edge(get_node_label("b", col - 1, row), node_label1)
         self.add_edge(get_node_label("b", col + 1, row), node_label2)
 
@@ -144,7 +145,7 @@ class TopoGraph(nx.Graph):
             self.shuffle_qubits()
 
     def add_labeled_node(self, label, col, row):
-        node_colors = {"m": "#FFBB99", "b": "#cccccc", "d": "#9999FF"}
+        node_colors = {"m": "#FFBB99", "b": "#aaaaaa", "d": "#9999FF"}
         node_label = get_node_label(label, col, row)
         self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
         if is_magic_node(node_label):
@@ -158,18 +159,23 @@ class TopoGraph(nx.Graph):
         # print("Generated topology with", num_qubits, "data qubits and ")
         plt.close()
         plt.rc("figure", figsize=[self.num_cols, self.num_rows])
+        fig, ax = plt.subplots()
+        bg_color = "#dddddd"
+        ax.add_patch(Rectangle((-0.5, -0.5), self.num_cols, self.num_rows, facecolor=bg_color))
         node_pos = nx.get_node_attributes(self, "pos")
         node_colors = nx.get_node_attributes(self, "color").values()
         edge_labels = nx.get_edge_attributes(self, "label")
-        edge_colors = ["black"] * self.number_of_edges()
+        edge_colors = [bg_color] * self.number_of_edges()
         edge_width = [1] * self.number_of_edges()
-        node_edge_colors = ["white"] * self.number_of_nodes()
+        node_edge_colors = [bg_color] * self.number_of_nodes()
         node_line_widths = [1] * self.number_of_nodes()
         node_labels = {}
         for i, node in enumerate(self.nodes()):
             node_labels[node] = "" if is_bus_node(node) else node
             node_labels[node] = node
         cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
+        label_col = -1.5
+        label_row = self.num_rows
         for pi, pauli_path in enumerate(pauli_product_paths):
             pauli_product, pauli_product_graph = pauli_path
             for ei, edge in enumerate(self.edges):
@@ -186,13 +192,24 @@ class TopoGraph(nx.Graph):
                         root_node = node
             if root_node != None:
                 col, row = root_node[1:].split("-")
-                col = float(col) - 0.2
                 if row == "0":
                     row = float(self.num_rows) - 0.5
                 else:
                     row = -0.5
-                t = plt.text(col, row, pauli_product.get_product_str(), color="black")
-                t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
+                col = float(col)
+                row = float(row)
+                col = float(col) - 0.2
+            else:
+                col = label_col
+                row = label_row
+                label_row -= 0.35
+            t = plt.text(col, row, pauli_product.get_product_str(), color="black")
+            t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
+        for row in range(self.num_rows + 1):
+            plt.axhline(row - 0.5, xmin=0.5 / self.num_cols, xmax=1.0 - 0.5 / self.num_cols, ls="-", lw=2, c="white", alpha=0.5)
+        for col in range(self.num_cols + 1):
+            plt.axvline(col - 0.5, ymin=0.5 / self.num_rows, ymax=1.0 - 0.5 / self.num_rows, ls="-", lw=2, c="white", alpha=0.5)
+        plt.plot(0, 0, 1, 1, ls="-", c="black", lw=10)
         nx.draw_networkx(
             self,
             pos=node_pos,
@@ -211,5 +228,5 @@ class TopoGraph(nx.Graph):
         plt.box(False)
         plt.title(title_str).set_fontsize(6 * math.sqrt(self.num_rows))
         plt.tight_layout()
-        # plt.savefig(topo_fname + ".pdf")
+        plt.savefig(topo_fname + ".pdf")
         plt.savefig(topo_fname + ".png")
