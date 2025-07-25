@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <chrono>
 #include <deque>
+#include <execinfo.h>
 #include <fstream>
 #include <iostream>
 #include <math.h>
@@ -7,24 +9,29 @@
 #include <queue>
 #include <regex>
 #include <set>
+#include <signal.h>
 #include <sstream>
 #include <stdexcept>
+#include <stdlib.h>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-#include <execinfo.h>
-#include <signal.h>
-#include <stdlib.h>
-
 using namespace std;
 
-#if 1
-#define DBG cout
+// #define DBGTRACE
+static bool traceon = true;
+
+#ifdef DBGTRACE
+#define DBG(x)                                                                                                                   \
+  if (traceon) { cout << x; }
 #else
-#define DBG 0 && cout
+// #define DBG 0 && cout
+#define DBG(x)
 #endif
+
+#define NOW chrono::high_resolution_clock::now
 
 void signal_handler(int signal) {
   void* array[10];
@@ -202,17 +209,20 @@ public:
     if (factors.size() == 2) { angle_denominator = stoi(factors[1].substr(0, factors[1].length() - 2)); }
     // simplify angle to determine if is clifford
     double gcd_factor = gcd(angle_numerator, angle_denominator);
-    int numerator = floor(angle_numerator / gcd_factor);
-    int denominator = floor(angle_denominator / gcd_factor);
-    is_clifford = denominator == -4 || denominator == -2 || denominator == -1 || denominator == 0 || denominator == 1 ||
-                  denominator == 2 || denominator == 4;
-
+    set_angle(floor(angle_numerator / gcd_factor), floor(angle_denominator / gcd_factor));
     auto term_tokens = split_string(tokens[0], '.');
     for (auto& token : term_tokens) {
       PauliTerm term;
       term.load_from_string(token);
       terms.push_back(term);
     }
+  }
+
+  void set_angle(int numerator, int denominator) {
+    angle_numerator = numerator;
+    angle_denominator = denominator;
+    is_clifford = denominator == -4 || denominator == -2 || denominator == -1 || denominator == 0 || denominator == 1 ||
+                  denominator == 2 || denominator == 4;
   }
 
   friend ostream& operator<<(ostream& os, const PauliProduct& pp) {
@@ -248,10 +258,13 @@ public:
 
   // Commute this measurement to the right past another
   PauliProduct commute_right(PauliProduct& rhs) {
-    if (commutes_with(rhs)) { return rhs; }
+    if (commutes_with(rhs)) {
+      DBG(*this << " commutes with " << rhs << "\n");
+      return rhs;
+    }
     //  Ensure we're commuting a Clifford angle rotation
     if (!is_clifford) { throw runtime_error("Currently only support commuting right of Clifford angles"); }
-    unordered_map<int, pair<PauliTerm*, PauliTerm*>> all_terms_map;
+    map<int, pair<PauliTerm*, PauliTerm*>> all_terms_map;
     for (auto& term : terms) {
       all_terms_map.insert({term.qubit, {&term, nullptr}});
     }
@@ -265,8 +278,8 @@ public:
     }
     PauliProduct new_prod;
     new_prod.terms.resize(all_terms_map.size());
-    new_prod.angle_denominator = rhs.angle_denominator;
-    new_prod.angle_numerator = rhs.angle_numerator;
+    new_prod.set_angle(rhs.angle_numerator, rhs.angle_denominator);
+
     int i = 0;
     for (const auto& [qubit, term_pair] : all_terms_map) {
       if (term_pair.second == nullptr) {
@@ -348,6 +361,7 @@ private:
   vector<PauliProductDAGNode> nodes;
   unordered_set<int> roots;
   vector<int> topological_order;
+  int max_qubit = 0;
 
 public:
   void load_from_file(const string& fname) {
@@ -370,9 +384,12 @@ public:
       if (node.is_root()) { roots.insert(node.id); }
       if (node.is_clifford()) { num_cliffords++; }
       topological_order[node.id] = i;
+      for (auto& term : node.product.terms) {
+        max_qubit = max(max_qubit, term.qubit);
+      }
     }
     cout << "Loaded " << nodes.size() << " products from " << fname << " of which " << num_cliffords << " are cliffords and "
-         << roots.size() << " are roots\n";
+         << roots.size() << " are roots, with max qubit " << max_qubit << "\n";
   }
 
   friend ostream& operator<<(ostream& os, const PauliProductDAG& dag) {
@@ -395,8 +412,16 @@ public:
   }
 
   bool done_commuting_nonclifford(int node_id, set<int>& uncommuted_noncliffords) {
+    DBG("check for done for " << node_id << " parents " << nodes[node_id].parents << "\n");
     for (auto parent_id : nodes[node_id].parents) {
-      if (nodes[parent_id].is_clifford() || uncommuted_noncliffords.contains(parent_id)) { return false; }
+      DBG("  parent " << parent_id << " clifford " << (nodes[parent_id].is_clifford() ? "True" : "False") << " uncommuted "
+                      << (uncommuted_noncliffords.contains(parent_id) ? "True" : "False") << "\n");
+    }
+    for (auto parent_id : nodes[node_id].parents) {
+      if (nodes[parent_id].is_clifford()) { return false; }
+    }
+    for (auto parent_id : nodes[node_id].parents) {
+      if (uncommuted_noncliffords.contains(parent_id)) { return false; }
     }
     return true;
   }
@@ -415,6 +440,11 @@ public:
         q.push_back(child_id);
         visited.insert(child_id);
       }
+    }
+    if (q.empty()) {
+      DBG("    no path from " << u << " to " << v << " children " << nodes[u].children << "\n");
+    } else {
+      DBG("    path from " << u << " to " << v << " visited " << visited << "\n");
     }
     while (!q.empty()) {
       int node_id = q.front();
@@ -435,7 +465,8 @@ public:
   vector<int> get_valid_parent_cliffords(int node_id) {
     vector<int> parent_cliffords;
     for (auto parent_id : nodes[node_id].parents) {
-      if (nodes[parent_id].is_clifford() && !indirect_path_exists(parent_id, node_id)) { parent_cliffords.push_back(parent_id); }
+      if (!nodes[parent_id].is_clifford()) { continue; }
+      if (!indirect_path_exists(parent_id, node_id)) { parent_cliffords.push_back(parent_id); }
     }
     return parent_cliffords;
   }
@@ -502,13 +533,13 @@ public:
 
     if (nodes[node_id].children.contains(parent_id)) {
       swap(node_id, parent_id);
-      DBG << "    parent is child, swapped: " << nodes[node_id] << " " << nodes[parent_id] << "\n";
+      DBG("    parent is child, swapped: " << nodes[node_id] << " " << nodes[parent_id] << "\n");
     }
     // Find the parents associated with each of node's qubits
     unordered_map<int, int> parent_parents_by_qubit = parents_by_qubit(parent_id);
     unordered_map<int, int> node_children_by_qubit = children_by_qubit(node_id);
-    DBG << "    parent_parents_by_qubit " << parent_parents_by_qubit << " node_children_by_qubit " << node_children_by_qubit
-        << "\n";
+    // DBG("    parent_parents_by_qubit " << parent_parents_by_qubit << " node_children_by_qubit " << node_children_by_qubit
+    //                                    << "\n");
 
     nodes[parent_id].children.erase(node_id);
     nodes[parent_id].parents.insert(node_id);
@@ -516,14 +547,17 @@ public:
     nodes[node_id].children.insert(parent_id);
 
     // Only shared qubits need to be updated
-    set<int> shared_qubits;
+    set<int> node_qubits;
     for (auto& term : nodes[node_id].product.terms) {
-      shared_qubits.insert(term.qubit);
+      node_qubits.insert(term.qubit);
     }
+    set<int> shared_qubits;
     for (auto& term : nodes[parent_id].product.terms) {
-      if (!shared_qubits.contains(term.qubit)) { continue; }
+      if (node_qubits.contains(term.qubit)) { shared_qubits.insert(term.qubit); }
     }
+    DBG("    shared_qubits " << shared_qubits << "\n");
     for (auto qubit : shared_qubits) {
+      DBG("      check qubit " << qubit << "\n");
       // What grandparents should now point at node?
       {
         auto it = parent_parents_by_qubit.find(qubit);
@@ -552,8 +586,8 @@ public:
           nodes[node_id].parents.insert(grandparent_id);
         }
       }
+      // What children should now be pointed to by parent?
       {
-        // What children should now be pointed to by parent?
         auto it = node_children_by_qubit.find(qubit);
         if (it != node_children_by_qubit.end()) {
           // Update the relationship between node and child
@@ -580,15 +614,17 @@ public:
           nodes[child_id].parents.insert(parent_id);
         }
       }
-      // Swap order
-      swap(topological_order[node_id], topological_order[parent_id]);
-      // Update roots
-      if (roots.contains(parent_id)) {
-        roots.erase(parent_id);
-        roots.insert(node_id);
-      } else if (nodes[node_id].parents.empty()) {
-        roots.insert(node_id);
-      }
+    }
+    DBG("swap order " << node_id << " " << parent_id << " " << topological_order[node_id] << " " << topological_order[parent_id]
+                      << "\n");
+    // Swap order
+    swap(topological_order[node_id], topological_order[parent_id]);
+    // Update roots
+    if (roots.contains(parent_id)) {
+      roots.erase(parent_id);
+      roots.insert(node_id);
+    } else if (nodes[node_id].parents.empty()) {
+      roots.insert(node_id);
     }
   }
 
@@ -638,14 +674,14 @@ public:
     auto& clifford = nodes[clifford_id];
     auto& node = nodes[node_id];
     PauliProduct new_node_prod = clifford.product.commute_right(node.product);
-    DBG << "  new product " << new_node_prod << " old product " << node.product << "\n";
+    DBG("  new product " << new_node_prod << " old product " << node.product << "\n");
     node.product = new_node_prod;
-    DBG << "  before swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n";
-    DBG << "  topo order before " << topological_order << "\n";
+    DBG("  before swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n");
+    DBG("  topo order before " << topological_order << "\n");
     swap_nodes(clifford_id, node_id);
-    DBG << "  after swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n";
-    DBG << "  topo order after " << topological_order << "\n";
-    // If node or clifford has a higher topological order than any of their children, we must recompute the topological order
+    DBG("  after swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n");
+    DBG("  topo order after " << topological_order << "\n");
+    //   If node or clifford has a higher topological order than any of their children, we must recompute the topological order
     bool do_update = false;
     for (auto child_id : node.children) {
       if (topological_order[child_id] > topological_order[node_id]) {
@@ -660,11 +696,10 @@ public:
       }
     }
     if (do_update) {
-      DBG << "  Updating topo order starting at " << node_id << "\n";
+      DBG("  Updating topo order starting at " << node_id << "\n");
       update_topological_order_starting_at(node_id);
-      DBG << "  topo order updated " << topological_order << "\n";
+      DBG("  topo order update " << topological_order << "\n");
     }
-    exit(0);
   }
 
   // Commute Clifford operators to the right past non-Clifford operators
@@ -673,53 +708,65 @@ public:
     for (auto& node : nodes) {
       is_uncommuted_nonclifford(node.id, uncommuted_noncliffords);
     }
-    ofstream f("uncommuted_noncliffords-mine");
-    for (auto node_id : uncommuted_noncliffords) {
-      f << node_id << "\n";
-    }
-    f.close();
     if (uncommuted_noncliffords.empty()) {
       cout << "No uncommuted non-Cliffords\n";
       return;
     }
 
     cout << "Commuting " << uncommuted_noncliffords.size() << " uncommuted noncliffords\n";
+#ifdef DBGTRACE
+    for (auto& node : nodes) {
+      DBG("node " << node.id << " clifford " << (node.is_clifford() ? "True" : "False") << "\n");
+    }
+    for (auto nonclifford : uncommuted_noncliffords) {
+      DBG("  " << nonclifford << "\n");
+    }
+#endif
 
-    ofstream dbg_f("debug.txt");
     int num_commuted = 0;
+    int loops = 0;
     while (uncommuted_noncliffords.size() > 0) {
-      unordered_set<int> finished_noncliffords;
+      DBG("LOOP " << loops << "\n");
+      set<int> finished_noncliffords;
       for (auto node_id : uncommuted_noncliffords) {
         auto& node = nodes[node_id];
         if (done_commuting_nonclifford(node_id, uncommuted_noncliffords)) {
           finished_noncliffords.insert(node_id);
-          dbg_f << "Finished nonclifford " << node_id << "\n";
+          DBG("add finished nonclifford " << node_id << "\n");
           continue;
         }
         vector<int> parent_cliffords = get_valid_parent_cliffords(node_id);
-        dbg_f << "node_id " << node_id << " parents " << parent_cliffords.size() << "\n";
+        DBG("node_id " << node_id << " valid parents " << parent_cliffords << " parents " << nodes[node_id].parents << "\n");
         if (parent_cliffords.empty()) { continue; }
-        for (auto parent_id : parent_cliffords) {
-          dbg_f << "  valid_parent_id " << parent_id << "\n";
-        }
-        if (parent_cliffords.size() > 1) { DBG << "parents " << parent_cliffords.size() << "\n"; }
         // check for loops
         for (auto parent_id : node.parents) {
           if (node.children.contains(parent_id)) { throw runtime_error(to_string(__LINE__) + ": loop detected"); }
         }
         int parent_id = youngest_parent(parent_cliffords);
-        DBG << "Commute " << parent_id << " past " << node_id << " (" << parent_cliffords.size() << ")\n";
+#ifdef DBGTRACE
+        if (parent_cliffords.size() > 1) {
+          DBG("youngest parent " << parent_id << "\n");
+          for (auto pid : parent_cliffords) {
+            DBG("parent id " << pid << " topo " << topological_order[pid] << "\n");
+          }
+        }
+#endif
+        // if (parent_id == 237 && node_id == 370) { traceon = true; }
+        DBG("Commute " << nodes[parent_id] << " past " << nodes[node_id] << "\n");
         commute_clifford_right(parent_id, node_id);
-        // cout << "parent: " << nodes[parent_id] << "\n";
-        // cout << "node: " << node << "\n";
+        // if (parent_id == 298 && node_id == 429) { exit(0); }
       }
       for (auto nonclifford_id : finished_noncliffords) {
+        DBG("finished nonclifford " << nonclifford_id << "\n");
         uncommuted_noncliffords.erase(nonclifford_id);
       }
       num_commuted += finished_noncliffords.size();
-      break;
+      loops++;
+      DBG("num commuted " << num_commuted << "\n");
+#ifdef DBGTRACE
+      // if (loops == 51) { break; }
+#endif
     }
-    dbg_f.close();
   }
 };
 
@@ -729,8 +776,18 @@ int main(int argc, char* argv[]) {
   PauliProductDAG dag;
   string fname(argv[1]);
   dag.load_from_file(argv[1]);
-  ofstream f("dag-loaded.txt");
-  f << dag;
-  f.close();
+  {
+    ofstream f("dag-loaded.txt");
+    f << dag;
+    f.close();
+  }
+  auto start_t = NOW();
   dag.commute_all_cliffords();
+  chrono::duration<double> elapsed_t = NOW() - start_t;
+  cout << "Transpiled in " << std::setprecision(2) << std::fixed << elapsed_t.count() << " s\n";
+  {
+    ofstream f("dag-transpiled.txt");
+    f << dag;
+    f.close();
+  }
 }
