@@ -401,7 +401,12 @@ public:
 
   bool is_uncommuted_nonclifford(int node_id, set<int>& uncommuted_noncliffords) {
     if (nodes[node_id].is_clifford()) { return false; }
+    if (nodes[node_id].is_root()) { return true; }
     if (uncommuted_noncliffords.contains(node_id)) { return true; }
+    if (nodes[node_id].children.empty()) {
+      uncommuted_noncliffords.insert(node_id);
+      return true;
+    }
     for (auto child_id : nodes[node_id].children) {
       if (nodes[child_id].is_clifford() || is_uncommuted_nonclifford(child_id, uncommuted_noncliffords)) {
         uncommuted_noncliffords.insert(node_id);
@@ -721,12 +726,24 @@ public:
     for (auto nonclifford : uncommuted_noncliffords) {
       DBG("  " << nonclifford << "\n");
     }
+    exit(0);
 #endif
 
     int num_commuted = 0;
     int loops = 0;
+    int num_uncommuted = uncommuted_noncliffords.size();
+    int update_tick = (double)num_uncommuted / 100.0;
+    int next_tick = update_tick;
+
     while (uncommuted_noncliffords.size() > 0) {
       DBG("LOOP " << loops << "\n");
+#ifndef DBGTRACE
+      if (num_commuted >= next_tick) {
+        cout << (int)round(num_commuted * 100.0 / num_uncommuted) << " ";
+        cout.flush();
+        next_tick = num_commuted + update_tick;
+      }
+#endif
       set<int> finished_noncliffords;
       for (auto node_id : uncommuted_noncliffords) {
         auto& node = nodes[node_id];
@@ -775,18 +792,18 @@ int main(int argc, char* argv[]) {
   signal(SIGSEGV, signal_handler);
   PauliProductDAG dag;
   string fname(argv[1]);
-  dag.load_from_file(argv[1]);
+  dag.load_from_file(fname);
   {
-    ofstream f("dag-loaded.txt");
+    ofstream f(fname + "-loaded.txt");
     f << dag;
     f.close();
   }
   auto start_t = NOW();
   dag.commute_all_cliffords();
   chrono::duration<double> elapsed_t = NOW() - start_t;
-  cout << "Transpiled in " << std::setprecision(2) << std::fixed << elapsed_t.count() << " s\n";
+  cout << "\nTranspiled in " << std::setprecision(2) << std::fixed << elapsed_t.count() << " s\n";
   {
-    ofstream f("dag-transpiled.txt");
+    ofstream f(fname + "-transpiled.txt");
     f << dag;
     f.close();
   }
