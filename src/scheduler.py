@@ -391,24 +391,3 @@ class Scheduler:
             )
             return title_str, pp_paths, next_to_schedule
         return None, None, next_to_schedule
-
-    def schedule_circuit_barrier(self, circuit):
-        layers = circuit.get_layers()
-        num_steps = 0
-        num_scheduled = 0
-        self.sched_file = open("sched-" + str(self.rank) + ".txt", "w")
-        for ci, layer in enumerate(layers):
-            if ci % self.num_ranks != self.rank:
-                continue
-            while len(layer) > 0:
-                num_steps += 1
-                print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in layer], file=self.sched_file)
-                title_str, pp_paths, layer = self.schedule_timestep(layer)
-                if pp_paths is None:
-                    raise RuntimeError("Cannot schedule on current layout")
-                if title_str is not None and "paths" in self.args.plot and num_steps < 20:
-                    # don't plot too many steps
-                    fname = "lssp-topo-path-" + str(num_steps) + "-" + self.args.path_method
-                    self.topo_graph.plot(fname, pp_paths, title_str)
-                num_scheduled += len(pp_paths)
-        return num_steps, num_scheduled
