@@ -379,6 +379,7 @@ public:
     nodes.resize(lines.size());
     topological_order.resize(lines.size());
     int num_cliffords = 0;
+    int num_edges = 0;
     for (int i = 0; i < lines.size(); i++) {
       auto& node = nodes[i];
       node.load_from_string(lines[i]);
@@ -389,9 +390,11 @@ public:
       for (auto& term : node.product.terms) {
         max_qubit = max(max_qubit, term.qubit);
       }
+      num_edges += node.children.size();
     }
     cout << "Loaded " << nodes.size() << " products from " << fname << " of which " << num_cliffords << " are cliffords and "
          << roots.size() << " are roots, with max qubit " << max_qubit << "\n";
+    cout << "Forms a dag with " << nodes.size() << " nodes and " << num_edges << " edges\n";
   }
 
   friend ostream& operator<<(ostream& os, const PauliProductDAG& dag) {
@@ -640,41 +643,64 @@ public:
     int offset = topological_order[node_id];
     int num_nodes = topological_order.size();
     // Step 1: Identify affected nodes
+    int subgraph_size = 0;
     vector<int> indegrees(num_nodes, -1);
     for (int ni = 0; ni < num_nodes; ni++) {
-      if (topological_order[ni] >= offset) { indegrees[ni] = 0; }
+      if (topological_order[ni] >= offset) {
+        indegrees[ni] = 0;
+        subgraph_size++;
+      }
     }
-    // Step 2: Compute in-degrees inside the affected subgraph
+    //   Step 2: Compute in-degrees inside the affected subgraph
+    int subgraph_nodes = 0;
+    int subgraph_edges = 0;
     for (int ni = 0; ni < num_nodes; ni++) {
       if (indegrees[ni] != -1) {
+        subgraph_nodes++;
         for (auto child_id : nodes[ni].children) {
-          if (indegrees[child_id] != -1) { indegrees[child_id]++; }
+          if (indegrees[child_id] != -1) {
+            subgraph_edges++;
+            indegrees[child_id]++;
+          }
         }
       }
     }
     // Step 3: Start sorting from all zero in-degree nodes in affected subgraph
     vector<int> new_order;
+    new_order.reserve(subgraph_size);
     queue<int> q;
     for (int ni = 0; ni < num_nodes; ni++) {
       if (indegrees[ni] == 0) { q.push(ni); }
     }
+    int num_steps = 0;
     while (!q.empty()) {
       assert(q.size() <= num_nodes);
       node_id = q.front();
       q.pop();
       new_order.push_back(node_id);
       for (auto child_id : nodes[node_id].children) {
+        num_steps++;
         if (indegrees[child_id] != -1) {
           indegrees[child_id]--;
           if (indegrees[child_id] == 0) { q.push(child_id); }
         }
       }
     }
-    // Step 4: Update the topological order map
+    // cerr << "subgraph nodes " << perc_str(subgraph_nodes, num_nodes) << " edges " << subgraph_edges << " num_steps " <<
+    // num_steps
+    //      << " expected " << subgraph_edges << "\n";
+    //  Step 4: Update the topological order map
     for (int ni = 0; ni < new_order.size(); ni++) {
       topological_order[new_order[ni]] = ni + offset;
     }
     update_topo_timer.stop();
+  }
+
+  bool check_topo_order(PauliProductDAGNode& node) {
+    for (auto child_id : node.children) {
+      if (topological_order[child_id] > topological_order[node.id]) { return false; }
+    }
+    return true;
   }
 
   // Commute a clifford operator to the right past a child node.
@@ -691,20 +717,7 @@ public:
     DBG("  after swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n");
     DBG("  topo order after " << topological_order << "\n");
     //   If node or clifford has a higher topological order than any of their children, we must recompute the topological order
-    bool do_update = false;
-    for (auto child_id : node.children) {
-      if (topological_order[child_id] > topological_order[node_id]) {
-        do_update = true;
-        break;
-      }
-    }
-    for (auto child_id : clifford.children) {
-      if (topological_order[child_id] > topological_order[clifford_id]) {
-        do_update = true;
-        break;
-      }
-    }
-    if (do_update) {
+    if (!check_topo_order(node) || !check_topo_order(clifford)) {
       DBG("  Updating topo order starting at " << node_id << "\n");
       update_topological_order_starting_at(node_id);
       DBG("  topo order update " << topological_order << "\n");
