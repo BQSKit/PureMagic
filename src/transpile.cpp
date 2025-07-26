@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <deque>
 #include <execinfo.h>
 #include <fstream>
 #include <iostream>
@@ -440,11 +439,11 @@ public:
     int topo_index_v = topological_order[v];
     if (topo_index_u > topo_index_v) { return false; }
     // BFS traversal from u's children that are not v
-    deque<int> q;
+    queue<int> q;
     unordered_set<int> visited;
     for (auto child_id : nodes[u].children) {
       if (child_id != v) {
-        q.push_back(child_id);
+        q.push(child_id);
         visited.insert(child_id);
       }
     }
@@ -455,14 +454,14 @@ public:
     }
     while (!q.empty()) {
       int node_id = q.front();
-      q.pop_front();
+      q.pop();
       for (auto child_id : nodes[node_id].children) {
         if (child_id == v) { return true; }
         if (!visited.contains(child_id)) {
           // Prune if v cannot depend on child_id
           if (topological_order[child_id] > topo_index_v) { continue; }
           visited.insert(child_id);
-          q.push_back(child_id);
+          q.push(child_id);
         }
       }
     }
@@ -655,19 +654,19 @@ public:
     }
     // Step 3: Start sorting from all zero in-degree nodes in affected subgraph
     vector<int> new_order;
-    deque<int> q;
+    queue<int> q;
     for (int ni = 0; ni < num_nodes; ni++) {
-      if (indegrees[ni] == 0) { q.push_back(ni); }
+      if (indegrees[ni] == 0) { q.push(ni); }
     }
     while (!q.empty()) {
       assert(q.size() <= num_nodes);
       node_id = q.front();
-      q.pop_front();
+      q.pop();
       new_order.push_back(node_id);
       for (auto child_id : nodes[node_id].children) {
         if (indegrees[child_id] != -1) {
           indegrees[child_id]--;
-          if (indegrees[child_id] == 0) { q.push_back(child_id); }
+          if (indegrees[child_id] == 0) { q.push(child_id); }
         }
       }
     }
