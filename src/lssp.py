@@ -31,6 +31,7 @@ def get_args():
     # parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument("--magic-steps", "-m", type=int, default=1, help="Number of timesteps until a magic state is ready")
+    parser.add_argument("--show-product-ids", action="store_true", help="Show product IDs when plotting the circuit")
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
@@ -48,7 +49,7 @@ def main():
         topo_graph.plot(".topo")
     circuit = realcircuit.RealCircuit(args)
     if "circuit" in args.plot:
-        circuit.plot()
+        circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:
         circuit.plot_freqs()
     single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)

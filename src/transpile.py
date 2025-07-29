@@ -47,7 +47,7 @@ def main():
         elapsed_t = timer() - start_t
         print(f"Compiled in {elapsed_t:.2f} s")
         dag = PauliProductDAG(circuit)
-        dag_fname = Path(file_name).stem + ".dag.txt"
+        dag_fname = Path(file_name).stem + ".compiled.txt"
         print("Printing DAG to", dag_fname)
         dag.print(dag_fname)
         start_t = timer()
@@ -56,10 +56,10 @@ def main():
         print(f"Transpiled in {elapsed_t:.2f}")
 
         # Save the transpiled DAG
-        out_fname = Path(file_name).stem + ".dag"
+        out_fname = Path(file_name).stem + ".transpiled.txt"
+        print(f"Saving transpiled DAG to {out_fname}")
         with open(f"{out_fname}", "wb") as f:
-            pickle.dump(dag, f)
-            dag.print(out_fname + ".transpiled.txt")
+            dag.print(out_fname)
 
 
 if __name__ == "__main__":
