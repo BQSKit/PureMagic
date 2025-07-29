@@ -7,6 +7,7 @@ import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="networkx backend defined more than once")
     import networkx as nx
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import math
@@ -22,21 +23,14 @@ class RealCircuit(list):
         list.__init__(self)
         self.args = args
         self.num_pauli_products = 0
-        self.num_qubits = 0
+        self.num_qubits = args.min_num_qubits
         self.load_circuit()
 
     def load_circuit(self):
-        f = open(self.args.circuit, "rb")
-        dag = pickle.load(f)
-        dag.print(self.args.circuit + ".txt")
-
-        self.num_qubits = 0
-        for node in dag.nodes.values():
-            self.num_qubits = max(self.num_qubits, node.product.qubits[-1])
-        self.num_qubits += 1
-        for node in dag.nodes.values():
+        dag_df = pd.read_csv(self.args.circuit, sep='\t')
+        for i, row in dag_df.iterrows():
             self.append(pauliproduct.PauliProduct(self.num_qubits))
-            self[-1].set(node.id, node.product, dag.parents(node), dag.children(node))
+            self[-1].set(row["id"], row["product"], row["parents"], row["children"])
 
     def get_layers(self):
         layer_i = 0
@@ -85,8 +79,15 @@ class RealCircuit(list):
             s = str(i) + " " + pauli_product.__str__() + "\n"
         return s
 
+    def print(self, fname):
+        f = open(fname, "w")
+        print("id product children parents", file=f)
+        for i, pauli_product in enumerate(self):
+            print(f"{pauli_product.__str__()}", file=f)
+        f.close()
+
     @timer
-    def plot(self):
+    def plot(self, show_product_ids):
         plt.rcParams["font.size"] = 20
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
         print("Drawing circuit...", circuit_fname)
@@ -113,7 +114,6 @@ class RealCircuit(list):
             if col == max_layer:
                 break
             for pauli_product in layer:
-                show_product_ids = False
                 for start_pos in range(num_rows):
                     if pauli_product.operators[start_pos] != " ":
                         if show_product_ids:
@@ -133,7 +133,7 @@ class RealCircuit(list):
                 for i in range(start_pos, end_pos + 1):
                     if pauli_product.operators[i] == " ":
                         continue
-                    if len(layers) < 100:
+                    if len(layers) < 100 and not show_product_ids:
                         ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
                 rect_height = end_pos - start_pos
                 top_shift = 0.11 * math.sqrt(num_rows)
