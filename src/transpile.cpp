@@ -9,6 +9,7 @@
 #include <set>
 #include <signal.h>
 #include <sstream>
+#include <stack>
 #include <stdexcept>
 #include <stdlib.h>
 #include <string>
@@ -34,6 +35,7 @@ static bool traceon = true;
 #endif
 
 static IntermittentTimer update_topo_timer("update_topo");
+static IntermittentTimer compute_indegree_timer("compute_indegree");
 
 void signal_handler(int signal) {
   void* array[10];
@@ -88,7 +90,7 @@ ostream& operator<<(ostream& os, const set<int>& data) {
 }
 
 ostream& operator<<(ostream& os, const unordered_set<int>& data) {
-  os << "[";
+  os << "(";
   int i = 0;
   for (auto x : data) {
     os << x;
@@ -304,12 +306,13 @@ private:
   set<int> parse_id_list(const string& s) {
     if (s == "[]") { return {}; }
     set<int> ids;
+    if (s == "set()") { return ids; }
     auto tokens = split_string(s.substr(1), ',');
     for (auto& token : tokens) {
       try {
         ids.insert(stoi(token));
       } catch (const exception& ex) {
-        cerr << __LINE__ << ": Exception: " << ex.what() << " s " << s << " " << token << "\n";
+        cerr << __LINE__ << ": Exception: " << ex.what() << " \"" << s << "\" \"" << token << "\"\n";
         throw ex;
       }
     }
@@ -324,8 +327,8 @@ public:
 
   void load_from_string(string& s) {
     const int NUM_SPACE_TOKENS = 4;
-    s = regex_replace(s, regex(", "), ",");
-    auto tokens = split_string(s, ' ');
+    // s = regex_replace(s, regex(", "), ",");
+    auto tokens = split_string(s, '\t');
     if (tokens.size() != NUM_SPACE_TOKENS) {
       throw runtime_error(to_string(__LINE__) + ": Incorrect number of tokens: expected " + to_string(NUM_SPACE_TOKENS) +
                           " but got " + to_string(tokens.size()) + " for line:\n" + s);
@@ -342,7 +345,7 @@ public:
   }
 
   friend ostream& operator<<(ostream& os, const PauliProductDAGNode& node) {
-    os << node.id << " " << node.product << " " << node.children << " " << node.parents;
+    os << node.id << "\t" << node.product << "\t" << node.children << "\t" << node.parents;
     return os;
   }
 
@@ -365,43 +368,14 @@ private:
   vector<int> topological_order;
   int max_qubit = 0;
 
-public:
-  void load_from_file(const string& fname) {
-    cout << "Loading circuit from " << fname << "\n";
-    ifstream f(fname);
-    if (!f) { throw runtime_error("Could not open " + fname + "\n"); }
-    vector<string> lines;
-    string buf;
-    while (getline(f, buf)) {
-      lines.push_back(buf);
+  bool is_bad_topo_order(int node_id) {
+    for (auto child_id : nodes[node_id].children) {
+      if (topological_order[child_id] < topological_order[node_id]) { return true; }
     }
-    cout << "Found " << lines.size() << " lines in " << fname << "\n";
-    nodes.resize(lines.size());
-    topological_order.resize(lines.size());
-    int num_cliffords = 0;
-    int num_edges = 0;
-    for (int i = 0; i < lines.size(); i++) {
-      auto& node = nodes[i];
-      node.load_from_string(lines[i]);
-      assert(node.id == i);
-      if (node.is_root()) { roots.insert(node.id); }
-      if (node.is_clifford()) { num_cliffords++; }
-      topological_order[node.id] = i;
-      for (auto& term : node.product.terms) {
-        max_qubit = max(max_qubit, term.qubit);
-      }
-      num_edges += node.children.size();
+    for (auto parent_id : nodes[node_id].parents) {
+      if (topological_order[parent_id] > topological_order[node_id]) { return true; }
     }
-    cout << "Loaded " << nodes.size() << " products from " << fname << " of which " << num_cliffords << " are cliffords and "
-         << roots.size() << " are roots, with max qubit " << max_qubit << "\n";
-    cout << "Forms a dag with " << nodes.size() << " nodes and " << num_edges << " edges\n";
-  }
-
-  friend ostream& operator<<(ostream& os, const PauliProductDAG& dag) {
-    for (auto& node : dag.nodes) {
-      os << node << "\n";
-    }
-    return os;
+    return false;
   }
 
   bool is_uncommuted_nonclifford(int node_id, set<int>& uncommuted_noncliffords) {
@@ -438,6 +412,7 @@ public:
   // Check if an indirect forward path exists from u -> ... -> v
   bool indirect_path_exists(int u, int v) {
     if (u == v) { return true; }
+    assert(!is_bad_topo_order(u) && !is_bad_topo_order(v));
     int topo_index_u = topological_order[u];
     int topo_index_v = topological_order[v];
     if (topo_index_u > topo_index_v) { return false; }
@@ -480,28 +455,18 @@ public:
     return parent_cliffords;
   }
 
-  int youngest_parent(vector<int>& related_nodes) {
-    int youngest_id = 0;
-    int min_val = numeric_limits<int>::max();
-    for (auto node_id : related_nodes) {
-      if (-topological_order[node_id] < min_val) {
-        min_val = -topological_order[node_id];
-        youngest_id = node_id;
-      }
-    }
-    return youngest_id;
+  int youngest_node(const vector<int>& related_nodes) {
+    return *max_element(related_nodes.begin(), related_nodes.end(),
+                        [topo_order = this->topological_order](const int& x, const int& y) {
+                          return topo_order[x] < topo_order[y];
+                        });
   }
 
-  int oldest_child(vector<int>& related_nodes) {
-    int oldest_id = 0;
-    int max_val = numeric_limits<int>::min();
-    for (auto node_id : related_nodes) {
-      if (-topological_order[node_id] > max_val) {
-        max_val = -topological_order[node_id];
-        oldest_id = node_id;
-      }
-    }
-    return oldest_id;
+  int oldest_node(const vector<int>& related_nodes) {
+    return *min_element(related_nodes.begin(), related_nodes.end(),
+                        [topo_order = this->topological_order](const int& x, const int& y) {
+                          return topo_order[x] < topo_order[y];
+                        });
   }
 
   unordered_map<int, int> parents_by_qubit(int node_id) {
@@ -511,7 +476,7 @@ public:
       for (auto parent_id : nodes[node_id].parents) {
         if (nodes[parent_id].involves_qubit(term.qubit)) { parents_involving_q.push_back(parent_id); }
       }
-      if (!parents_involving_q.empty()) { relation[term.qubit] = youngest_parent(parents_involving_q); }
+      if (!parents_involving_q.empty()) { relation[term.qubit] = youngest_node(parents_involving_q); }
     }
     return relation;
   }
@@ -523,7 +488,7 @@ public:
       for (auto child_id : nodes[node_id].children) {
         if (nodes[child_id].involves_qubit(term.qubit)) { children_involving_q.push_back(child_id); }
       }
-      if (!children_involving_q.empty()) { relation[term.qubit] = oldest_child(children_involving_q); }
+      if (!children_involving_q.empty()) { relation[term.qubit] = oldest_node(children_involving_q); }
     }
     return relation;
   }
@@ -635,6 +600,15 @@ public:
     } else if (nodes[node_id].parents.empty()) {
       roots.insert(node_id);
     }
+    assert(nodes[node_id].id == node_id && nodes[parent_id].id == parent_id);
+  }
+
+  void topo_sort(int node_id, vector<bool>& visited, stack<int>& topo_stack) {
+    visited[node_id] = true;
+    for (auto child_id : nodes[node_id].children) {
+      if (!visited[child_id]) { topo_sort(child_id, visited, topo_stack); }
+    }
+    topo_stack.push(node_id);
   }
 
   // Topological sort starting at node
@@ -642,45 +616,52 @@ public:
     update_topo_timer.start();
     int offset = topological_order[node_id];
     int num_nodes = topological_order.size();
-    // Step 1: Identify affected nodes
-    int subgraph_size = 0;
-    vector<int> indegrees(num_nodes, -1);
+
+    /*
+    vector<bool> visited(num_nodes, false);
+    stack<int> topo_stack;
+    int subgraph_nodes = 0;
+    for (int ni = 0; ni < num_nodes; ni++) {
+      if (topological_order[ni] < offset) { visited[ni] = true; }
+    }
+    if (visited[node_id]) { return; }
+    topo_sort(node_id, visited, topo_stack);
+    vector<int> new_order;
+    for (int ni = 0; !topo_stack.empty(); ni++) {
+      topological_order[topo_stack.top()] = ni + offset;
+      topo_stack.pop();
+    }
+    */
+
+    vector<int> indegrees(num_nodes, 0);
+    compute_indegree_timer.start();
+    //   Step 1: Compute in-degrees inside the affected subgraph
+    int subgraph_nodes = 0;
     for (int ni = 0; ni < num_nodes; ni++) {
       if (topological_order[ni] >= offset) {
-        indegrees[ni] = 0;
-        subgraph_size++;
-      }
-    }
-    //   Step 2: Compute in-degrees inside the affected subgraph
-    int subgraph_nodes = 0;
-    int subgraph_edges = 0;
-    for (int ni = 0; ni < num_nodes; ni++) {
-      if (indegrees[ni] != -1) {
         subgraph_nodes++;
         for (auto child_id : nodes[ni].children) {
-          if (indegrees[child_id] != -1) {
-            subgraph_edges++;
-            indegrees[child_id]++;
-          }
+          if (topological_order[child_id] >= offset) { indegrees[child_id]++; }
         }
       }
     }
-    // Step 3: Start sorting from all zero in-degree nodes in affected subgraph
+    compute_indegree_timer.stop();
+    // Step 2: Start sorting from all zero in-degree nodes in affected subgraph
     vector<int> new_order;
-    new_order.reserve(subgraph_size);
+    new_order.reserve(subgraph_nodes);
     queue<int> q;
     for (int ni = 0; ni < num_nodes; ni++) {
-      if (indegrees[ni] == 0) { q.push(ni); }
+      if (topological_order[ni] >= offset && indegrees[ni] == 0) { q.push(ni); }
     }
-    int num_steps = 0;
+    // int num_steps = 0;
     while (!q.empty()) {
       assert(q.size() <= num_nodes);
       node_id = q.front();
       q.pop();
       new_order.push_back(node_id);
       for (auto child_id : nodes[node_id].children) {
-        num_steps++;
-        if (indegrees[child_id] != -1) {
+        // num_steps++;
+        if (topological_order[child_id] >= offset) {
           indegrees[child_id]--;
           if (indegrees[child_id] == 0) { q.push(child_id); }
         }
@@ -688,19 +669,12 @@ public:
     }
     // cerr << "subgraph nodes " << perc_str(subgraph_nodes, num_nodes) << " edges " << subgraph_edges << " num_steps " <<
     // num_steps
-    //      << " expected " << subgraph_edges << "\n";
-    //  Step 4: Update the topological order map
+    //      << "\n";
+    //   Step 3: Update the topological order map
     for (int ni = 0; ni < new_order.size(); ni++) {
       topological_order[new_order[ni]] = ni + offset;
     }
     update_topo_timer.stop();
-  }
-
-  bool check_topo_order(PauliProductDAGNode& node) {
-    for (auto child_id : node.children) {
-      if (topological_order[child_id] > topological_order[node.id]) { return false; }
-    }
-    return true;
   }
 
   // Commute a clifford operator to the right past a child node.
@@ -709,19 +683,56 @@ public:
     auto& clifford = nodes[clifford_id];
     auto& node = nodes[node_id];
     PauliProduct new_node_prod = clifford.product.commute_right(node.product);
-    DBG("  new product " << new_node_prod << " old product " << node.product << "\n");
     node.product = new_node_prod;
-    DBG("  before swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n");
-    DBG("  topo order before " << topological_order << "\n");
     swap_nodes(clifford_id, node_id);
-    DBG("  after swap " << nodes[clifford_id] << " " << nodes[node_id] << "\n");
-    DBG("  topo order after " << topological_order << "\n");
-    //   If node or clifford has a higher topological order than any of their children, we must recompute the topological order
-    if (!check_topo_order(node) || !check_topo_order(clifford)) {
-      DBG("  Updating topo order starting at " << node_id << "\n");
-      update_topological_order_starting_at(node_id);
-      DBG("  topo order update " << topological_order << "\n");
+    if (is_bad_topo_order(node_id) || is_bad_topo_order(clifford_id)) { update_topological_order_starting_at(node_id); }
+    assert(!is_bad_topo_order(node_id) && !is_bad_topo_order(clifford_id));
+  }
+
+public:
+  void load_from_file(const string& fname) {
+    cout << "Loading circuit from " << fname << "\n";
+    ifstream f(fname);
+    if (!f) { throw runtime_error("Could not open " + fname + "\n"); }
+    vector<string> lines;
+    string buf;
+    // first line is headers
+    getline(f, buf);
+    while (getline(f, buf)) {
+      lines.push_back(buf);
     }
+    cout << "Found " << lines.size() << " lines in " << fname << "\n";
+    nodes.resize(lines.size());
+    topological_order.resize(lines.size());
+    int num_cliffords = 0;
+    int num_edges = 0;
+    for (int i = 0; i < lines.size(); i++) {
+      auto& node = nodes[i];
+      node.load_from_string(lines[i]);
+      assert(node.id == i);
+      if (node.is_root()) { roots.insert(node.id); }
+      if (node.is_clifford()) { num_cliffords++; }
+      topological_order[node.id] = i;
+      for (auto& term : node.product.terms) {
+        max_qubit = max(max_qubit, term.qubit);
+      }
+      num_edges += node.children.size();
+    }
+    for (int ni = 0; ni < nodes.size(); ni++) {
+      assert(!is_bad_topo_order(ni));
+    }
+
+    cout << "Loaded " << nodes.size() << " products from " << fname << " of which " << num_cliffords << " are cliffords and "
+         << roots.size() << " are roots, with max qubit " << max_qubit << "\n";
+    cout << "Forms a dag with " << nodes.size() << " nodes and " << num_edges << " edges\n";
+  }
+
+  friend ostream& operator<<(ostream& os, const PauliProductDAG& dag) {
+    os << "id\tproduct\tchildren\tparents\n";
+    for (auto& node : dag.nodes) {
+      os << node << "\n";
+    }
+    return os;
   }
 
   // Commute Clifford operators to the right past non-Clifford operators
@@ -777,7 +788,7 @@ public:
         for (auto parent_id : node.parents) {
           if (node.children.contains(parent_id)) { throw runtime_error(to_string(__LINE__) + ": loop detected"); }
         }
-        int parent_id = youngest_parent(parent_cliffords);
+        int parent_id = youngest_node(parent_cliffords);
 #ifdef DBGTRACE
         if (parent_cliffords.size() > 1) {
           DBG("youngest parent " << parent_id << "\n");
@@ -801,6 +812,16 @@ public:
 #endif
     }
     cout << "\n";
+    // now check - if we are a nonclifford, we should have no clifford children
+    for (auto& node : nodes) {
+      if (node.is_clifford()) {
+        for (auto child_id : node.children) {
+          if (!nodes[child_id].is_clifford()) {
+            cout << "Found clifford " << node.id << " with nonclifford child " << child_id << "\n";
+          }
+        }
+      }
+    }
   }
 };
 
@@ -823,4 +844,5 @@ int main(int argc, char* argv[]) {
     f.close();
   }
   update_topo_timer.done();
+  compute_indegree_timer.done();
 }
