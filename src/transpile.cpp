@@ -90,7 +90,7 @@ ostream& operator<<(ostream& os, const set<int>& data) {
 }
 
 ostream& operator<<(ostream& os, const unordered_set<int>& data) {
-  os << "(";
+  os << "[";
   int i = 0;
   for (auto x : data) {
     os << x;
@@ -303,9 +303,26 @@ public:
 
 class PauliProductDAGNode {
 private:
-  set<int> parse_id_list(const string& s) {
+  template <typename T>
+  T parse_id_list(const string& s) {
     if (s == "[]") { return {}; }
-    set<int> ids;
+    T ids;
+    if (s == "set()") { return ids; }
+    auto tokens = split_string(s.substr(1), ',');
+    for (auto& token : tokens) {
+      try {
+        ids.insert(stoi(token));
+      } catch (const exception& ex) {
+        cerr << __LINE__ << ": Exception: " << ex.what() << " \"" << s << "\" \"" << token << "\"\n";
+        throw ex;
+      }
+    }
+    return ids;
+  }
+
+  unordered_set<int> parse_id_list_unordered(const string& s) {
+    if (s == "[]") { return {}; }
+    unordered_set<int> ids;
     if (s == "set()") { return ids; }
     auto tokens = split_string(s.substr(1), ',');
     for (auto& token : tokens) {
@@ -322,8 +339,8 @@ private:
 public:
   int id;
   PauliProduct product;
-  set<int> children;
-  set<int> parents;
+  unordered_set<int> children;
+  unordered_set<int> parents;
 
   void load_from_string(string& s) {
     const int NUM_SPACE_TOKENS = 4;
@@ -340,8 +357,8 @@ public:
       throw ex;
     }
     product.load_from_string(tokens[1]);
-    children = parse_id_list(tokens[2]);
-    parents = parse_id_list(tokens[3]);
+    children = parse_id_list<unordered_set<int>>(tokens[2]);
+    parents = parse_id_list<unordered_set<int>>(tokens[3]);
   }
 
   friend ostream& operator<<(ostream& os, const PauliProductDAGNode& node) {
@@ -367,6 +384,8 @@ private:
   unordered_set<int> roots;
   vector<int> topological_order;
   int max_qubit = 0;
+  long topo_steps = 0;
+  int update_topo_calls = 0;
 
   bool is_bad_topo_order(int node_id) {
     for (auto child_id : nodes[node_id].children) {
@@ -521,13 +540,13 @@ private:
     nodes[node_id].children.insert(parent_id);
 
     // Only shared qubits need to be updated
-    set<int> node_qubits;
+    unordered_set<int> node_qubits;
     for (auto& term : nodes[node_id].product.terms) {
       node_qubits.insert(term.qubit);
     }
-    set<int> shared_qubits;
+    vector<int> shared_qubits;
     for (auto& term : nodes[parent_id].product.terms) {
-      if (node_qubits.contains(term.qubit)) { shared_qubits.insert(term.qubit); }
+      if (node_qubits.contains(term.qubit)) { shared_qubits.push_back(term.qubit); }
     }
     DBG("    shared_qubits " << shared_qubits << "\n");
     for (auto qubit : shared_qubits) {
@@ -611,8 +630,13 @@ private:
     topo_stack.push(node_id);
   }
 
+  // struct TopoComp {
+  //   bool operator()(int n1, int n2) const { return topological_order[n1] < topological_order[n2]; }
+  // };
+
   // Topological sort starting at node
   void update_topological_order_starting_at(int node_id) {
+    update_topo_calls++;
     update_topo_timer.start();
     int offset = topological_order[node_id];
     int num_nodes = topological_order.size();
@@ -653,14 +677,24 @@ private:
     for (int ni = 0; ni < num_nodes; ni++) {
       if (topological_order[ni] >= offset && indegrees[ni] == 0) { q.push(ni); }
     }
-    // int num_steps = 0;
+    auto cmp = [topo_order = this->topological_order](int n1, int n2) {
+      return topo_order[n1] < topo_order[n2];
+    };
     while (!q.empty()) {
       assert(q.size() <= num_nodes);
       node_id = q.front();
       q.pop();
       new_order.push_back(node_id);
+      set<int, decltype(cmp)> children(cmp);
       for (auto child_id : nodes[node_id].children) {
-        // num_steps++;
+        children.insert(child_id);
+      }
+      // vector<int> children(nodes[node_id].children.begin(), nodes[node_id].children.end());
+      //  sort(children.begin(), children.end(), [topo_order = this->topological_order](int n1, int n2) {
+      //    return topo_order[n1] < topo_order[n2];
+      //  });
+      for (auto child_id : children) {
+        topo_steps++;
         if (topological_order[child_id] >= offset) {
           indegrees[child_id]--;
           if (indegrees[child_id] == 0) { q.push(child_id); }
@@ -685,8 +719,10 @@ private:
     PauliProduct new_node_prod = clifford.product.commute_right(node.product);
     node.product = new_node_prod;
     swap_nodes(clifford_id, node_id);
-    if (is_bad_topo_order(node_id) || is_bad_topo_order(clifford_id)) { update_topological_order_starting_at(node_id); }
-    assert(!is_bad_topo_order(node_id) && !is_bad_topo_order(clifford_id));
+    if (is_bad_topo_order(node_id) || is_bad_topo_order(clifford_id)) {
+      update_topological_order_starting_at(node_id);
+      assert(!is_bad_topo_order(node_id) && !is_bad_topo_order(clifford_id));
+    }
   }
 
 public:
@@ -773,11 +809,11 @@ public:
         next_tick = num_commuted + update_tick;
       }
 #endif
-      set<int> finished_noncliffords;
+      vector<int> finished_noncliffords;
       for (auto node_id : uncommuted_noncliffords) {
         auto& node = nodes[node_id];
         if (done_commuting_nonclifford(node_id, uncommuted_noncliffords)) {
-          finished_noncliffords.insert(node_id);
+          finished_noncliffords.push_back(node_id);
           DBG("add finished nonclifford " << node_id << "\n");
           continue;
         }
@@ -822,6 +858,7 @@ public:
         }
       }
     }
+    cout << "There were " << topo_steps << " steps in " << update_topo_calls << " calls to update the topological order\n";
   }
 };
 
