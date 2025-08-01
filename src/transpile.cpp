@@ -35,8 +35,9 @@ static bool traceon = true;
 #endif
 
 static IntermittentTimer update_topo_timer("update_topo");
-static IntermittentTimer compute_indegree_timer("compute_indegree");
 static IntermittentTimer swap_nodes_timer("swap_nodes");
+static IntermittentTimer shared_qubits_timer("shared_qubits");
+static IntermittentTimer by_qubit_timer("by_qubit");
 
 void signal_handler(int signal) {
   void* array[10];
@@ -477,17 +478,20 @@ private:
       swap(node_id, parent_id);
       DBG("    parent is child, swapped: " << node_id << " " << parent_id << "\n");
     }
+    by_qubit_timer.start();
     // Find the parents associated with each of node's qubits
     unordered_map<int, int> parent_parents_by_qubit = parents_by_qubit(parent_id);
     unordered_map<int, int> node_children_by_qubit = children_by_qubit(node_id);
     // DBG("    parent_parents_by_qubit " << parent_parents_by_qubit << " node_children_by_qubit " << node_children_by_qubit
     //                                    << "\n");
+    by_qubit_timer.stop();
 
     children[parent_id].erase(node_id);
     parents[parent_id].insert(node_id);
     parents[node_id].erase(parent_id);
     children[node_id].insert(parent_id);
 
+    shared_qubits_timer.start();
     // Only shared qubits need to be updated
     unordered_set<int> node_qubits;
     for (auto& term : products[node_id].terms) {
@@ -497,6 +501,8 @@ private:
     for (auto& term : products[parent_id].terms) {
       if (node_qubits.contains(term.qubit)) { shared_qubits.push_back(term.qubit); }
     }
+    shared_qubits_timer.stop();
+
     DBG("    shared_qubits " << shared_qubits << "\n");
     for (auto qubit : shared_qubits) {
       DBG("      check qubit " << qubit << "\n");
@@ -603,7 +609,6 @@ private:
     */
 
     vector<int> indegrees(num_nodes, 0);
-    compute_indegree_timer.start();
     //   Step 1: Compute in-degrees inside the affected subgraph
     int subgraph_nodes = 0;
     for (int ni = 0; ni < num_nodes; ni++) {
@@ -614,7 +619,6 @@ private:
         }
       }
     }
-    compute_indegree_timer.stop();
     // Step 2: Start sorting from all zero in-degree nodes in affected subgraph
     vector<int> new_order;
     new_order.reserve(subgraph_nodes);
@@ -844,6 +848,7 @@ int main(int argc, char* argv[]) {
     f.close();
   }
   update_topo_timer.done();
-  compute_indegree_timer.done();
   swap_nodes_timer.done();
+  shared_qubits_timer.done();
+  by_qubit_timer.done();
 }
