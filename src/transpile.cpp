@@ -36,6 +36,7 @@ static bool traceon = true;
 
 static IntermittentTimer update_topo_timer("update_topo");
 static IntermittentTimer compute_indegree_timer("compute_indegree");
+static IntermittentTimer swap_nodes_timer("swap_nodes");
 
 void signal_handler(int signal) {
   void* array[10];
@@ -471,7 +472,7 @@ private:
           grandparents -?-> node -> *parent -?-> children
                      |------?--------^
     */
-
+    swap_nodes_timer.start();
     if (children[node_id].contains(parent_id)) {
       swap(node_id, parent_id);
       DBG("    parent is child, swapped: " << node_id << " " << parent_id << "\n");
@@ -567,6 +568,7 @@ private:
     } else if (parents[node_id].empty()) {
       roots.insert(node_id);
     }
+    swap_nodes_timer.stop();
   }
 
   void topo_sort(int node_id, vector<bool>& visited, stack<int>& topo_stack) {
@@ -843,4 +845,5 @@ int main(int argc, char* argv[]) {
   }
   update_topo_timer.done();
   compute_indegree_timer.done();
+  swap_nodes_timer.done();
 }
