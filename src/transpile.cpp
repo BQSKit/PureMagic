@@ -438,28 +438,50 @@ private:
                         });
   }
 
-  unordered_map<int, int> parents_by_qubit(int node_id) {
-    unordered_map<int, int> relation;
+  unordered_map<int, int> relations_by_qubit(int node_id, bool from_children) {
+    unordered_map<int, int> relation_map;
+    unordered_set<int>& relations = (from_children ? children[node_id] : parents[node_id]);
     for (auto& term : products[node_id].terms) {
-      vector<int> parents_involving_q;
-      for (auto parent_id : parents[node_id]) {
-        if (involves_qubit(parent_id, term.qubit)) { parents_involving_q.push_back(parent_id); }
+      int selected_id = -1;
+      int selected_order = 0;
+      for (auto relation_id : relations) {
+        if (involves_qubit(relation_id, term.qubit)) {
+          if ((selected_id == -1) || (from_children && topological_order[relation_id] < selected_order) ||
+              (!from_children && topological_order[relation_id] > selected_order)) {
+            selected_id = relation_id;
+            selected_order = topological_order[relation_id];
+          }
+        }
       }
-      if (!parents_involving_q.empty()) { relation[term.qubit] = youngest_node(parents_involving_q); }
+      if (selected_id != -1) { relation_map[term.qubit] = selected_id; }
     }
-    return relation;
+    return relation_map;
   }
 
-  unordered_map<int, int> children_by_qubit(int node_id) {
-    unordered_map<int, int> relation;
-    for (auto& term : products[node_id].terms) {
-      vector<int> children_involving_q;
-      for (auto child_id : children[node_id]) {
-        if (involves_qubit(child_id, term.qubit)) { children_involving_q.push_back(child_id); }
+  void erase_related(int grandparent_id, int parent_id, int node_id, bool from_children) {
+    if (!children[grandparent_id].contains(parent_id)) { return; }
+    vector<int> related_qubits;
+    if (from_children) {
+      for (auto [q, n] : relations_by_qubit(grandparent_id, true)) {
+        if (n == parent_id) { related_qubits.push_back(q); }
       }
-      if (!children_involving_q.empty()) { relation[term.qubit] = oldest_node(children_involving_q); }
+    } else {
+      for (auto [q, n] : relations_by_qubit(parent_id, false)) {
+        if (n == grandparent_id) { related_qubits.push_back(q); }
+      }
     }
-    return relation;
+
+    bool all_in = true;
+    for (auto q : related_qubits) {
+      if (!involves_qubit(node_id, q)) {
+        all_in = false;
+        break;
+      }
+    }
+    if (all_in) {
+      children[grandparent_id].erase(parent_id);
+      parents[parent_id].erase(grandparent_id);
+    }
   }
 
   // Swap two nodes in the graph
@@ -480,8 +502,8 @@ private:
     }
     by_qubit_timer.start();
     // Find the parents associated with each of node's qubits
-    unordered_map<int, int> parent_parents_by_qubit = parents_by_qubit(parent_id);
-    unordered_map<int, int> node_children_by_qubit = children_by_qubit(node_id);
+    unordered_map<int, int> parent_parents_by_qubit = relations_by_qubit(parent_id, false);
+    unordered_map<int, int> node_children_by_qubit = relations_by_qubit(node_id, true);
     // DBG("    parent_parents_by_qubit " << parent_parents_by_qubit << " node_children_by_qubit " << node_children_by_qubit
     //                                    << "\n");
     by_qubit_timer.stop();
@@ -512,24 +534,8 @@ private:
         if (it != parent_parents_by_qubit.end()) {
           // Update the relationship between grandparent and parent
           int grandparent_id = it->second;
-          if (children[grandparent_id].contains(parent_id)) {
-            // Qubits that relate grandparent and parent
-            vector<int> related_qubits;
-            for (auto [q, n] : children_by_qubit(grandparent_id)) {
-              if (n == parent_id) { related_qubits.push_back(q); }
-            }
-            bool all_in = true;
-            for (auto q : related_qubits) {
-              if (!involves_qubit(node_id, q)) {
-                all_in = false;
-                break;
-              }
-            }
-            if (all_in) {
-              children[grandparent_id].erase(parent_id);
-              parents[parent_id].erase(grandparent_id);
-            }
-          }
+          // Qubits that relate grandparent and parent
+          erase_related(grandparent_id, parent_id, node_id, true);
           children[grandparent_id].insert(node_id);
           parents[node_id].insert(grandparent_id);
         }
@@ -540,24 +546,8 @@ private:
         if (it != node_children_by_qubit.end()) {
           // Update the relationship between node and child
           int child_id = it->second;
-          if (children[node_id].contains(child_id)) {
-            // Qubits that relate node and child
-            vector<int> related_qubits;
-            for (auto [q, n] : parents_by_qubit(child_id)) {
-              if (n == node_id) { related_qubits.push_back(q); }
-            }
-            bool all_in = true;
-            for (auto q : related_qubits) {
-              if (!involves_qubit(parent_id, q)) {
-                all_in = false;
-                break;
-              }
-            }
-            if (all_in) {
-              children[node_id].erase(child_id);
-              parents[child_id].erase(node_id);
-            }
-          }
+          // Qubits that relate node and child
+          erase_related(node_id, child_id, parent_id, false);
           children[parent_id].insert(child_id);
           parents[child_id].insert(parent_id);
         }
