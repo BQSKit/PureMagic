@@ -308,6 +308,7 @@ private:
   vector<unordered_set<int>> parents;
   unordered_set<int> roots;
   vector<int> topological_order;
+
   int max_qubit = 0;
   long topo_steps = 0;
   int update_topo_calls = 0;
@@ -619,19 +620,17 @@ private:
     for (int ni = 0; ni < num_nodes; ni++) {
       if (topological_order[ni] >= offset && indegrees[ni] == 0) { q.push(ni); }
     }
-    auto cmp = [topo_order = this->topological_order](int n1, int n2) {
-      return topo_order[n1] < topo_order[n2];
-    };
     while (!q.empty()) {
       assert(q.size() <= num_nodes);
       node_id = q.front();
       q.pop();
       new_order.push_back(node_id);
-      set<int, decltype(cmp)> sorted_children(cmp);
+      set<int, decltype(*this)> sorted_children(*this);
       for (auto child_id : children[node_id]) {
         if (topological_order[child_id] >= offset) { sorted_children.insert(child_id); }
       }
       for (auto child_id : sorted_children) {
+        // for (auto child_id : children[node_id]) {
         topo_steps++;
         if (topological_order[child_id] >= offset) {
           indegrees[child_id]--;
@@ -686,6 +685,8 @@ private:
   }
 
 public:
+  bool operator()(const int n1, const int n2) { return topological_order[n1] < topological_order[n2]; }
+
   void load_from_file(const string& fname) {
     cout << "Loading circuit from " << fname << "\n";
     ifstream f(fname);
