@@ -4,9 +4,13 @@ extern crate log;
 use lazy_static::lazy_static;
 use log::{debug, warn};
 use num::integer::gcd;
+#[cfg(feature = "pythonapi")]
 use pyo3::prelude::*;
+#[cfg(feature = "pythonapi")]
 use pyo3::types::{PyDict, PyList};
+#[cfg(feature = "pythonapi")]
 use pyo3::FromPyObject;
+#[cfg(feature = "pythonapi")]
 use pyo3::Python;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
@@ -100,8 +104,10 @@ impl IntermittentTimer {
     }
 }
 
+#[cfg(feature = "pythonapi")]
 struct Circuit(PyObject);
 
+#[cfg(feature = "pythonapi")]
 impl Circuit {
     fn iter(&self) -> PyResult<Vec<PyObject>> {
         Python::with_gil(|py| {
@@ -113,12 +119,14 @@ impl Circuit {
     }
 }
 
+#[cfg(feature = "pythonapi")]
 impl FromPyObject<'_> for Circuit {
     fn extract(ob: &PyAny) -> PyResult<Self> {
         Ok(Circuit(ob.into()))
     }
 }
 
+#[cfg(feature = "pythonapi")]
 fn load_circuit(fname: &str) -> io::Result<Circuit> {
     let _timer = Timer::new("load_circuit");
     // Initialize Python
@@ -246,12 +254,7 @@ impl PauliTerm {
         Ok(())
     }
 
-    fn commute_right(
-        &self,
-        rhs: &PauliTerm,
-        angle_numerator: i32,
-        angle_denominator: i32,
-    ) -> PauliTerm {
+    fn commute_right(&self, rhs: &PauliTerm, angle: &Angle) -> PauliTerm {
         // If qubits don't match or bases commute, return rhs unchanged
         if self.qubit != rhs.qubit || basis_commutes_with(self.basis, rhs.basis) {
             return rhs.clone();
@@ -272,7 +275,7 @@ impl PauliTerm {
         new_term.phase = add_phase(new_term.phase, *phase_shift);
         new_term.phase = add_phase(new_term.phase, 1);
         // Additional phase shift based on angle
-        if angle_numerator > angle_denominator {
+        if angle.numerator > angle.denominator {
             new_term.phase = add_phase(new_term.phase, 2);
         }
         new_term
@@ -293,23 +296,87 @@ impl std::fmt::Display for PauliTerm {
 }
 
 #[derive(Clone, Debug)]
+struct Angle {
+    numerator: i32,
+    denominator: i32,
+    is_clifford: bool,
+}
+
+impl Angle {
+    fn new(numerator: i32, denominator: i32) -> Self {
+        let gcd_factor = gcd(numerator, denominator);
+        let numerator = (numerator as f64 / gcd_factor as f64).floor() as i32;
+        let denominator = (denominator as f64 / gcd_factor as f64).floor() as i32;
+        let is_clifford = matches!(denominator, 1 | 2 | 4 | -1 | -2 | -4);
+
+        Angle {
+            numerator,
+            denominator,
+            is_clifford,
+        }
+    }
+
+    fn from_string(s: &str) -> io::Result<Self> {
+        if let Some(angle_str) = s.strip_prefix("Angle(").and_then(|s| s.strip_suffix(")>")) {
+            if angle_str.contains('/') {
+                let nums: Vec<&str> = angle_str.split('/').collect();
+                let numerator = if nums[0].len() > 2 {
+                    nums[0].trim_end_matches("pi").parse().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Invalid numerator: {}", angle_str),
+                        )
+                    })?
+                } else {
+                    1
+                };
+                let denominator = nums[1].parse().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Invalid denominator")
+                })?;
+                Ok(Angle::new(numerator, denominator))
+            } else {
+                let numerator = angle_str
+                    .trim_end_matches("pi")
+                    .parse()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid angle"))?;
+                Ok(Angle::new(numerator, 1))
+            }
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid angle format",
+            ))
+        }
+    }
+}
+
+impl std::fmt::Display for Angle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.denominator == 1 {
+            write!(f, "<Angle({}pi)>", self.numerator)
+        } else if self.numerator == 1 {
+            write!(f, "<Angle(pi/{})>", self.denominator)
+        } else {
+            write!(f, "<Angle({}pi/{})>", self.numerator, self.denominator)
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct PauliProduct {
     terms: Vec<PauliTerm>,
-    angle_numerator: i32,
-    angle_denominator: i32,
-    is_clifford: bool,
+    angle: Angle,
 }
 
 impl PauliProduct {
     fn new() -> Self {
         PauliProduct {
             terms: Vec::new(),
-            angle_numerator: 1,
-            angle_denominator: 1,
-            is_clifford: false,
+            angle: Angle::new(1, 1),
         }
     }
 
+    #[cfg(feature = "pythonapi")]
     /*
     fn from_operation(operation: (&str, Option<f64>, Vec<i32>)) -> Vec<PauliProduct> {
         let (gate, params, location) = operation;
@@ -452,7 +519,7 @@ impl PauliProduct {
         }
     }
      */
-
+    #[cfg(feature = "pythonapi")]
     fn parse_location(&mut self, s: &str) -> io::Result<Vec<i32>> {
         let inner = s
             .trim_start_matches('(')
@@ -476,6 +543,7 @@ impl PauliProduct {
             .collect()
     }
 
+    #[cfg(feature = "pythonapi")]
     fn parse_param_from_op(&mut self, s: &str) -> io::Result<Option<f64>> {
         let inner = s.trim_start_matches('[').trim_end_matches("])@");
 
@@ -491,6 +559,7 @@ impl PauliProduct {
         }
     }
 
+    #[cfg(feature = "pythonapi")]
     fn load_from_op(&mut self, op: &str) -> io::Result<()> {
         let parts: Vec<&str> = op.split('(').collect();
         let (gate, params, location) = (
@@ -510,7 +579,6 @@ impl PauliProduct {
         if parts.len() != 2 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid format"));
         }
-
         // Parse terms
         for term_str in parts[0].split('.') {
             if !term_str.is_empty() {
@@ -519,43 +587,13 @@ impl PauliProduct {
                 self.terms.push(term);
             }
         }
-
         // Parse angle
-        if let Some(angle_str) = parts[1]
-            .strip_prefix("Angle(")
-            .and_then(|s| s.strip_suffix(")>"))
-        {
-            if angle_str.contains('/') {
-                let nums: Vec<&str> = angle_str.split('/').collect();
-                if nums[0].len() > 2 {
-                    self.angle_numerator =
-                        nums[0].trim_end_matches("pi").parse().map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "Invalid numerator: ".to_owned() + angle_str,
-                            )
-                        })?;
-                } else {
-                    self.angle_numerator = 1;
-                }
-                self.angle_denominator = nums[1].parse().map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Invalid denominator")
-                })?;
-            } else {
-                self.angle_numerator = angle_str
-                    .trim_end_matches("pi")
-                    .parse()
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid angle"))?;
-                self.angle_denominator = 1;
-            }
-        }
-        let gcd_factor = gcd(self.angle_numerator, self.angle_denominator);
-        let numerator = self.angle_numerator as f64 / gcd_factor as f64;
-        let denominator = self.angle_denominator as f64 / gcd_factor as f64;
-        self.angle_numerator = numerator.floor() as i32;
-        self.angle_denominator = denominator.floor() as i32;
-        self.is_clifford = matches!(self.angle_denominator, 1 | 2 | 4 | -1 | -2 | -4);
+        self.angle = Angle::from_string(parts[1])?;
         Ok(())
+    }
+
+    fn is_clifford(&self) -> bool {
+        self.angle.is_clifford
     }
 
     fn commutes_with(&self, other: &PauliProduct) -> bool {
@@ -580,7 +618,7 @@ impl PauliProduct {
             return rhs.clone();
         }
         // Ensure we're commuting a Clifford angle rotation
-        if !self.is_clifford {
+        if !self.is_clifford() {
             panic!("Currently only support commuting right of Clifford angles");
         }
         // Use BTreeMap to maintain sorted order by qubit
@@ -600,9 +638,7 @@ impl PauliProduct {
         // Create new product with same size as combined terms
         let mut new_prod = PauliProduct {
             terms: Vec::with_capacity(all_terms_map.len()),
-            angle_numerator: rhs.angle_numerator,
-            angle_denominator: rhs.angle_denominator,
-            is_clifford: rhs.is_clifford,
+            angle: rhs.angle.clone(),
         };
         // Process terms in order of increasing qubit number
         for (_, (left_term, right_term)) in all_terms_map {
@@ -617,11 +653,7 @@ impl PauliProduct {
                 }
                 (Some(left), Some(right)) => {
                     // Both terms exist - apply commutation rules
-                    new_prod.terms.push(left.commute_right(
-                        right,
-                        self.angle_numerator,
-                        self.angle_denominator,
-                    ));
+                    new_prod.terms.push(left.commute_right(right, &self.angle));
                 }
                 (None, None) => unreachable!("Map should not contain empty entries"),
             }
@@ -638,18 +670,7 @@ impl std::fmt::Display for PauliProduct {
             }
             write!(f, "{}", term)?;
         }
-
-        if self.angle_denominator == 1 {
-            write!(f, "<Angle({}pi)>", self.angle_numerator)
-        } else if self.angle_numerator == 1 {
-            write!(f, "<Angle(pi/{})>", self.angle_denominator)
-        } else {
-            write!(
-                f,
-                "<Angle({}pi/{})>",
-                self.angle_numerator, self.angle_denominator
-            )
-        }
+        write!(f, "{}", self.angle)
     }
 }
 
@@ -738,7 +759,7 @@ impl PauliProductDAG {
     }
 
     fn is_clifford(&self, node_id: usize) -> bool {
-        self.products[node_id].is_clifford
+        self.products[node_id].is_clifford()
     }
 
     fn involves_qubit(&self, node_id: usize, qubit: i32) -> bool {
@@ -1106,7 +1127,9 @@ impl PauliProductDAG {
         Ok(())
     }
 
-    fn load_from_circuit(&mut self, circuit: &Circuit) -> io::Result<()> {
+    #[cfg(feature = "pythonapi")]
+    fn load_from_circuit(&mut self, fname: &str) -> io::Result<()> {
+        let circuit = load_circuit(fname)?;
         let items = circuit
             .iter()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))?;
@@ -1294,9 +1317,13 @@ fn main() -> io::Result<()> {
     }
 
     let _timer = Timer::new("main");
-    //let circuit = load_circuit(&args[1])?;
     let mut dag = PauliProductDAG::new();
-    //dag.load_from_circuit(&circuit)?;
+
+    #[cfg(feature = "pythonapi")]
+    dag.load_from_circuit(&args[1])?;
+    #[cfg(feature = "pythonapi")]
+    std::process::exit(0);
+
     dag.load_from_file(&args[1])?;
 
     let fname = format!("{}-loaded.txt", args[1]);
