@@ -884,7 +884,7 @@ impl PauliProductDAG {
         );
         let mut num_commuted = 0;
         let num_uncommuted = uncommuted_noncliffords.len();
-        let update_tick = (num_uncommuted as f64 / 100.0) as usize;
+        let update_tick = (num_uncommuted as f64 / 20.0) as usize;
         let mut next_tick = update_tick;
         let mut loops = 0;
         while !uncommuted_noncliffords.is_empty() {
