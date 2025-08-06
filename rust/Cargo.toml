@@ -10,6 +10,7 @@ description = "A quantum circuit transformation tool for Pauli products"
 thiserror = "1.0"
 anyhow = "1.0"
 num = "0.4"
+lazy_static = "1.4"
 
 # Command line argument parsing
 clap = { version = "4.3", features = ["derive"] }
@@ -23,7 +24,6 @@ colored = "2.0"
 rayon = "1.7"     # For parallel processing
 dashmap = "5.4"   # For concurrent maps
 parking_lot = "0.12" # More efficient mutexes
-#math = "0.11.0"
 
 [dev-dependencies]
 criterion = "0.5"  # For benchmarking
