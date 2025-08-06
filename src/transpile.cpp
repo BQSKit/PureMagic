@@ -36,8 +36,6 @@ static bool traceon = true;
 
 static IntermittentTimer update_topo_timer("update_topo");
 static IntermittentTimer swap_nodes_timer("swap_nodes");
-static IntermittentTimer shared_qubits_timer("shared_qubits");
-static IntermittentTimer by_qubit_timer("by_qubit");
 
 void signal_handler(int signal) {
   void* array[10];
@@ -515,20 +513,17 @@ private:
       swap(node_id, parent_id);
       DBG("  parent is child, swapped: " << node_id << " " << parent_id << "\n");
     }
-    by_qubit_timer.start();
     // Find the parents associated with each of node's qubits
     unordered_map<int, int> parent_parents_by_qubit = relations_by_qubit(parent_id, false);
     unordered_map<int, int> node_children_by_qubit = relations_by_qubit(node_id, true);
     // DBG("    parent_parents_by_qubit " << parent_parents_by_qubit << " node_children_by_qubit " << node_children_by_qubit
     //                                    << "\n");
-    by_qubit_timer.stop();
 
     children[parent_id].erase(node_id);
     parents[parent_id].insert(node_id);
     parents[node_id].erase(parent_id);
     children[node_id].insert(parent_id);
 
-    shared_qubits_timer.start();
     // Only shared qubits need to be updated
     unordered_set<int> node_qubits;
     for (auto& term : products[node_id].terms) {
@@ -538,7 +533,6 @@ private:
     for (auto& term : products[parent_id].terms) {
       if (node_qubits.contains(term.qubit)) { shared_qubits.push_back(term.qubit); }
     }
-    shared_qubits_timer.stop();
 
     // DBG("    shared_qubits " << shared_qubits << "\n");
     for (auto qubit : shared_qubits) {
@@ -724,7 +718,7 @@ public:
     int num_commuted = 0;
     int loops = 0;
     int num_uncommuted = uncommuted_noncliffords.size();
-    int update_tick = (double)num_uncommuted / 100.0;
+    int update_tick = (double)num_uncommuted / 20.0;
     int next_tick = update_tick;
 
     while (uncommuted_noncliffords.size() > 0) {
@@ -797,6 +791,4 @@ int main(int argc, char* argv[]) {
   }
   update_topo_timer.done();
   swap_nodes_timer.done();
-  shared_qubits_timer.done();
-  by_qubit_timer.done();
 }
