@@ -1,6 +1,7 @@
 extern crate env_logger;
 extern crate log;
 
+use clap::Parser;
 use lazy_static::lazy_static;
 use log::{debug, warn};
 use num::integer::gcd;
@@ -1307,35 +1308,50 @@ impl std::fmt::Display for PauliProductDAG {
     }
 }
 
-fn main() -> io::Result<()> {
-    env_logger::init();
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Input circuit file path
+    #[arg(help = "Path to the input circuit file")]
+    input_file: String,
 
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <input_file>", args[0]);
-        std::process::exit(1);
+    /// Enable logging
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
+}
+
+fn main() -> io::Result<()> {
+    let args = Args::parse();
+    if args.verbose {
+        env_logger::init();
+    } else {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 
     let _timer = Timer::new("main");
     let mut dag = PauliProductDAG::new();
 
     #[cfg(feature = "pythonapi")]
-    dag.load_from_circuit(&args[1])?;
-    #[cfg(feature = "pythonapi")]
-    std::process::exit(0);
+    {
+        dag.load_from_circuit(&args.input_file)?;
+        std::process::exit(0);
+    }
 
-    dag.load_from_file(&args[1])?;
+    #[cfg(not(feature = "pythonapi"))]
+    {
+        dag.load_from_file(&args.input_file)?;
 
-    let fname = format!("{}-loaded.txt", args[1]);
-    println!("Saving loaded circuit to {}", fname);
-    let mut f = File::create(fname)?;
-    writeln!(f, "{}", dag)?;
+        let fname = format!("{}-loaded.txt", &args.input_file);
+        println!("Saving loaded circuit to {}", fname);
+        let mut f = File::create(fname)?;
+        writeln!(f, "{}", dag)?;
 
-    dag.commute_all_cliffords();
-    let fname = format!("{}-transpiled.txt", args[1]);
-    println!("Saving transpiled circuit to {}", fname);
-    let mut f = File::create(fname)?;
-    write!(f, "{}", dag)?;
+        dag.commute_all_cliffords();
+        let fname = format!("{}-transpiled.txt", &args.input_file);
+        println!("Saving transpiled circuit to {}", fname);
+        let mut f = File::create(fname)?;
+        write!(f, "{}", dag)?;
+    }
 
     dag.update_topo_timer.done();
     dag.swap_nodes_timer.done();

@@ -66,7 +66,7 @@ lto = true
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
 
 [features]
-#default = ["pythonapi"]
-default = []
+default = ["pythonapi"]
+#default = []
 pythonapi = []
 
