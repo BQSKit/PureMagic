@@ -23,7 +23,7 @@
 
 using namespace std;
 
-#define DBGTRACE
+// #define DBGTRACE
 static bool traceon = true;
 
 #ifdef DBGTRACE

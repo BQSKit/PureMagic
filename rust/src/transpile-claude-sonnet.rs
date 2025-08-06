@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 struct PauliTerm {
@@ -42,10 +42,65 @@ impl Timer {
 impl Drop for Timer {
     fn drop(&mut self) {
         println!(
-            "{} took {:.2} s",
+            "\x1b[36mTiming: {} took {:.2} s\x1b[0m",
             self.name,
             self.start.elapsed().as_secs_f64()
         );
+    }
+}
+
+#[derive(Debug)]
+pub struct IntermittentTimer {
+    start_time: Option<Instant>,
+    total_elapsed: Duration,
+    last_interval: Duration,
+    name: String,
+    interval_label: String,
+}
+
+impl IntermittentTimer {
+    pub fn new(name: &str, interval_label: &str) -> Self {
+        IntermittentTimer {
+            start_time: None,
+            total_elapsed: Duration::new(0, 0),
+            last_interval: Duration::new(0, 0),
+            name: name.to_string(),
+            interval_label: interval_label.to_string(),
+        }
+    }
+
+    pub fn done(&self) {
+        println!(
+            "\x1b[36mTiming: {} took {:.2} s\x1b[0m",
+            self.name,
+            self.total_elapsed.as_secs_f64()
+        );
+    }
+
+    pub fn get_final(&self) -> String {
+        format!("{}: {:.2}", self.name, self.total_elapsed.as_secs_f64())
+    }
+
+    pub fn start(&mut self) {
+        if !self.interval_label.is_empty() {
+            println!("{:<40}:", self.interval_label);
+        }
+        self.start_time = Some(Instant::now());
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(start) = self.start_time.take() {
+            self.last_interval = start.elapsed();
+            self.total_elapsed += self.last_interval;
+
+            if !self.interval_label.is_empty() {
+                println!("\x1b[34m{:.2} s\x1b[0m", self.last_interval.as_secs_f64());
+            }
+        }
+    }
+
+    pub fn get_interval(&self) -> f64 {
+        self.last_interval.as_secs_f64()
     }
 }
 
@@ -342,6 +397,8 @@ struct PauliProductDAG {
     topo_steps: usize,
     update_topo_calls: usize,
     num_nodes: usize,
+    update_topo_timer: IntermittentTimer,
+    swap_nodes_timer: IntermittentTimer,
 }
 
 impl PauliProductDAG {
@@ -356,6 +413,8 @@ impl PauliProductDAG {
             topo_steps: 0,
             update_topo_calls: 0,
             num_nodes: 0,
+            update_topo_timer: IntermittentTimer::new("update_topo", ""),
+            swap_nodes_timer: IntermittentTimer::new("swap_nodes", ""),
         }
     }
 
@@ -620,7 +679,7 @@ impl PauliProductDAG {
         grandparents -?-> node -> *parent -?-> children
                    |------?--------^
         */
-        //let _timer = Timer::new("swap_nodes");
+        self.swap_nodes_timer.start();
         let mut node_id = param_node_id;
         let mut parent_id = param_parent_id;
         // Check if parent is actually a child
@@ -676,12 +735,14 @@ impl PauliProductDAG {
         } else if self.parents[node_id].is_empty() {
             self.roots.insert(node_id);
         }
+        self.swap_nodes_timer.stop();
     }
 
     fn update_topological_order_starting_at(&mut self, node_id: usize) {
         debug!("Updating topological order starting at {}", node_id);
         debug!("Current topo order: {:?}", self.topological_order);
         self.update_topo_calls += 1;
+        self.update_topo_timer.start();
         let offset = self.topological_order[node_id];
         let mut indegrees = vec![0; self.num_nodes];
         let mut subgraph_nodes = 0;
@@ -726,6 +787,7 @@ impl PauliProductDAG {
             self.topological_order[node] = ni + offset;
         }
         debug!("New topo order: {:?}", self.topological_order);
+        self.update_topo_timer.stop();
     }
 
     fn load_from_file(&mut self, fname: &str) -> io::Result<()> {
@@ -947,7 +1009,9 @@ fn main() -> io::Result<()> {
     let fname = format!("{}-transpiled.txt", args[1]);
     println!("Saving transpiled circuit to {}", fname);
     let mut f = File::create(fname)?;
-    writeln!(f, "{}", dag)?;
+    write!(f, "{}", dag)?;
 
+    dag.update_topo_timer.done();
+    dag.swap_nodes_timer.done();
     Ok(())
 }
