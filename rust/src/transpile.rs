@@ -4,6 +4,10 @@ extern crate log;
 use lazy_static::lazy_static;
 use log::{debug, warn};
 use num::integer::gcd;
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
+use pyo3::FromPyObject;
+use pyo3::Python;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::File;
@@ -15,14 +19,6 @@ struct PauliTerm {
     basis: char,
     phase: i32,
     qubit: i32,
-}
-
-#[derive(Clone, Debug)]
-struct PauliProduct {
-    terms: Vec<PauliTerm>,
-    angle_numerator: i32,
-    angle_denominator: i32,
-    is_clifford: bool,
 }
 
 struct Timer {
@@ -102,6 +98,74 @@ impl IntermittentTimer {
     pub fn get_interval(&self) -> f64 {
         self.last_interval.as_secs_f64()
     }
+}
+
+struct Circuit(PyObject);
+
+impl Circuit {
+    fn iter(&self) -> PyResult<Vec<PyObject>> {
+        Python::with_gil(|py| {
+            // Convert circuit to iterator using __iter__
+            let iter = self.0.as_ref(py).iter()?;
+            // Collect all items into a Vec
+            iter.map(|item| item.map(|x| x.into_py(py))).collect()
+        })
+    }
+}
+
+impl FromPyObject<'_> for Circuit {
+    fn extract(ob: &PyAny) -> PyResult<Self> {
+        Ok(Circuit(ob.into()))
+    }
+}
+
+fn load_circuit(fname: &str) -> io::Result<Circuit> {
+    let _timer = Timer::new("load_circuit");
+    // Initialize Python
+    Python::with_gil(|py| -> PyResult<Circuit> {
+        // Import required modules
+        let bqskit_circuit = py.import("bqskit.ir.circuit")?;
+        let bqskit_compiler = py.import("bqskit.compiler")?;
+        let bqskit_passes = py.import("bqskit.passes")?;
+
+        // Create the decomposition instance
+        let decomp = bqskit_passes.getattr("ZXZXZDecomposition")?.call0()?;
+
+        // Create ForEachBlockPass arguments
+        let loop_body = PyList::new(py, &[decomp]);
+        let filter_lambda = py.eval("lambda x: x.num_qudits == 1", None, None)?;
+
+        // Create kwargs dictionary
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("loop_body", loop_body)?;
+        kwargs.set_item("collection_filter", filter_lambda)?;
+
+        // Create passes list
+        let foreach_pass = bqskit_passes
+            .getattr("ForEachBlockPass")?
+            .call((), Some(kwargs))?;
+
+        let group_pass = bqskit_passes.getattr("GroupSingleQuditGatePass")?.call0()?;
+
+        let passes = PyList::new(py, &[group_pass, foreach_pass]);
+
+        // Load and transform circuit
+        let circuit = bqskit_circuit
+            .getattr("Circuit")?
+            .call_method1("from_file", (fname,))?;
+
+        println!("Decomposed");
+        // Remove measurements
+        circuit.call_method0("remove_all_measurements")?;
+        println!("Removed measurements");
+        // Compile circuit
+        let compiler = bqskit_compiler.getattr("Compiler")?.call0()?;
+        let circuit = compiler.call_method1("compile", (circuit, passes))?;
+        // Unfold all
+        circuit.call_method0("unfold_all")?;
+        Ok(circuit.extract()?)
+    })
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))
 }
 
 // Constants needed for commutation rules
@@ -228,6 +292,14 @@ impl std::fmt::Display for PauliTerm {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PauliProduct {
+    terms: Vec<PauliTerm>,
+    angle_numerator: i32,
+    angle_denominator: i32,
+    is_clifford: bool,
+}
+
 impl PauliProduct {
     fn new() -> Self {
         PauliProduct {
@@ -236,6 +308,201 @@ impl PauliProduct {
             angle_denominator: 1,
             is_clifford: false,
         }
+    }
+
+    /*
+    fn from_operation(operation: (&str, Option<f64>, Vec<i32>)) -> Vec<PauliProduct> {
+        let (gate, params, location) = operation;
+
+        // FIXME: not sure that this is how a Dagger gate is indicated.
+        // Define angles based on dagger flag
+        let dagger = gate.ends_with("dg");
+        let base_gate = if dagger {
+            gate.trim_end_matches("dg")
+        } else {
+            gate
+        };
+
+        let (pi_2, pi_4, pi7_4, pi_8, pi15_8) = if dagger {
+            (
+                Angle::new(1, 2),
+                Angle::new(7, 4),
+                Angle::new(1, 4),
+                Angle::new(15, 8),
+                Angle::new(1, 8),
+            )
+        } else {
+            (
+                Angle::new(1, 2),
+                Angle::new(1, 4),
+                Angle::new(7, 4),
+                Angle::new(1, 8),
+                Angle::new(15, 8),
+            )
+        };
+
+        match base_gate {
+            // Pauli gates (X, Y, Z) -> (pi/2)
+            "x" | "y" | "z" => {
+                let qubit = location[0];
+                let axis = match base_gate {
+                    "x" => PauliX::new(),
+                    "y" => PauliY::new(),
+                    "z" => PauliZ::new(),
+                    _ => panic!("No known Pauli basis for {}", gate),
+                };
+                let spec = PauliTerm::new(qubit, axis, pi_2);
+                vec![PauliProduct::new(vec![spec])]
+            }
+
+            // Single qubit Clifford gates
+            "s" | "sdg" => {
+                let mut phase = if base_gate == "s" { pi_4 } else { pi7_4 };
+                phase.sign = if gate == "tdg" { -1 } else { 1 };
+                let qubit = location[0];
+                let axis = PauliZ::new();
+                let spec = PauliTerm::new(qubit, axis, phase);
+                vec![PauliProduct::new(vec![spec])]
+            }
+
+            "sx" => {
+                let qubit = location[0];
+                let axis = PauliX::new();
+                let spec = PauliTerm::new(qubit, axis, pi_4);
+                vec![PauliProduct::new(vec![spec])]
+            }
+
+            "h" => {
+                let qubit = location[0];
+                let s1 = PauliTerm::new(qubit, PauliZ::new(), pi_4);
+                let s2 = PauliTerm::new(qubit, PauliX::new(), pi_4);
+                let s3 = PauliTerm::new(qubit, PauliZ::new(), pi_4);
+                vec![
+                    PauliProduct::new(vec![s1]),
+                    PauliProduct::new(vec![s2]),
+                    PauliProduct::new(vec![s3]),
+                ]
+            }
+
+            // Two qubit Clifford gates
+            "cx" => {
+                let qubit_a = location[0];
+                let qubit_b = location[1];
+                let s1 = PauliTerm::new(qubit_a, PauliZ::new(), pi_4);
+                let s2 = PauliTerm::new(qubit_b, PauliX::new(), pi_4);
+                let s3 = PauliTerm::new(qubit_a, PauliZ::new(), pi7_4);
+                let s4 = PauliTerm::new(qubit_b, PauliX::new(), pi7_4);
+                vec![
+                    PauliProduct::new(vec![s1, s2]),
+                    PauliProduct::new(vec![s3]),
+                    PauliProduct::new(vec![s4]),
+                ]
+            }
+
+            "cz" => {
+                let qubit_a = location[0];
+                let qubit_b = location[1];
+                let s1 = PauliTerm::new(qubit_a, PauliZ::new(), pi_4);
+                let s2 = PauliTerm::new(qubit_b, PauliZ::new(), pi_4);
+                let s3 = PauliTerm::new(qubit_a, PauliZ::new(), pi7_4);
+                let s4 = PauliTerm::new(qubit_b, PauliZ::new(), pi7_4);
+                vec![
+                    PauliProduct::new(vec![s1, s2]),
+                    PauliProduct::new(vec![s3]),
+                    PauliProduct::new(vec![s4]),
+                ]
+            }
+
+            // T gates
+            "t" | "tdg" => {
+                let phase = if base_gate == "t" { pi_8 } else { pi15_8 };
+                let qubit = location[0];
+                let axis = PauliZ::new();
+                let spec = PauliTerm::new(qubit, axis, phase);
+                vec![PauliProduct::new(vec![spec])]
+            }
+
+            // Rotation gates
+            "rx" | "ry" | "rz" => {
+                let angle = match params {
+                    Some(a) => {
+                        if dagger {
+                            -a
+                        } else {
+                            a
+                        }
+                    }
+                    None => panic!("Rotation gate requires angle parameter"),
+                };
+                let qubit = location[0];
+                let axis = match base_gate {
+                    "rx" => PauliX::new(),
+                    "ry" => PauliY::new(),
+                    "rz" => PauliZ::new(),
+                    _ => unreachable!(),
+                };
+                let phase = Angle::from_float(angle);
+                let spec = PauliTerm::new(qubit, axis, phase);
+                vec![PauliProduct::new(vec![spec])]
+            }
+
+            "barrier" => vec![],
+
+            _ => panic!("No known transpilation rule for {}", gate),
+        }
+    }
+     */
+
+    fn parse_location(&mut self, s: &str) -> io::Result<Vec<i32>> {
+        let inner = s
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim_end_matches(','); // Handle trailing comma
+
+        if inner.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        inner
+            .split(',')
+            .map(|x| {
+                x.trim().parse::<i32>().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to parse location number: {}", e),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn parse_param_from_op(&mut self, s: &str) -> io::Result<Option<f64>> {
+        let inner = s.trim_start_matches('[').trim_end_matches("])@");
+
+        if inner.is_empty() {
+            Ok(None)
+        } else {
+            inner.parse::<f64>().map(Some).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to parse float: {}", e),
+                )
+            })
+        }
+    }
+
+    fn load_from_op(&mut self, op: &str) -> io::Result<()> {
+        let parts: Vec<&str> = op.split('(').collect();
+        let (gate, params, location) = (
+            parts[0],
+            self.parse_param_from_op(parts[1])?,
+            self.parse_location(parts[2])?,
+        );
+        println!(
+            "gate: {}, params: {:?}, location: {:?}",
+            gate, params, location
+        );
+        Ok(())
     }
 
     fn load_from_string(&mut self, s: &str) -> io::Result<()> {
@@ -839,6 +1106,36 @@ impl PauliProductDAG {
         Ok(())
     }
 
+    fn load_from_circuit(&mut self, circuit: &Circuit) -> io::Result<()> {
+        let items = circuit
+            .iter()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))?;
+
+        println!("Circuit has {} operations", items.len());
+
+        for (_i, item) in items.iter().enumerate() {
+            let product = Python::with_gil(|py| -> io::Result<PauliProduct> {
+                let item_str = item
+                    .as_ref(py)
+                    .str()
+                    .map_err(|e| {
+                        io::Error::new(io::ErrorKind::Other, format!("Python str error: {}", e))
+                    })?
+                    .extract::<String>()
+                    .map_err(|e| {
+                        io::Error::new(io::ErrorKind::Other, format!("Python extract error: {}", e))
+                    })?;
+
+                let mut product = PauliProduct::new();
+                product.load_from_op(&item_str)?;
+                Ok(product)
+            })?;
+
+            self.products.push(product);
+        }
+        Ok(())
+    }
+
     fn commute_clifford_right(&mut self, clifford_id: usize, node_id: usize) {
         if !self.is_clifford(clifford_id) {
             return;
@@ -997,9 +1294,11 @@ fn main() -> io::Result<()> {
     }
 
     let _timer = Timer::new("main");
+    //let circuit = load_circuit(&args[1])?;
     let mut dag = PauliProductDAG::new();
-
+    //dag.load_from_circuit(&circuit)?;
     dag.load_from_file(&args[1])?;
+
     let fname = format!("{}-loaded.txt", args[1]);
     println!("Saving loaded circuit to {}", fname);
     let mut f = File::create(fname)?;
@@ -1013,5 +1312,6 @@ fn main() -> io::Result<()> {
 
     dag.update_topo_timer.done();
     dag.swap_nodes_timer.done();
+
     Ok(())
 }

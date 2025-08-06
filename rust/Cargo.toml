@@ -25,6 +25,13 @@ rayon = "1.7"     # For parallel processing
 dashmap = "5.4"   # For concurrent maps
 parking_lot = "0.12" # More efficient mutexes
 
+# Python bindings
+pyo3 = { version = "0.19", features = ["auto-initialize"] }
+numpy = "0.19"
+
+[dependencies.pyo3-built]
+version = "0.4"
+
 [dev-dependencies]
 criterion = "0.5"  # For benchmarking
 tempfile = "3.7"   # For temporary test files
@@ -32,7 +39,7 @@ pretty_assertions = "1.3" # For better test output
 
 [[bin]]
 name = "transpile"
-path = "src/transpile-claude-sonnet.rs"
+path = "src/transpile.rs"
 
 [profile.release]
 opt-level = 3
