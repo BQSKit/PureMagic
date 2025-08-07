@@ -5,13 +5,9 @@ use clap::Parser;
 use lazy_static::lazy_static;
 use log::{debug, warn};
 use num::integer::gcd;
-#[cfg(feature = "pythonapi")]
 use pyo3::prelude::*;
-#[cfg(feature = "pythonapi")]
 use pyo3::types::{PyDict, PyList};
-#[cfg(feature = "pythonapi")]
 use pyo3::FromPyObject;
-#[cfg(feature = "pythonapi")]
 use pyo3::Python;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
@@ -98,10 +94,8 @@ impl IntermittentTimer {
     }
 }
 
-#[cfg(feature = "pythonapi")]
 struct Circuit(PyObject);
 
-#[cfg(feature = "pythonapi")]
 impl Circuit {
     fn iter(&self) -> PyResult<Vec<PyObject>> {
         Python::with_gil(|py| {
@@ -113,14 +107,12 @@ impl Circuit {
     }
 }
 
-#[cfg(feature = "pythonapi")]
 impl FromPyObject<'_> for Circuit {
     fn extract(ob: &PyAny) -> PyResult<Self> {
         Ok(Circuit(ob.into()))
     }
 }
 
-#[cfg(feature = "pythonapi")]
 fn load_circuit(fname: &str) -> io::Result<Circuit> {
     let _timer = Timer::new("load_circuit");
     // Initialize Python
@@ -780,7 +772,6 @@ impl PauliProductDAG {
         self.update_topo_timer.stop();
     }
 
-    #[cfg(feature = "pythonapi")]
     fn parse_location(s: &str) -> io::Result<Vec<i32>> {
         let inner = s
             .trim_start_matches('(')
@@ -804,7 +795,6 @@ impl PauliProductDAG {
             .collect()
     }
 
-    #[cfg(feature = "pythonapi")]
     fn parse_param_from_op(s: &str) -> io::Result<Option<f64>> {
         let inner = s.trim_start_matches('[').trim_end_matches("])@");
 
@@ -820,7 +810,6 @@ impl PauliProductDAG {
         }
     }
 
-    #[cfg(feature = "pythonapi")]
     fn products_from_operation(op: &str) -> io::Result<Vec<PauliProduct>> {
         let parts: Vec<&str> = op.split('(').collect();
         let (gate_name, params, location) = (
@@ -983,7 +972,6 @@ impl PauliProductDAG {
         })
     }
 
-    #[cfg(feature = "pythonapi")]
     fn from_circuit(&mut self, fname: &str) -> io::Result<()> {
         let circuit = load_circuit(fname)?;
         let items = circuit
@@ -1223,20 +1211,11 @@ fn main() -> io::Result<()> {
     let _timer = Timer::new("main");
     let mut dag = PauliProductDAG::new();
 
-    #[cfg(feature = "pythonapi")]
-    {
-        dag.from_circuit(&args.input_file)?;
-        let fname = format!("{}.compiled.txt", &args.input_file);
-        println!("Saving compiled circuit to {}", fname);
-        let mut f = File::create(fname)?;
-        write!(f, "{}", dag)?;
-    }
-
-    //dag.load_from_file(&args.input_file)?;
-    //let fname = format!("{}-loaded.txt", &args.input_file);
-    //println!("Saving loaded circuit to {}", fname);
-    //let mut f = File::create(fname)?;
-    //writeln!(f, "{}", dag)?;
+    dag.from_circuit(&args.input_file)?;
+    let fname = format!("{}.compiled.txt", &args.input_file);
+    println!("Saving compiled circuit to {}", fname);
+    let mut f = File::create(fname)?;
+    write!(f, "{}", dag)?;
 
     dag.commute_all_cliffords();
 

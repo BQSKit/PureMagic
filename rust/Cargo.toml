@@ -68,7 +68,8 @@ lto = true
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
 
 [features]
-default = ["pythonapi"]
-#default = []
-pythonapi = []
+default = []
+# to enable a feature. Use #[cfg(feature = "somefeature")] in the code before the function or line to enable
+#default = ["somefeature"]
+#somefeature = []
 
