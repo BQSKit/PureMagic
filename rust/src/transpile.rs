@@ -5,8 +5,6 @@ use clap::Parser;
 use lazy_static::lazy_static;
 use log::{debug, warn};
 use num::integer::gcd;
-use num::FromPrimitive;
-use num_rational::Ratio;
 #[cfg(feature = "pythonapi")]
 use pyo3::prelude::*;
 #[cfg(feature = "pythonapi")]
@@ -152,21 +150,30 @@ fn load_circuit(fname: &str) -> io::Result<Circuit> {
         let group_pass = bqskit_passes.getattr("GroupSingleQuditGatePass")?.call0()?;
 
         let passes = PyList::new(py, &[group_pass, foreach_pass]);
-
+        let mut file_read_timer = IntermittentTimer::new("reading circuit from file", "");
+        file_read_timer.start();
         // Load and transform circuit
         let circuit = bqskit_circuit
             .getattr("Circuit")?
             .call_method1("from_file", (fname,))?;
-
-        println!("Decomposed");
+        file_read_timer.stop();
+        file_read_timer.done();
+        let mut remove_measurements_timer =
+            IntermittentTimer::new("removing measurements from circuit", "");
+        remove_measurements_timer.start();
         // Remove measurements
         circuit.call_method0("remove_all_measurements")?;
-        println!("Removed measurements");
+        remove_measurements_timer.stop();
+        remove_measurements_timer.done();
+        let mut compile_timer = IntermittentTimer::new("compiling circuit", "");
+        compile_timer.start();
         // Compile circuit
         let compiler = bqskit_compiler.getattr("Compiler")?.call0()?;
         let circuit = compiler.call_method1("compile", (circuit, passes))?;
         // Unfold all
         circuit.call_method0("unfold_all")?;
+        compile_timer.stop();
+        compile_timer.done();
         Ok(circuit.extract()?)
     })
     .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))
@@ -1165,7 +1172,7 @@ impl PauliProductDAG {
     }
 
     #[cfg(feature = "pythonapi")]
-    fn load_from_circuit(&mut self, fname: &str) -> io::Result<()> {
+    fn from_circuit(&mut self, fname: &str) -> io::Result<()> {
         let circuit = load_circuit(fname)?;
         let items = circuit
             .iter()
@@ -1406,26 +1413,22 @@ fn main() -> io::Result<()> {
 
     #[cfg(feature = "pythonapi")]
     {
-        dag.load_from_circuit(&args.input_file)?;
+        dag.from_circuit(&args.input_file)?;
         let fname = format!("{}.compiled.txt", &args.input_file);
         println!("Saving compiled circuit to {}", fname);
         let mut f = File::create(fname)?;
         write!(f, "{}", dag)?;
     }
 
-    #[cfg(not(feature = "pythonapi"))]
-    {
-        dag.load_from_file(&args.input_file)?;
+    //dag.load_from_file(&args.input_file)?;
+    //let fname = format!("{}-loaded.txt", &args.input_file);
+    //println!("Saving loaded circuit to {}", fname);
+    //let mut f = File::create(fname)?;
+    //writeln!(f, "{}", dag)?;
 
-        let fname = format!("{}-loaded.txt", &args.input_file);
-        println!("Saving loaded circuit to {}", fname);
-        let mut f = File::create(fname)?;
-        writeln!(f, "{}", dag)?;
+    dag.commute_all_cliffords();
 
-        dag.commute_all_cliffords();
-    }
-
-    let fname = format!("{}-transpiled.txt", &args.input_file);
+    let fname = format!("{}.transpiled.txt", &args.input_file);
     println!("Saving transpiled circuit to {}", fname);
     let mut f = File::create(fname)?;
     write!(f, "{}", dag)?;
