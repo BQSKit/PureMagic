@@ -11,6 +11,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 num = "0.4"
 lazy_static = "1.4"
+num-rational = "0.4"  # For Fraction support
 
 # Command line argument parsing
 clap = { version = "4.3", features = ["derive"] }
@@ -28,6 +29,7 @@ parking_lot = "0.12" # More efficient mutexes
 # Python bindings
 pyo3 = { version = "0.19", features = ["auto-initialize"] }
 numpy = "0.19"
+fractions = "0.1.0"
 
 [dependencies.pyo3-built]
 version = "0.4"

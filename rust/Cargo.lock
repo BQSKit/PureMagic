@@ -308,6 +308,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "fractions"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a297f41f049ce682359b07432298f4f7452c8aa1b4e33b7e87053bb3f49c305a"
+
+[[package]]
 name = "getrandom"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -445,9 +451,11 @@ dependencies = [
  "criterion",
  "dashmap",
  "env_logger",
+ "fractions",
  "lazy_static",
  "log",
  "num",
+ "num-rational",
  "numpy",
  "parking_lot",
  "pretty_assertions",
