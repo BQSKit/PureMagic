@@ -16,7 +16,7 @@ use pyo3::Python;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 struct Timer {
@@ -231,39 +231,6 @@ impl PauliTerm {
         }
     }
 
-    fn load_from_string(&mut self, s: &str) -> io::Result<()> {
-        if !s.starts_with("Pauli") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid Pauli term format",
-            ));
-        }
-
-        self.basis = s
-            .chars()
-            .nth(5)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing basis"))?;
-
-        if !matches!(self.basis, 'X' | 'Y' | 'Z' | 'I') {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid basis"));
-        }
-
-        let phase_str = &s[7..9];
-        self.phase = match phase_str {
-            "+1" => 0,
-            "+i" => 1,
-            "-1" => 2,
-            "-i" => 3,
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid phase")),
-        };
-
-        self.qubit = s[10..]
-            .parse()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid qubit number"))?;
-
-        Ok(())
-    }
-
     fn commute_right(&self, rhs: &PauliTerm, angle: &Angle) -> PauliTerm {
         // If qubits don't match or bases commute, return rhs unchanged
         if self.qubit != rhs.qubit || basis_commutes_with(self.basis, rhs.basis) {
@@ -326,39 +293,6 @@ impl Angle {
         }
     }
 
-    fn from_string(s: &str) -> io::Result<Self> {
-        if let Some(angle_str) = s.strip_prefix("Angle(").and_then(|s| s.strip_suffix(")>")) {
-            if angle_str.contains('/') {
-                let nums: Vec<&str> = angle_str.split('/').collect();
-                let numerator = if nums[0].len() > 2 {
-                    nums[0].trim_end_matches("pi").parse().map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Invalid numerator: {}", angle_str),
-                        )
-                    })?
-                } else {
-                    1
-                };
-                let denominator = nums[1].parse().map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Invalid denominator")
-                })?;
-                Ok(Angle::new(numerator, denominator))
-            } else {
-                let numerator = angle_str
-                    .trim_end_matches("pi")
-                    .parse()
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid angle"))?;
-                Ok(Angle::new(numerator, 1))
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid angle format",
-            ))
-        }
-    }
-
     pub fn from_float(mut value: f64) -> Self {
         // Normalize to [0, 2π) in units of π
         if value < 0.0 {
@@ -404,33 +338,8 @@ struct PauliProduct {
 }
 
 impl PauliProduct {
-    fn new_empty() -> Self {
-        PauliProduct {
-            terms: Vec::new(),
-            angle: Angle::new(1, 1),
-        }
-    }
-
     fn new(terms: Vec<PauliTerm>, angle: Angle) -> Self {
         PauliProduct { terms, angle }
-    }
-
-    fn load_from_string(&mut self, s: &str) -> io::Result<()> {
-        let parts: Vec<&str> = s.split('<').collect();
-        if parts.len() != 2 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid format"));
-        }
-        // Parse terms
-        for term_str in parts[0].split('.') {
-            if !term_str.is_empty() {
-                let mut term = PauliTerm::new('I', 0, 0);
-                term.load_from_string(term_str)?;
-                self.terms.push(term);
-            }
-        }
-        // Parse angle
-        self.angle = Angle::from_string(parts[1])?;
-        Ok(())
     }
 
     fn is_clifford(&self) -> bool {
@@ -545,54 +454,6 @@ impl PauliProductDAG {
             update_topo_timer: IntermittentTimer::new("update_topo", ""),
             swap_nodes_timer: IntermittentTimer::new("swap_nodes", ""),
         }
-    }
-
-    fn load_node_from_string(&mut self, s: &str, node_id: usize) -> io::Result<()> {
-        let tokens: Vec<&str> = s.split('\t').collect();
-        const NUM_TOKENS: usize = 4;
-
-        if tokens.len() != NUM_TOKENS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Incorrect number of tokens: expected {} but got {} for line: {}",
-                    NUM_TOKENS,
-                    tokens.len(),
-                    s
-                ),
-            ));
-        }
-
-        let id: usize = tokens[0]
-            .parse()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid node ID"))?;
-        assert_eq!(id, node_id, "Node ID mismatch");
-
-        self.products[node_id].load_from_string(tokens[1])?;
-
-        // Parse children and parents
-        self.children[node_id] = Self::parse_id_list(tokens[2])?;
-        self.parents[node_id] = Self::parse_id_list(tokens[3])?;
-
-        Ok(())
-    }
-
-    fn parse_id_list(s: &str) -> io::Result<HashSet<usize>> {
-        if s == "[]" || s == "set()" {
-            return Ok(HashSet::new());
-        }
-
-        let s = s
-            .trim_start_matches(['[', '{'])
-            .trim_end_matches([']', '}']);
-
-        s.split(',')
-            .map(|id| {
-                id.trim()
-                    .parse()
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid ID in list"))
-            })
-            .collect()
     }
 
     fn is_root(&self, node_id: usize) -> bool {
@@ -917,55 +778,6 @@ impl PauliProductDAG {
         }
         debug!("New topo order: {:?}", self.topological_order);
         self.update_topo_timer.stop();
-    }
-
-    fn load_from_file(&mut self, fname: &str) -> io::Result<()> {
-        println!("Loading circuit from {}", fname);
-        let file = File::open(fname)?;
-        let reader = BufReader::new(file);
-        let mut lines = Vec::new();
-
-        // Skip header
-        for line in reader.lines().skip(1) {
-            lines.push(line?);
-        }
-
-        println!("Found {} lines in {}", lines.len(), fname);
-        self.num_nodes = lines.len();
-        self.children = vec![HashSet::new(); self.num_nodes];
-        self.parents = vec![HashSet::new(); self.num_nodes];
-        self.products = vec![PauliProduct::new_empty(); self.num_nodes];
-        self.topological_order = (0..self.num_nodes).collect();
-
-        let mut num_cliffords = 0;
-        let mut num_edges = 0;
-
-        for (i, line) in lines.iter().enumerate() {
-            self.load_node_from_string(line, i)?;
-
-            if self.is_root(i) {
-                self.roots.insert(i);
-            }
-            if self.is_clifford(i) {
-                num_cliffords += 1;
-            }
-
-            for term in &self.products[i].terms {
-                self.max_qubit = self.max_qubit.max(term.qubit);
-            }
-            num_edges += self.children[i].len();
-        }
-        debug!("Topological order: {:?}", self.topological_order);
-        println!(
-            "Loaded {} products from {} of which {} are cliffords and {} are roots, with max qubit {}",
-            self.num_nodes, fname, num_cliffords, self.roots.len(), self.max_qubit
-        );
-        println!(
-            "Forms a dag with {} nodes and {} edges",
-            self.num_nodes, num_edges
-        );
-
-        Ok(())
     }
 
     #[cfg(feature = "pythonapi")]
