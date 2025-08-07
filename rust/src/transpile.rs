@@ -300,7 +300,7 @@ impl Angle {
         }
         value = (value % (2.0 * PI)) / PI;
         // Find best rational approximation with denominator <= 16
-        let max_denom = 16;
+        let max_denom = 1000;
         let mut best_num = 0;
         let mut best_denom = 1;
         let mut min_error = f64::MAX;
@@ -1204,7 +1204,7 @@ impl std::fmt::Display for PauliProductDAG {
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Input circuit file path
-    #[arg(help = "Path to the input circuit file")]
+    #[arg(help = "Path to the input .qasm circuit file")]
     input_file: String,
 
     /// Enable logging
