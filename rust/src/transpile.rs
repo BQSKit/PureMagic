@@ -1045,7 +1045,7 @@ impl PauliProductDAG {
                 "Missing first location parameter",
             )
         })?;
-        let qubit1 = location.get(1).unwrap_or(&0); // Default to 0 if not provided
+        let qubit1 = location.get(1).unwrap_or(&-1);
 
         Ok(match base_gate {
             // Pauli gates (X, Y, Z) -> (pi/2)
@@ -1091,10 +1091,17 @@ impl PauliProductDAG {
             "CNOT" => {
                 vec![
                     PauliProduct::new(
-                        vec![
-                            PauliTerm::new('Z', 0, *qubit0),
-                            PauliTerm::new('X', 0, *qubit1),
-                        ],
+                        if qubit0 < qubit1 {
+                            vec![
+                                PauliTerm::new('Z', 0, *qubit0),
+                                PauliTerm::new('X', 0, *qubit1),
+                            ]
+                        } else {
+                            vec![
+                                PauliTerm::new('X', 0, *qubit1),
+                                PauliTerm::new('Z', 0, *qubit0),
+                            ]
+                        },
                         pi_4.clone(),
                     ),
                     PauliProduct::new(vec![PauliTerm::new('Z', 0, *qubit0)], pi7_4.clone()),
@@ -1178,15 +1185,51 @@ impl PauliProductDAG {
                         io::Error::new(io::ErrorKind::Other, format!("Python extract error: {}", e))
                     })
             })?;
-            println!("Operation: {}", item_str);
+            debug!("Operation: {}", item_str);
             let products = Self::products_from_operation(&item_str)?;
             for product in &products {
-                println!("  {}", product);
+                debug!("  {}", product);
             }
             self.products.extend(products);
         }
         self.num_nodes = self.products.len();
-        println!("Loaded {} products from circuit", self.num_nodes);
+        self.children = vec![HashSet::new(); self.num_nodes];
+        self.parents = vec![HashSet::new(); self.num_nodes];
+        self.topological_order = (0..self.num_nodes).collect();
+        println!("Extracted {} Pauli products from circuit", self.num_nodes);
+        for i in 0..self.num_nodes {
+            if self.is_clifford(i) {
+                self.roots.insert(i);
+            }
+            let mut prev_qubit = -1;
+            for term in &self.products[i].terms {
+                assert!(term.qubit >= 0);
+                self.max_qubit = self.max_qubit.max(term.qubit);
+                if term.qubit <= prev_qubit {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Qubit numbers must be in increasing order, found {} after {}",
+                            term.qubit, prev_qubit
+                        ),
+                    ));
+                }
+                prev_qubit = term.qubit;
+            }
+        }
+        let mut frontier: Vec<i32> = vec![-1; self.max_qubit as usize + 1];
+        for i in 0..self.num_nodes {
+            for term in &self.products[i].terms {
+                let qubit = term.qubit as usize;
+                if frontier[qubit] != -1 {
+                    let parent_id = frontier[qubit] as usize;
+                    assert!(parent_id != i);
+                    self.children[parent_id].insert(i);
+                    self.parents[i].insert(parent_id);
+                }
+                frontier[qubit] = i as i32; // Update frontier to current node
+            }
+        }
         Ok(())
     }
 
@@ -1364,6 +1407,10 @@ fn main() -> io::Result<()> {
     #[cfg(feature = "pythonapi")]
     {
         dag.load_from_circuit(&args.input_file)?;
+        let fname = format!("{}.compiled.txt", &args.input_file);
+        println!("Saving compiled circuit to {}", fname);
+        let mut f = File::create(fname)?;
+        write!(f, "{}", dag)?;
     }
 
     #[cfg(not(feature = "pythonapi"))]
