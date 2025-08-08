@@ -39,11 +39,10 @@ def main():
         ]
         print("Decomposed")
         start_t = timer()
-        with Compiler() as compiler:
-            circuit.remove_all_measurements()
-            print("Removed measurements")
-            circuit = compiler.compile(circuit, passes)
-            circuit.unfold_all()
+        circuit.remove_all_measurements()
+        print("Removed measurements")
+        circuit = Compiler().compile(circuit, passes)
+        circuit.unfold_all()
         elapsed_t = timer() - start_t
         print(f"Compiled in {elapsed_t:.2f} s")
         dag = PauliProductDAG(circuit)

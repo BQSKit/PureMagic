@@ -120,21 +120,6 @@ fn load_circuit(fname: &str) -> io::Result<Vec<String>> {
         let bqskit_circuit = py.import("bqskit.ir.circuit")?;
         let bqskit_compiler = py.import("bqskit.compiler")?;
         let bqskit_passes = py.import("bqskit.passes")?;
-        // Create the decomposition instance
-        let decomp = bqskit_passes.getattr("ZXZXZDecomposition")?.call0()?;
-        // Create ForEachBlockPass arguments
-        let loop_body = PyList::new(py, &[decomp]);
-        let filter_lambda = py.eval("lambda x: x.num_qudits == 1", None, None)?;
-        // Create kwargs dictionary
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("loop_body", loop_body)?;
-        kwargs.set_item("collection_filter", filter_lambda)?;
-        // Create passes list
-        let foreach_pass = bqskit_passes
-            .getattr("ForEachBlockPass")?
-            .call((), Some(kwargs))?;
-        let group_pass = bqskit_passes.getattr("GroupSingleQuditGatePass")?.call0()?;
-        let passes = PyList::new(py, &[group_pass, foreach_pass]);
         let mut file_read_timer = IntermittentTimer::new("reading circuit from file", "");
         file_read_timer.start();
         // Load and transform circuit
@@ -152,6 +137,21 @@ fn load_circuit(fname: &str) -> io::Result<Vec<String>> {
         remove_measurements_timer.done();
         let mut compile_timer = IntermittentTimer::new("compiling circuit", "");
         compile_timer.start();
+        // Create the decomposition instance
+        let decomp = bqskit_passes.getattr("ZXZXZDecomposition")?.call0()?;
+        // Create ForEachBlockPass arguments
+        let loop_body = PyList::new(py, &[decomp]);
+        let filter_lambda = py.eval("lambda x: x.num_qudits == 1", None, None)?;
+        // Create kwargs dictionary
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("loop_body", loop_body)?;
+        kwargs.set_item("collection_filter", filter_lambda)?;
+        // Create passes list
+        let foreach_pass = bqskit_passes
+            .getattr("ForEachBlockPass")?
+            .call((), Some(kwargs))?;
+        let group_pass = bqskit_passes.getattr("GroupSingleQuditGatePass")?.call0()?;
+        let passes = PyList::new(py, &[group_pass, foreach_pass]);
         // Compile circuit
         let compiler = bqskit_compiler.getattr("Compiler")?.call0()?;
         let circuit = compiler.call_method1("compile", (circuit, passes))?;
@@ -299,11 +299,16 @@ impl Angle {
     }
 
     pub fn from_float(mut value: f64) -> Self {
+        let pi2 = 2.0 * PI;
         // Normalize to [0, 2π) in units of π
         if value < 0.0 {
-            value += 2.0 * PI;
+            value += pi2;
+            // this can happen if the original value is very small
+            if value == pi2 {
+                value = pi2 - 1e-10;
+            }
         }
-        value = (value % (2.0 * PI)) / PI;
+        value = (value % pi2) / PI;
         // Find best rational approximation with denominator <= 16
         let max_denom = 1000;
         let mut best_num = 0;
@@ -990,6 +995,10 @@ impl PauliProductDAG {
         for item_str in op_strings {
             let products = Self::products_from_operation(&item_str)?;
             for product in &products {
+                if self.products.len() == 1566 {
+                    println!("Operation: {}", item_str);
+                    println!("  {}", product);
+                }
                 debug!("  {}", product);
             }
             self.products.extend(products);
