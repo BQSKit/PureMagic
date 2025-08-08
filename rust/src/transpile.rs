@@ -345,11 +345,17 @@ impl std::fmt::Display for Angle {
 struct PauliProduct {
     terms: Vec<PauliTerm>,
     angle: Angle,
+    qubit_cache: HashSet<i32>,
 }
 
 impl PauliProduct {
     fn new(terms: Vec<PauliTerm>, angle: Angle) -> Self {
-        PauliProduct { terms, angle }
+        let qubit_cache = terms.iter().map(|term| term.qubit).collect();
+        PauliProduct {
+            terms,
+            angle,
+            qubit_cache,
+        }
     }
 
     fn is_clifford(&self) -> bool {
@@ -395,30 +401,26 @@ impl PauliProduct {
                 .and_modify(|e| e.1 = Some(term))
                 .or_insert((None, Some(term)));
         }
-        // Create new product with same size as combined terms
-        let mut new_prod = PauliProduct {
-            terms: Vec::with_capacity(all_terms_map.len()),
-            angle: rhs.angle.clone(),
-        };
+        let mut new_terms = Vec::with_capacity(all_terms_map.len());
         // Process terms in order of increasing qubit number
         for (_, (left_term, right_term)) in all_terms_map {
             match (left_term, right_term) {
                 (None, Some(right)) => {
                     // Only right term exists
-                    new_prod.terms.push(right.clone());
+                    new_terms.push(right.clone());
                 }
                 (Some(left), None) => {
                     // Only left term exists
-                    new_prod.terms.push(left.clone());
+                    new_terms.push(left.clone());
                 }
                 (Some(left), Some(right)) => {
                     // Both terms exist - apply commutation rules
-                    new_prod.terms.push(left.commute_right(right, &self.angle));
+                    new_terms.push(left.commute_right(right, &self.angle));
                 }
                 (None, None) => unreachable!("Map should not contain empty entries"),
             }
         }
-        new_prod
+        PauliProduct::new(new_terms, rhs.angle.clone())
     }
 }
 
@@ -475,10 +477,7 @@ impl PauliProductDAG {
     }
 
     fn involves_qubit(&self, node_id: usize, qubit: i32) -> bool {
-        self.products[node_id]
-            .terms
-            .iter()
-            .any(|term| term.qubit == qubit)
+        self.products[node_id].qubit_cache.contains(&qubit)
     }
 
     fn is_bad_topo_order(&self, node_id: usize) -> bool {
@@ -705,16 +704,10 @@ impl PauliProductDAG {
             std::mem::swap(&mut node_id, &mut parent_id);
             debug!("  parent is child, swapped: {} {}", node_id, parent_id);
         }
-        let node_qubits: HashSet<_> = self.products[node_id]
-            .terms
-            .iter()
-            .map(|term| term.qubit)
-            .collect();
         let shared_qubits: Vec<_> = self.products[parent_id]
-            .terms
-            .iter()
-            .filter(|term| node_qubits.contains(&term.qubit))
-            .map(|term| term.qubit)
+            .qubit_cache
+            .intersection(&self.products[node_id].qubit_cache)
+            .copied()
             .collect();
         // Get relations maps for shared qubits only
         let parent_parents_by_qubit: HashMap<_, _> = shared_qubits
