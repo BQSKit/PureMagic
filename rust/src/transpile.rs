@@ -767,10 +767,8 @@ impl PauliProductDAG {
         self.update_topo_timer.start();
         let offset = self.topological_order[node_id];
         let mut indegrees = vec![0; self.num_nodes];
-        let mut subgraph_nodes = 0;
         for ni in 0..self.num_nodes {
             if self.topological_order[ni] >= offset {
-                subgraph_nodes += 1;
                 for &child_id in &self.children[ni] {
                     if self.topological_order[child_id] >= offset {
                         indegrees[child_id] += 1;
@@ -778,19 +776,21 @@ impl PauliProductDAG {
                 }
             }
         }
-        let mut new_order = Vec::with_capacity(subgraph_nodes);
         let mut queue = VecDeque::new();
         for ni in 0..self.num_nodes {
             if self.topological_order[ni] >= offset && indegrees[ni] == 0 {
                 queue.push_back(ni);
             }
         }
+        let mut new_order_idx = offset;
+
         while let Some(current) = queue.pop_front() {
             debug!(
                 "Popped node {} with topo order {}",
                 current, self.topological_order[current]
             );
-            new_order.push(current);
+            self.topological_order[current] = new_order_idx;
+            new_order_idx += 1;
             debug!("Append to new order {}", current);
             let mut sorted_children: Vec<_> = self.children[current].iter().copied().collect();
             sorted_children.sort_by_key(|&c| self.topological_order[c]);
@@ -804,9 +804,6 @@ impl PauliProductDAG {
                     }
                 }
             }
-        }
-        for (ni, &node) in new_order.iter().enumerate() {
-            self.topological_order[node] = ni + offset;
         }
         debug!("New topo order: {:?}", self.topological_order);
         self.update_topo_timer.stop();
