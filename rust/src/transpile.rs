@@ -113,34 +113,27 @@ impl FromPyObject<'_> for Circuit {
     }
 }
 
-fn load_circuit(fname: &str) -> io::Result<Circuit> {
+fn load_circuit(fname: &str) -> io::Result<Vec<String>> {
     let _timer = Timer::new("load_circuit");
-    // Initialize Python
-    Python::with_gil(|py| -> PyResult<Circuit> {
+    Python::with_gil(|py| -> io::Result<Vec<String>> {
         // Import required modules
         let bqskit_circuit = py.import("bqskit.ir.circuit")?;
         let bqskit_compiler = py.import("bqskit.compiler")?;
         let bqskit_passes = py.import("bqskit.passes")?;
-
         // Create the decomposition instance
         let decomp = bqskit_passes.getattr("ZXZXZDecomposition")?.call0()?;
-
         // Create ForEachBlockPass arguments
         let loop_body = PyList::new(py, &[decomp]);
         let filter_lambda = py.eval("lambda x: x.num_qudits == 1", None, None)?;
-
         // Create kwargs dictionary
         let kwargs = PyDict::new(py);
         kwargs.set_item("loop_body", loop_body)?;
         kwargs.set_item("collection_filter", filter_lambda)?;
-
         // Create passes list
         let foreach_pass = bqskit_passes
             .getattr("ForEachBlockPass")?
             .call((), Some(kwargs))?;
-
         let group_pass = bqskit_passes.getattr("GroupSingleQuditGatePass")?.call0()?;
-
         let passes = PyList::new(py, &[group_pass, foreach_pass]);
         let mut file_read_timer = IntermittentTimer::new("reading circuit from file", "");
         file_read_timer.start();
@@ -166,7 +159,27 @@ fn load_circuit(fname: &str) -> io::Result<Circuit> {
         circuit.call_method0("unfold_all")?;
         compile_timer.stop();
         compile_timer.done();
-        Ok(circuit.extract()?)
+        let items = circuit
+            .extract::<Circuit>()?
+            .iter()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))?;
+        println!("Circuit has {} operations", items.len());
+        let mut op_strings = Vec::new();
+        for item in items.iter() {
+            let item_str = item
+                .as_ref(py)
+                .str()
+                .map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, format!("Python str error: {}", e))
+                })?
+                .extract::<String>()
+                .map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, format!("Python extract error: {}", e))
+                })?;
+            debug!("Operation: {}", item_str);
+            op_strings.push(item_str);
+        }
+        Ok(op_strings)
     })
     .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))
 }
@@ -973,26 +986,8 @@ impl PauliProductDAG {
     }
 
     fn from_circuit(&mut self, fname: &str) -> io::Result<()> {
-        let circuit = load_circuit(fname)?;
-        let items = circuit
-            .iter()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))?;
-
-        println!("Circuit has {} operations", items.len());
-
-        for (_i, item) in items.iter().enumerate() {
-            let item_str = Python::with_gil(|py| -> io::Result<String> {
-                item.as_ref(py)
-                    .str()
-                    .map_err(|e| {
-                        io::Error::new(io::ErrorKind::Other, format!("Python str error: {}", e))
-                    })?
-                    .extract::<String>()
-                    .map_err(|e| {
-                        io::Error::new(io::ErrorKind::Other, format!("Python extract error: {}", e))
-                    })
-            })?;
-            debug!("Operation: {}", item_str);
+        let op_strings = load_circuit(fname)?;
+        for item_str in op_strings {
             let products = Self::products_from_operation(&item_str)?;
             for product in &products {
                 debug!("  {}", product);
