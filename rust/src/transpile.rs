@@ -581,21 +581,14 @@ impl PauliProductDAG {
         false
     }
 
-    fn get_valid_parent_cliffords(&self, node_id: usize) -> Vec<usize> {
-        let mut parent_cliffords = Vec::new();
-        for &parent_id in &self.parents[node_id] {
-            if self.is_clifford(parent_id) && !self.indirect_path_exists(parent_id, node_id) {
-                parent_cliffords.push(parent_id);
-            }
-        }
-        parent_cliffords
-    }
-
-    fn youngest_node(&self, nodes: &[usize]) -> usize {
-        *nodes
+    fn get_youngest_valid_parent_clifford(&self, node_id: usize) -> Option<usize> {
+        self.parents[node_id]
             .iter()
+            .filter(|&&parent_id| {
+                self.is_clifford(parent_id) && !self.indirect_path_exists(parent_id, node_id)
+            })
             .max_by_key(|&&id| self.topological_order[id])
-            .expect("Empty node list")
+            .copied()
     }
 
     fn relations_by_qubit(&self, node_id: usize, from_children: bool) -> HashMap<i32, usize> {
@@ -994,12 +987,10 @@ impl PauliProductDAG {
         let op_strings = load_circuit(fname)?;
         for item_str in op_strings {
             let products = Self::products_from_operation(&item_str)?;
-            for product in &products {
-                if self.products.len() == 1566 {
-                    println!("Operation: {}", item_str);
-                    println!("  {}", product);
+            if log::log_enabled!(log::Level::Debug) {
+                for product in &products {
+                    debug!("  {}", product);
                 }
-                debug!("  {}", product);
             }
             self.products.extend(products);
         }
@@ -1045,9 +1036,7 @@ impl PauliProductDAG {
     }
 
     fn commute_clifford_right(&mut self, clifford_id: usize, node_id: usize) {
-        if !self.is_clifford(clifford_id) {
-            return;
-        }
+        assert!(self.is_clifford(clifford_id));
         let new_node_prod = self.products[clifford_id].commute_right(&self.products[node_id]);
         debug!(
             "Commuting clifford {} with nonclifford {}:\n   {} -> {}\n   topo order {} {}",
@@ -1107,26 +1096,13 @@ impl PauliProductDAG {
                     finished_noncliffords.push(node_id);
                     continue;
                 }
-                let parent_cliffords = self.get_valid_parent_cliffords(node_id);
-                //let all_parents_cliffords = Vec::from_iter(self.parents[node_id].iter().cloned());
-                //debug!(
-                //    "node_id {} valid parents {:?} parents {:?}",
-                //    node_id, parent_cliffords, all_parents_cliffords
-                //);
-                if parent_cliffords.is_empty() {
-                    continue;
-                }
-                // Check for loops
-                for &parent_id in &self.parents[node_id] {
+                if let Some(parent_id) = self.get_youngest_valid_parent_clifford(node_id) {
                     if self.children[node_id].contains(&parent_id) {
                         panic!("Loop detected");
                     }
-                }
-                let parent_id = self.youngest_node(&parent_cliffords);
-                if parent_cliffords.len() > 1 {
                     debug!("youngest parent {}", parent_id);
+                    self.commute_clifford_right(parent_id, node_id);
                 }
-                self.commute_clifford_right(parent_id, node_id);
             }
             for &nonclifford_id in &finished_noncliffords {
                 uncommuted_noncliffords.remove(&nonclifford_id);
