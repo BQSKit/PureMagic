@@ -633,108 +633,131 @@ impl PauliProductDAG {
         relation_map
     }
 
-    fn erase_related(
-        &mut self,
+    fn get_related_qubits(
+        &self,
+        node_id: usize,
+        related_id: usize,
+        from_children: bool,
+    ) -> Vec<i32> {
+        self.relations_by_qubit(node_id, from_children)
+            .into_iter()
+            .filter_map(|(qubit, id)| if id == related_id { Some(qubit) } else { None })
+            .collect()
+    }
+
+    fn should_erase_relation(
+        &self,
         grandparent_id: usize,
         parent_id: usize,
         node_id: usize,
         from_children: bool,
-    ) {
-        debug!(
-            "Erasing related {} {} {} from_children {}",
-            grandparent_id, parent_id, node_id, from_children
-        );
-        // Only proceed if there's a relationship to erase
+    ) -> bool {
         if !self.children[grandparent_id].contains(&parent_id) {
-            return;
+            return false;
         }
-        // Find shared qubits between the three nodes
-        let mut related_qubits = Vec::new();
-        if from_children {
-            // Check qubits from grandparent's perspective
-            for (qubit, related_id) in self.relations_by_qubit(grandparent_id, true) {
-                if related_id == parent_id {
-                    related_qubits.push(qubit);
-                }
-            }
+
+        let related_qubits = if from_children {
+            self.get_related_qubits(grandparent_id, parent_id, true)
         } else {
-            // Check qubits from parent's perspective
-            for (qubit, related_id) in self.relations_by_qubit(parent_id, false) {
-                if related_id == grandparent_id {
-                    related_qubits.push(qubit);
+            self.get_related_qubits(parent_id, grandparent_id, false)
+        };
+
+        related_qubits
+            .iter()
+            .all(|&qubit| self.involves_qubit(node_id, qubit))
+    }
+
+    fn get_relation_for_qubit(
+        &self,
+        node_id: usize,
+        qubit: i32,
+        from_children: bool,
+    ) -> Option<usize> {
+        let relations = if from_children {
+            &self.children[node_id]
+        } else {
+            &self.parents[node_id]
+        };
+
+        let mut selected_id = None;
+        let mut selected_order = if from_children { std::usize::MAX } else { 0 };
+
+        for &relation_id in relations {
+            if self.involves_qubit(relation_id, qubit) {
+                if selected_id.is_none()
+                    || (from_children && self.topological_order[relation_id] < selected_order)
+                    || (!from_children && self.topological_order[relation_id] > selected_order)
+                {
+                    selected_id = Some(relation_id);
+                    selected_order = self.topological_order[relation_id];
                 }
             }
         }
-        // Only erase the relationship if all qubits are involved in the node
-        let all_qubits_in_node = related_qubits
-            .iter()
-            .all(|&qubit| self.involves_qubit(node_id, qubit));
-        if all_qubits_in_node {
-            self.children[grandparent_id].remove(&parent_id);
-            self.parents[parent_id].remove(&grandparent_id);
-        }
+        selected_id
     }
 
     fn swap_nodes(&mut self, param_node_id: usize, param_parent_id: usize) {
-        /*
-        If commuting a clifford through, update the node products beforehand.
-
-        grandparents -> parent -> node -> children
-
-                             |-------?---------v
-        grandparents -?-> node -> *parent -?-> children
-                   |------?--------^
-        */
         self.swap_nodes_timer.start();
         let mut node_id = param_node_id;
         let mut parent_id = param_parent_id;
-        // Check if parent is actually a child
+
         if self.children[node_id].contains(&parent_id) {
             std::mem::swap(&mut node_id, &mut parent_id);
             debug!("  parent is child, swapped: {} {}", node_id, parent_id);
         }
-        //let _timer = Timer::new("by_qubit");
-        // Find the parents associated with each of node's qubits
-        let parent_parents_by_qubit = self.relations_by_qubit(parent_id, false);
-        let node_children_by_qubit = self.relations_by_qubit(node_id, true);
-        // Update basic relationships
-        self.children[parent_id].remove(&node_id);
-        self.parents[parent_id].insert(node_id);
-        self.parents[node_id].remove(&parent_id);
-        self.children[node_id].insert(parent_id);
-        //let _timer = Timer::new("shared_qubits");
-        // Only shared qubits need to be updated
-        let mut node_qubits = HashSet::new();
-        for term in &self.products[node_id].terms {
-            node_qubits.insert(term.qubit);
-        }
-
-        let shared_qubits: Vec<i32> = self.products[parent_id]
+        let node_qubits: HashSet<_> = self.products[node_id]
+            .terms
+            .iter()
+            .map(|term| term.qubit)
+            .collect();
+        let shared_qubits: Vec<_> = self.products[parent_id]
             .terms
             .iter()
             .filter(|term| node_qubits.contains(&term.qubit))
             .map(|term| term.qubit)
             .collect();
+        // Get relations maps for shared qubits only
+        let parent_parents_by_qubit: HashMap<_, _> = shared_qubits
+            .iter()
+            .filter_map(|&qubit| {
+                self.get_relation_for_qubit(parent_id, qubit, false)
+                    .map(|id| (qubit, id))
+            })
+            .collect();
+        let node_children_by_qubit: HashMap<_, _> = shared_qubits
+            .iter()
+            .filter_map(|&qubit| {
+                self.get_relation_for_qubit(node_id, qubit, true)
+                    .map(|id| (qubit, id))
+            })
+            .collect();
 
-        for qubit in shared_qubits {
-            // What grandparents should now point at node?
+        self.children[parent_id].remove(&node_id);
+        self.parents[parent_id].insert(node_id);
+        self.parents[node_id].remove(&parent_id);
+        self.children[node_id].insert(parent_id);
+
+        for &qubit in &shared_qubits {
+            // Update grandparent relationships
             if let Some(&grandparent_id) = parent_parents_by_qubit.get(&qubit) {
-                // Update the relationship between grandparent and parent
-                self.erase_related(grandparent_id, parent_id, node_id, true);
+                if self.should_erase_relation(grandparent_id, parent_id, node_id, true) {
+                    self.children[grandparent_id].remove(&parent_id);
+                    self.parents[parent_id].remove(&grandparent_id);
+                }
                 self.children[grandparent_id].insert(node_id);
                 self.parents[node_id].insert(grandparent_id);
             }
-            // What children should now be pointed to by parent?
+            // Update child relationships
             if let Some(&child_id) = node_children_by_qubit.get(&qubit) {
-                // Update the relationship between node and child
-                self.erase_related(node_id, child_id, parent_id, false);
+                if self.should_erase_relation(node_id, child_id, parent_id, false) {
+                    self.children[node_id].remove(&child_id);
+                    self.parents[child_id].remove(&node_id);
+                }
                 self.children[parent_id].insert(child_id);
                 self.parents[child_id].insert(parent_id);
             }
         }
-        // Swap topological order
         self.topological_order.swap(node_id, parent_id);
-        // Update roots
         if self.roots.contains(&parent_id) {
             self.roots.remove(&parent_id);
             self.roots.insert(node_id);
