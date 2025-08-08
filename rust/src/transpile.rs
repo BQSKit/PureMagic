@@ -495,33 +495,46 @@ impl PauliProductDAG {
         false
     }
 
-    fn is_uncommuted_nonclifford(
-        &self,
-        node_id: usize,
-        uncommuted_noncliffords: &mut BTreeSet<usize>,
-    ) -> bool {
-        if self.is_clifford(node_id) {
-            return false;
-        }
-        if self.is_root(node_id) {
-            return true;
-        }
-        if uncommuted_noncliffords.contains(&node_id) {
-            return true;
-        }
-        if self.children[node_id].is_empty() {
-            uncommuted_noncliffords.insert(node_id);
-            return true;
-        }
-        for &child_id in &self.children[node_id] {
-            if self.is_clifford(child_id)
-                || self.is_uncommuted_nonclifford(child_id, uncommuted_noncliffords)
-            {
-                uncommuted_noncliffords.insert(node_id);
-                return true;
+    fn collect_uncommuted_noncliffords(&self) -> BTreeSet<usize> {
+        let mut uncommuted_noncliffords = BTreeSet::new();
+        let mut visited = HashSet::new();
+
+        for node_id in 0..self.num_nodes {
+            // Skip if already processed or is Clifford
+            if visited.contains(&node_id) || self.is_clifford(node_id) {
+                continue;
             }
+
+            // Check if node is uncommuted
+            if self.is_root(node_id) || self.children[node_id].is_empty() {
+                uncommuted_noncliffords.insert(node_id);
+                continue;
+            }
+
+            // DFS to check children
+            let mut stack = Vec::new();
+            let mut node_visited = HashSet::new();
+            stack.push(node_id);
+
+            while let Some(current) = stack.pop() {
+                if !node_visited.insert(current) {
+                    continue;
+                }
+
+                // Check children
+                for &child_id in &self.children[current] {
+                    if self.is_clifford(child_id) || uncommuted_noncliffords.contains(&child_id) {
+                        uncommuted_noncliffords.insert(node_id);
+                        break;
+                    }
+                    stack.push(child_id);
+                }
+            }
+
+            visited.extend(node_visited);
         }
-        false
+
+        uncommuted_noncliffords
     }
 
     fn done_commuting_nonclifford(
@@ -1064,20 +1077,14 @@ impl PauliProductDAG {
 
     fn commute_all_cliffords(&mut self) {
         let _timer = Timer::new("commute_all_cliffords");
-        let mut uncommuted_noncliffords = BTreeSet::new();
-        for i in 0..self.num_nodes {
-            self.is_uncommuted_nonclifford(i, &mut uncommuted_noncliffords);
-        }
+        let mut uncommuted_noncliffords = self.collect_uncommuted_noncliffords();
         if uncommuted_noncliffords.is_empty() {
             println!("No uncommuted non-Cliffords");
             return;
         }
-        println!(
-            "Commuting {} uncommuted noncliffords",
-            uncommuted_noncliffords.len()
-        );
-        let mut num_commuted = 0;
         let num_uncommuted = uncommuted_noncliffords.len();
+        println!("Found {} uncommuted noncliffords", num_uncommuted);
+        let mut num_commuted = 0;
         let update_tick = (num_uncommuted as f64 / 20.0) as usize;
         let mut next_tick = update_tick;
         let mut loops = 0;
