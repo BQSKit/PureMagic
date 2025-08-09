@@ -25,8 +25,8 @@ def get_args():
     parser.add_argument("--double-bus", action="store_true", help="Double columns for bus qubits")
     plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
-    # parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
-    parser.add_argument("--circuit", "-c", type=str, required=True, default="None", help="Circuit pickle file name")
+    parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
+    parser.add_argument("--circuit", "-c", type=str, required=True, default="None", help="Circuit file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     # parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
