@@ -449,10 +449,11 @@ struct PauliProductDAG {
     num_nodes: usize,
     update_topo_timer: IntermittentTimer,
     swap_nodes_timer: IntermittentTimer,
+    topo_sort_children: bool,
 }
 
 impl PauliProductDAG {
-    fn new() -> Self {
+    fn new(topo_sort_children: bool) -> Self {
         PauliProductDAG {
             products: Vec::new(),
             children: Vec::new(),
@@ -465,6 +466,7 @@ impl PauliProductDAG {
             num_nodes: 0,
             update_topo_timer: IntermittentTimer::new("update_topo", ""),
             swap_nodes_timer: IntermittentTimer::new("swap_nodes", ""),
+            topo_sort_children,
         }
     }
 
@@ -792,15 +794,31 @@ impl PauliProductDAG {
             self.topological_order[current] = new_order_idx;
             new_order_idx += 1;
             debug!("Append to new order {}", current);
-            let mut sorted_children: Vec<_> = self.children[current].iter().copied().collect();
-            sorted_children.sort_by_key(|&c| self.topological_order[c]);
-            for &child_id in &sorted_children {
-                self.topo_steps += 1;
-                if self.topological_order[child_id] >= offset {
+            self.topo_steps += self.children[current].len();
+            if self.topo_sort_children {
+                // Sort children by their topological order first for consistent results
+                let mut sorted_children: Vec<usize> = self.children[current]
+                    .iter()
+                    .copied()
+                    .filter(|&c| self.topological_order[c] >= offset)
+                    .collect();
+                sorted_children.sort_by_key(|&c| self.topological_order[c]);
+                for &child_id in &sorted_children {
                     indegrees[child_id] -= 1;
                     if indegrees[child_id] == 0 {
                         queue.push_back(child_id);
                         debug!("From {} pushed node {}", current, child_id);
+                    }
+                }
+            } else {
+                // this is much faster
+                for &child_id in &self.children[current] {
+                    if self.topological_order[child_id] >= offset {
+                        indegrees[child_id] -= 1;
+                        if indegrees[child_id] == 0 {
+                            queue.push_back(child_id);
+                            debug!("From {} pushed node {}", current, child_id);
+                        }
                     }
                 }
             }
@@ -1194,10 +1212,12 @@ struct Args {
     /// Input circuit file path
     #[arg(help = "Path to the input .qasm circuit file")]
     input_file: String,
-
     /// Enable logging
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
+    /// Sort children topologically during updates
+    #[arg(short, long, default_value_t = false)]
+    topo_sort_children: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -1209,7 +1229,7 @@ fn main() -> io::Result<()> {
     }
 
     let _timer = Timer::new("main");
-    let mut dag = PauliProductDAG::new();
+    let mut dag = PauliProductDAG::new(args.topo_sort_children);
 
     dag.from_circuit(&args.input_file)?;
     let fname = format!("{}.compiled.txt", &args.input_file);
