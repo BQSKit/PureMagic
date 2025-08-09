@@ -562,9 +562,7 @@ impl PauliProductDAG {
         );
         let topo_index_start = self.topological_order[start];
         let topo_index_end = self.topological_order[end];
-        if topo_index_start > topo_index_end {
-            return false;
-        }
+        assert!(topo_index_start < topo_index_end);
         // BFS traversal from start's children that are not end
         let mut queue = VecDeque::new();
         let mut visited = HashSet::new();
