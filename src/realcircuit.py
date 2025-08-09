@@ -105,8 +105,11 @@ class RealCircuit(list):
         print("Number of layers", len(layers))
         min_layer = 0
         max_layer = len(layers)
-        # if len(self.args.plot_circuit_range) > 0:
-        #    min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
+        if len(self.args.plot_circuit_range) > 0:
+            min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
+            max_layer = min(len(layers), max_layer)
+            min_layer = min(max_layer, min_layer)
+        num_layers = max_layer - min_layer
 
         for col, layer in enumerate(layers):
             if col < min_layer:
@@ -135,7 +138,7 @@ class RealCircuit(list):
                 for i in range(start_pos, end_pos + 1):
                     if pauli_product.operators[i] == " ":
                         continue
-                    if len(layers) < 100 and not show_product_ids:
+                    if num_layers <= 100 and not show_product_ids:
                         ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
                 rect_height = end_pos - start_pos
                 top_shift = 0.11 * math.sqrt(num_rows)
