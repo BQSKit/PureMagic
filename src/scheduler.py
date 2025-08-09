@@ -116,7 +116,7 @@ def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
 
     G_3_mst = list(nx.minimum_spanning_edges(G_3, data=False))
     G_4 = topo_graph.edge_subgraph(G_3_mst).copy()
-    nx.approximation.steinertree._remove_nonterminal_leaves(G_4, terminal_nodes)
+    nx.approximation.steinertree._remove_nonterminal_leaves(G_4, terminal_nodes)  # type: ignore
     edges = G_4.edges()
     T = topo_graph.edge_subgraph(edges)
     for node in T.nodes():
@@ -154,7 +154,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes)
     if not all([node in g for node in terminal_nodes]):
         if pauli_product.is_pi_over_four():
-            print(f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}")
+            print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
         return None
     return g
 
