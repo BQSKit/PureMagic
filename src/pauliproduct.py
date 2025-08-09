@@ -15,7 +15,7 @@ class PauliProduct:
         self.qubits_used = 0
         self.parents = set()
         self.children = set()
-        self.angle = 0
+        self.angle = None
         self.id = -1
 
     def set(self, pp_id, pp_str, parents_str, children_str):
@@ -28,15 +28,15 @@ class PauliProduct:
             if not term.startswith("Pauli"):
                 raise RuntimeError("Term does not start with Pauli")
             operator = term[5]
-            #phase = term[7:0]
-            qubit = int(term.split(')')[1].split("<")[0])
+            # phase = term[7:0]
+            qubit = int(term.split(")")[1].split("<")[0])
             self.operators[qubit] = operator
             self.qubits_used += 1
         angle_parts = pp_str.split("<")[1][6:].split("/")
         if angle_parts[0] == "pi":
             numerator = 1
         else:
-            numerator = int(angle_parts[0].split('p')[0])
+            numerator = int(angle_parts[0].split("p")[0])
         if len(angle_parts) == 1:
             denominator = 1
         else:
@@ -44,6 +44,7 @@ class PauliProduct:
         self.angle = quilt.angle.Angle(numerator, denominator)
 
     def is_pi_over_four(self):
+        assert self.angle is not None
         return self.angle.is_clifford()
 
     def get_product_str(self):
@@ -57,5 +58,15 @@ class PauliProduct:
         return [i for i, o in enumerate(self.operators) if o != " "]
 
     def __str__(self):
-        s = str(self.id) + " " + self.get_product_str() + " " + str(self.angle) + " " + str(self.children) + " " + str(self.parents)
+        s = (
+            str(self.id)
+            + " "
+            + self.get_product_str()
+            + " "
+            + str(self.angle)
+            + " "
+            + str(self.children)
+            + " "
+            + str(self.parents)
+        )
         return s.strip()

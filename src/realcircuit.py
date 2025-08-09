@@ -27,7 +27,7 @@ class RealCircuit(list):
         self.load_circuit()
 
     def load_circuit(self):
-        dag_df = pd.read_csv(self.args.circuit, sep='\t')
+        dag_df = pd.read_csv(self.args.circuit, sep="\t")
         for i, row in dag_df.iterrows():
             self.append(pauliproduct.PauliProduct(self.num_qubits))
             self[-1].set(row["id"], row["product"], row["parents"], row["children"])
@@ -114,6 +114,8 @@ class RealCircuit(list):
             if col == max_layer:
                 break
             for pauli_product in layer:
+                start_pos = 0
+                end_pos = 0
                 for start_pos in range(num_rows):
                     if pauli_product.operators[start_pos] != " ":
                         if show_product_ids:

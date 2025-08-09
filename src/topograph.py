@@ -180,13 +180,13 @@ class TopoGraph(nx.Graph):
             pauli_product, pauli_product_graph = pauli_path
             for ei, edge in enumerate(self.edges):
                 if pauli_product_graph.has_edge(*edge):
-                    edge_colors[ei] = cmap(pi)
+                    edge_colors[ei] = cmap(pi)  # type: ignore
                     edge_width[ei] = 6
             root_node = None
             # print(pauli_product_graph.nodes)
             for ni, node in enumerate(self.nodes):
                 if pauli_product_graph.has_node(node):
-                    node_edge_colors[ni] = cmap(pi)
+                    node_edge_colors[ni] = cmap(pi)  # type: ignore
                     node_line_widths[ni] = 3
                     if is_magic_node(node):
                         root_node = node
