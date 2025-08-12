@@ -57,8 +57,13 @@ opt-level = 0
 debug = true
 
 [profile.test]
-opt-level = 0
+opt-level = 3
+debug = false
+
+[profile.perf]
+inherits = "release"
 debug = true
+strip = false
 
 [profile.bench]
 opt-level = 3
