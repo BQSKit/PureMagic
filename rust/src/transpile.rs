@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::FromPyObject;
 use pyo3::Python;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
 use std::fs::File;
@@ -1084,7 +1085,8 @@ impl PauliProductDAG {
             return;
         }
         let num_uncommuted = uncommuted_noncliffords.len();
-        print!("Commuting {} noncliffords:    ", num_uncommuted);
+        print!("Commuting {} noncliffords:  00%", num_uncommuted);
+        std::io::stdout().flush().unwrap();
         let mut num_commuted = 0;
         let update_tick = (num_uncommuted as f64 / 100.0) as usize;
         let mut next_tick = update_tick;
@@ -1125,7 +1127,7 @@ impl PauliProductDAG {
                 uncommuted_noncliffords.len()
             );
         }
-        println!();
+        println!("\x08\x08\x08{}%", 100);
         println!(
             "There were {} steps in {} calls to update the topological order",
             self.topo_steps, self.update_topo_calls
