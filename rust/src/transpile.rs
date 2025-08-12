@@ -302,22 +302,16 @@ impl Angle {
             }
         }
         value = (value % pi2) / PI;
-        // Find best rational approximation with denominator <= 16
-        let max_denom = 1000;
-        let mut best_num = 0;
-        let mut best_denom = 1;
-        let mut min_error = f64::MAX;
-
-        for denom in 1..=max_denom {
-            let num = (value * denom as f64).round() as i32;
-            let error = ((num as f64 / denom as f64) - value).abs();
-
-            if error < min_error {
-                min_error = error;
-                best_num = num;
-                best_denom = denom;
-            }
-        }
+        // Find best rational approximation with limited denominator
+        let (best_num, best_denom) = (1..=1000)
+            .map(|denom| {
+                let num = (value * denom as f64).round() as i32;
+                let error = ((num as f64 / denom as f64) - value).abs();
+                (num, denom, error)
+            })
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+            .map(|(num, denom, _)| (num, denom))
+            .unwrap();
         Angle::new(best_num, best_denom)
     }
 }
@@ -358,19 +352,22 @@ impl PauliProduct {
     }
 
     fn commutes_with(&self, other: &PauliProduct) -> bool {
-        let mut terms_map = HashMap::new();
-        for term in &self.terms {
-            terms_map.insert(term.qubit, term.basis);
-        }
-        let mut sum_signs = 0;
-        for term in &other.terms {
-            if let Some(&basis) = terms_map.get(&term.qubit) {
-                if basis != term.basis && basis != 'I' && term.basis != 'I' {
-                    sum_signs += 1;
-                }
-            }
-        }
-        sum_signs % 2 == 0
+        let terms_map: HashMap<_, _> = self
+            .terms
+            .iter()
+            .map(|term| (term.qubit, term.basis))
+            .collect();
+        other
+            .terms
+            .iter()
+            .filter(|term| terms_map.contains_key(&term.qubit))
+            .filter(|term| {
+                let basis = terms_map[&term.qubit];
+                basis != term.basis && basis != 'I' && term.basis != 'I'
+            })
+            .count()
+            % 2
+            == 0
     }
 
     fn commute_right(&self, rhs: &PauliProduct) -> PauliProduct {
@@ -477,17 +474,12 @@ impl PauliProductDAG {
     }
 
     fn is_bad_topo_order(&self, node_id: usize) -> bool {
-        for &child_id in &self.children[node_id] {
-            if self.topological_order[child_id] < self.topological_order[node_id] {
-                return true;
-            }
-        }
-        for &parent_id in &self.parents[node_id] {
-            if self.topological_order[parent_id] > self.topological_order[node_id] {
-                return true;
-            }
-        }
-        false
+        self.children[node_id]
+            .iter()
+            .any(|&child_id| self.topological_order[child_id] < self.topological_order[node_id])
+            || self.parents[node_id].iter().any(|&parent_id| {
+                self.topological_order[parent_id] > self.topological_order[node_id]
+            })
     }
 
     fn collect_uncommuted_noncliffords(&self) -> BTreeSet<usize> {
@@ -600,22 +592,17 @@ impl PauliProductDAG {
         } else {
             &self.parents[node_id]
         };
-
-        let mut selected_id = None;
-        let mut selected_order = if from_children { std::usize::MAX } else { 0 };
-
-        for &relation_id in relations {
-            if self.products[relation_id].qubit_cache.contains(&qubit) {
-                if selected_id.is_none()
-                    || (from_children && self.topological_order[relation_id] < selected_order)
-                    || (!from_children && self.topological_order[relation_id] > selected_order)
-                {
-                    selected_id = Some(relation_id);
-                    selected_order = self.topological_order[relation_id];
+        relations
+            .iter()
+            .filter(|&&relation_id| self.products[relation_id].qubit_cache.contains(&qubit))
+            .min_by_key(|&&relation_id| {
+                if from_children {
+                    self.topological_order[relation_id]
+                } else {
+                    std::usize::MAX - self.topological_order[relation_id]
                 }
-            }
-        }
-        selected_id
+            })
+            .copied()
     }
 
     fn get_related_qubits(
@@ -741,12 +728,10 @@ impl PauliProductDAG {
                 }
             }
         }
-        let mut queue = VecDeque::new();
-        for ni in 0..self.num_nodes {
-            if self.topological_order[ni] >= offset && indegrees[ni] == 0 {
-                queue.push_back(ni);
-            }
-        }
+        let mut queue: VecDeque<_> = (0..self.num_nodes)
+            .filter(|&ni| self.topological_order[ni] >= offset && indegrees[ni] == 0)
+            .collect();
+
         let mut new_order_idx = offset;
 
         while let Some(current) = queue.pop_front() {
@@ -759,31 +744,30 @@ impl PauliProductDAG {
             debug!("Append to new order {}", current);
             self.topo_steps += self.children[current].len();
             if self.topo_sort_children {
-                // Sort children by their topological order first for consistent results
-                let mut sorted_children: Vec<usize> = self.children[current]
+                self.children[current]
                     .iter()
                     .copied()
                     .filter(|&c| self.topological_order[c] >= offset)
-                    .collect();
-                sorted_children.sort_by_key(|&c| self.topological_order[c]);
-                for &child_id in &sorted_children {
-                    indegrees[child_id] -= 1;
-                    if indegrees[child_id] == 0 {
-                        queue.push_back(child_id);
-                        debug!("From {} pushed node {}", current, child_id);
-                    }
-                }
-            } else {
-                // this is much faster
-                for &child_id in &self.children[current] {
-                    if self.topological_order[child_id] >= offset {
+                    .sorted_by_key(|&c| self.topological_order[c])
+                    .for_each(|child_id| {
                         indegrees[child_id] -= 1;
                         if indegrees[child_id] == 0 {
                             queue.push_back(child_id);
                             debug!("From {} pushed node {}", current, child_id);
                         }
-                    }
-                }
+                    });
+            } else {
+                // this is much faster
+                self.children[current]
+                    .iter()
+                    .filter(|&&child_id| self.topological_order[child_id] >= offset)
+                    .for_each(|&child_id| {
+                        indegrees[child_id] -= 1;
+                        if indegrees[child_id] == 0 {
+                            queue.push_back(child_id);
+                            debug!("From {} pushed node {}", current, child_id);
+                        }
+                    });
             }
         }
         debug!("New topo order: {:?}", self.topological_order);
@@ -1128,18 +1112,14 @@ impl PauliProductDAG {
     }
 
     fn verify_clifford_relations(&self) -> u32 {
-        let mut num_cliffords: u32 = 0;
-        let mut num_failures: u32 = 0;
-        for node_id in 0..self.num_nodes {
-            if self.is_clifford(node_id) {
-                num_cliffords += 1;
-                for &child_id in &self.children[node_id] {
-                    if !self.is_clifford(child_id) {
-                        num_failures += 1;
-                    }
-                }
-            }
-        }
+        let num_cliffords = (0..self.num_nodes)
+            .filter(|&node_id| self.is_clifford(node_id))
+            .count() as u32;
+        let num_failures = (0..self.num_nodes)
+            .filter(|&node_id| self.is_clifford(node_id))
+            .flat_map(|node_id| self.children[node_id].iter())
+            .filter(|&&child_id| !self.is_clifford(child_id))
+            .count() as u32;
         assert!(num_cliffords == self.num_cliffords as u32);
         num_failures
     }
@@ -1175,26 +1155,29 @@ impl std::fmt::Display for PauliProductDAG {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "id\tproduct\tchildren\tparents")?;
         for i in 0..self.num_nodes {
-            write!(f, "{}\t{}\t", i, self.products[i])?;
-            write!(f, "[")?;
-            let mut v = Vec::from_iter(self.children[i].iter().cloned());
-            v.sort_unstable();
-            for (j, &child) in v.iter().enumerate() {
-                if j > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", child)?;
-            }
-            write!(f, "]\t")?;
-            write!(f, "[")?;
-            let mut v = Vec::from_iter(self.parents[i].iter().cloned());
-            v.sort_unstable();
-            for (j, &parent) in v.iter().enumerate() {
-                if j > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", parent)?;
-            }
+            write!(f, "{}\t{}\t[", i, self.products[i])?;
+            self.children[i]
+                .iter()
+                .sorted_unstable()
+                .enumerate()
+                .try_for_each(|(j, &child)| {
+                    if j > 0 {
+                        write!(f, ", ")?
+                    }
+                    write!(f, "{}", child)
+                })?;
+
+            write!(f, "]\t[")?;
+            self.parents[i]
+                .iter()
+                .sorted_unstable()
+                .enumerate()
+                .try_for_each(|(j, &parent)| {
+                    if j > 0 {
+                        write!(f, ", ")?
+                    }
+                    write!(f, "{}", parent)
+                })?;
             writeln!(f, "]")?;
         }
         Ok(())
