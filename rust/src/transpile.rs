@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::FromPyObject;
 use pyo3::Python;
-use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
 use std::fs::File;
@@ -476,10 +476,6 @@ impl PauliProductDAG {
         self.products[node_id].is_clifford()
     }
 
-    fn involves_qubit(&self, node_id: usize, qubit: i32) -> bool {
-        self.products[node_id].qubit_cache.contains(&qubit)
-    }
-
     fn is_bad_topo_order(&self, node_id: usize) -> bool {
         for &child_id in &self.children[node_id] {
             if self.topological_order[child_id] < self.topological_order[node_id] {
@@ -536,12 +532,9 @@ impl PauliProductDAG {
         node_id: usize,
         uncommuted_noncliffords: &mut BTreeSet<usize>,
     ) -> bool {
-        for &parent_id in &self.parents[node_id] {
-            if self.is_clifford(parent_id) || uncommuted_noncliffords.contains(&parent_id) {
-                return false;
-            }
-        }
-        true
+        !self.parents[node_id].iter().any(|&parent_id| {
+            self.is_clifford(parent_id) || uncommuted_noncliffords.contains(&parent_id)
+        })
     }
 
     fn indirect_path_exists(&self, start: usize, end: usize) -> bool {
@@ -612,7 +605,7 @@ impl PauliProductDAG {
         let mut selected_order = if from_children { std::usize::MAX } else { 0 };
 
         for &relation_id in relations {
-            if self.involves_qubit(relation_id, qubit) {
+            if self.products[relation_id].qubit_cache.contains(&qubit) {
                 if selected_id.is_none()
                     || (from_children && self.topological_order[relation_id] < selected_order)
                     || (!from_children && self.topological_order[relation_id] > selected_order)
@@ -631,16 +624,19 @@ impl PauliProductDAG {
         related_id: usize,
         from_children: bool,
     ) -> Vec<i32> {
-        let mut relation_map = HashMap::new();
-        for term in &self.products[node_id].terms {
-            let selected_id = self.get_relation_for_qubit(node_id, term.qubit, from_children);
-            if selected_id.is_some() {
-                relation_map.insert(term.qubit, selected_id.unwrap());
-            }
-        }
-        relation_map
-            .into_iter()
-            .filter_map(|(qubit, id)| if id == related_id { Some(qubit) } else { None })
+        self.products[node_id]
+            .terms
+            .iter()
+            .filter_map(|term| {
+                self.get_relation_for_qubit(node_id, term.qubit, from_children)
+                    .and_then(|id| {
+                        if id == related_id {
+                            Some(term.qubit)
+                        } else {
+                            None
+                        }
+                    })
+            })
             .collect()
     }
 
@@ -663,7 +659,7 @@ impl PauliProductDAG {
 
         related_qubits
             .iter()
-            .all(|&qubit| self.involves_qubit(node_id, qubit))
+            .all(|&qubit| self.products[node_id].qubit_cache.contains(&qubit))
     }
 
     fn erase_relation(&mut self, parent_id: usize, node_id: usize) {
@@ -723,10 +719,7 @@ impl PauliProductDAG {
             }
         }
         self.topological_order.swap(node_id, parent_id);
-        if self.roots.contains(&parent_id) {
-            self.roots.remove(&parent_id);
-            self.roots.insert(node_id);
-        } else if self.parents[node_id].is_empty() {
+        if self.roots.remove(&parent_id) || self.parents[parent_id].is_empty() {
             self.roots.insert(node_id);
         }
         self.swap_nodes_timer.stop();
@@ -1218,8 +1211,11 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
     /// Sort children topologically during updates
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short = 's', long, default_value_t = false)]
     topo_sort_children: bool,
+    /// Number of threads to use for parallel operations
+    #[arg(short = 't', long, default_value_t = 8)]
+    threads: usize,
 }
 
 fn main() -> io::Result<()> {
@@ -1229,6 +1225,11 @@ fn main() -> io::Result<()> {
     } else {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
+
+    ThreadPoolBuilder::new()
+        .num_threads(args.threads)
+        .build_global()
+        .unwrap();
 
     let _timer = Timer::new("main");
     let mut dag = PauliProductDAG::new(args.topo_sort_children);
