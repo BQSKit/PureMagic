@@ -1,5 +1,6 @@
 #!/usr/bin/env -S python -u
 
+import sys
 import numpy as np
 import argparse
 import multiprocessing as mp
@@ -50,6 +51,7 @@ def main():
     circuit = realcircuit.RealCircuit(args)
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
+        sys.exit(0)
     if "freqs" in args.plot:
         circuit.plot_freqs()
     single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
