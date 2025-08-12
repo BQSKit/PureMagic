@@ -2,6 +2,7 @@ extern crate env_logger;
 extern crate log;
 
 use clap::Parser;
+use itertools::Itertools;
 use log::{debug, warn};
 use num::integer::gcd;
 use pyo3::prelude::*;
@@ -439,6 +440,7 @@ struct PauliProductDAG {
     topological_order: Vec<usize>,
     max_qubit: i32,
     topo_steps: usize,
+    num_cliffords: usize,
     update_topo_calls: usize,
     num_nodes: usize,
     update_topo_timer: IntermittentTimer,
@@ -456,6 +458,7 @@ impl PauliProductDAG {
             topological_order: Vec::new(),
             max_qubit: 0,
             topo_steps: 0,
+            num_cliffords: 0,
             update_topo_calls: 0,
             num_nodes: 0,
             update_topo_timer: IntermittentTimer::new("update_topo", ""),
@@ -490,15 +493,11 @@ impl PauliProductDAG {
         false
     }
 
-    fn collect_uncommuted_noncliffords(&self, min_layer: u32, max_layer: u32) -> BTreeSet<usize> {
+    fn collect_uncommuted_noncliffords(&self) -> BTreeSet<usize> {
         let mut uncommuted_noncliffords = BTreeSet::new();
         let mut visited = HashSet::new();
 
         for node_id in 0..self.num_nodes {
-            if self.products[node_id].layer >= max_layer || self.products[node_id].layer < min_layer
-            {
-                continue;
-            }
             // Skip if already processed or is Clifford
             if visited.contains(&node_id) || self.is_clifford(node_id) {
                 continue;
@@ -518,9 +517,6 @@ impl PauliProductDAG {
                     continue;
                 }
                 for &child_id in &self.children[current] {
-                    if self.products[child_id].layer >= max_layer {
-                        continue; // Skip nodes beyond max_layer
-                    }
                     if self.is_clifford(child_id) || uncommuted_noncliffords.contains(&child_id) {
                         uncommuted_noncliffords.insert(node_id);
                         break;
@@ -538,12 +534,8 @@ impl PauliProductDAG {
         &self,
         node_id: usize,
         uncommuted_noncliffords: &mut BTreeSet<usize>,
-        min_layer: u32,
     ) -> bool {
         for &parent_id in &self.parents[node_id] {
-            if self.products[parent_id].layer < min_layer {
-                continue;
-            }
             if self.is_clifford(parent_id) || uncommuted_noncliffords.contains(&parent_id) {
                 return false;
             }
@@ -551,13 +543,10 @@ impl PauliProductDAG {
         true
     }
 
-    fn indirect_path_exists(&self, start: usize, end: usize, max_layer: u32) -> bool {
+    fn indirect_path_exists(&self, start: usize, end: usize) -> bool {
         // Base case - path to self
         if start == end {
             return true;
-        }
-        if self.products[start].layer >= max_layer || self.products[end].layer >= max_layer {
-            return false;
         }
         assert!(
             !self.is_bad_topo_order(start) && !self.is_bad_topo_order(end),
@@ -578,16 +567,13 @@ impl PauliProductDAG {
         // BFS traversal
         while let Some(current) = queue.pop_front() {
             for &child_id in &self.children[current] {
-                if self.products[child_id].layer >= max_layer {
-                    continue; // Skip nodes beyond max_layer
-                }
                 // Found path to end
                 if child_id == end {
                     return true;
                 }
 
                 if !visited.contains(&child_id) {
-                    // Prune if end cannot depend on child_id
+                    // Prune if end cannot depend on child_id - this is only a performance optimization
                     if self.topological_order[child_id] > topo_index_end {
                         continue;
                     }
@@ -599,44 +585,43 @@ impl PauliProductDAG {
         false
     }
 
-    fn get_youngest_valid_parent_clifford(&self, node_id: usize, max_layer: u32) -> Option<usize> {
+    fn get_youngest_valid_parent_clifford(&self, node_id: usize) -> Option<usize> {
         self.parents[node_id]
             .iter()
             .filter(|&&parent_id| {
-                self.is_clifford(parent_id)
-                    && !self.indirect_path_exists(parent_id, node_id, max_layer)
+                self.is_clifford(parent_id) && !self.indirect_path_exists(parent_id, node_id)
             })
             .max_by_key(|&&id| self.topological_order[id])
             .copied()
     }
 
-    fn relations_by_qubit(&self, node_id: usize, from_children: bool) -> HashMap<i32, usize> {
-        let mut relation_map = HashMap::new();
+    fn get_relation_for_qubit(
+        &self,
+        node_id: usize,
+        qubit: i32,
+        from_children: bool,
+    ) -> Option<usize> {
         let relations = if from_children {
             &self.children[node_id]
         } else {
             &self.parents[node_id]
         };
-        // Find relations by qubit
-        for term in &self.products[node_id].terms {
-            let mut selected_id = None;
-            let mut selected_order = if from_children { std::usize::MAX } else { 0 };
-            for &relation_id in relations {
-                if self.involves_qubit(relation_id, term.qubit) {
-                    if selected_id.is_none()
-                        || (from_children && self.topological_order[relation_id] < selected_order)
-                        || (!from_children && self.topological_order[relation_id] > selected_order)
-                    {
-                        selected_id = Some(relation_id);
-                        selected_order = self.topological_order[relation_id];
-                    }
+
+        let mut selected_id = None;
+        let mut selected_order = if from_children { std::usize::MAX } else { 0 };
+
+        for &relation_id in relations {
+            if self.involves_qubit(relation_id, qubit) {
+                if selected_id.is_none()
+                    || (from_children && self.topological_order[relation_id] < selected_order)
+                    || (!from_children && self.topological_order[relation_id] > selected_order)
+                {
+                    selected_id = Some(relation_id);
+                    selected_order = self.topological_order[relation_id];
                 }
             }
-            if selected_id.is_some() {
-                relation_map.insert(term.qubit, selected_id.unwrap());
-            }
         }
-        relation_map
+        selected_id
     }
 
     fn get_related_qubits(
@@ -645,7 +630,14 @@ impl PauliProductDAG {
         related_id: usize,
         from_children: bool,
     ) -> Vec<i32> {
-        self.relations_by_qubit(node_id, from_children)
+        let mut relation_map = HashMap::new();
+        for term in &self.products[node_id].terms {
+            let selected_id = self.get_relation_for_qubit(node_id, term.qubit, from_children);
+            if selected_id.is_some() {
+                relation_map.insert(term.qubit, selected_id.unwrap());
+            }
+        }
+        relation_map
             .into_iter()
             .filter_map(|(qubit, id)| if id == related_id { Some(qubit) } else { None })
             .collect()
@@ -683,35 +675,6 @@ impl PauliProductDAG {
     fn add_relation(&mut self, parent_id: usize, node_id: usize) {
         self.parents[node_id].insert(parent_id);
         self.children[parent_id].insert(node_id);
-    }
-
-    fn get_relation_for_qubit(
-        &self,
-        node_id: usize,
-        qubit: i32,
-        from_children: bool,
-    ) -> Option<usize> {
-        let relations = if from_children {
-            &self.children[node_id]
-        } else {
-            &self.parents[node_id]
-        };
-
-        let mut selected_id = None;
-        let mut selected_order = if from_children { std::usize::MAX } else { 0 };
-
-        for &relation_id in relations {
-            if self.involves_qubit(relation_id, qubit) {
-                if selected_id.is_none()
-                    || (from_children && self.topological_order[relation_id] < selected_order)
-                    || (!from_children && self.topological_order[relation_id] > selected_order)
-                {
-                    selected_id = Some(relation_id);
-                    selected_order = self.topological_order[relation_id];
-                }
-            }
-        }
-        selected_id
     }
 
     fn swap_nodes(&mut self, parent_id: usize, node_id: usize) {
@@ -768,7 +731,7 @@ impl PauliProductDAG {
         self.swap_nodes_timer.stop();
     }
 
-    fn update_topological_order_starting_at(&mut self, node_id: usize, max_layer: u32) {
+    fn update_topological_order_starting_at(&mut self, node_id: usize) {
         debug!("Updating topological order starting at {}", node_id);
         debug!("Current topo order: {:?}", self.topological_order);
         self.update_topo_calls += 1;
@@ -806,9 +769,7 @@ impl PauliProductDAG {
                 let mut sorted_children: Vec<usize> = self.children[current]
                     .iter()
                     .copied()
-                    .filter(|&c| {
-                        self.topological_order[c] >= offset && self.products[c].layer < max_layer
-                    })
+                    .filter(|&c| self.topological_order[c] >= offset)
                     .collect();
                 sorted_children.sort_by_key(|&c| self.topological_order[c]);
                 for &child_id in &sorted_children {
@@ -821,9 +782,7 @@ impl PauliProductDAG {
             } else {
                 // this is much faster
                 for &child_id in &self.children[current] {
-                    if self.topological_order[child_id] >= offset
-                        && self.products[child_id].layer < max_layer
-                    {
+                    if self.topological_order[child_id] >= offset {
                         indegrees[child_id] -= 1;
                         if indegrees[child_id] == 0 {
                             queue.push_back(child_id);
@@ -1056,6 +1015,7 @@ impl PauliProductDAG {
         for i in 0..self.num_nodes {
             if self.is_clifford(i) {
                 self.roots.insert(i);
+                self.num_cliffords += 1;
             }
             let mut prev_qubit = -1;
             for term in &self.products[i].terms {
@@ -1089,7 +1049,7 @@ impl PauliProductDAG {
         Ok(())
     }
 
-    fn commute_clifford_right(&mut self, parent_id: usize, node_id: usize, max_layer: u32) {
+    fn commute_clifford_right(&mut self, parent_id: usize, node_id: usize) {
         assert!(self.is_clifford(parent_id));
         let new_node_prod = self.products[parent_id].commute_right(&self.products[node_id]);
         debug!(
@@ -1111,55 +1071,52 @@ impl PauliProductDAG {
             self.topological_order[node_id]
         );
         if self.is_bad_topo_order(node_id) || self.is_bad_topo_order(parent_id) {
-            self.update_topological_order_starting_at(node_id, max_layer);
+            self.update_topological_order_starting_at(node_id);
             assert!(!self.is_bad_topo_order(node_id) && !self.is_bad_topo_order(parent_id));
         }
     }
 
-    fn commute_all_cliffords(&mut self, min_layer: u32, max_layer: u32) {
+    fn commute_all_cliffords(&mut self) {
         let _timer = Timer::new("commute_all_cliffords");
-        let mut uncommuted_noncliffords =
-            self.collect_uncommuted_noncliffords(min_layer, max_layer);
+        let mut uncommuted_noncliffords = self.collect_uncommuted_noncliffords();
         if uncommuted_noncliffords.is_empty() {
             println!("No uncommuted non-Cliffords");
             return;
         }
         let num_uncommuted = uncommuted_noncliffords.len();
-        println!("Found {} uncommuted noncliffords", num_uncommuted);
-        //let mut num_commuted = 0;
-        //let update_tick = (num_uncommuted as f64 / 20.0) as usize;
-        //let mut next_tick = update_tick;
+        print!("Commuting {} noncliffords:    ", num_uncommuted);
+        let mut num_commuted = 0;
+        let update_tick = (num_uncommuted as f64 / 100.0) as usize;
+        let mut next_tick = update_tick;
         let mut loops = 0;
         while !uncommuted_noncliffords.is_empty() {
-            //if num_commuted >= next_tick {
-            //    print!("{} ", (num_commuted * 100 / num_uncommuted));
-            //    std::io::stdout().flush().unwrap();
-            //    next_tick = num_commuted + update_tick;
-            //}
+            if num_commuted >= next_tick {
+                print!("\x08\x08\x08{:02}%", (num_commuted * 100 / num_uncommuted));
+                std::io::stdout().flush().unwrap();
+                next_tick = num_commuted + update_tick;
+            }
             let mut finished_noncliffords = Vec::new();
             // Create a temporary copy for iteration
             let current_noncliffords: Vec<_> = uncommuted_noncliffords.iter().copied().collect();
             for &node_id in &current_noncliffords {
-                if self.done_commuting_nonclifford(node_id, &mut uncommuted_noncliffords, min_layer)
-                {
+                if self.done_commuting_nonclifford(node_id, &mut uncommuted_noncliffords) {
                     debug!("Finished commuting nonclifford {}", node_id);
                     finished_noncliffords.push(node_id);
                     continue;
                 }
-                if let Some(parent_id) = self.get_youngest_valid_parent_clifford(node_id, max_layer)
-                {
+                if let Some(parent_id) = self.get_youngest_valid_parent_clifford(node_id) {
                     if self.children[node_id].contains(&parent_id) {
                         panic!("Loop detected");
                     }
                     debug!("youngest parent {}", parent_id);
-                    self.commute_clifford_right(parent_id, node_id, max_layer);
+                    self.commute_clifford_right(parent_id, node_id);
                 }
             }
             for &nonclifford_id in &finished_noncliffords {
                 uncommuted_noncliffords.remove(&nonclifford_id);
                 debug!("Removed nonclifford {}", nonclifford_id);
             }
-            //num_commuted += finished_noncliffords.len();
+            num_commuted += finished_noncliffords.len();
             loops += 1;
             debug!(
                 "Iteration {}: Commuted {} noncliffords, remaining {}",
@@ -1168,7 +1125,7 @@ impl PauliProductDAG {
                 uncommuted_noncliffords.len()
             );
         }
-        //println!();
+        println!();
         println!(
             "There were {} steps in {} calls to update the topological order",
             self.topo_steps, self.update_topo_calls
@@ -1176,27 +1133,27 @@ impl PauliProductDAG {
     }
 
     fn verify_clifford_relations(&self) -> u32 {
-        // Verify results
+        let mut num_cliffords: u32 = 0;
         let mut num_failures: u32 = 0;
         for node_id in 0..self.num_nodes {
             if self.is_clifford(node_id) {
+                num_cliffords += 1;
                 for &child_id in &self.children[node_id] {
                     if !self.is_clifford(child_id) {
-                        //warn!(
-                        //    "Found clifford {} with nonclifford child {}",
-                        //    node_id, child_id
-                        //);
                         num_failures += 1;
                     }
                 }
             }
         }
+        assert!(num_cliffords == self.num_cliffords as u32);
         num_failures
     }
 
     fn set_layers(&mut self) -> usize {
         let mut nodes_used = BTreeSet::new();
-        let mut nodes_left: BTreeSet<_> = (0..self.num_nodes).collect();
+        let mut nodes_left: BTreeSet<_> = (0..self.num_nodes)
+            .sorted_by_key(|&i| self.topological_order[i])
+            .collect();
         let mut layer_idx = 0;
         while !nodes_left.is_empty() {
             let nodes_left_snapshot = nodes_left.clone();
@@ -1283,45 +1240,12 @@ fn main() -> io::Result<()> {
     let mut f = File::create(fname)?;
     write!(f, "{}", dag)?;
 
-    let mut step_size = num_layers;
-    loop {
-        println!("STEP SIZE {}", step_size);
-        for layer in (0..num_layers).step_by(step_size) {
-            println!(
-                "Commuting non-Cliffords in layers {} to {}",
-                layer,
-                layer + step_size
-            );
-            dag.commute_all_cliffords(layer as u32, (layer + step_size) as u32);
-        }
-        for node_id in 0..dag.num_nodes {
-            assert!(
-                !dag.is_bad_topo_order(node_id),
-                "Bad topo order for node {}",
-                node_id
-            );
-        }
-        num_layers = dag.set_layers();
-        println!(
-            "After step size of {}, circuit now has {} layers",
-            step_size, num_layers
-        );
-        let fname = format!("{}.transpiled.{}.txt", &args.input_file, step_size);
-        println!("Saving transpiled circuit to {}", fname);
-        write!(File::create(fname)?, "{}", dag)?;
-        let num_failures = dag.verify_clifford_relations();
-        if num_failures == 0 {
-            break;
-        } else {
-            warn!("Found {} failures", num_failures);
-        }
-        if step_size == num_layers {
-            break;
-        }
-        step_size *= 2;
-        if step_size > num_layers {
-            step_size = num_layers;
-        }
+    dag.commute_all_cliffords();
+    num_layers = dag.set_layers();
+    println!("Transpiled circuit has {} layers", num_layers);
+    let num_failures = dag.verify_clifford_relations();
+    if num_failures > 0 {
+        warn!("Found {} failures", num_failures);
     }
 
     let fname = format!("{}.transpiled.txt", &args.input_file);
