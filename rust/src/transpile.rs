@@ -1,6 +1,9 @@
 extern crate env_logger;
 extern crate log;
 
+mod utils;
+
+use crate::utils::{IntermittentTimer, Timer};
 use clap::Parser;
 use itertools::Itertools;
 use log::{debug, warn};
@@ -14,84 +17,28 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
 use std::fs::File;
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
-
-struct Timer {
-    name: String,
-    start: Instant,
-}
-
-impl Timer {
-    fn new(name: &str) -> Self {
-        Timer {
-            name: name.to_string(),
-            start: Instant::now(),
-        }
-    }
-}
-
-impl Drop for Timer {
-    fn drop(&mut self) {
-        println!(
-            "\x1b[36mTiming: {} took {:.2} s\x1b[0m",
-            self.name,
-            self.start.elapsed().as_secs_f64()
-        );
-    }
-}
 
 #[derive(Debug)]
-pub struct IntermittentTimer {
-    start_time: Option<Instant>,
-    total_elapsed: Duration,
-    last_interval: Duration,
-    name: String,
-    interval_label: String,
+struct Operation {
+    gate: String,
+    params: Option<f64>,
+    location: Vec<i32>,
+    dagger: bool,
 }
 
-impl IntermittentTimer {
-    pub fn new(name: &str, interval_label: &str) -> Self {
-        IntermittentTimer {
-            start_time: None,
-            total_elapsed: Duration::new(0, 0),
-            last_interval: Duration::new(0, 0),
-            name: name.to_string(),
-            interval_label: interval_label.to_string(),
+impl Operation {
+    fn new(mut gate: String, params: Option<f64>, location: Vec<i32>) -> Self {
+        assert!(gate.ends_with("Gate") || gate.ends_with("barrier"));
+        if gate.ends_with("Gate") {
+            gate.truncate(gate.len() - 4);
         }
-    }
-
-    pub fn done(&self) {
-        println!(
-            "\x1b[36mTiming: {} took {:.2} s\x1b[0m",
-            self.name,
-            self.total_elapsed.as_secs_f64()
-        );
-    }
-
-    pub fn get_final(&self) -> String {
-        format!("{}: {:.2}", self.name, self.total_elapsed.as_secs_f64())
-    }
-
-    pub fn start(&mut self) {
-        if !self.interval_label.is_empty() {
-            println!("{:<40}:", self.interval_label);
+        let dagger = gate.ends_with("dg");
+        Operation {
+            gate,
+            params,
+            location,
+            dagger,
         }
-        self.start_time = Some(Instant::now());
-    }
-
-    pub fn stop(&mut self) {
-        if let Some(start) = self.start_time.take() {
-            self.last_interval = start.elapsed();
-            self.total_elapsed += self.last_interval;
-
-            if !self.interval_label.is_empty() {
-                println!("\x1b[34m{:.2} s\x1b[0m", self.last_interval.as_secs_f64());
-            }
-        }
-    }
-
-    pub fn get_interval(&self) -> f64 {
-        self.last_interval.as_secs_f64()
     }
 }
 
@@ -114,9 +61,9 @@ impl FromPyObject<'_> for Circuit {
     }
 }
 
-fn load_circuit(fname: &str) -> io::Result<Vec<String>> {
+fn load_circuit(fname: &str) -> io::Result<Vec<Operation>> {
     let _timer = Timer::new("load_circuit");
-    Python::with_gil(|py| -> io::Result<Vec<String>> {
+    Python::with_gil(|py| -> io::Result<Vec<Operation>> {
         // Import required modules
         let bqskit_circuit = py.import("bqskit.ir.circuit")?;
         let bqskit_compiler = py.import("bqskit.compiler")?;
@@ -160,29 +107,56 @@ fn load_circuit(fname: &str) -> io::Result<Vec<String>> {
         circuit.call_method0("unfold_all")?;
         compile_timer.stop();
         compile_timer.done();
-        let items = circuit
-            .extract::<Circuit>()?
-            .iter()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))?;
+        let items = circuit.extract::<Circuit>()?.iter().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("{}: Python error: {}", line!(), e),
+            )
+        })?;
         println!("Circuit has {} operations", items.len());
-        let mut op_strings = Vec::new();
+
+        let mut operations = Vec::new();
         for item in items.iter() {
-            let item_str = item
-                .as_ref(py)
-                .str()
-                .map_err(|e| {
-                    io::Error::new(io::ErrorKind::Other, format!("Python str error: {}", e))
-                })?
+            let op = item.as_ref(py);
+
+            let gate = op
+                .getattr("gate")?
+                .str()?
                 .extract::<String>()
                 .map_err(|e| {
-                    io::Error::new(io::ErrorKind::Other, format!("Python extract error: {}", e))
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("{}: Failed to extract gate name: {}", line!(), e),
+                    )
                 })?;
-            debug!("Operation: {}", item_str);
-            op_strings.push(item_str);
+
+            let params = match op.getattr("params")?.extract::<Vec<f64>>() {
+                Ok(p) if !p.is_empty() => Some(p[0]),
+                _ => None,
+            };
+
+            let location = op.getattr("location")?.extract::<Vec<i32>>().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("{}: Failed to extract location: {}", line!(), e),
+                )
+            })?;
+
+            debug!(
+                "Operation: {} params: {:?} loc: {:?}",
+                gate, params, location
+            );
+
+            operations.push(Operation::new(gate, params, location));
         }
-        Ok(op_strings)
+        Ok(operations)
     })
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Python error: {}", e)))
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("{}: Python error: {}", line!(), e),
+        )
+    })
 }
 
 fn basis_commutes_with(b1: char, b2: char) -> bool {
@@ -774,63 +748,8 @@ impl PauliProductDAG {
         self.update_topo_timer.stop();
     }
 
-    fn parse_location(s: &str) -> io::Result<Vec<i32>> {
-        let inner = s
-            .trim_start_matches('(')
-            .trim_end_matches(')')
-            .trim_end_matches(','); // Handle trailing comma
-
-        if inner.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        inner
-            .split(',')
-            .map(|x| {
-                x.trim().parse::<i32>().map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to parse location number: {}", e),
-                    )
-                })
-            })
-            .collect()
-    }
-
-    fn parse_param_from_op(s: &str) -> io::Result<Option<f64>> {
-        let inner = s.trim_start_matches('[').trim_end_matches("])@");
-
-        if inner.is_empty() {
-            Ok(None)
-        } else {
-            inner.parse::<f64>().map(Some).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to parse float: {}", e),
-                )
-            })
-        }
-    }
-
-    fn products_from_operation(op: &str) -> io::Result<Vec<PauliProduct>> {
-        let parts: Vec<&str> = op.split('(').collect();
-        let (gate_name, params, location) = (
-            parts[0],
-            PauliProductDAG::parse_param_from_op(parts[1])?,
-            PauliProductDAG::parse_location(parts[2])?,
-        );
-
-        let gate = &gate_name[..gate_name.len() - 4]; // Remove "Gate" suffix
-
-        // Define angles based on dagger flag
-        let dagger = gate.ends_with("dg");
-        let base_gate = if dagger {
-            gate.trim_end_matches("dg")
-        } else {
-            gate
-        };
-
-        let (pi_2, pi_4, pi7_4, pi_8, pi15_8) = if dagger {
+    fn products_from_operation(op: &Operation) -> io::Result<Vec<PauliProduct>> {
+        let (pi_2, pi_4, pi7_4, pi_8, pi15_8) = if op.dagger {
             (
                 Angle::new(1, 2),
                 Angle::new(7, 4),
@@ -849,39 +768,32 @@ impl PauliProductDAG {
         };
 
         // Unwrap location values after checking bounds
-        let qubit0 = location.get(0).ok_or_else(|| {
+        let qubit0 = op.location.get(0).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Missing first location parameter",
+                format!("{}: Missing first location parameter", line!()),
             )
         })?;
-        let qubit1 = location.get(1).unwrap_or(&-1);
-
-        Ok(match base_gate {
+        let qubit1 = op.location.get(1).unwrap_or(&-1);
+        Ok(match op.gate.as_str() {
             // Pauli gates (X, Y, Z) -> (pi/2)
             "X" | "Y" | "Z" => {
                 vec![PauliProduct::new(
-                    vec![PauliTerm::new(
-                        base_gate.chars().next().unwrap(),
-                        0,
-                        *qubit0,
-                    )],
+                    vec![PauliTerm::new(op.gate.chars().next().unwrap(), 0, *qubit0)],
                     pi_2.clone(),
                 )]
             }
             // Single qubit Clifford gates
-            "S" | "Sdg" => {
+            "S" => {
                 vec![PauliProduct::new(
-                    vec![PauliTerm::new(
-                        'Z',
-                        if gate == "Sdg" { -1 } else { 1 },
-                        *qubit0,
-                    )],
-                    if base_gate == "s" {
-                        pi_4.clone()
-                    } else {
-                        pi7_4.clone()
-                    },
+                    vec![PauliTerm::new('Z', 1, *qubit0)],
+                    pi_4.clone(),
+                )]
+            }
+            "Sdg" => {
+                vec![PauliProduct::new(
+                    vec![PauliTerm::new('Z', -1, *qubit0)],
+                    pi7_4.clone(),
                 )]
             }
             "SqrtX" => {
@@ -932,21 +844,23 @@ impl PauliProductDAG {
                 ]
             }
             // T gates
-            "T" | "Tdg" => {
+            "T" => {
                 vec![PauliProduct::new(
                     vec![PauliTerm::new('Z', 0, *qubit0)],
-                    if base_gate == "t" {
-                        pi_8.clone()
-                    } else {
-                        pi15_8.clone()
-                    },
+                    pi_8.clone(),
+                )]
+            }
+            "Tdg" => {
+                vec![PauliProduct::new(
+                    vec![PauliTerm::new('Z', 0, *qubit0)],
+                    pi15_8.clone(),
                 )]
             }
             // Rotation gates
             "RX" | "RY" | "RZ" => {
-                let param = match params {
+                let param = match op.params {
                     Some(a) => {
-                        if dagger {
+                        if op.dagger {
                             -a
                         } else {
                             a
@@ -955,29 +869,26 @@ impl PauliProductDAG {
                     None => panic!("Rotation gate requires angle parameter"),
                 };
                 let angle = Angle::from_float(param);
-                let basis = match base_gate {
+                let basis = match op.gate.as_str() {
                     "RX" => 'X',
                     "RY" => 'Y',
                     "RZ" => 'Z',
-                    _ => panic!(
-                        "Invalid rotation gate: {} {} {}",
-                        base_gate, gate, gate_name
-                    ),
+                    _ => panic!("Invalid rotation gate: {} {:?}", op.gate, op,),
                 };
                 vec![PauliProduct::new(
                     vec![PauliTerm::new(basis, 0, *qubit0)],
                     angle,
                 )]
             }
-            "bar" => vec![], //  what is left of barrier after removing the "gate" ending
-            _ => panic!("No known transpilation rule for {}", gate),
+            "barrier" => vec![],
+            _ => panic!("No known transpilation rule for {}", op.gate),
         })
     }
 
     fn from_circuit(&mut self, fname: &str) -> io::Result<()> {
-        let op_strings = load_circuit(fname)?;
-        for item_str in op_strings {
-            let products = Self::products_from_operation(&item_str)?;
+        let operations = load_circuit(fname)?;
+        for op in operations {
+            let products = Self::products_from_operation(&op)?;
             if log::log_enabled!(log::Level::Debug) {
                 for product in &products {
                     debug!("  {}", product);
@@ -1003,8 +914,10 @@ impl PauliProductDAG {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "Qubit numbers must be in increasing order, found {} after {}",
-                            term.qubit, prev_qubit
+                            "{}: Qubit numbers must be in increasing order, found {} after {}",
+                            line!(),
+                            term.qubit,
+                            prev_qubit
                         ),
                     ));
                 }

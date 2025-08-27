@@ -1,10 +1,10 @@
-# LSSP (Local Stabilizer Simulation Protocol)
+# transpile
 
-A quantum circuit transformation tool that performs Clifford operator commutations on Pauli products.
+Transpilation of quantum circuits.
 
 ## Description
 
-This tool reads a quantum circuit represented as a directed acyclic graph (DAG) of Pauli products and performs commutations of Clifford operators to transform the circuit into a standardized form.
+This tool reads a quantum circuit represented as a directed acyclic graph (DAG) of Pauli products and performs commutations of Clifford operators to the right.
 
 ## Features
 
