@@ -1,6 +1,5 @@
 import sys
 import os
-import pickle
 from re import findall
 import argparse
 from pathlib import Path
