@@ -12,11 +12,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::FromPyObject;
 use pyo3::Python;
-use rayon::ThreadPoolBuilder;
+//use rayon::ThreadPoolBuilder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f64::consts::PI;
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::Path;
 
 #[derive(Debug)]
 struct Operation {
@@ -31,8 +32,13 @@ impl Operation {
         assert!(gate.ends_with("Gate") || gate.ends_with("barrier"));
         if gate.ends_with("Gate") {
             gate.truncate(gate.len() - 4);
+        } else if gate != "barrier" {
+            panic!("Invalid gate {}", gate);
         }
         let dagger = gate.ends_with("dg");
+        if dagger {
+            warn!("Found dagger for {}", gate);
+        }
         Operation {
             gate,
             params,
@@ -888,12 +894,15 @@ impl PauliProductDAG {
     fn from_circuit(&mut self, fname: &str) -> io::Result<()> {
         let operations = load_circuit(fname)?;
         for op in operations {
+            debug!("XXX {:?}", op);
             let products = Self::products_from_operation(&op)?;
+            /*
             if log::log_enabled!(log::Level::Debug) {
                 for product in &products {
                     debug!("  {}", product);
                 }
             }
+            */
             self.products.extend(products);
         }
         self.num_nodes = self.products.len();
@@ -1109,9 +1118,9 @@ struct Args {
     /// Sort children topologically during updates
     #[arg(short = 's', long, default_value_t = false)]
     topo_sort_children: bool,
-    /// Number of threads to use for parallel operations
-    #[arg(short = 't', long, default_value_t = 8)]
-    threads: usize,
+    // Number of threads to use for parallel operations
+    //#[arg(short = 't', long, default_value_t = 8)]
+    //threads: usize,
 }
 
 fn main() -> io::Result<()> {
@@ -1122,10 +1131,12 @@ fn main() -> io::Result<()> {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 
+    /*
     ThreadPoolBuilder::new()
         .num_threads(args.threads)
         .build_global()
         .unwrap();
+     */
 
     let _timer = Timer::new("main");
     let mut dag = PauliProductDAG::new(args.topo_sort_children);
@@ -1134,7 +1145,11 @@ fn main() -> io::Result<()> {
     let mut num_layers = dag.set_layers();
     println!("Circuit has {} layers", num_layers);
 
-    let fname = format!("{}.compiled.txt", &args.input_file);
+    let input_basename = Path::new(&args.input_file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&args.input_file);
+    let fname = format!("{}.compiled.txt", input_basename);
     println!("Saving compiled circuit to {}", fname);
     let mut f = File::create(fname)?;
     write!(f, "{}", dag)?;
@@ -1147,7 +1162,7 @@ fn main() -> io::Result<()> {
         warn!("Found {} failures", num_failures);
     }
 
-    let fname = format!("{}.transpiled.txt", &args.input_file);
+    let fname = format!("{}.transpiled.txt", input_basename);
     println!("Saving transpiled circuit to {}", fname);
     write!(File::create(fname)?, "{}", dag)?;
 
