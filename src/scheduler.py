@@ -284,8 +284,10 @@ class Scheduler:
         self.sched_file = open(sched_fname, "w")
         num_steps = 0
         scheduled = set()
-        path_dir = Path(self.args.circuit).stem + ".paths"
-        Path(path_dir).mkdir(exist_ok=True)
+        path_dir = None
+        if "paths" in self.args.plot:
+            path_dir = Path(self.args.circuit).stem + ".paths"
+            Path(path_dir).mkdir(exist_ok=True)
         while len(to_schedule) > 0:
             num_steps += 1
             print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=self.sched_file)
@@ -303,7 +305,7 @@ class Scheduler:
                     circuit[child_id].parents.remove(pp.id)
                     if len(circuit[child_id].parents) == 0:
                         to_schedule.append(circuit[child_id])
-            if title_str is not None and "paths" in self.args.plot and num_steps > 0 and num_steps < 30:
+            if path_dir is not None and title_str is not None and num_steps > 0 and num_steps < 30:
                 # don't plot too many steps
                 fname_added = "." + str(num_steps) + "-" + self.args.path_method
                 os.chdir(path_dir)
