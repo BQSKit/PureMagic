@@ -43,7 +43,7 @@ class PauliProduct:
             denominator = int(angle_parts[1].split(")")[0])
         self.angle = quilt.angle.Angle(numerator, denominator)
 
-    def is_pi_over_four(self):
+    def is_clifford(self):
         assert self.angle is not None
         return self.angle.is_clifford()
 
