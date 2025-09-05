@@ -134,7 +134,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
             for op in ops:
                 node = "d" + str(oi) + op
                 if node not in topo_graph:
-                    if pauli_product.is_pi_over_four():
+                    if pauli_product.is_clifford():
                         print(f"node {node} not in topo graph for pp {pauli_product.get_product_str()}")
                     return None
                 if node not in terminal_nodes:
@@ -146,14 +146,14 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
 
     for terminal_node in terminal_nodes[1:]:
         if not nx.has_path(topo_graph, root_node, terminal_node):
-            if pauli_product.is_pi_over_four():
+            if pauli_product.is_clifford():
                 print(
                     f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
                 )
             return None
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes)
     if not all([node in g for node in terminal_nodes]):
-        if pauli_product.is_pi_over_four():
+        if pauli_product.is_clifford():
             print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
         return None
     return g
@@ -178,7 +178,7 @@ def find_best_magic_node(topo_graph, pauli_product):
                     return None
                 terminal_nodes.append(node)
     starting_nodes = []
-    if pauli_product.is_pi_over_four():
+    if pauli_product.is_clifford():
         # if this is a pi/4 rotation, we don't need a magic node so the starting nodes are bus qubits
         if len(terminal_nodes) == 1:
             return terminal_nodes[0]
@@ -329,7 +329,7 @@ class Scheduler:
         num_dependent_nodes = 0
         next_to_schedule = []
         for pp in to_schedule:
-            if pp.is_pi_over_four():
+            if pp.is_clifford():
                 print(pp.id, "PI/4 rotation", pp, file=self.sched_file)
             if working_topo_graph.number_of_nodes() == 0:
                 print("No more nodes", file=self.sched_file)

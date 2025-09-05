@@ -56,6 +56,14 @@ class RealCircuit(list):
             layers.append(layer)
         return layers
 
+    def check_clifford_relations(self):
+        for node in self:
+            # a clifford shouldn't have any non-clifford children
+            if node.is_clifford():
+                for child_id in node.children:
+                    if not self[child_id].is_clifford():
+                        raise RuntimeError(f"Node {node.id} is a clifford but has a non-clifford child {child_id}")
+
     def draw_graph(self):
         g = nx.DiGraph()
         for node in self:
@@ -151,7 +159,7 @@ class RealCircuit(list):
                         # edgecolor="black",
                         lw=0.2,
                         edgecolor="none",
-                        facecolor="#cccc22" if pauli_product.is_pi_over_four() else "#22ff22",
+                        facecolor="#cccc22" if pauli_product.is_clifford() else "#22ff22",
                     )
                 )
         plt.xlim(min_layer, max_layer)

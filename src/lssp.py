@@ -49,6 +49,7 @@ def main():
     if "topo" in args.plot:
         topo_graph.plot(".topo")
     circuit = realcircuit.RealCircuit(args)
+    circuit.check_clifford_relations()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:
