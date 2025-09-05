@@ -18,7 +18,7 @@ def get_args():
     parser.add_argument(
         "--path-method",
         type=str,
-        default="bfs",
+        default="steiner",
         choices=path_methods,
         help="Method to use for finding paths: " + ", ".join(path_methods),
     )
