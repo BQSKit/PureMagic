@@ -20,7 +20,6 @@ def get_args():
     parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
     parser.add_argument("--circuit", "-c", type=str, required=True, default="None", help="Circuit file name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    # parser.add_argument("--topbottom", action="store_true", help="Use top and bottom of double data qubits")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument("--magic-steps", "-m", type=int, default=1, help="Number of timesteps until a magic state is ready")
     parser.add_argument("--show-product-ids", action="store_true", help="Show product IDs when plotting the circuit")
