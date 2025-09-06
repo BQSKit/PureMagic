@@ -67,7 +67,7 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
     return None
 
 
-def get_topo_digraph(topo_graph):
+def get_topo_digraph(topo_graph, root_node):
     topo_digraph = topo_graph.to_directed()
     # now strip the directed edges coming out of the data nodes, to prevent paths that go into then out of data nodes
     edges_to_remove = []
@@ -75,14 +75,19 @@ def get_topo_digraph(topo_graph):
         if is_data_node(edge[0]):
             edges_to_remove.append(edge)
     topo_digraph.remove_edges_from(edges_to_remove)
+    nodes_to_remove = []
+    for node in topo_digraph.nodes():
+        if is_magic_node(node) and node != root_node:
+            nodes_to_remove.append(node)
+    topo_digraph.remove_nodes_from(nodes_to_remove)
     return topo_digraph
 
 
-def mehlhorn_steiner_tree(topo_graph, terminal_nodes):
+def mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node):
     # this is exactly like the steiner tree computation in the networkx library, except that for the dijkstra path calculation
     # and the shortest path, we use a digraph with the edges that go from the data nodes outwards removed. This prevents trees
     # that pass through the data nodes, instead of just terminating at the data nodes
-    topo_digraph = get_topo_digraph(topo_graph)
+    topo_digraph = get_topo_digraph(topo_graph, root_node)
     paths = nx.multi_source_dijkstra_path(topo_digraph, terminal_nodes)
 
     d_1 = {}
@@ -151,7 +156,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
                     f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
                 )
             return None
-    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes)
+    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node)
     if not all([node in g for node in terminal_nodes]):
         if pauli_product.is_clifford():
             print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
@@ -159,14 +164,14 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
     return g
 
 
-def find_best_magic_node(topo_graph, pauli_product):
+def find_best_magic_node(topo_graph, pauli_product, sched_file):
     magic_nodes = []
     for node in topo_graph.nodes:
         if is_magic_node(node):
             if topo_graph.nodes[node]["busy_count"] == 0:
                 magic_nodes.append(node)
     if len(magic_nodes) == 0:
-        # print("Could not find starting node for Pauli product", pauli_product.__str__())
+        print("Could not find starting node for Pauli product", pauli_product.__str__(), file=sched_file)
         return None
     terminal_nodes = []
     for oi, operator in enumerate(pauli_product.operators):
@@ -175,6 +180,7 @@ def find_best_magic_node(topo_graph, pauli_product):
             for op in ops:
                 node = "d" + str(oi) + op
                 if node not in topo_graph:
+                    print(f"Node {node} not in topo graph for finding best magic node", file=sched_file)
                     return None
                 terminal_nodes.append(node)
     starting_nodes = []
@@ -205,6 +211,7 @@ def find_best_magic_node(topo_graph, pauli_product):
                 best_start_node = start_node
         except nx.NetworkXNoPath:
             # path not found - can't use this magic node
+            print(f"Path not found", file=sched_file)
             continue
     return best_start_node
 
@@ -234,11 +241,12 @@ def add_double_edges(topo_graph, pauli_product):
     return topo_graph
 
 
-def schedule_pauli_product(args, topo_graph, pauli_product):
+def schedule_pauli_product(args, topo_graph, pauli_product, sched_file):
     # if args.topbottom:
     #    topo_graph = add_double_edges(topo_graph, pauli_product)
-    root_node = find_best_magic_node(topo_graph, pauli_product)
+    root_node = find_best_magic_node(topo_graph, pauli_product, sched_file)
     if root_node == None:
+        print(f"Could not find root node for product {pauli_product}", file=sched_file)
         return None
     # schedule from each available magic node in turn to find the first that works
     # for root_node in magic_nodes:
@@ -336,7 +344,7 @@ class Scheduler:
             if working_topo_graph.number_of_nodes() == 0:
                 print("No more nodes", file=self.sched_file)
                 break
-            pp_graph = schedule_pauli_product(self.args, working_topo_graph, pp)
+            pp_graph = schedule_pauli_product(self.args, working_topo_graph, pp, self.sched_file)
             if pp_graph == None:
                 print("* Could not schedule", pp, file=self.sched_file)
                 next_to_schedule.append(pp)

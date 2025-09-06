@@ -23,7 +23,6 @@ def get_args():
         help="Method to use for finding paths: " + ", ".join(path_methods),
     )
     parser.add_argument("--bus-ratio", "-s", type=int, default=1, help="Ratio of double qubit rows to bus rows")
-    parser.add_argument("--double-bus", action="store_true", help="Double columns for bus qubits")
     plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
     parser.add_argument("--plot-circuit-range", type=str, default="", help="Min and max depths of circuit to plot: NN:NN")
@@ -48,6 +47,7 @@ def main():
         print("Adjusted number of data qubits from", args.min_num_qubits, "to", topo_graph.num_data_qubits)
     if "topo" in args.plot:
         topo_graph.plot(".topo")
+        # sys.exit(0)
     circuit = realcircuit.RealCircuit(args)
     circuit.check_clifford_relations()
     if "circuit" in args.plot:
@@ -63,7 +63,7 @@ def main():
     num_layers = len(circuit.get_layers())
     speedup = float(num_scheduled) / num_layers
     print(f"Optimal time steps {num_layers} ({speedup:.3f} speedup)")
-    opt_cols, opt_rows = topo_graph.get_topo_dims(1000, False)
+    opt_cols, opt_rows = topo_graph.get_topo_dims(1000)
     opt_qubit_cost = num_layers * (opt_cols * opt_rows - int(opt_cols / 2) * 2)
     efficiency = float(opt_qubit_cost) / qubit_cost
     print(f"Optimal qubit cost {opt_qubit_cost}, efficiency {efficiency:.3f}")
