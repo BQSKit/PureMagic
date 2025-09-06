@@ -86,41 +86,23 @@ def mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node):
     return T
 
 
-def find_best_magic_node(topo_graph, pauli_product, sched_file):
-    magic_nodes = []
-    for node in topo_graph.nodes:
-        if is_magic_node(node):
-            if topo_graph.nodes[node]["busy_count"] == 0:
-                magic_nodes.append(node)
-    if len(magic_nodes) == 0:
-        print("Could not find starting node for Pauli product", pauli_product.__str__(), file=sched_file)
-        return None
+def find_terminal_nodes(topo_graph, pauli_product, sched_file):
     terminal_nodes = []
     for oi, operator in enumerate(pauli_product.operators):
-        if operator != " ":
-            ops = ["X", "Z"] if operator == "Y" else [operator]
-            for op in ops:
-                node = "d" + str(oi) + op
-                if node not in topo_graph:
-                    print(f"Node {node} not in topo graph for finding best magic node", file=sched_file)
-                    return None
-                terminal_nodes.append(node)
-    starting_nodes = []
-    if pauli_product.is_clifford():
-        # if this is a pi/4 rotation, we don't need a magic node so the starting nodes are bus qubits
-        if len(terminal_nodes) == 1:
-            return terminal_nodes[0]
-        candidates = set()
-        # find the nearest bus qubit
-        for node in terminal_nodes:
-            for nb in topo_graph[node]:
-                if is_bus_node(nb):
-                    candidates.add(nb)
-        starting_nodes = list(candidates)
-    else:
-        starting_nodes = magic_nodes
+        # the product has blank spaces for unused qubits
+        if operator == " ":
+            continue
+        ops = ["X", "Z"] if operator == "Y" else [operator]
+        for op in ops:
+            node = "d" + str(oi) + op
+            if node not in topo_graph:
+                print(f"Node {node} not in topo graph for finding terminal nodes", file=sched_file)
+                return []
+            terminal_nodes.append(node)
+    return terminal_nodes
 
-    # as the magic node, choose the one that connects to all terminals with the summed shortest path
+
+def find_best_starting_node(topo_graph, terminal_nodes, starting_nodes, sched_file):
     best_path_len = None
     best_start_node = None
     for start_node in starting_nodes:
@@ -138,47 +120,71 @@ def find_best_magic_node(topo_graph, pauli_product, sched_file):
     return best_start_node
 
 
-def schedule_pauli_product(topo_graph, pauli_product, sched_file):
-    root_node = find_best_magic_node(topo_graph, pauli_product, sched_file)
-    if root_node == None:
-        print(f"Could not find root node for product {pauli_product}", file=sched_file)
+def find_best_magic_node(topo_graph, pauli_product, terminal_nodes, sched_file):
+    magic_nodes = []
+    for node in topo_graph.nodes:
+        if is_magic_node(node):
+            if topo_graph.nodes[node]["busy_count"] == 0:
+                magic_nodes.append(node)
+    if len(magic_nodes) == 0:
+        print("Could not find starting node for Pauli product", pauli_product.__str__(), file=sched_file)
         return None
+    # as the magic node, choose the one that connects to all terminals with the summed shortest path
+    return find_best_starting_node(topo_graph, terminal_nodes, magic_nodes, sched_file)
+
+
+def find_best_bus_node(topo_graph, terminal_nodes, sched_file):
+    # can start from any bus node adjacent to a terminal node
+    starting_nodes = set(
+        neighbor for terminal in terminal_nodes for neighbor in topo_graph.neighbors(terminal) if is_bus_node(neighbor)
+    )
+    return find_best_starting_node(topo_graph, terminal_nodes, starting_nodes, sched_file)
+
+
+def schedule_pauli_product(topo_graph, pauli_product, sched_file):
+    terminal_nodes = find_terminal_nodes(topo_graph, pauli_product, sched_file)
+    if len(terminal_nodes) == 0:
+        return None
+    root_node = None
+    if not pauli_product.is_clifford():
+        root_node = find_best_magic_node(topo_graph, pauli_product, terminal_nodes, sched_file)
+        if root_node == None:
+            print(f"Could not find root node for product {pauli_product}", file=sched_file)
+            return None
+        terminal_nodes.insert(0, root_node)
+    else:
+        if len(terminal_nodes) == 1:
+            g = nx.Graph()
+            g.add_node(terminal_nodes[0])
+            return copy.deepcopy(g)
+        else:
+            # if there is more than one terminal, root node must be a bus node
+            root_node = find_best_bus_node(topo_graph, terminal_nodes, sched_file)
+            terminal_nodes.insert(0, root_node)
+
     ancilla_node = None
-    # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
-    terminal_nodes = [root_node]
     if ancilla_node is not None:
         terminal_nodes.append(ancilla_node)
-    for oi, operator in enumerate(pauli_product.operators):
-        if operator != " ":
-            ops = ["X", "Z"] if operator == "Y" else [operator]
-            for op in ops:
-                node = "d" + str(oi) + op
-                if node not in topo_graph:
-                    if pauli_product.is_clifford():
-                        print(f"node {node} not in topo graph for pp {pauli_product.get_product_str()}")
-                    return None
-                if node not in terminal_nodes:
-                    terminal_nodes.append(node)
-    if len(terminal_nodes) == 1:
-        g = nx.Graph()
-        g.add_node(terminal_nodes[0])
-        return copy.deepcopy(g)
 
+    # check path exists from root node to all other terminals
     for terminal_node in terminal_nodes[1:]:
         if not nx.has_path(topo_graph, root_node, terminal_node):
-            if pauli_product.is_clifford():
-                print(
-                    f"no path from root node {root_node} to terminal node {terminal_node} "
-                    f"for pp {pauli_product.get_product_str()}",
-                    file=sched_file,
-                )
+            print(
+                f"Check: no path from root node {root_node} to terminal node {terminal_node} "
+                f"for pp {pauli_product.get_product_str()}",
+                file=sched_file,
+            )
             return None
+    print(
+        "Trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes, file=sched_file
+    )
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node)
     if not all([node in g for node in terminal_nodes]):
-        if pauli_product.is_clifford():
-            print(
-                f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}", file=sched_file
-            )
+        print(
+            f"Steiner tree: no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}"
+            f" {g.nodes}",
+            file=sched_file,
+        )
         return None
     return copy.deepcopy(g)
 
