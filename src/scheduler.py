@@ -23,50 +23,6 @@ def trim_dangling_nodes(g):
         g.remove_nodes_from(dangling_nodes)
 
 
-def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
-    visited = {root_node}
-    num_found_operators = 0
-    for node in topo_graph.nodes():
-        if is_magic_node(node):
-            visited.add(node)
-    queue = [root_node]
-    pauli_product_graph = nx.Graph()
-    num_expected_ops = pauli_product.qubits_used
-    for op in pauli_product.operators:
-        if op == "Y":
-            num_expected_ops += 1
-    while len(queue):
-        node = queue.pop(0)
-        pauli_product_graph.add_node(node)
-        if is_data_node(root_node) and num_expected_ops == 1:
-            return pauli_product_graph
-        # look for data nodes first
-        for nb in topo_graph[node]:
-            if nb not in visited and is_data_node(nb):
-                visited.add(nb)
-                qubit_index = int(nb[1:-1])
-                qubit_basis = nb[-1]
-                if qubit_index >= len(pauli_product.operators):
-                    continue
-                qbs = [pauli_product.operators[qubit_index]]
-                if qbs[0] == "Y":
-                    qbs = ["X", "Z"]
-                if qubit_basis in qbs:
-                    # print("Found basis", qubit_basis, "at node", nb)
-                    pauli_product_graph.add_edge(node, nb)
-                    num_found_operators += 1
-                    if num_found_operators == num_expected_ops:
-                        trim_dangling_nodes(pauli_product_graph)
-                        return pauli_product_graph
-        # now extend along the bus
-        for nb in topo_graph[node]:
-            if not is_data_node(nb) and nb not in visited:
-                visited.add(nb)
-                queue.append(nb)
-                pauli_product_graph.add_edge(node, nb)
-    return None
-
-
 def get_topo_digraph(topo_graph, root_node, ancilla_node):
     topo_digraph = topo_graph.to_directed()
     # now strip the directed edges coming out of the data nodes, to prevent paths that go into then out of data nodes
@@ -128,42 +84,6 @@ def mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node):
         if is_data_node(node) and T.degree(node) > 1:
             print("Failure in tree construction: data node", node, "has degree", T.degree(node))
     return T
-
-
-def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node, ancilla_node):
-    # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
-    terminal_nodes = [root_node]
-    if ancilla_node is not None:
-        terminal_nodes.append(ancilla_node)
-    for oi, operator in enumerate(pauli_product.operators):
-        if operator != " ":
-            ops = ["X", "Z"] if operator == "Y" else [operator]
-            for op in ops:
-                node = "d" + str(oi) + op
-                if node not in topo_graph:
-                    if pauli_product.is_clifford():
-                        print(f"node {node} not in topo graph for pp {pauli_product.get_product_str()}")
-                    return None
-                if node not in terminal_nodes:
-                    terminal_nodes.append(node)
-    if len(terminal_nodes) == 1:
-        g = nx.Graph()
-        g.add_node(terminal_nodes[0])
-        return g
-
-    for terminal_node in terminal_nodes[1:]:
-        if not nx.has_path(topo_graph, root_node, terminal_node):
-            # if pauli_product.is_clifford():
-            #    print(
-            #        f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
-            #    )
-            return None
-    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node)
-    if not all([node in g for node in terminal_nodes]):
-        # if pauli_product.is_clifford():
-        #    print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
-        return None
-    return g
 
 
 def find_best_magic_node(topo_graph, pauli_product, sched_file):
@@ -243,7 +163,7 @@ def add_double_edges(topo_graph, pauli_product):
     return topo_graph
 
 
-def schedule_pauli_product(args, topo_graph, pauli_product, sched_file):
+def schedule_pauli_product(topo_graph, pauli_product, sched_file):
     # if args.topbottom:
     #    topo_graph = add_double_edges(topo_graph, pauli_product)
     root_node = find_best_magic_node(topo_graph, pauli_product, sched_file)
@@ -251,16 +171,42 @@ def schedule_pauli_product(args, topo_graph, pauli_product, sched_file):
         print(f"Could not find root node for product {pauli_product}", file=sched_file)
         return None
     ancilla_node = None
-    if args.path_method == "bfs":
-        g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
-    elif args.path_method == "steiner":
-        g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node, ancilla_node)
-    else:
-        raise ValueError("Unknown path method " + args.path_method)
-    if g == None:
-        # continue
+    # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
+    terminal_nodes = [root_node]
+    if ancilla_node is not None:
+        terminal_nodes.append(ancilla_node)
+    for oi, operator in enumerate(pauli_product.operators):
+        if operator != " ":
+            ops = ["X", "Z"] if operator == "Y" else [operator]
+            for op in ops:
+                node = "d" + str(oi) + op
+                if node not in topo_graph:
+                    if pauli_product.is_clifford():
+                        print(f"node {node} not in topo graph for pp {pauli_product.get_product_str()}")
+                    return None
+                if node not in terminal_nodes:
+                    terminal_nodes.append(node)
+    if len(terminal_nodes) == 1:
+        g = nx.Graph()
+        g.add_node(terminal_nodes[0])
+        return copy.deepcopy(g)
+
+    for terminal_node in terminal_nodes[1:]:
+        if not nx.has_path(topo_graph, root_node, terminal_node):
+            if pauli_product.is_clifford():
+                print(
+                    f"no path from root node {root_node} to terminal node {terminal_node} "
+                    f"for pp {pauli_product.get_product_str()}",
+                    file=sched_file,
+                )
+            return None
+    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node)
+    if not all([node in g for node in terminal_nodes]):
+        if pauli_product.is_clifford():
+            print(
+                f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}", file=sched_file
+            )
         return None
-    # return the first one we find - far more efficient and seems to give similar results to trying to find the shortest
     return copy.deepcopy(g)
 
 
@@ -300,7 +246,7 @@ class Scheduler:
         while len(to_schedule) > 0:
             num_steps += 1
             print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=self.sched_file)
-            title_str, pp_paths, to_schedule = self.schedule_timestep(to_schedule)
+            title_str, pp_paths, to_schedule = self.schedule_timestep(num_steps, to_schedule)
             if pp_paths is None:
                 for node in self.topo_graph.nodes:
                     if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
@@ -316,7 +262,7 @@ class Scheduler:
                         to_schedule.append(circuit[child_id])
             if path_dir is not None and title_str is not None and num_steps > 0 and num_steps < 30:
                 # don't plot too many steps
-                fname_added = "." + str(num_steps) + "-" + self.args.path_method
+                fname_added = "." + str(num_steps)
                 os.chdir(path_dir)
                 self.topo_graph.plot(fname_added, pp_paths, title_str)
                 os.chdir("..")
@@ -329,7 +275,7 @@ class Scheduler:
         print("  bus qubit fraction: %.3f" % (float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)))
         return num_steps, len(scheduled)
 
-    def schedule_timestep(self, to_schedule):
+    def schedule_timestep(self, step_i, to_schedule):
         for node in self.topo_graph.nodes:
             if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
                 self.topo_graph.nodes[node]["busy_count"] -= 1
@@ -345,7 +291,7 @@ class Scheduler:
             if working_topo_graph.number_of_nodes() == 0:
                 print("No more nodes", file=self.sched_file)
                 break
-            pp_graph = schedule_pauli_product(self.args, working_topo_graph, pp, self.sched_file)
+            pp_graph = schedule_pauli_product(working_topo_graph, pp, self.sched_file)
             if pp_graph == None:
                 print("* Could not schedule", pp, file=self.sched_file)
                 next_to_schedule.append(pp)
@@ -395,7 +341,7 @@ class Scheduler:
         self.sum_bus_qubits += num_bus_qubits_scheduled
 
         if len(pp_paths) > 0:
-            title_str = self.args.path_method + " (pps %.2f, data %.2f, bus %.2f)" % (
+            title_str = f"Step {step_i} (pps %.2f, data %.2f, bus %.2f)" % (
                 frac_paths,
                 frac_data_qubits,
                 frac_bus_qubits,

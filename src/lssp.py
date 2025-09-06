@@ -14,14 +14,6 @@ def get_args():
     parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
     parser.add_argument("--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits")
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
-    path_methods = ["steiner", "bfs"]
-    parser.add_argument(
-        "--path-method",
-        type=str,
-        default="steiner",
-        choices=path_methods,
-        help="Method to use for finding paths: " + ", ".join(path_methods),
-    )
     parser.add_argument("--bus-ratio", "-s", type=int, default=1, help="Ratio of double qubit rows to bus rows")
     plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument("--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting")
