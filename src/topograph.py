@@ -15,18 +15,23 @@ from utils import timer
 
 
 def is_magic_node(node):
-    assert node[0] in ["m", "b", "d"]
+    assert node[0] in ["m", "b", "d", "a"]
     return node[0] == "m"
 
 
 def is_data_node(node):
-    assert node[0] in ["m", "b", "d"]
+    assert node[0] in ["m", "b", "d", "a"]
     return node[0] == "d"
 
 
 def is_bus_node(node):
-    assert node[0] in ["m", "b", "d"]
+    assert node[0] in ["m", "b", "d", "a"]
     return node[0] == "b"
+
+
+def is_ancilla_node(node):
+    assert node[0] in ["m", "b", "d", "a"]
+    return node[0] == "a"
 
 
 def get_node_label(label, col, row):
@@ -91,6 +96,15 @@ class TopoGraph(nx.Graph):
         self.add_edge(get_node_label("b", col - 1, row), node_label1)
         self.add_edge(get_node_label("b", col + 1, row), node_label2)
 
+    def add_ancilla_qubit(self, col, row):
+        node_label = self.add_labeled_node("a", col, row)
+        if col > 0:
+            ch = "m" if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            self.add_edge(node_label, get_node_label(ch, col - 1, row))
+        if col < self.num_cols - 1:
+            ch = "m" if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            self.add_edge(node_label, get_node_label(ch, col + 1, row))
+
     def shuffle_qubits(self):
         qubit_order = list(range(self.num_data_qubits))
         self.rng.shuffle(qubit_order)
@@ -124,7 +138,10 @@ class TopoGraph(nx.Graph):
             data_rows = 0
             for row in range(0, self.num_rows):
                 offset = row - 1
-                if row == 0 or row == self.num_rows - 1 or offset % spacing == 0:
+                if row == 0:
+                    if not self.is_magic_column(col):
+                        self.add_ancilla_qubit(col, row)
+                elif row == self.num_rows - 1 or offset % spacing == 0:
                     if not self.is_magic_column(col) or (row != 0 and row == self.num_rows - 1):
                         self.add_bus_qubit(col, row)
                         bus_rows += 1
@@ -148,7 +165,7 @@ class TopoGraph(nx.Graph):
             self.shuffle_qubits()
 
     def add_labeled_node(self, label, col, row):
-        node_colors = {"m": "#FFBB99", "b": "#aaaaaa", "d": "#9999FF"}
+        node_colors = {"m": "#FFBB99", "b": "#aaaaaa", "d": "#9999FF", "a": "#FF88AA"}
         node_label = get_node_label(label, col, row)
         self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
         if is_magic_node(node_label):
