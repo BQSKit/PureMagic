@@ -9,7 +9,7 @@ with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="networkx backend defined more than once")
     import networkx as nx
 
-from topograph import is_bus_node, is_data_node, is_magic_node
+from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node
 
 
 def trim_dangling_nodes(g):
@@ -67,7 +67,7 @@ def schedule_pauli_product_bfs(topo_graph, pauli_product, root_node):
     return None
 
 
-def get_topo_digraph(topo_graph, root_node):
+def get_topo_digraph(topo_graph, root_node, ancilla_node):
     topo_digraph = topo_graph.to_directed()
     # now strip the directed edges coming out of the data nodes, to prevent paths that go into then out of data nodes
     edges_to_remove = []
@@ -77,17 +77,17 @@ def get_topo_digraph(topo_graph, root_node):
     topo_digraph.remove_edges_from(edges_to_remove)
     nodes_to_remove = []
     for node in topo_digraph.nodes():
-        if is_magic_node(node) and node != root_node:
+        if (is_magic_node(node) and node != root_node) or (is_ancilla_node(node) and node != ancilla_node):
             nodes_to_remove.append(node)
     topo_digraph.remove_nodes_from(nodes_to_remove)
     return topo_digraph
 
 
-def mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node):
+def mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node):
     # this is exactly like the steiner tree computation in the networkx library, except that for the dijkstra path calculation
     # and the shortest path, we use a digraph with the edges that go from the data nodes outwards removed. This prevents trees
     # that pass through the data nodes, instead of just terminating at the data nodes
-    topo_digraph = get_topo_digraph(topo_graph, root_node)
+    topo_digraph = get_topo_digraph(topo_graph, root_node, ancilla_node)
     paths = nx.multi_source_dijkstra_path(topo_digraph, terminal_nodes)
 
     d_1 = {}
@@ -130,9 +130,11 @@ def mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node):
     return T
 
 
-def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
+def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node, ancilla_node):
     # print("trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes)
     terminal_nodes = [root_node]
+    if ancilla_node is not None:
+        terminal_nodes.append(ancilla_node)
     for oi, operator in enumerate(pauli_product.operators):
         if operator != " ":
             ops = ["X", "Z"] if operator == "Y" else [operator]
@@ -156,7 +158,7 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
             #        f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
             #    )
             return None
-    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node)
+    g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node)
     if not all([node in g for node in terminal_nodes]):
         # if pauli_product.is_clifford():
         #    print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
@@ -248,12 +250,11 @@ def schedule_pauli_product(args, topo_graph, pauli_product, sched_file):
     if root_node == None:
         print(f"Could not find root node for product {pauli_product}", file=sched_file)
         return None
-    # schedule from each available magic node in turn to find the first that works
-    # for root_node in magic_nodes:
+    ancilla_node = None
     if args.path_method == "bfs":
         g = schedule_pauli_product_bfs(topo_graph, pauli_product, root_node)
     elif args.path_method == "steiner":
-        g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node)
+        g = schedule_pauli_product_steiner(topo_graph, pauli_product, root_node, ancilla_node)
     else:
         raise ValueError("Unknown path method " + args.path_method)
     if g == None:
