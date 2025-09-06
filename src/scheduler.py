@@ -151,15 +151,15 @@ def schedule_pauli_product_steiner(topo_graph, pauli_product, root_node):
 
     for terminal_node in terminal_nodes[1:]:
         if not nx.has_path(topo_graph, root_node, terminal_node):
-            if pauli_product.is_clifford():
-                print(
-                    f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
-                )
+            # if pauli_product.is_clifford():
+            #    print(
+            #        f"no path from root node {root_node} to terminal node {terminal_node} for pp {pauli_product.get_product_str()}"
+            #    )
             return None
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node)
     if not all([node in g for node in terminal_nodes]):
-        if pauli_product.is_clifford():
-            print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
+        # if pauli_product.is_clifford():
+        #    print(f"no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}")
         return None
     return g
 
