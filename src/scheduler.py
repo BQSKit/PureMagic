@@ -138,34 +138,7 @@ def find_best_magic_node(topo_graph, pauli_product, sched_file):
     return best_start_node
 
 
-def add_double_edges(topo_graph, pauli_product):
-    for i in range(0, len(pauli_product.operators), 2):
-        if i + 1 >= len(pauli_product.operators):
-            break
-        operators = pauli_product.operators
-        if operators[i] == " " or operators[i + 1] == " ":
-            continue
-        if operators[i] == operators[i + 1]:
-            # print("found matching operators", operators[i], "at positions", i, i + 1)
-            node = "d" + str(i) + operators[i]
-            if not topo_graph.has_node(node):
-                return topo_graph
-            other_node = topo_graph.nodes[node]["other"]
-            # print("adding edge", node, other_node)
-            topo_graph.add_edge(node, other_node)
-            node = "d" + str(i + 1) + operators[i + 1]
-            # print("adding edge", node, other_node)
-            topo_graph.add_edge(node, other_node)
-        if operators[i] == "Y" or operators[i + 1] == "Y":
-            # not sure how exactly to handle this
-            continue
-            print("found Y operators", operators[i], operators[i + 1], "at positions", i, i + 1)
-    return topo_graph
-
-
 def schedule_pauli_product(topo_graph, pauli_product, sched_file):
-    # if args.topbottom:
-    #    topo_graph = add_double_edges(topo_graph, pauli_product)
     root_node = find_best_magic_node(topo_graph, pauli_product, sched_file)
     if root_node == None:
         print(f"Could not find root node for product {pauli_product}", file=sched_file)
