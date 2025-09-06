@@ -6,6 +6,7 @@ import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="networkx backend defined more than once")
     import networkx as nx
+import sys
 import math
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -36,52 +37,51 @@ class TopoGraph(nx.Graph):
     def __init__(self):
         nx.Graph.__init__(self)
 
-    def get_topo_dims(self, bus_ratio, double_bus):
+    def get_topo_dims(self, bus_ratio):
         sq_dim = int(np.floor(np.sqrt(self.args.min_num_qubits)))
         patch_rows = int(sq_dim / 2) + sq_dim % 2
+        bus_rows = int(patch_rows / bus_ratio) + 1
+        print(f"patch rows {patch_rows}, bus rows {bus_rows}")
         qubits_per_col = 2 * patch_rows
         num_data_cols = int(np.ceil(self.args.min_num_qubits / qubits_per_col))
         num_cols = 2 * num_data_cols + 1
-        if double_bus:
-            num_cols += num_data_cols - 1
-        # 2 rows for magic, 1 always for bus, 2 per patch row, rows for bus qubits
-        num_rows = 2 + 1 + 2 * patch_rows + int(patch_rows / bus_ratio)
+        # 2 rows for magic, 2 per patch row, rows for bus qubits
+        num_rows = 2 + 2 * patch_rows + bus_rows
         return num_cols, num_rows
 
     def set_dims(self, args, rng):
         self.args = args
         self.rng = rng
-        self.num_cols, self.num_rows = self.get_topo_dims(args.bus_ratio, args.double_bus)
+        self.num_cols, self.num_rows = self.get_topo_dims(args.bus_ratio)
         if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
 
+    def is_magic_column(self, col):
+        return col % 2 != 1
+
     def gen_magic_columns(self):
         for col in range(self.num_cols):
-            if (self.args.double_bus and col % 3 == 1) or (not self.args.double_bus and col % 2 == 1):
+            if not self.is_magic_column(col):
                 continue
             node_label = self.add_labeled_node("m", col, 0)
             self.add_edge(node_label, get_node_label("b", col, 1))
             for row in range(1, self.num_rows - 2):
                 node_label = self.add_labeled_node("b", col, row)
                 self.add_edge(node_label, get_node_label("b", col, row + 1))
-                if self.args.double_bus and col % 3 == 0 and col > 0:
-                    self.add_edge(node_label, get_node_label("b", col - 1, row))
             prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
             node_label = self.add_labeled_node("m", col, self.num_rows - 1)
             self.add_edge(node_label, prev_node_label, other="")
 
-    def add_bus_row(self, col, row):
+    def add_bus_qubit(self, col, row):
         node_label = self.add_labeled_node("b", col, row)
-        self.add_edge(node_label, get_node_label("b", col - 1, row))
-        self.add_edge(node_label, get_node_label("b", col + 1, row))
-        # if col == 1:
-        #    node_label = self.add_labeled_node("m", -1, row)
-        #    self.add_edge(node_label, get_node_label("b", 0, row))
-        # if col == self.num_cols - 1:
-        #    node_label = self.add_labeled_node("m", self.num_cols, row)
-        #    self.add_edge(node_label, get_node_label("b", self.num_cols - 1, row))
+        if col > 0:
+            ch = "m" if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            self.add_edge(node_label, get_node_label(ch, col - 1, row))
+        if col < self.num_cols - 1:
+            ch = "m" if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            self.add_edge(node_label, get_node_label(ch, col + 1, row))
 
-    def add_data_row(self, qi, col, row, op):
+    def add_data_qubit(self, qi, col, row, op):
         q = int(qi / 2) if op == "X" else int(qi / 2) - 1
         node_label1 = "d" + str(q) + op
         node_label2 = "d" + str(q + 1) + op
@@ -118,17 +118,20 @@ class TopoGraph(nx.Graph):
         qi = 0
         spacing = self.args.bus_ratio * 2 + 1
         for col in range(1, self.num_cols, 1):
-            if (self.args.double_bus and col % 3 != 1) or (not self.args.double_bus and col % 2 != 1):
+            if self.is_magic_column(col):
                 continue
             bus_rows = 0
-            for row in range(1, self.num_rows - 1):
+            data_rows = 0
+            for row in range(0, self.num_rows):
                 offset = row - 1
-                if offset % spacing == 0:
-                    self.add_bus_row(col, row)
-                    bus_rows += 1
+                if row == 0 or row == self.num_rows - 1 or offset % spacing == 0:
+                    if not self.is_magic_column(col) or (row != 0 and row == self.num_rows - 1):
+                        self.add_bus_qubit(col, row)
+                        bus_rows += 1
                 else:
-                    self.add_data_row(qi, col, row, "X" if (row - bus_rows) % 2 == 1 else "Z")
+                    self.add_data_qubit(qi, col, row, "X" if data_rows % 2 == 0 else "Z")
                     qi += 2
+                    data_rows += 1
         num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
         num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
         num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
@@ -170,8 +173,7 @@ class TopoGraph(nx.Graph):
         node_edge_colors = [bg_color] * self.number_of_nodes()
         node_line_widths = [1] * self.number_of_nodes()
         node_labels = {}
-        for i, node in enumerate(self.nodes()):
-            node_labels[node] = "" if is_bus_node(node) else node
+        for _, node in enumerate(self.nodes()):
             node_labels[node] = node
         cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
         label_col = -1.5
