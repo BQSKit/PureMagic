@@ -1113,7 +1113,7 @@ struct Args {
     #[arg(help = "Path to the input .qasm circuit file")]
     input_file: String,
     /// Enable logging
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short = 'v', long, default_value_t = false)]
     verbose: bool,
     /// Sort children topologically during updates
     #[arg(short = 's', long, default_value_t = false)]
