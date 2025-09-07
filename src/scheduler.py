@@ -12,15 +12,13 @@ with warnings.catch_warnings():
 from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node
 
 
-def trim_dangling_nodes(g):
-    while True:
-        dangling_nodes = []
-        for node in g.nodes:
-            if is_bus_node(node) and g.degree(node) == 1:
-                dangling_nodes.append(node)
-        if len(dangling_nodes) == 0:
-            break
-        g.remove_nodes_from(dangling_nodes)
+sched_file = None
+
+
+def sched_print(message):
+    global sched_file
+    if sched_file is not None:
+        print(message, file=sched_file)
 
 
 def get_topo_digraph(topo_graph, root_node, ancilla_node):
@@ -96,7 +94,7 @@ def find_terminal_nodes(topo_graph, pauli_product, sched_file):
         for op in ops:
             node = "d" + str(oi) + op
             if node not in topo_graph:
-                print(f"Node {node} not in topo graph for finding terminal nodes", file=sched_file)
+                sched_print(f"Node {node} not in topo graph for finding terminal nodes")
                 return []
             terminal_nodes.append(node)
     return terminal_nodes
@@ -115,7 +113,7 @@ def find_best_starting_node(topo_graph, terminal_nodes, starting_nodes, sched_fi
                 best_start_node = start_node
         except nx.NetworkXNoPath:
             # path not found - can't use this magic node
-            print(f"Path not found", file=sched_file)
+            sched_print(f"Path not found")
             continue
     return best_start_node
 
@@ -123,11 +121,10 @@ def find_best_starting_node(topo_graph, terminal_nodes, starting_nodes, sched_fi
 def find_best_magic_node(topo_graph, pauli_product, terminal_nodes, sched_file):
     magic_nodes = []
     for node in topo_graph.nodes:
-        if is_magic_node(node):
-            if topo_graph.nodes[node]["busy_count"] == 0:
-                magic_nodes.append(node)
+        if is_magic_node(node) and topo_graph.nodes[node]["busy_count"] == 0:
+            magic_nodes.append(node)
     if len(magic_nodes) == 0:
-        print("Could not find starting node for Pauli product", pauli_product.__str__(), file=sched_file)
+        sched_print(f"Could not find starting node for Pauli product {pauli_product.__str__()}")
         return None
     # as the magic node, choose the one that connects to all terminals with the summed shortest path
     return find_best_starting_node(topo_graph, terminal_nodes, magic_nodes, sched_file)
@@ -149,7 +146,7 @@ def schedule_pauli_product(topo_graph, pauli_product, sched_file):
     if not pauli_product.is_clifford():
         root_node = find_best_magic_node(topo_graph, pauli_product, terminal_nodes, sched_file)
         if root_node == None:
-            print(f"Could not find root node for product {pauli_product}", file=sched_file)
+            sched_print(f"Could not find root node for product {pauli_product}")
             return None
         terminal_nodes.insert(0, root_node)
     else:
@@ -169,21 +166,17 @@ def schedule_pauli_product(topo_graph, pauli_product, sched_file):
     # check path exists from root node to all other terminals
     for terminal_node in terminal_nodes[1:]:
         if not nx.has_path(topo_graph, root_node, terminal_node):
-            print(
+            sched_print(
                 f"Check: no path from root node {root_node} to terminal node {terminal_node} "
                 f"for pp {pauli_product.get_product_str()}",
-                file=sched_file,
             )
             return None
-    print(
-        "Trying steiner tree from root", root_node, "for", pauli_product.__str__(), "terminals", terminal_nodes, file=sched_file
-    )
+    sched_print(f"Trying steiner tree from root {root_node} for {pauli_product.__str__()}, terminals {terminal_nodes}")
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node)
     if not all([node in g for node in terminal_nodes]):
-        print(
+        sched_print(
             f"Steiner tree: no path from root node {root_node} to terminal node for pp {pauli_product.get_product_str()}"
             f" {g.nodes}",
-            file=sched_file,
         )
         return None
     return copy.deepcopy(g)
@@ -208,6 +201,7 @@ class Scheduler:
                 raise RuntimeError("pp " + str(pp.id) + " scheduled before parent " + str(parent_id))
 
     def schedule_circuit(self, real_circuit):
+        global sched_file
         to_schedule = []
         circuit = copy.deepcopy(real_circuit)
         for pp in circuit:
@@ -216,6 +210,7 @@ class Scheduler:
 
         sched_fname = Path(self.args.circuit).stem + ".sched"
         self.sched_file = open(sched_fname, "w")
+        sched_file = self.sched_file
         num_steps = 0
         scheduled = set()
         path_dir = None
@@ -224,7 +219,7 @@ class Scheduler:
             Path(path_dir).mkdir(exist_ok=True)
         while len(to_schedule) > 0:
             num_steps += 1
-            print("Step:", num_steps, [str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule], file=self.sched_file)
+            sched_print(f"Step: {num_steps} {[str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule]}")
             title_str, pp_paths, to_schedule = self.schedule_timestep(num_steps, to_schedule)
             if pp_paths is None:
                 for node in self.topo_graph.nodes:
@@ -266,13 +261,13 @@ class Scheduler:
         next_to_schedule = []
         for pp in to_schedule:
             if pp.is_clifford():
-                print(pp.id, "PI/4 rotation", pp, file=self.sched_file)
+                sched_print(f"{pp.id} PI/4 rotation {pp}")
             if working_topo_graph.number_of_nodes() == 0:
-                print("No more nodes", file=self.sched_file)
+                sched_print("No more nodes")
                 break
             pp_graph = schedule_pauli_product(working_topo_graph, pp, self.sched_file)
             if pp_graph == None:
-                print("* Could not schedule", pp, file=self.sched_file)
+                sched_print(f"* Could not schedule {pp}")
                 next_to_schedule.append(pp)
                 # now the circuit could include multiple timeteps, so we need to ensure dependencies are met
                 # if the product couldn't be scheduled, then every qubit in that product is now out of bounds so remove from
@@ -285,7 +280,7 @@ class Scheduler:
                     num_dependent_nodes += len(nodes_to_remove)
                     working_topo_graph.remove_nodes_from(nodes_to_remove)
             else:
-                print("Scheduled", pp.__str__(), "with", pp_graph.number_of_nodes(), "nodes", file=self.sched_file)
+                sched_print(f"Scheduled {pp.__str__()} with {pp_graph.number_of_nodes()} nodes")
                 pp_paths.append((pp, pp_graph))
                 num_qubits_scheduled += pp.qubits_used
                 for node in pp_graph.nodes():
@@ -302,18 +297,14 @@ class Scheduler:
                         orphaned_nodes.append(node)
                 working_topo_graph.remove_nodes_from(orphaned_nodes)
 
-        print("Scheduling results:", file=self.sched_file)
+        sched_print("Scheduling results:")
         frac_paths = float(len(pp_paths)) / len(to_schedule)
         frac_data_qubits = float(num_qubits_scheduled) / self.topo_graph.num_data_qubits
         frac_bus_qubits = float(num_bus_qubits_scheduled) / self.topo_graph.num_bus_qubits
-        print("  products:    %d/%d (%.2f)" % (len(pp_paths), len(to_schedule), frac_paths), file=self.sched_file)
-        print(
-            "  data qubits: %d/%d (%.2f)" % (num_qubits_scheduled, self.topo_graph.num_data_qubits, frac_data_qubits),
-            file=self.sched_file,
-        )
-        print(
-            "  bus qubits:  %d/%d (%.2f)" % (num_bus_qubits_scheduled, self.topo_graph.num_bus_qubits, frac_bus_qubits),
-            file=self.sched_file,
+        sched_print(f"  products:    {len(pp_paths)}/{len(to_schedule)} ({frac_paths:.2f})")
+        sched_print(f"  data qubits: {num_qubits_scheduled}/{self.topo_graph.num_data_qubits} ({frac_data_qubits:.2f})")
+        sched_print(
+            f"  bus qubits:  {num_bus_qubits_scheduled}/{self.topo_graph.num_bus_qubits} ({frac_bus_qubits:.2f})",
         )
         # print("Removed", num_dependent_nodes, "dependent nodes", file=f)
         self.sum_data_qubits += num_qubits_scheduled
