@@ -44,6 +44,9 @@ def get_args():
     parser.add_argument(
         "--show-product-ids", action="store_true", help="Show product IDs when plotting the circuit"
     )
+    parser.add_argument(
+        "--log-scheduler", action="store_true", help="Log scheduler actions to .sched file"
+    )
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args
