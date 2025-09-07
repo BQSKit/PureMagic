@@ -117,19 +117,16 @@ class TopoGraph(nx.Graph):
     def add_ancilla_qubit(self, col, row):
         node_label = self.add_labeled_node("a", col, row)
         if col > 0:
-            ch = (
-                "m"
-                if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)
-                else "b"
-            )
-            self.add_edge(node_label, get_node_label(ch, col - 1, row))
+            if not (self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)):
+                self.add_edge(node_label, get_node_label("b", col - 1, row))
         if col < self.num_cols - 1:
-            ch = (
-                "m"
-                if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)
-                else "b"
-            )
-            self.add_edge(node_label, get_node_label(ch, col + 1, row))
+            if not (self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)):
+                self.add_edge(node_label, get_node_label("b", col + 1, row))
+        # assume fixed ancilla in first and last row
+        if row == 0:
+            self.add_edge(node_label, get_node_label("b", col, row + 1))
+        elif row == self.num_rows - 1:
+            self.add_edge(node_label, get_node_label("b", col, row - 1))
 
     def shuffle_qubits(self):
         qubit_order = list(range(self.num_data_qubits))
@@ -164,7 +161,7 @@ class TopoGraph(nx.Graph):
             data_rows = 0
             for row in range(0, self.num_rows):
                 offset = row - 1
-                if row == 0:
+                if row == 0 or row == self.num_rows - 1:
                     if not self.is_magic_column(col):
                         self.add_ancilla_qubit(col, row)
                 elif row == self.num_rows - 1 or offset % spacing == 0:
@@ -178,16 +175,23 @@ class TopoGraph(nx.Graph):
         num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
         num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
         num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
+        num_ancilla_qubits = sum([is_ancilla_node(node) for node in self.nodes])
         print("Number of qubits:")
-        print("  magic:", num_magic_qubits)
-        print("  data: ", num_data_qubits)
-        print("  bus:  ", num_bus_qubits)
+        print("  magic:   ", num_magic_qubits)
+        print("  data:    ", num_data_qubits)
+        print("  bus:     ", num_bus_qubits)
+        print("  ancilla: ", num_ancilla_qubits)
         print(
-            "Space efficiency: %.2f" % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits))
+            "Space efficiency: %.2f"
+            % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits + num_ancilla_qubits))
         )
         print(
             "Magic state ratio: %.2f"
             % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits))
+        )
+        print(
+            "Ancilla ratio: %.2f"
+            % (float(num_ancilla_qubits) / (num_data_qubits + num_ancilla_qubits))
         )
         self.num_data_qubits = num_data_qubits
         self.num_magic_qubits = num_magic_qubits

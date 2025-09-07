@@ -17,6 +17,7 @@ class PauliProduct:
         self.children = set()
         self.angle = None
         self.id = -1
+        self.num_ys = 0
 
     def set(self, pp_id, pp_str, parents_str, children_str):
         terms = pp_str.split(".")
@@ -32,6 +33,8 @@ class PauliProduct:
             qubit = int(term.split(")")[1].split("<")[0])
             self.operators[qubit] = operator
             self.qubits_used += 1
+            if operator == "Y":
+                self.num_ys += 1
         angle_parts = pp_str.split("<")[1][6:].split("/")
         if angle_parts[0] == "pi":
             numerator = 1
