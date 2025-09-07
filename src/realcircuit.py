@@ -62,7 +62,9 @@ class RealCircuit(list):
             if node.is_clifford():
                 for child_id in node.children:
                     if not self[child_id].is_clifford():
-                        raise RuntimeError(f"Node {node.id} is a clifford but has a non-clifford child {child_id}")
+                        raise RuntimeError(
+                            f"Node {node.id} is a clifford but has a non-clifford child {child_id}"
+                        )
 
     def draw_graph(self):
         g = nx.DiGraph()

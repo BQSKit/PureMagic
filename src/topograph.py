@@ -80,10 +80,18 @@ class TopoGraph(nx.Graph):
     def add_bus_qubit(self, col, row):
         node_label = self.add_labeled_node("b", col, row)
         if col > 0:
-            ch = "m" if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            ch = (
+                "m"
+                if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)
+                else "b"
+            )
             self.add_edge(node_label, get_node_label(ch, col - 1, row))
         if col < self.num_cols - 1:
-            ch = "m" if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            ch = (
+                "m"
+                if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)
+                else "b"
+            )
             self.add_edge(node_label, get_node_label(ch, col + 1, row))
 
     def add_data_qubit(self, qi, col, row, op):
@@ -91,18 +99,36 @@ class TopoGraph(nx.Graph):
         node_label1 = "d" + str(q) + op
         node_label2 = "d" + str(q + 1) + op
         other = None
-        self.add_node(node_label1, pos=[float(col) - 0.25, self.num_rows - 1 - row], color="#9999FF", other=other)
-        self.add_node(node_label2, pos=[float(col) + 0.25, self.num_rows - 1 - row], color="#9999FF", other=other)
+        self.add_node(
+            node_label1,
+            pos=[float(col) - 0.25, self.num_rows - 1 - row],
+            color="#9999FF",
+            other=other,
+        )
+        self.add_node(
+            node_label2,
+            pos=[float(col) + 0.25, self.num_rows - 1 - row],
+            color="#9999FF",
+            other=other,
+        )
         self.add_edge(get_node_label("b", col - 1, row), node_label1)
         self.add_edge(get_node_label("b", col + 1, row), node_label2)
 
     def add_ancilla_qubit(self, col, row):
         node_label = self.add_labeled_node("a", col, row)
         if col > 0:
-            ch = "m" if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            ch = (
+                "m"
+                if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)
+                else "b"
+            )
             self.add_edge(node_label, get_node_label(ch, col - 1, row))
         if col < self.num_cols - 1:
-            ch = "m" if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1) else "b"
+            ch = (
+                "m"
+                if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)
+                else "b"
+            )
             self.add_edge(node_label, get_node_label(ch, col + 1, row))
 
     def shuffle_qubits(self):
@@ -156,8 +182,13 @@ class TopoGraph(nx.Graph):
         print("  magic:", num_magic_qubits)
         print("  data: ", num_data_qubits)
         print("  bus:  ", num_bus_qubits)
-        print("Space efficiency: %.2f" % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits)))
-        print("Magic state ratio: %.2f" % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits)))
+        print(
+            "Space efficiency: %.2f" % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits))
+        )
+        print(
+            "Magic state ratio: %.2f"
+            % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits))
+        )
         self.num_data_qubits = num_data_qubits
         self.num_magic_qubits = num_magic_qubits
         self.num_bus_qubits = num_bus_qubits
@@ -225,9 +256,25 @@ class TopoGraph(nx.Graph):
             t = plt.text(col, row, pauli_product.get_product_str(), color="black")
             t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
         for row in range(self.num_rows + 1):
-            plt.axhline(row - 0.5, xmin=0.5 / self.num_cols, xmax=1.0 - 0.5 / self.num_cols, ls="-", lw=2, c="white", alpha=0.5)
+            plt.axhline(
+                row - 0.5,
+                xmin=0.5 / self.num_cols,
+                xmax=1.0 - 0.5 / self.num_cols,
+                ls="-",
+                lw=2,
+                c="white",
+                alpha=0.5,
+            )
         for col in range(self.num_cols + 1):
-            plt.axvline(col - 0.5, ymin=0.5 / self.num_rows, ymax=1.0 - 0.5 / self.num_rows, ls="-", lw=2, c="white", alpha=0.5)
+            plt.axvline(
+                col - 0.5,
+                ymin=0.5 / self.num_rows,
+                ymax=1.0 - 0.5 / self.num_rows,
+                ls="-",
+                lw=2,
+                c="white",
+                alpha=0.5,
+            )
         plt.plot(0, 0, 1, 1, ls="-", c="black", lw=10)
         nx.draw_networkx(
             self,

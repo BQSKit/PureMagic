@@ -31,7 +31,9 @@ def get_topo_digraph(topo_graph, root_node, ancilla_node):
     topo_digraph.remove_edges_from(edges_to_remove)
     nodes_to_remove = []
     for node in topo_digraph.nodes():
-        if (is_magic_node(node) and node != root_node) or (is_ancilla_node(node) and node != ancilla_node):
+        if (is_magic_node(node) and node != root_node) or (
+            is_ancilla_node(node) and node != ancilla_node
+        ):
             nodes_to_remove.append(node)
     topo_digraph.remove_nodes_from(nodes_to_remove)
     return topo_digraph
@@ -133,7 +135,10 @@ def find_best_magic_node(topo_graph, pauli_product, terminal_nodes, sched_file):
 def find_best_bus_node(topo_graph, terminal_nodes, sched_file):
     # can start from any bus node adjacent to a terminal node
     starting_nodes = set(
-        neighbor for terminal in terminal_nodes for neighbor in topo_graph.neighbors(terminal) if is_bus_node(neighbor)
+        neighbor
+        for terminal in terminal_nodes
+        for neighbor in topo_graph.neighbors(terminal)
+        if is_bus_node(neighbor)
     )
     return find_best_starting_node(topo_graph, terminal_nodes, starting_nodes, sched_file)
 
@@ -171,7 +176,9 @@ def schedule_pauli_product(topo_graph, pauli_product, sched_file):
                 f"for pp {pauli_product.get_product_str()}",
             )
             return None
-    sched_print(f"Trying steiner tree from root {root_node} for {pauli_product.__str__()}, terminals {terminal_nodes}")
+    sched_print(
+        f"Trying steiner tree from root {root_node} for {pauli_product.__str__()}, terminals {terminal_nodes}"
+    )
     g = mehlhorn_steiner_tree(topo_graph, terminal_nodes, root_node, ancilla_node)
     if not all([node in g for node in terminal_nodes]):
         sched_print(
@@ -198,7 +205,9 @@ class Scheduler:
             raise RuntimeError("pp " + str(pp.id) + " already scheduled")
         for parent_id in pp.parents:
             if parent_id not in scheduled:
-                raise RuntimeError("pp " + str(pp.id) + " scheduled before parent " + str(parent_id))
+                raise RuntimeError(
+                    "pp " + str(pp.id) + " scheduled before parent " + str(parent_id)
+                )
 
     def schedule_circuit(self, real_circuit):
         global sched_file
@@ -219,7 +228,9 @@ class Scheduler:
             Path(path_dir).mkdir(exist_ok=True)
         while len(to_schedule) > 0:
             num_steps += 1
-            sched_print(f"Step: {num_steps} {[str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule]}")
+            sched_print(
+                f"Step: {num_steps} {[str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule]}"
+            )
             title_str, pp_paths, to_schedule = self.schedule_timestep(num_steps, to_schedule)
             if pp_paths is None:
                 for node in self.topo_graph.nodes:
@@ -245,8 +256,14 @@ class Scheduler:
                     self.check_dependencies(pp, scheduled)
                     scheduled.add(pp.id)
         print("Scheduled", len(real_circuit), "products:")
-        print("  data qubit fraction: %.3f" % (float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps)))
-        print("  bus qubit fraction: %.3f" % (float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)))
+        print(
+            "  data qubit fraction: %.3f"
+            % (float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps))
+        )
+        print(
+            "  bus qubit fraction: %.3f"
+            % (float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps))
+        )
         return num_steps, len(scheduled)
 
     def schedule_timestep(self, step_i, to_schedule):
@@ -302,7 +319,9 @@ class Scheduler:
         frac_data_qubits = float(num_qubits_scheduled) / self.topo_graph.num_data_qubits
         frac_bus_qubits = float(num_bus_qubits_scheduled) / self.topo_graph.num_bus_qubits
         sched_print(f"  products:    {len(pp_paths)}/{len(to_schedule)} ({frac_paths:.2f})")
-        sched_print(f"  data qubits: {num_qubits_scheduled}/{self.topo_graph.num_data_qubits} ({frac_data_qubits:.2f})")
+        sched_print(
+            f"  data qubits: {num_qubits_scheduled}/{self.topo_graph.num_data_qubits} ({frac_data_qubits:.2f})"
+        )
         sched_print(
             f"  bus qubits:  {num_bus_qubits_scheduled}/{self.topo_graph.num_bus_qubits} ({frac_bus_qubits:.2f})",
         )
