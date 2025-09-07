@@ -26,7 +26,7 @@ class Scheduler:
     def print_sched(self, message):
         if self.sched_file is not None:
             # only evaluate the message function if schedule printing is enabled
-            print(message, file=sched_file)
+            print(message, file=self.sched_file)
 
     def check_dependencies(self, pp, scheduled):
         if pp.id in scheduled:
@@ -116,6 +116,7 @@ class Scheduler:
         return terminal_nodes
 
     def find_best_starting_node(self, g, terminal_nodes, starting_nodes):
+        # find the starting node that connects to all terminals with the summed shortest path
         best_path_len = None
         best_start_node = None
         for start_node in starting_nodes:
@@ -132,17 +133,13 @@ class Scheduler:
                 continue
         return best_start_node
 
-    def find_best_magic_node(self, g, pauli_product, terminal_nodes):
-        magic_nodes = []
-        for node in g.nodes:
-            if is_magic_node(node) and g.nodes[node]["busy_count"] == 0:
-                magic_nodes.append(node)
+    def find_best_magic_node(self, g, terminal_nodes):
+        magic_nodes = [
+            node for node in g.nodes if is_magic_node(node) and g.nodes[node]["busy_count"] == 0
+        ]
         if len(magic_nodes) == 0:
-            self.print_sched(
-                f"Could not find starting node for Pauli product {pauli_product.__str__()}"
-            )
+            self.print_sched(f"Could not find magic node for terminals {terminal_nodes}")
             return None
-        # as the magic node, choose the one that connects to all terminals with the summed shortest path
         return self.find_best_starting_node(g, terminal_nodes, magic_nodes)
 
     def find_best_bus_node(self, g, terminal_nodes):
@@ -153,7 +150,17 @@ class Scheduler:
             for neighbor in g.neighbors(terminal)
             if is_bus_node(neighbor)
         )
+        if len(starting_nodes) == 0:
+            self.print_sched(f"Could not find starting bus node for terminals {terminal_nodes}")
+            return None
         return self.find_best_starting_node(g, terminal_nodes, starting_nodes)
+
+    def find_best_ancilla_node(self, g, terminal_nodes):
+        ancilla_nodes = [node for node in g.nodes if is_ancilla_node(node)]
+        if len(ancilla_nodes) == 0:
+            self.print_sched(f"Could not find ancilla node for terminals {terminal_nodes}")
+            return None
+        return self.find_best_starting_node(g, terminal_nodes, ancilla_nodes)
 
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
         terminal_nodes = self.find_terminal_nodes(working_topo_graph, pauli_product)
@@ -161,7 +168,7 @@ class Scheduler:
             return None
         root_node = None
         if not pauli_product.is_clifford():
-            root_node = self.find_best_magic_node(working_topo_graph, pauli_product, terminal_nodes)
+            root_node = self.find_best_magic_node(working_topo_graph, terminal_nodes)
             if root_node == None:
                 self.print_sched(f"Could not find magic root node for product {pauli_product}")
                 return None
@@ -180,7 +187,11 @@ class Scheduler:
                 terminal_nodes.insert(0, root_node)
 
         ancilla_node = None
-        if ancilla_node is not None:
+        if pauli_product.num_ys > 0 and pauli_product.num_ys % 2 != 0:
+            ancilla_node = self.find_best_ancilla_node(working_topo_graph, terminal_nodes)
+            if ancilla_node == None:
+                self.print_sched(f"Could not find ancilla root node for product {pauli_product}")
+                return None
             terminal_nodes.append(ancilla_node)
 
         # check path exists from root node to all other terminals
@@ -192,7 +203,7 @@ class Scheduler:
                 )
                 return None
         self.print_sched(
-            lambda: f"Trying steiner tree from root {root_node} for {pauli_product.__str__()}"
+            f"Trying steiner tree from root {root_node} for {pauli_product}"
             f", terminals {terminal_nodes}"
         )
         g = self.mehlhorn_steiner_tree(working_topo_graph, terminal_nodes, root_node, ancilla_node)
@@ -287,22 +298,27 @@ class Scheduler:
 
         if self.args.log_scheduler:
             sched_fname = Path(self.args.circuit).stem + ".sched"
-            sched_file = open(sched_fname, "w")
+            self.sched_file = open(sched_fname, "w")
         num_steps = 0
         scheduled = set()
         path_dir = None
+        plot_steps = 0
         if "paths" in self.args.plot:
             path_dir = Path(self.args.circuit).stem + ".paths"
             Path(path_dir).mkdir(exist_ok=True)
+            plot_steps = 30
         total_to_schedule = len(real_circuit)
         prev_perc_complete = 0
         print(f"Scheduling {total_to_schedule} products:    ", end="")
+        if plot_steps > 0:
+            print("")
         while len(to_schedule) > 0:
             num_steps += 1
-            perc_complete = int((len(scheduled) / total_to_schedule) * 100)
-            if perc_complete > prev_perc_complete:
-                print(f"\x08\x08\x08{perc_complete:02}%", end="")
-                prev_perc_complete = perc_complete
+            if plot_steps == 0:
+                perc_complete = int((len(scheduled) / total_to_schedule) * 100)
+                if perc_complete > prev_perc_complete:
+                    print(f"\x08\x08\x08{perc_complete:02}%", end="")
+                    prev_perc_complete = perc_complete
             self.print_sched(
                 f"Step: {num_steps}"
                 f"{[str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule]}"
@@ -321,12 +337,13 @@ class Scheduler:
                     circuit[child_id].parents.remove(pp.id)
                     if len(circuit[child_id].parents) == 0:
                         to_schedule.append(circuit[child_id])
-            if path_dir is not None and title_str is not None and num_steps > 0 and num_steps < 30:
+            if path_dir is not None and title_str is not None and num_steps > 0 and plot_steps > 0:
                 # don't plot too many steps
                 fname_added = "." + str(num_steps)
                 os.chdir(path_dir)
                 self.topo_graph.plot(fname_added, pp_paths, title_str)
                 os.chdir("..")
+                plot_steps -= 1
             if pp_paths is not None:
                 for pp, _ in pp_paths:
                     self.check_dependencies(pp, scheduled)
