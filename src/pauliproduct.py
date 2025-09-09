@@ -13,13 +13,14 @@ class PauliProduct:
     def __init__(self, num_qubits):
         self.operators = [" "] * num_qubits
         self.qubits_used = 0
-        self.parents = set()
-        self.children = set()
+        self.parents = []
+        self.children = []
         self.angle = None
         self.id = -1
         self.num_ys = 0
+        self.need_estabilizer = False
 
-    def set(self, pp_id, pp_str, parents_str, children_str):
+    def set_vals(self, pp_id, pp_str, parents_str, children_str):
         terms = pp_str.split(".")
         self.id = pp_id
         self.parents = [int(x) for x in literal_eval(parents_str)]
@@ -67,6 +68,10 @@ class PauliProduct:
             + self.get_product_str()
             + " "
             + str(self.angle)
+            + " "
+            + str(self.num_ys)
+            + " "
+            + str(self.need_estabilizer)
             + " "
             + str(self.children)
             + " "

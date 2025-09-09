@@ -67,8 +67,8 @@ def main():
         )
     if "topo" in args.plot:
         topo_graph.plot(".topo")
-        # sys.exit(0)
     circuit = realcircuit.RealCircuit(args)
+    circuit.split_ys()
     circuit.check_clifford_relations()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)

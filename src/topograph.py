@@ -95,7 +95,7 @@ class TopoGraph(nx.Graph):
             self.add_edge(node_label, get_node_label(ch, col + 1, row))
 
     def add_data_qubit(self, qi, col, row, op):
-        q = int(qi / 2) if op == "X" else int(qi / 2) - 1
+        q = int(qi / 2) if op.upper() == "X" else int(qi / 2) - 1
         node_label1 = "d" + str(q) + op
         node_label2 = "d" + str(q + 1) + op
         other = None
