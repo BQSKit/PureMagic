@@ -30,7 +30,7 @@ class RealCircuit(list):
         dag_df = pd.read_csv(self.args.circuit, sep="\t")
         for i, row in dag_df.iterrows():
             self.append(pauliproduct.PauliProduct(self.num_qubits))
-            self[-1].set(row["id"], row["product"], row["parents"], row["children"])
+            self[-1].set_vals(row["id"], row["product"], row["parents"], row["children"])
 
     def get_layers(self):
         layer_i = 0
@@ -66,6 +66,32 @@ class RealCircuit(list):
                             f"Node {node.id} is a clifford but has a non-clifford child {child_id}"
                         )
 
+    def split_ys(self):
+        new_pps = []
+        new_pp_id = len(self)
+        for pp in self:
+            if pp.num_ys > 0:
+                new_pp = pauliproduct.PauliProduct(self.num_qubits)
+                new_pp.id = new_pp_id
+                new_pp_id += 1
+                new_pp.angle = pp.angle
+                new_pp.num_ys = pp.num_ys
+                new_pp.need_estabilizer = True
+                # convert product to X only
+                for qi, op in enumerate(pp.operators):
+                    if op == "Y":
+                        pp.operators[qi] = "x"
+                        new_pp.operators[qi] = "z"
+                        new_pp.qubits_used += 1
+                # now set the parents and children appropriately
+                new_pp.children = pp.children.copy()
+                new_pp.parents = [pp.id]
+                pp.children = [new_pp.id]
+                new_pps.append(new_pp)
+                for child_id in new_pp.children:
+                    self[child_id].parents[self[child_id].parents.index(pp.id)] = new_pp.id
+        self.extend(new_pps)
+
     def draw_graph(self):
         g = nx.DiGraph()
         for node in self:
@@ -91,7 +117,7 @@ class RealCircuit(list):
 
     def print(self, fname):
         f = open(fname, "w")
-        print("id product children parents", file=f)
+        print("id product Ys ES children parents", file=f)
         for i, pauli_product in enumerate(self):
             print(f"{pauli_product.__str__()}", file=f)
         f.close()

@@ -108,7 +108,7 @@ class Scheduler:
                 continue
             ops = ["X", "Z"] if operator == "Y" else [operator]
             for op in ops:
-                node = "d" + str(oi) + op
+                node = "d" + str(oi) + op.upper()
                 if node not in g:
                     self.print_sched(f"Node {node} not in topo graph for finding terminal nodes")
                     return []
