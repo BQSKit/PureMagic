@@ -35,11 +35,11 @@ def get_args():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument(
-        "--magic-steps",
+        "--magic-state-lambda",
         "-m",
-        type=int,
-        default=1,
-        help="Number of timesteps until a magic state is ready",
+        type=float,
+        default=0.00228,
+        help="Lambda parameter for exponential distribution of timesteps to ready a magic state",
     )
     parser.add_argument(
         "--show-product-ids", action="store_true", help="Show product IDs when plotting the circuit"
@@ -69,6 +69,7 @@ def main():
         topo_graph.plot(".topo")
     circuit = realcircuit.RealCircuit(args)
     circuit.split_ys()
+    # circuit.print("after_split_ys.txt")
     circuit.check_clifford_relations()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
@@ -77,20 +78,18 @@ def main():
     single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
     tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
     speedup = float(num_scheduled) / tot_num_steps
-    tot_qubits = (
-        topo_graph.num_bus_qubits + topo_graph.num_data_qubits + topo_graph.num_magic_qubits
-    )
-    qubit_cost = tot_qubits * tot_num_steps
+    qubit_cost = topo_graph.num_qubits * tot_num_steps
     print(
-        f"Scheduled {num_scheduled} in {tot_num_steps} time steps ({speedup:.3f} speedup) qubit cost {qubit_cost}"
+        f"Scheduled {num_scheduled} in {tot_num_steps} time steps ({speedup:.3f} speedup) "
+        f"qubit cost {qubit_cost}"
     )
     num_layers = len(circuit.get_layers())
     speedup = float(num_scheduled) / num_layers
-    print(f"Optimal time steps {num_layers} ({speedup:.3f} speedup)")
-    opt_cols, opt_rows = topo_graph.get_topo_dims(1000)
-    opt_qubit_cost = num_layers * (opt_cols * opt_rows - int(opt_cols / 2) * 2)
-    efficiency = float(opt_qubit_cost) / qubit_cost
-    print(f"Optimal qubit cost {opt_qubit_cost}, efficiency {efficiency:.3f}")
+    opt_qubit_cost = topo_graph.num_qubits * num_layers
+    print(
+        f"Optimal time steps {num_layers} ({speedup:.3f} speedup) " f"qubit cost {opt_qubit_cost}"
+    )
+    print(f"Scheduling efficiency {(float(opt_qubit_cost) / qubit_cost):.3f}")
 
 
 if __name__ == "__main__":

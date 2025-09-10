@@ -83,6 +83,9 @@ class RealCircuit(list):
                         pp.operators[qi] = "x"
                         new_pp.operators[qi] = "z"
                         new_pp.qubits_used += 1
+                    elif op == "Z":
+                        pp.operators[qi] = " "
+                        new_pp.operators[qi] = "Z"
                 # now set the parents and children appropriately
                 new_pp.children = pp.children.copy()
                 new_pp.parents = [pp.id]

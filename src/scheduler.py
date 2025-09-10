@@ -21,6 +21,8 @@ class Scheduler:
         self.topo_graph = topo_graph
         self.sum_data_qubits = 0
         self.sum_bus_qubits = 0
+        self.sum_magic_qubits = 0
+        self.sum_ancilla_qubits = 0
         self.sched_file = None
 
     def print_sched(self, message):
@@ -221,8 +223,11 @@ class Scheduler:
                 self.topo_graph.nodes[node]["busy_count"] -= 1
         pp_paths = []
         working_topo_graph = copy.deepcopy(self.topo_graph)
-        num_qubits_scheduled = 0
-        num_bus_qubits_scheduled = 0
+        num_scheduled = 0
+        num_bus_scheduled = 0
+        num_data_scheduled = 0
+        num_magic_scheduled = 0
+        num_ancilla_scheduled = 0
         num_dependent_nodes = 0
         next_to_schedule = []
         for pp in to_schedule:
@@ -249,12 +254,21 @@ class Scheduler:
                 num_nodes = pp_graph.number_of_nodes()
                 self.print_sched(f"Scheduled {pp.__str__()} with {num_nodes} nodes")
                 pp_paths.append((pp, pp_graph))
-                num_qubits_scheduled += pp.qubits_used
+                num_scheduled += pp.qubits_used
                 for node in pp_graph.nodes():
                     if is_bus_node(node):
-                        num_bus_qubits_scheduled += 1
-                    if is_magic_node(node):
-                        self.topo_graph.nodes[node]["busy_count"] = self.args.magic_steps
+                        num_bus_scheduled += 1
+                    elif is_magic_node(node):
+                        busy_count = self.rng.exponential(self.args.magic_state_lambda)
+                        self.topo_graph.nodes[node]["busy_count"] = int(round(busy_count))
+                        self.print_sched(
+                            f"Busy count for node {node} is set to {int(round(busy_count))}"
+                        )
+                        num_magic_scheduled += 1
+                    elif is_data_node(node):
+                        num_data_scheduled += 1
+                    elif is_ancilla_node(node):
+                        num_ancilla_scheduled += 1
 
                 # now remove the Pauli product path from the graph
                 working_topo_graph.remove_nodes_from(pp_graph.nodes)
@@ -266,39 +280,57 @@ class Scheduler:
 
         self.print_sched("Scheduling results:")
         frac_paths = float(len(pp_paths)) / len(to_schedule)
-        frac_data_qubits = float(num_qubits_scheduled) / self.topo_graph.num_data_qubits
-        frac_bus_qubits = float(num_bus_qubits_scheduled) / self.topo_graph.num_bus_qubits
+        frac_data = float(num_data_scheduled) / self.topo_graph.num_data_qubits
+        frac_bus = float(num_bus_scheduled) / self.topo_graph.num_bus_qubits
+        frac_magic = float(num_magic_scheduled) / self.topo_graph.num_magic_qubits
+        frac_ancilla = float(num_ancilla_scheduled) / self.topo_graph.num_ancilla_qubits
         self.print_sched(f"  products:    {len(pp_paths)}/{len(to_schedule)} ({frac_paths:.2f})")
         self.print_sched(
-            f"  data qubits: {num_qubits_scheduled}/{self.topo_graph.num_data_qubits} ({frac_data_qubits:.2f})"
+            f"  data:    {num_data_scheduled}/{self.topo_graph.num_data_qubits} "
+            f"({frac_data:.2f})"
         )
         self.print_sched(
-            f"  bus qubits:  {num_bus_qubits_scheduled}/{self.topo_graph.num_bus_qubits} ({frac_bus_qubits:.2f})",
+            f"  bus:     {num_bus_scheduled}/{self.topo_graph.num_bus_qubits} " f"({frac_bus:.2f})",
+        )
+        self.print_sched(
+            f"  magic:   {num_magic_scheduled}/{self.topo_graph.num_magic_qubits} "
+            f"({frac_magic:.2f})",
+        )
+        self.print_sched(
+            f"  ancilla: {num_ancilla_scheduled}/{self.topo_graph.num_ancilla_qubits} "
+            f"({frac_ancilla:.2f})",
         )
         # print("Removed", num_dependent_nodes, "dependent nodes", file=f)
-        self.sum_data_qubits += num_qubits_scheduled
-        self.sum_bus_qubits += num_bus_qubits_scheduled
+        self.sum_data_qubits += num_scheduled
+        self.sum_bus_qubits += num_bus_scheduled
+        self.sum_magic_qubits += num_magic_scheduled
+        self.sum_ancilla_qubits += num_ancilla_scheduled
 
         if len(pp_paths) > 0:
-            title_str = f"Step {step_i} (pps %.2f, data %.2f, bus %.2f)" % (
-                frac_paths,
-                frac_data_qubits,
-                frac_bus_qubits,
+            title_str = (
+                f"Step {step_i} pps {frac_paths:.2f}, data {frac_data:.2f}"
+                f", bus {frac_bus:.2f}, magic {frac_magic:.2f}, ancilla {frac_ancilla:.2f}"
             )
             return title_str, pp_paths, next_to_schedule
         return None, None, next_to_schedule
 
     def schedule_circuit(self, real_circuit):
         global sched_file
+        if self.args.log_scheduler:
+            sched_fname = Path(self.args.circuit).stem + ".sched"
+            self.sched_file = open(sched_fname, "w")
+        # initialize all magic nodes to require cultivation starting from round 0
+        for node in self.topo_graph.nodes():
+            if is_magic_node(node):
+                busy_count = self.rng.exponential(self.args.magic_state_lambda)
+                self.print_sched(f"busy count exp {busy_count}")
+                self.topo_graph.nodes[node]["busy_count"] = int(round(busy_count))
+                self.print_sched(f"Busy count for node {node} is set to {int(round(busy_count))}")
         to_schedule = []
         circuit = copy.deepcopy(real_circuit)
         for pp in circuit:
             if len(pp.parents) == 0:
                 to_schedule.append(pp)
-
-        if self.args.log_scheduler:
-            sched_fname = Path(self.args.circuit).stem + ".sched"
-            self.sched_file = open(sched_fname, "w")
         num_steps = 0
         scheduled = set()
         path_dir = None
@@ -348,13 +380,15 @@ class Scheduler:
                 for pp, _ in pp_paths:
                     self.check_dependencies(pp, scheduled)
                     scheduled.add(pp.id)
-        print("\nScheduled", len(real_circuit), "products:")
-        print(
-            "  data qubit fraction: %.3f"
-            % (float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps))
+        print("\nOverall qubit fractions used:")
+        data_frac = float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps)
+        print(f"  data:    {data_frac:.3f}")
+        bus_frac = float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)
+        print(f"  bus:     {bus_frac:.3f}")
+        magic_frac = float(self.sum_magic_qubits) / (self.topo_graph.num_magic_qubits * num_steps)
+        print(f"  magic:   {magic_frac:.3f}")
+        ancilla_frac = float(self.sum_ancilla_qubits) / (
+            self.topo_graph.num_ancilla_qubits * num_steps
         )
-        print(
-            "  bus qubit fraction: %.3f"
-            % (float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps))
-        )
+        print(f"  ancilla: {ancilla_frac:.3f}")
         return num_steps, len(scheduled)
