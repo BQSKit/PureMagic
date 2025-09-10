@@ -217,6 +217,10 @@ class Scheduler:
             return None
         return copy.deepcopy(g)
 
+    def gen_busy_count(self):
+        # one timestep is 17 rounds of cultivation
+        return int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda) / 17))
+
     def schedule_timestep(self, step_i, to_schedule):
         for node in self.topo_graph.nodes:
             if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
@@ -259,10 +263,10 @@ class Scheduler:
                     if is_bus_node(node):
                         num_bus_scheduled += 1
                     elif is_magic_node(node):
-                        busy_count = self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)
-                        self.topo_graph.nodes[node]["busy_count"] = int(round(busy_count))
+                        self.topo_graph.nodes[node]["busy_count"] = self.gen_busy_count()
                         self.print_sched(
-                            f"Busy count for node {node} is set to {int(round(busy_count))}"
+                            f"Busy count for node {node} is set to "
+                            f"{self.topo_graph.nodes[node]["busy_count"]}"
                         )
                         num_magic_scheduled += 1
                     elif is_data_node(node):
@@ -322,9 +326,11 @@ class Scheduler:
         # initialize all magic nodes to require cultivation starting from round 0
         for node in self.topo_graph.nodes():
             if is_magic_node(node):
-                busy_count = self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)
-                self.topo_graph.nodes[node]["busy_count"] = int(round(busy_count))
-                self.print_sched(f"Busy count for node {node} is set to {int(round(busy_count))}")
+                self.topo_graph.nodes[node]["busy_count"] = self.gen_busy_count()
+                self.print_sched(
+                    f"Busy count for node {node} is set to "
+                    f"{self.topo_graph.nodes[node]["busy_count"]}"
+                )
         to_schedule = []
         circuit = copy.deepcopy(real_circuit)
         for pp in circuit:
