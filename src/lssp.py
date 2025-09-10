@@ -12,13 +12,7 @@ from utils import timer
 
 def get_args():
     parser = argparse.ArgumentParser(description="Experimental scheduler for the LSSP")
-    parser.add_argument(
-        "--min-num-qubits", "-n", type=int, default=10, help="Minimum number of data qubits"
-    )
     parser.add_argument("--rseed", "-r", type=int, default=29, help="Random seed")
-    parser.add_argument(
-        "--bus-ratio", "-s", type=int, default=1, help="Ratio of double qubit rows to bus rows"
-    )
     plot_options = ["none", "circuit", "paths", "freqs", "topo"]
     parser.add_argument(
         "--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting"
@@ -55,26 +49,17 @@ def get_args():
 @timer
 def main():
     rng = np.random.default_rng(seed=args.rseed)
-    topo_graph = topograph.TopoGraph()
-    topo_graph.set_dims(args, rng)
-    print("Layout dimensions:", topo_graph.num_cols, topo_graph.num_rows)
-    if topo_graph.num_data_qubits != args.min_num_qubits:
-        print(
-            "Adjusted number of data qubits from",
-            args.min_num_qubits,
-            "to",
-            topo_graph.num_data_qubits,
-        )
-    if "topo" in args.plot:
-        topo_graph.plot(".topo")
     circuit = realcircuit.RealCircuit(args)
     circuit.split_ys()
-    # circuit.print("after_split_ys.txt")
     circuit.check_clifford_relations()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:
         circuit.plot_freqs()
+    topo_graph = topograph.TopoGraph()
+    topo_graph.set_topo(args, circuit.num_qubits, rng)
+    if "topo" in args.plot:
+        topo_graph.plot(".topo")
     single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
     tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
     speedup = float(num_scheduled) / tot_num_steps

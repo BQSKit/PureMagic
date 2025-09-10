@@ -48,24 +48,33 @@ class TopoGraph(nx.Graph):
         self.num_ancilla_qubits = 0
         self.num_qubits = 0
 
-    def get_topo_dims(self, bus_ratio):
-        sq_dim = int(np.floor(np.sqrt(self.args.min_num_qubits)))
-        patch_rows = int(sq_dim / 2) + sq_dim % 2
-        bus_rows = int(patch_rows / bus_ratio) + 1
-        # print(f"patch rows {patch_rows}, bus rows {bus_rows}")
-        qubits_per_col = 2 * patch_rows
-        num_data_cols = int(np.ceil(self.args.min_num_qubits / qubits_per_col))
-        num_cols = 2 * num_data_cols + 1
-        # 2 rows for magic, 2 per patch row, rows for bus qubits
-        num_rows = 2 + 2 * patch_rows + bus_rows
-        return num_cols, num_rows
-
-    def set_dims(self, args, rng):
+    def set_topo(self, args, min_num_qubits, rng):
         self.args = args
         self.rng = rng
-        self.num_cols, self.num_rows = self.get_topo_dims(args.bus_ratio)
+        sq_dim = int(np.floor(np.sqrt(min_num_qubits)))
+        patch_rows = int(sq_dim / 2) + sq_dim % 2
+        bus_rows = patch_rows + 1
+        # print(f"patch rows {patch_rows}, bus rows {bus_rows}")
+        qubits_per_col = 2 * patch_rows
+        num_data_cols = int(np.ceil(min_num_qubits / qubits_per_col))
+        self.num_cols = 2 * num_data_cols + 1
+        # 2 rows for magic, 2 per patch row, rows for bus qubits
+        self.num_rows = 2 + 2 * patch_rows + bus_rows
         if self.num_cols > 0 and self.num_rows > 0:
             self.gen_topo()
+            frac_data = float(self.num_data_qubits) / self.num_qubits
+            frac_bus = float(self.num_bus_qubits) / self.num_qubits
+            frac_magic = float(self.num_magic_qubits) / self.num_qubits
+            frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
+            if self.num_data_qubits != min_num_qubits:
+                print(f"Adjusted data qubits from {min_num_qubits} to {self.num_data_qubits}")
+            print("Layout dimensions:", self.num_cols, self.num_rows)
+            print("Number of qubits:")
+            print(f"  data:    {self.num_data_qubits} ({frac_data:.3f})")
+            print(f"  bus:     {self.num_bus_qubits} ({frac_bus:.3f})")
+            print(f"  magic:   {self.num_magic_qubits} ({frac_magic:.3f})")
+            print(f"  ancilla: {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
+            print(f"  total:   {self.num_qubits}")
 
     def is_magic_column(self, col):
         return col % 2 != 1
@@ -159,7 +168,7 @@ class TopoGraph(nx.Graph):
     def gen_topo(self):
         self.gen_magic_columns()
         qi = 0
-        spacing = self.args.bus_ratio * 2 + 1
+        spacing = 3
         for col in range(1, self.num_cols, 1):
             if self.is_magic_column(col):
                 continue
@@ -188,16 +197,6 @@ class TopoGraph(nx.Graph):
             + self.num_magic_qubits
             + self.num_ancilla_qubits
         )
-        frac_data = float(self.num_data_qubits) / self.num_qubits
-        frac_bus = float(self.num_bus_qubits) / self.num_qubits
-        frac_magic = float(self.num_magic_qubits) / self.num_qubits
-        frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
-        print("Number of qubits:")
-        print(f"  data:    {self.num_data_qubits} ({frac_data:.3f})")
-        print(f"  bus:     {self.num_bus_qubits} ({frac_bus:.3f})")
-        print(f"  magic:   {self.num_magic_qubits} ({frac_magic:.3f})")
-        print(f"  ancilla: {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
-        print(f"  total:   {self.num_qubits}")
         if self.args.rnd_order:
             self.shuffle_qubits()
 

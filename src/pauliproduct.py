@@ -10,8 +10,8 @@ import quilt.angle
 
 
 class PauliProduct:
-    def __init__(self, num_qubits):
-        self.operators = [" "] * num_qubits
+    def __init__(self):
+        self.operators = []
         self.qubits_used = 0
         self.parents = []
         self.children = []
@@ -26,16 +26,20 @@ class PauliProduct:
         self.parents = [int(x) for x in literal_eval(parents_str)]
         self.children = [int(x) for x in literal_eval(children_str)]
         terms = pp_str.split(".")
+        qubit_list = []
+        operator_list = []
         for term in terms:
             if not term.startswith("Pauli"):
                 raise RuntimeError("Term does not start with Pauli")
-            operator = term[5]
-            # phase = term[7:0]
-            qubit = int(term.split(")")[1].split("<")[0])
-            self.operators[qubit] = operator
-            self.qubits_used += 1
-            if operator == "Y":
+            qubit_list.append(int(term.split(")")[1].split("<")[0]))
+            operator_list.append(term[5])
+            if operator_list[-1] == "Y":
                 self.num_ys += 1
+            # phase = term[7:0]
+        self.qubits_used = len(qubit_list)
+        self.operators = [" "] * (max(qubit_list) + 1)
+        for i, term in enumerate(terms):
+            self.operators[qubit_list[i]] = operator_list[i]
         angle_parts = pp_str.split("<")[1][6:].split("/")
         if angle_parts[0] == "pi":
             numerator = 1
