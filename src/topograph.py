@@ -42,11 +42,17 @@ class TopoGraph(nx.Graph):
     def __init__(self):
         nx.Graph.__init__(self)
 
+        self.num_data_qubits = 0
+        self.num_bus_qubits = 0
+        self.num_magic_qubits = 0
+        self.num_ancilla_qubits = 0
+        self.num_qubits = 0
+
     def get_topo_dims(self, bus_ratio):
         sq_dim = int(np.floor(np.sqrt(self.args.min_num_qubits)))
         patch_rows = int(sq_dim / 2) + sq_dim % 2
         bus_rows = int(patch_rows / bus_ratio) + 1
-        print(f"patch rows {patch_rows}, bus rows {bus_rows}")
+        # print(f"patch rows {patch_rows}, bus rows {bus_rows}")
         qubits_per_col = 2 * patch_rows
         num_data_cols = int(np.ceil(self.args.min_num_qubits / qubits_per_col))
         num_cols = 2 * num_data_cols + 1
@@ -172,30 +178,26 @@ class TopoGraph(nx.Graph):
                     self.add_data_qubit(qi, col, row, "X" if data_rows % 2 == 0 else "Z")
                     qi += 2
                     data_rows += 1
-        num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
-        num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
-        num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
-        num_ancilla_qubits = sum([is_ancilla_node(node) for node in self.nodes])
+        self.num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
+        self.num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
+        self.num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
+        self.num_ancilla_qubits = sum([is_ancilla_node(node) for node in self.nodes])
+        self.num_qubits = (
+            self.num_data_qubits
+            + self.num_bus_qubits
+            + self.num_magic_qubits
+            + self.num_ancilla_qubits
+        )
+        frac_data = float(self.num_data_qubits) / self.num_qubits
+        frac_bus = float(self.num_bus_qubits) / self.num_qubits
+        frac_magic = float(self.num_magic_qubits) / self.num_qubits
+        frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
         print("Number of qubits:")
-        print("  magic:   ", num_magic_qubits)
-        print("  data:    ", num_data_qubits)
-        print("  bus:     ", num_bus_qubits)
-        print("  ancilla: ", num_ancilla_qubits)
-        print(
-            "Space efficiency: %.2f"
-            % (float(num_data_qubits) / (num_data_qubits + num_bus_qubits + num_ancilla_qubits))
-        )
-        print(
-            "Magic state ratio: %.2f"
-            % (float(num_magic_qubits) / (num_data_qubits + num_magic_qubits))
-        )
-        print(
-            "Ancilla ratio: %.2f"
-            % (float(num_ancilla_qubits) / (num_data_qubits + num_ancilla_qubits))
-        )
-        self.num_data_qubits = num_data_qubits
-        self.num_magic_qubits = num_magic_qubits
-        self.num_bus_qubits = num_bus_qubits
+        print(f"  data:    {self.num_data_qubits} ({frac_data:.3f})")
+        print(f"  bus:     {self.num_bus_qubits} ({frac_bus:.3f})")
+        print(f"  magic:   {self.num_magic_qubits} ({frac_magic:.3f})")
+        print(f"  ancilla: {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
+        print(f"  total:   {self.num_qubits}")
         if self.args.rnd_order:
             self.shuffle_qubits()
 
@@ -210,7 +212,7 @@ class TopoGraph(nx.Graph):
     @timer
     def plot(self, fname_added="", pauli_product_paths=[], title_str=""):
         topo_fname = Path(self.args.circuit).stem + fname_added
-        print("Plotting topology to", topo_fname, title_str, "...")
+        print(f"Plotting topology to {topo_fname}...")
         # print("Generated topology with", num_qubits, "data qubits and ")
         plt.close()
         plt.rc("figure", figsize=[self.num_cols, self.num_rows])
