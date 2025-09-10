@@ -259,7 +259,7 @@ class Scheduler:
                     if is_bus_node(node):
                         num_bus_scheduled += 1
                     elif is_magic_node(node):
-                        busy_count = self.rng.exponential(self.args.magic_state_lambda)
+                        busy_count = self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)
                         self.topo_graph.nodes[node]["busy_count"] = int(round(busy_count))
                         self.print_sched(
                             f"Busy count for node {node} is set to {int(round(busy_count))}"
@@ -322,8 +322,7 @@ class Scheduler:
         # initialize all magic nodes to require cultivation starting from round 0
         for node in self.topo_graph.nodes():
             if is_magic_node(node):
-                busy_count = self.rng.exponential(self.args.magic_state_lambda)
-                self.print_sched(f"busy count exp {busy_count}")
+                busy_count = self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)
                 self.topo_graph.nodes[node]["busy_count"] = int(round(busy_count))
                 self.print_sched(f"Busy count for node {node} is set to {int(round(busy_count))}")
         to_schedule = []
