@@ -23,14 +23,17 @@ class RealCircuit(list):
         list.__init__(self)
         self.args = args
         self.num_pauli_products = 0
-        self.num_qubits = args.min_num_qubits
+        self.num_qubits = 0
         self.load_circuit()
 
+    @timer
     def load_circuit(self):
         dag_df = pd.read_csv(self.args.circuit, sep="\t")
         for i, row in dag_df.iterrows():
-            self.append(pauliproduct.PauliProduct(self.num_qubits))
+            self.append(pauliproduct.PauliProduct())
             self[-1].set_vals(row["id"], row["product"], row["parents"], row["children"])
+        self.num_qubits = max(len(pp.operators) for pp in self)
+        print(f"Loaded circuit with {len(self)} products and {self.num_qubits} qubits")
 
     def get_layers(self):
         layer_i = 0
@@ -71,12 +74,13 @@ class RealCircuit(list):
         new_pp_id = len(self)
         for pp in self:
             if pp.num_ys > 0:
-                new_pp = pauliproduct.PauliProduct(self.num_qubits)
+                new_pp = pauliproduct.PauliProduct()
                 new_pp.id = new_pp_id
                 new_pp_id += 1
                 new_pp.angle = pp.angle
                 new_pp.num_ys = pp.num_ys
                 new_pp.need_estabilizer = True
+                new_pp.operators = [" "] * len(pp.operators)
                 # convert product to X only
                 for qi, op in enumerate(pp.operators):
                     if op == "Y":
@@ -94,6 +98,10 @@ class RealCircuit(list):
                 for child_id in new_pp.children:
                     self[child_id].parents[self[child_id].parents.index(pp.id)] = new_pp.id
         self.extend(new_pps)
+        print(
+            f"After splitting {len(new_pps)} Y products there are "
+            f"{len(self)} products in the circuit"
+        )
 
     def draw_graph(self):
         g = nx.DiGraph()
@@ -130,6 +138,7 @@ class RealCircuit(list):
         plt.rcParams["font.size"] = 20
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
         print("Drawing circuit...", circuit_fname)
+        self.print(circuit_fname + ".txt")
 
         plt.close()
         fig = plt.figure(figsize=(18, 9))
@@ -158,7 +167,8 @@ class RealCircuit(list):
             for pauli_product in layer:
                 start_pos = 0
                 end_pos = 0
-                for start_pos in range(num_rows):
+                pp_rows = len(pauli_product.operators)
+                for start_pos in range(pp_rows):
                     if pauli_product.operators[start_pos] != " ":
                         if show_product_ids:
                             ax.text(
@@ -171,7 +181,7 @@ class RealCircuit(list):
                                 rotation="vertical",
                             )
                         break
-                for i in range(start_pos, num_rows):
+                for i in range(start_pos, pp_rows):
                     if pauli_product.operators[i] != " ":
                         end_pos = i
                 for i in range(start_pos, end_pos + 1):

@@ -3,6 +3,7 @@
 import os
 import copy
 from pathlib import Path
+import numpy as np
 import warnings
 
 with warnings.catch_warnings():
@@ -24,6 +25,7 @@ class Scheduler:
         self.sum_magic_qubits = 0
         self.sum_ancilla_qubits = 0
         self.sched_file = None
+        self.busy_count_list = []
 
     def print_sched(self, message):
         if self.sched_file is not None:
@@ -219,7 +221,10 @@ class Scheduler:
 
     def gen_busy_count(self):
         # one timestep is 17 rounds of cultivation
-        return int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda) / 17))
+        busy_count = int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda) / 17))
+        busy_count += 1
+        self.busy_count_list.append(busy_count)
+        return busy_count
 
     def schedule_timestep(self, step_i, to_schedule):
         for node in self.topo_graph.nodes:
@@ -396,4 +401,8 @@ class Scheduler:
             self.topo_graph.num_ancilla_qubits * num_steps
         )
         print(f"  ancilla: {ancilla_frac:.3f}")
+        print("Magic state cultivation time:")
+        print(f"  average: {np.mean(self.busy_count_list):.2f}")
+        print(f"  min:     {np.min(self.busy_count_list):.0f}")
+        print(f"  max:     {np.max(self.busy_count_list):.0f}")
         return num_steps, len(scheduled)
