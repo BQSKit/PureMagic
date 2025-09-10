@@ -984,12 +984,15 @@ impl PauliProductDAG {
             return;
         }
         let num_uncommuted = uncommuted_noncliffords.len();
-        print!("Commuting {} noncliffords:  00%", num_uncommuted);
+        print!("Commuting {} noncliffords:  00.0%", num_uncommuted);
         std::io::stdout().flush().unwrap();
         let mut num_commuted = 0;
         let mut loops = 0;
         while !uncommuted_noncliffords.is_empty() {
-            print!("\x08\x08\x08{:02}%", (num_commuted * 100 / num_uncommuted));
+            print!(
+                "\x08\x08\x08\x08\x08{:4.1}%",
+                (num_commuted as f64 * 100.0 / num_uncommuted as f64)
+            );
             std::io::stdout().flush().unwrap();
             let mut finished_noncliffords = Vec::new();
             // Create a temporary copy for iteration
