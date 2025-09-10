@@ -220,8 +220,7 @@ class Scheduler:
         return copy.deepcopy(g)
 
     def gen_busy_count(self):
-        # one timestep is 17 rounds of cultivation
-        busy_count = int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda) / 17))
+        busy_count = int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)))
         busy_count += 1
         self.busy_count_list.append(busy_count)
         return busy_count
