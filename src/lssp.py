@@ -32,7 +32,8 @@ def get_args():
         "--magic-state-lambda",
         "-m",
         type=float,
-        default=0.00228,
+        # default is 0.00228 with 17 rounds cultivation per timestep
+        default=0.0387396,
         help="Lambda parameter for exponential distribution of timesteps to ready a magic state",
     )
     parser.add_argument(

@@ -987,15 +987,10 @@ impl PauliProductDAG {
         print!("Commuting {} noncliffords:  00%", num_uncommuted);
         std::io::stdout().flush().unwrap();
         let mut num_commuted = 0;
-        let update_tick = (num_uncommuted as f64 / 100.0) as usize;
-        let mut next_tick = update_tick;
         let mut loops = 0;
         while !uncommuted_noncliffords.is_empty() {
-            if num_commuted >= next_tick {
-                print!("\x08\x08\x08{:02}%", (num_commuted * 100 / num_uncommuted));
-                std::io::stdout().flush().unwrap();
-                next_tick = num_commuted + update_tick;
-            }
+            print!("\x08\x08\x08{:02}%", (num_commuted * 100 / num_uncommuted));
+            std::io::stdout().flush().unwrap();
             let mut finished_noncliffords = Vec::new();
             // Create a temporary copy for iteration
             let current_noncliffords: Vec<_> = uncommuted_noncliffords.iter().copied().collect();
@@ -1151,8 +1146,11 @@ fn main() -> io::Result<()> {
         .unwrap_or(&args.input_file);
     let fname = format!("{}.compiled.txt", input_basename);
     println!("Saving compiled circuit to {}", fname);
-    let mut f = File::create(fname)?;
-    write!(f, "{}", dag)?;
+    {
+        let _timer = Timer::new("saving compiled circuit");
+        let mut f = File::create(fname)?;
+        write!(f, "{}", dag)?;
+    }
 
     dag.commute_all_cliffords();
     num_layers = dag.set_layers();
