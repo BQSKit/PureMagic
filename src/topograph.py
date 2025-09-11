@@ -15,23 +15,28 @@ from utils import timer
 
 
 def is_magic_node(node):
-    assert node[0] in ["m", "b", "d", "a"]
+    assert node[0] in ["m", "b", "d", "a", "e"]
     return node[0] == "m"
 
 
 def is_data_node(node):
-    assert node[0] in ["m", "b", "d", "a"]
+    assert node[0] in ["m", "b", "d", "a", "e"]
     return node[0] == "d"
 
 
 def is_bus_node(node):
-    assert node[0] in ["m", "b", "d", "a"]
+    assert node[0] in ["m", "b", "d", "a", "e"]
     return node[0] == "b"
 
 
 def is_ancilla_node(node):
-    assert node[0] in ["m", "b", "d", "a"]
+    assert node[0] in ["m", "b", "d", "a", "e"]
     return node[0] == "a"
+
+
+def is_estabilizer_node(node):
+    assert node[0] in ["m", "b", "d", "a", "e"]
+    return node[0] == "e"
 
 
 def get_node_label(label, col, row):
@@ -46,6 +51,7 @@ class TopoGraph(nx.Graph):
         self.num_bus_qubits = 0
         self.num_magic_qubits = 0
         self.num_ancilla_qubits = 0
+        self.num_estabilizer_qubits = 0
         self.num_qubits = 0
 
     def set_topo(self, args, min_num_qubits, rng):
@@ -66,15 +72,17 @@ class TopoGraph(nx.Graph):
             frac_bus = float(self.num_bus_qubits) / self.num_qubits
             frac_magic = float(self.num_magic_qubits) / self.num_qubits
             frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
+            frac_estabilizer = float(self.num_estabilizer_qubits) / self.num_qubits
             if self.num_data_qubits != min_num_qubits:
                 print(f"Adjusted data qubits from {min_num_qubits} to {self.num_data_qubits}")
             print("Layout dimensions:", self.num_cols, self.num_rows)
             print("Number of qubits:")
-            print(f"  data:    {self.num_data_qubits} ({frac_data:.3f})")
-            print(f"  bus:     {self.num_bus_qubits} ({frac_bus:.3f})")
-            print(f"  magic:   {self.num_magic_qubits} ({frac_magic:.3f})")
-            print(f"  ancilla: {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
-            print(f"  total:   {self.num_qubits}")
+            print(f"  data:         {self.num_data_qubits} ({frac_data:.3f})")
+            print(f"  bus:          {self.num_bus_qubits} ({frac_bus:.3f})")
+            print(f"  magic:        {self.num_magic_qubits} ({frac_magic:.3f})")
+            print(f"  ancilla:      {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
+            print(f"  e-stabilizer: {self.num_estabilizer_qubits} ({frac_ancilla:.3f})")
+            print(f"  total:        {self.num_qubits}")
 
     def is_magic_column(self, col):
         return col % 2 != 1
@@ -91,6 +99,22 @@ class TopoGraph(nx.Graph):
             prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
             node_label = self.add_labeled_node("m", col, self.num_rows - 1)
             self.add_edge(node_label, prev_node_label, other="")
+
+    def add_labeled_node(self, label, col, row):
+        node_colors = {
+            "m": "#FFBB99",
+            "b": "#aaaaaa",
+            "d": "#9999FF",
+            "a": "#FF88AA",
+            "e": "#99CC99",
+        }
+        node_label = get_node_label(label, col, row)
+        self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
+        if is_magic_node(node_label):
+            self.nodes[node_label]["busy_count"] = 0
+        if label == "e":
+            print(f"added node {node_label} {self.nodes[node_label]}")
+        return node_label
 
     def add_bus_qubit(self, col, row):
         node_label = self.add_labeled_node("b", col, row)
@@ -143,6 +167,20 @@ class TopoGraph(nx.Graph):
         elif row == self.num_rows - 1:
             self.add_edge(node_label, get_node_label("b", col, row - 1))
 
+    def add_estabilizer_qubit(self, col, row):
+        node_label = self.add_labeled_node("e", col, row)
+        if col > 0:
+            if not (self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)):
+                self.add_edge(node_label, get_node_label("b", col - 1, row))
+        if col < self.num_cols - 1:
+            if not (self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)):
+                self.add_edge(node_label, get_node_label("b", col + 1, row))
+        # assume fixed ancilla in first and last row
+        if row == 0:
+            self.add_edge(node_label, get_node_label("b", col, row + 1))
+        elif row == self.num_rows - 1:
+            self.add_edge(node_label, get_node_label("b", col, row - 1))
+
     def shuffle_qubits(self):
         qubit_order = list(range(self.num_data_qubits))
         self.rng.shuffle(qubit_order)
@@ -178,7 +216,10 @@ class TopoGraph(nx.Graph):
                 offset = row - 1
                 if row == 0 or row == self.num_rows - 1:
                     if not self.is_magic_column(col):
-                        self.add_ancilla_qubit(col, row)
+                        if col % 4 - 1 == 0:
+                            self.add_ancilla_qubit(col, row)
+                        else:
+                            self.add_estabilizer_qubit(col, row)
                 elif row == self.num_rows - 1 or offset % spacing == 0:
                     if not self.is_magic_column(col) or (row != 0 and row == self.num_rows - 1):
                         self.add_bus_qubit(col, row)
@@ -191,22 +232,16 @@ class TopoGraph(nx.Graph):
         self.num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
         self.num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
         self.num_ancilla_qubits = sum([is_ancilla_node(node) for node in self.nodes])
+        self.num_estabilizer_qubits = sum([is_estabilizer_node(node) for node in self.nodes])
         self.num_qubits = (
             self.num_data_qubits
             + self.num_bus_qubits
             + self.num_magic_qubits
             + self.num_ancilla_qubits
+            + self.num_estabilizer_qubits
         )
         if self.args.rnd_order:
             self.shuffle_qubits()
-
-    def add_labeled_node(self, label, col, row):
-        node_colors = {"m": "#FFBB99", "b": "#aaaaaa", "d": "#9999FF", "a": "#FF88AA"}
-        node_label = get_node_label(label, col, row)
-        self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
-        if is_magic_node(node_label):
-            self.nodes[node_label]["busy_count"] = 0
-        return node_label
 
     @timer
     def plot(self, fname_added="", pauli_product_paths=[], title_str=""):
@@ -227,7 +262,10 @@ class TopoGraph(nx.Graph):
         node_line_widths = [1] * self.number_of_nodes()
         node_labels = {}
         for _, node in enumerate(self.nodes()):
-            node_labels[node] = node
+            if is_magic_node(node) and self.nodes[node]["busy_count"] > 0:
+                node_labels[node] = f"{self.nodes[node]["busy_count"]}"
+            else:
+                node_labels[node] = node
         cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
         label_col = -1.5
         label_row = self.num_rows

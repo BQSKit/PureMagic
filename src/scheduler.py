@@ -10,7 +10,7 @@ with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="networkx backend defined more than once")
     import networkx as nx
 
-from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node
+from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node, is_estabilizer_node
 
 
 class Scheduler:
@@ -24,6 +24,7 @@ class Scheduler:
         self.sum_bus_qubits = 0
         self.sum_magic_qubits = 0
         self.sum_ancilla_qubits = 0
+        self.sum_estabilizer_qubits = 0
         self.sched_file = None
         self.busy_count_list = []
 
@@ -41,9 +42,10 @@ class Scheduler:
                     "pp " + str(pp.id) + " scheduled before parent " + str(parent_id)
                 )
 
-    def get_topo_digraph(self, g, root_node, ancilla_node):
+    def get_topo_digraph(self, g, root_node, ancilla_node, estabilizer_node):
         dg = g.to_directed()
-        # now strip the directed edges coming out of the data nodes, to prevent paths that go into then out of data nodes
+        # now strip the directed edges coming out of the data nodes, to prevent paths that go into
+        # then out of data nodes
         edges_to_remove = []
         for edge in dg.edges():
             if is_data_node(edge[0]):
@@ -51,19 +53,29 @@ class Scheduler:
         dg.remove_edges_from(edges_to_remove)
         nodes_to_remove = []
         for node in dg.nodes():
-            if (is_magic_node(node) and node != root_node) or (
-                is_ancilla_node(node) and node != ancilla_node
+            if (
+                (is_magic_node(node) and node != root_node)
+                or (is_ancilla_node(node) and node != ancilla_node)
+                or (is_estabilizer_node(node) and node != estabilizer_node)
             ):
                 nodes_to_remove.append(node)
         dg.remove_nodes_from(nodes_to_remove)
         return dg
 
-    def mehlhorn_steiner_tree(self, g, terminal_nodes, root_node, ancilla_node):
-        # this is exactly like the steiner tree computation in the networkx library, except that for the dijkstra path calculation
-        # and the shortest path, we use a digraph with the edges that go from the data nodes outwards removed. This prevents trees
-        # that pass through the data nodes, instead of just terminating at the data nodes
-        dg = self.get_topo_digraph(g, root_node, ancilla_node)
-        paths = nx.multi_source_dijkstra_path(dg, terminal_nodes)
+    def mehlhorn_steiner_tree(self, g, terminal_nodes, root_node, ancilla_node, estabilizer_node):
+        # this is exactly like the steiner tree computation in the networkx library, except that
+        # for the dijkstra path calculation and the shortest path, we use a digraph with the edges
+        # that go from the data nodes outwards removed. This prevents trees that pass through the
+        # data nodes, instead of just terminating at the data nodes
+        dg = self.get_topo_digraph(g, root_node, ancilla_node, estabilizer_node)
+        try:
+            paths = nx.multi_source_dijkstra_path(dg, terminal_nodes)
+        except nx.NodeNotFound as err:
+            print(terminal_nodes)
+            for node in dg.nodes():
+                print(node, end=" ")
+            print("")
+            raise err
 
         d_1 = {}
         s = {}
@@ -166,6 +178,13 @@ class Scheduler:
             return None
         return self.find_best_starting_node(g, terminal_nodes, ancilla_nodes)
 
+    def find_best_estabilizer_node(self, g, terminal_nodes):
+        estabilizer_nodes = [node for node in g.nodes if is_estabilizer_node(node)]
+        if len(estabilizer_nodes) == 0:
+            self.print_sched(f"Could not find estabilizer node for terminals {terminal_nodes}")
+            return None
+        return self.find_best_starting_node(g, terminal_nodes, estabilizer_nodes)
+
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
         terminal_nodes = self.find_terminal_nodes(working_topo_graph, pauli_product)
         if len(terminal_nodes) == 0:
@@ -198,6 +217,16 @@ class Scheduler:
                 return None
             terminal_nodes.append(ancilla_node)
 
+        estabilizer_node = None
+        if pauli_product.need_estabilizer:
+            estabilizer_node = self.find_best_estabilizer_node(working_topo_graph, terminal_nodes)
+            if estabilizer_node == None:
+                self.print_sched(
+                    f"Could not find estabilizer root node for product {pauli_product}"
+                )
+                return None
+            terminal_nodes.append(estabilizer_node)
+
         # check path exists from root node to all other terminals
         for terminal_node in terminal_nodes[1:]:
             if not nx.has_path(working_topo_graph, root_node, terminal_node):
@@ -210,7 +239,9 @@ class Scheduler:
             f"Trying steiner tree from root {root_node} for {pauli_product}"
             f", terminals {terminal_nodes}"
         )
-        g = self.mehlhorn_steiner_tree(working_topo_graph, terminal_nodes, root_node, ancilla_node)
+        g = self.mehlhorn_steiner_tree(
+            working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
+        )
         if not all([node in g for node in terminal_nodes]):
             self.print_sched(
                 f"Steiner tree: no path from root node {root_node} to terminal node for pp"
@@ -236,6 +267,7 @@ class Scheduler:
         num_data_scheduled = 0
         num_magic_scheduled = 0
         num_ancilla_scheduled = 0
+        num_estabilizers_scheduled = 0
         num_dependent_nodes = 0
         next_to_schedule = []
         for pp in to_schedule:
@@ -277,6 +309,8 @@ class Scheduler:
                         num_data_scheduled += 1
                     elif is_ancilla_node(node):
                         num_ancilla_scheduled += 1
+                    elif is_estabilizer_node(node):
+                        num_estabilizers_scheduled += 1
 
                 # now remove the Pauli product path from the graph
                 working_topo_graph.remove_nodes_from(pp_graph.nodes)
@@ -292,32 +326,41 @@ class Scheduler:
         frac_bus = float(num_bus_scheduled) / self.topo_graph.num_bus_qubits
         frac_magic = float(num_magic_scheduled) / self.topo_graph.num_magic_qubits
         frac_ancilla = float(num_ancilla_scheduled) / self.topo_graph.num_ancilla_qubits
+        frac_estabilizers = (
+            float(num_estabilizers_scheduled) / self.topo_graph.num_estabilizer_qubits
+        )
         self.print_sched(f"  products:    {len(pp_paths)}/{len(to_schedule)} ({frac_paths:.2f})")
         self.print_sched(
-            f"  data:    {num_data_scheduled}/{self.topo_graph.num_data_qubits} "
+            f"  data:        {num_data_scheduled}/{self.topo_graph.num_data_qubits} "
             f"({frac_data:.2f})"
         )
         self.print_sched(
-            f"  bus:     {num_bus_scheduled}/{self.topo_graph.num_bus_qubits} " f"({frac_bus:.2f})",
+            f"  bus:         {num_bus_scheduled}/{self.topo_graph.num_bus_qubits} "
+            f"({frac_bus:.2f})",
         )
         self.print_sched(
-            f"  magic:   {num_magic_scheduled}/{self.topo_graph.num_magic_qubits} "
+            f"  magic:       {num_magic_scheduled}/{self.topo_graph.num_magic_qubits} "
             f"({frac_magic:.2f})",
         )
         self.print_sched(
-            f"  ancilla: {num_ancilla_scheduled}/{self.topo_graph.num_ancilla_qubits} "
+            f"  ancilla:     {num_ancilla_scheduled}/{self.topo_graph.num_ancilla_qubits} "
             f"({frac_ancilla:.2f})",
+        )
+        self.print_sched(
+            f"  estabilizer: {num_estabilizers_scheduled}/{self.topo_graph.num_estabilizer_qubits} "
+            f"({frac_estabilizers:.2f})",
         )
         # print("Removed", num_dependent_nodes, "dependent nodes", file=f)
         self.sum_data_qubits += num_scheduled
         self.sum_bus_qubits += num_bus_scheduled
         self.sum_magic_qubits += num_magic_scheduled
         self.sum_ancilla_qubits += num_ancilla_scheduled
+        self.sum_estabilizer_qubits += num_estabilizers_scheduled
 
         if len(pp_paths) > 0:
             title_str = (
-                f"Step {step_i} pps {frac_paths:.2f}, data {frac_data:.2f}"
-                f", bus {frac_bus:.2f}, magic {frac_magic:.2f}, ancilla {frac_ancilla:.2f}"
+                f"Step {step_i} Products scheduled {frac_paths:.2f}, data {frac_data:.2f}"
+                f", bus {frac_bus:.2f}"  # , magic {frac_magic:.2f}, ancilla {frac_ancilla:.2f}"
             )
             return title_str, pp_paths, next_to_schedule
         return None, None, next_to_schedule
@@ -389,17 +432,21 @@ class Scheduler:
                 for pp, _ in pp_paths:
                     self.check_dependencies(pp, scheduled)
                     scheduled.add(pp.id)
-        print("\nOverall qubit fractions used:")
         data_frac = float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps)
-        print(f"  data:    {data_frac:.3f}")
         bus_frac = float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)
-        print(f"  bus:     {bus_frac:.3f}")
         magic_frac = float(self.sum_magic_qubits) / (self.topo_graph.num_magic_qubits * num_steps)
-        print(f"  magic:   {magic_frac:.3f}")
         ancilla_frac = float(self.sum_ancilla_qubits) / (
             self.topo_graph.num_ancilla_qubits * num_steps
         )
+        estabilizer_frac = float(self.sum_estabilizer_qubits) / (
+            self.topo_graph.num_estabilizer_qubits * num_steps
+        )
+        print("\nOverall qubit fractions used:")
+        print(f"  data:    {data_frac:.3f}")
+        print(f"  bus:     {bus_frac:.3f}")
+        print(f"  magic:   {magic_frac:.3f}")
         print(f"  ancilla: {ancilla_frac:.3f}")
+        print(f"  estabilizer: {estabilizer_frac:.3f}")
         print("Magic state cultivation time:")
         print(f"  average: {np.mean(self.busy_count_list):.2f}")
         print(f"  min:     {np.min(self.busy_count_list):.0f}")
