@@ -1024,7 +1024,7 @@ impl PauliProductDAG {
                 uncommuted_noncliffords.len()
             );
         }
-        println!("\x08\x08\x08{}%", 100);
+        print!("\x08\x08\x08\x08\x08{:4.1}%\n", 100.0);
         println!(
             "There were {} steps in {} calls to update the topological order",
             self.topo_steps, self.update_topo_calls
