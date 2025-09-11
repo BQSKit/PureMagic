@@ -244,7 +244,7 @@ class TopoGraph(nx.Graph):
             self.shuffle_qubits()
 
     @timer
-    def plot(self, fname_added="", pauli_product_paths=[], title_str=""):
+    def plot(self, fname_added="", pauli_product_paths=[], title_str="", node_labels=None):
         topo_fname = Path(self.args.circuit).stem + fname_added
         print(f"Plotting topology to {topo_fname}...")
         # print("Generated topology with", num_qubits, "data qubits and ")
@@ -260,11 +260,9 @@ class TopoGraph(nx.Graph):
         edge_width = [1] * self.number_of_edges()
         node_edge_colors = [bg_color] * self.number_of_nodes()
         node_line_widths = [1] * self.number_of_nodes()
-        node_labels = {}
-        for _, node in enumerate(self.nodes()):
-            if is_magic_node(node) and self.nodes[node]["busy_count"] > 0:
-                node_labels[node] = f"{self.nodes[node]["busy_count"]}"
-            else:
+        if node_labels is None:
+            node_labels = {}
+            for _, node in enumerate(self.nodes()):
                 node_labels[node] = node
         cmap = plt.get_cmap("hsv", len(pauli_product_paths) + 1)
         label_col = -1.5
