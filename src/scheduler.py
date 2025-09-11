@@ -407,6 +407,14 @@ class Scheduler:
                 f"Step: {num_steps}"
                 f"{[str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule]}"
             )
+            node_labels = {}
+            if path_dir is not None and num_steps > 0 and plot_steps > 0:
+                for _, node in enumerate(self.topo_graph.nodes()):
+                    if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
+                        node_labels[node] = f"{self.topo_graph.nodes[node]["busy_count"] - 1}"
+                    else:
+                        node_labels[node] = node
+
             title_str, pp_paths, to_schedule = self.schedule_timestep(num_steps, to_schedule)
             if pp_paths is None:
                 for node in self.topo_graph.nodes:
@@ -425,7 +433,7 @@ class Scheduler:
                 # don't plot too many steps
                 fname_added = "." + str(num_steps)
                 os.chdir(path_dir)
-                self.topo_graph.plot(fname_added, pp_paths, title_str)
+                self.topo_graph.plot(fname_added, pp_paths, title_str, node_labels)
                 os.chdir("..")
                 plot_steps -= 1
             if pp_paths is not None:
