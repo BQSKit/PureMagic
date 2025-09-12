@@ -70,14 +70,7 @@ class Scheduler:
         # that go from the data nodes outwards removed. This prevents trees that pass through the
         # data nodes, instead of just terminating at the data nodes
         dg = self.get_topo_digraph(g, root_node, ancilla_node, estabilizer_node)
-        try:
-            paths = nx.multi_source_dijkstra_path(dg, terminal_nodes)
-        except nx.NodeNotFound as err:
-            print(terminal_nodes)
-            for node in dg.nodes():
-                print(node, end=" ")
-            print("")
-            raise err
+        paths = nx.multi_source_dijkstra_path(dg, terminal_nodes)
 
         d_1 = {}
         s = {}
@@ -103,7 +96,7 @@ class Scheduler:
         G_2 = nx.minimum_spanning_edges(G_1_prime, data=True)
 
         G_3 = nx.Graph()
-        for u, v, d in G_2:
+        for u, v, _ in G_2:
             path = nx.shortest_path(dg, u, v, "weight")
             for n1, n2 in nx.utils.pairwise(path):
                 G_3.add_edge(n1, n2)
@@ -218,7 +211,7 @@ class Scheduler:
             node for node in g.nodes if is_magic_node(node) and g.nodes[node]["busy_count"] == 0
         ]
         if len(magic_nodes) == 0:
-            self.print_sched(f"Could not find magic node for terminals {terminal_nodes}")
+            # self.print_sched(f"Could not find magic node for terminals {terminal_nodes}")
             return None
         return self.find_best_starting_node(g, terminal_nodes, magic_nodes)
 
@@ -257,7 +250,7 @@ class Scheduler:
         if not pauli_product.is_clifford():
             root_node = self.find_best_magic_node(working_topo_graph, terminal_nodes)
             if root_node == None:
-                self.print_sched(f"Could not find magic root node for product {pauli_product}")
+                # self.print_sched(f"Could not find magic root node for product {pauli_product}")
                 return None
             terminal_nodes.insert(0, root_node)
         else:
@@ -269,7 +262,7 @@ class Scheduler:
                 # if there is more than one terminal, root node must be a bus node
                 root_node = self.find_best_bus_node(working_topo_graph, terminal_nodes)
                 if root_node is None:
-                    self.print_sched(f"Could not find bus root node for product {pauli_product}")
+                    # self.print_sched(f"Could not find bus root node for product {pauli_product}")
                     return None
                 terminal_nodes.insert(0, root_node)
 
@@ -277,7 +270,7 @@ class Scheduler:
         if pauli_product.num_ys > 0 and pauli_product.num_ys % 2 != 0:
             ancilla_node = self.find_best_ancilla_node(working_topo_graph, terminal_nodes)
             if ancilla_node == None:
-                self.print_sched(f"Could not find ancilla root node for product {pauli_product}")
+                # self.print_sched(f"Could not find ancilla root node for product {pauli_product}")
                 return None
             terminal_nodes.append(ancilla_node)
 
@@ -285,9 +278,9 @@ class Scheduler:
         if pauli_product.need_estabilizer:
             estabilizer_node = self.find_best_estabilizer_node(working_topo_graph, terminal_nodes)
             if estabilizer_node == None:
-                self.print_sched(
-                    f"Could not find estabilizer root node for product {pauli_product}"
-                )
+                # self.print_sched(
+                #    f"Could not find estabilizer root node for product {pauli_product}"
+                # )
                 return None
             terminal_nodes.append(estabilizer_node)
 
@@ -331,15 +324,18 @@ class Scheduler:
         return busy_count
 
     def schedule_timestep(self, step_i, to_schedule):
+        num_busy = 0
         for node in self.topo_graph.nodes:
             if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
                 self.topo_graph.nodes[node]["busy_count"] -= 1
+                if self.topo_graph.nodes[node]["busy_count"] > 0:
+                    num_busy += 1
         pp_paths = []
         working_topo_graph = copy.deepcopy(self.topo_graph)
         num_scheduled = 0
         num_bus_scheduled = 0
         num_data_scheduled = 0
-        num_magic_scheduled = 0
+        num_magic_scheduled = num_busy
         num_ancilla_scheduled = 0
         num_estabilizers_scheduled = 0
         num_dependent_nodes = 0
@@ -374,10 +370,10 @@ class Scheduler:
                         num_bus_scheduled += 1
                     elif is_magic_node(node):
                         self.topo_graph.nodes[node]["busy_count"] = self.gen_busy_count()
-                        self.print_sched(
-                            f"Busy count for node {node} is set to "
-                            f"{self.topo_graph.nodes[node]["busy_count"]}"
-                        )
+                        # self.print_sched(
+                        #    f"Busy count for node {node} is set to "
+                        #    f"{self.topo_graph.nodes[node]["busy_count"]}"
+                        # )
                         num_magic_scheduled += 1
                     elif is_data_node(node):
                         num_data_scheduled += 1
@@ -449,10 +445,10 @@ class Scheduler:
         for node in self.topo_graph.nodes():
             if is_magic_node(node):
                 self.topo_graph.nodes[node]["busy_count"] = self.gen_busy_count()
-                self.print_sched(
-                    f"Busy count for node {node} is set to "
-                    f"{self.topo_graph.nodes[node]["busy_count"]}"
-                )
+                # self.print_sched(
+                #    f"Busy count for node {node} is set to "
+                #    f"{self.topo_graph.nodes[node]["busy_count"]}"
+                # )
         to_schedule = []
         circuit = copy.deepcopy(real_circuit)
         for pp in circuit:
