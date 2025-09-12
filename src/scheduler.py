@@ -183,7 +183,7 @@ class Scheduler:
             for op in ops:
                 node = "d" + str(oi) + op.upper()
                 if node not in g:
-                    self.print_sched(f"Node {node} not in topo graph for finding terminal nodes")
+                    # self.print_sched(f"Node {node} not in topo graph for finding terminal nodes")
                     return []
                 terminal_nodes.append(node)
         return terminal_nodes
@@ -381,7 +381,6 @@ class Scheduler:
                         num_ancilla_scheduled += 1
                     elif is_estabilizer_node(node):
                         num_estabilizers_scheduled += 1
-
                 # now remove the Pauli product path from the graph
                 working_topo_graph.remove_nodes_from(pp_graph.nodes)
                 orphaned_nodes = []
@@ -420,7 +419,7 @@ class Scheduler:
             f"  estabilizer: {num_estabilizers_scheduled}/{self.topo_graph.num_estabilizer_qubits} "
             f"({frac_estabilizers:.2f})",
         )
-        # print("Removed", num_dependent_nodes, "dependent nodes", file=f)
+        self.print_sched(f"Removed {num_dependent_nodes} dependent nodes")
         self.sum_data_qubits += num_scheduled
         self.sum_bus_qubits += num_bus_scheduled
         self.sum_magic_qubits += num_magic_scheduled
@@ -433,7 +432,8 @@ class Scheduler:
                 f", bus {frac_bus:.2f}"  # , magic {frac_magic:.2f}, ancilla {frac_ancilla:.2f}"
             )
             return title_str, pp_paths, next_to_schedule
-        return None, None, next_to_schedule
+        else:
+            return None, None, next_to_schedule
 
     @timer
     def schedule_circuit(self, real_circuit):
