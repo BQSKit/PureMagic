@@ -54,6 +54,7 @@ class TopoGraph(nx.Graph):
         self.num_estabilizer_qubits = 0
         self.num_qubits = 0
 
+    @timer
     def set_topo(self, args, min_num_qubits, rng):
         self.args = args
         self.rng = rng
@@ -191,7 +192,6 @@ class TopoGraph(nx.Graph):
             qubit_map["dd" + str(i) + "Z"] = "d" + str(i) + "Z"
         nx.relabel_nodes(self, qubit_map, copy=False)
 
-    @timer
     def gen_topo(self):
         # add left edge bus column
         col = 0
