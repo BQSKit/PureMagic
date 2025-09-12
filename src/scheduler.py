@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python -u
 
 import os
+import sys
 import copy
 from pathlib import Path
 import numpy as np
@@ -11,6 +12,7 @@ with warnings.catch_warnings():
     import networkx as nx
 
 from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node, is_estabilizer_node
+from utils import timer
 
 
 class Scheduler:
@@ -115,6 +117,68 @@ class Scheduler:
             if is_data_node(node) and T.degree(node) > 1:
                 print("Failure in tree construction: data node", node, "has degree", T.degree(node))
         return T
+
+    def trim_dangling_nodes(self, g):
+        while True:
+            dangling_nodes = []
+            for node in g.nodes:
+                if is_bus_node(node) and g.degree(node) == 1:
+                    dangling_nodes.append(node)
+            if len(dangling_nodes) == 0:
+                break
+            g.remove_nodes_from(dangling_nodes)
+
+    def get_topo_subgraph(self, g, terminal_nodes, root_node, ancilla_node, estabilizer_node):
+        subg = copy.deepcopy(g)
+        nodes_to_remove = []
+        for node in subg.nodes():
+            if is_magic_node(node) and node != root_node:
+                nodes_to_remove.append(node)
+            elif is_ancilla_node(node) and node != ancilla_node:
+                nodes_to_remove.append(node)
+            elif is_estabilizer_node(node) and node != estabilizer_node:
+                nodes_to_remove.append(node)
+            elif is_data_node(node) and node not in terminal_nodes:
+                nodes_to_remove.append(node)
+        subg.remove_nodes_from(nodes_to_remove)
+        return subg
+
+    def get_bfs_schedule(
+        self, working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
+    ):
+        g = self.get_topo_subgraph(
+            working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
+        )
+        visited = {root_node}
+        num_found_terminals = 1
+        queue = [root_node]
+        pauli_product_graph = nx.Graph()
+        while len(queue):
+            node = queue.pop(0)
+            # self.print_sched(f"popped node {node}")
+            pauli_product_graph.add_node(node)
+            if is_data_node(root_node):
+                return pauli_product_graph
+            for nb in g[node]:
+                # self.print_sched(f"  visiting nb {nb}")
+                if nb in visited:
+                    # self.print_sched("  -> visited")
+                    continue
+                else:
+                    visited.add(nb)
+                    pauli_product_graph.add_edge(node, nb)
+                    # self.print_sched(f"  add edge {node}->{nb}")
+                    if is_bus_node(nb):
+                        # self.print_sched(f"  push bus node {nb}")
+                        queue.append(nb)
+                    else:
+                        num_found_terminals += 1
+                        # self.print_sched(f"  found terminal {nb} {num_found_terminals}")
+                        if num_found_terminals == len(terminal_nodes):
+                            self.trim_dangling_nodes(pauli_product_graph)
+                            # self.print_sched("  trimmed dangling nodes")
+                            return pauli_product_graph
+        return None
 
     def find_terminal_nodes(self, g, pauli_product):
         terminal_nodes = []
@@ -235,16 +299,26 @@ class Scheduler:
                     f"{terminal_node} for pp {pauli_product.get_product_str()}",
                 )
                 return None
-        self.print_sched(
-            f"Trying steiner tree from root {root_node} for {pauli_product}"
-            f", terminals {terminal_nodes}"
-        )
-        g = self.mehlhorn_steiner_tree(
-            working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
-        )
+        if self.args.use_steiner_trees:
+            self.print_sched(
+                f"Trying steiner tree from root {root_node} for {pauli_product}"
+                f", terminals {terminal_nodes}"
+            )
+            g = self.mehlhorn_steiner_tree(
+                working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
+            )
+        else:
+            self.print_sched(
+                f"Trying BFS from root {root_node} for {pauli_product}"
+                f", terminals {terminal_nodes}"
+            )
+            g = self.get_bfs_schedule(
+                working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
+            )
+
         if not all([node in g for node in terminal_nodes]):
             self.print_sched(
-                f"Steiner tree: no path from root node {root_node} to terminal node for pp"
+                f"No path from root node {root_node} to terminal node for pp"
                 f" {pauli_product.get_product_str()}",
             )
             return None
@@ -365,6 +439,7 @@ class Scheduler:
             return title_str, pp_paths, next_to_schedule
         return None, None, next_to_schedule
 
+    @timer
     def schedule_circuit(self, real_circuit):
         global sched_file
         if self.args.log_scheduler:
