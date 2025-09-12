@@ -63,7 +63,8 @@ class TopoGraph(nx.Graph):
         # print(f"patch rows {patch_rows}, bus rows {bus_rows}")
         qubits_per_col = 2 * patch_rows
         num_data_cols = int(np.ceil(min_num_qubits / qubits_per_col))
-        self.num_cols = 2 * num_data_cols + 1
+        # a bus column on both sides of the data columns plus 2 extra for side columns for magic
+        self.num_cols = 2 * num_data_cols + 3
         # 2 rows for magic, 2 per patch row, rows for bus qubits
         self.num_rows = 2 + 2 * patch_rows + bus_rows
         if self.num_cols > 0 and self.num_rows > 0:
@@ -85,20 +86,7 @@ class TopoGraph(nx.Graph):
             print(f"  total:        {self.num_qubits}")
 
     def is_magic_column(self, col):
-        return col % 2 != 1
-
-    def gen_magic_columns(self):
-        for col in range(self.num_cols):
-            if not self.is_magic_column(col):
-                continue
-            node_label = self.add_labeled_node("m", col, 0)
-            self.add_edge(node_label, get_node_label("b", col, 1))
-            for row in range(1, self.num_rows - 2):
-                node_label = self.add_labeled_node("b", col, row)
-                self.add_edge(node_label, get_node_label("b", col, row + 1))
-            prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
-            node_label = self.add_labeled_node("m", col, self.num_rows - 1)
-            self.add_edge(node_label, prev_node_label, other="")
+        return col % 2 == 1
 
     def add_labeled_node(self, label, col, row):
         node_colors = {
@@ -112,8 +100,7 @@ class TopoGraph(nx.Graph):
         self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
         if is_magic_node(node_label):
             self.nodes[node_label]["busy_count"] = 0
-        if label == "e":
-            print(f"added node {node_label} {self.nodes[node_label]}")
+        # print(f"{node_label} at {self.nodes[node_label]["pos"]}")
         return node_label
 
     def add_bus_qubit(self, col, row):
@@ -144,12 +131,14 @@ class TopoGraph(nx.Graph):
             color="#9999FF",
             other=other,
         )
+        # print(f"{node_label1} at {self.nodes[node_label1]["pos"]}")
         self.add_node(
             node_label2,
             pos=[float(col) + 0.25, self.num_rows - 1 - row],
             color="#9999FF",
             other=other,
         )
+        # print(f"{node_label2} at {self.nodes[node_label2]["pos"]}")
         self.add_edge(get_node_label("b", col - 1, row), node_label1)
         self.add_edge(get_node_label("b", col + 1, row), node_label2)
 
@@ -204,30 +193,58 @@ class TopoGraph(nx.Graph):
 
     @timer
     def gen_topo(self):
-        self.gen_magic_columns()
+        # add left edge bus column
+        col = 0
+        # print(f"Adding bus col {col}")
+        for row in range(1, self.num_rows - 1):
+            node_label = self.add_labeled_node("m", col, row)
+            self.add_edge(node_label, get_node_label("b", col + 1, row))
+            # if row < self.num_rows - 2:
+            #    self.add_edge(node_label, get_node_label("b", col, row + 1))
+
         qi = 0
         spacing = 3
-        for col in range(1, self.num_cols, 1):
+        for col in range(1, self.num_cols - 1):
             if self.is_magic_column(col):
-                continue
-            bus_rows = 0
-            data_rows = 0
-            for row in range(0, self.num_rows):
-                offset = row - 1
-                if row == 0 or row == self.num_rows - 1:
-                    if not self.is_magic_column(col):
-                        if col % 4 - 1 == 0:
-                            self.add_ancilla_qubit(col, row)
-                        else:
-                            self.add_estabilizer_qubit(col, row)
-                elif row == self.num_rows - 1 or offset % spacing == 0:
-                    if not self.is_magic_column(col) or (row != 0 and row == self.num_rows - 1):
-                        self.add_bus_qubit(col, row)
-                        bus_rows += 1
-                else:
-                    self.add_data_qubit(qi, col, row, "X" if data_rows % 2 == 0 else "Z")
-                    qi += 2
-                    data_rows += 1
+                # print(f"Adding magic col {col}")
+                node_label = self.add_labeled_node("m", col, 0)
+                self.add_edge(node_label, get_node_label("b", col, 1))
+                for row in range(1, self.num_rows - 2):
+                    node_label = self.add_labeled_node("b", col, row)
+                    self.add_edge(node_label, get_node_label("b", col, row + 1))
+                prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
+                node_label = self.add_labeled_node("m", col, self.num_rows - 1)
+                self.add_edge(node_label, prev_node_label, other="")
+            else:
+                # print(f"Adding data col {col}")
+                bus_rows = 0
+                data_rows = 0
+                for row in range(0, self.num_rows):
+                    offset = row - 1
+                    if row == 0 or row == self.num_rows - 1:
+                        if not self.is_magic_column(col):
+                            if col % 4 == 0:
+                                self.add_ancilla_qubit(col, row)
+                            else:
+                                self.add_estabilizer_qubit(col, row)
+                    elif row == self.num_rows - 1 or offset % spacing == 0:
+                        if not self.is_magic_column(col) or (row != 0 and row == self.num_rows - 1):
+                            self.add_bus_qubit(col, row)
+                            bus_rows += 1
+                    else:
+                        self.add_data_qubit(qi, col, row, "X" if data_rows % 2 == 0 else "Z")
+                        qi += 2
+                        data_rows += 1
+
+        # add right edge bus column
+        last_col = self.num_cols - 1
+        # print(f"Adding bus col {last_col}")
+        for row in range(1, self.num_rows - 1):
+            node_label = self.add_labeled_node("m", last_col, row)
+            self.add_edge(node_label, get_node_label("b", last_col - 1, row))
+            # if row < self.num_rows - 2:
+            #    self.add_edge(node_label, get_node_label("b", last_col, row + 1))
+
         self.num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
         self.num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
         self.num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
@@ -256,7 +273,8 @@ class TopoGraph(nx.Graph):
         node_pos = nx.get_node_attributes(self, "pos")
         node_colors = nx.get_node_attributes(self, "color").values()
         edge_labels = nx.get_edge_attributes(self, "label")
-        edge_colors = [bg_color] * self.number_of_edges()
+        # edge_colors = [bg_color] * self.number_of_edges()
+        edge_colors = ["#999999"] * self.number_of_edges()
         edge_width = [1] * self.number_of_edges()
         node_edge_colors = [bg_color] * self.number_of_nodes()
         node_line_widths = [1] * self.number_of_nodes()
@@ -283,18 +301,17 @@ class TopoGraph(nx.Graph):
                         root_node = node
             if root_node != None:
                 col, row = root_node[1:].split("-")
-                if row == "0":
-                    row = float(self.num_rows) - 0.5
-                else:
-                    row = -0.5
-                col = float(col)
-                row = float(row)
-                col = float(col) - 0.2
+                col = int(col)
+                row = int(row)
+                if row == 0:
+                    row -= 0.9
+                row = float(self.num_rows) - row - 1.5
+                col = float(col) - 0.1
             else:
                 col = label_col
                 row = label_row
                 label_row -= 0.35
-            t = plt.text(col, row, pauli_product.get_product_str(), color="black")
+            t = plt.text(col, row, pauli_product.get_product_str(), color="black", fontsize=11)
             t.set_bbox(dict(facecolor=cmap(pi), alpha=0.2, edgecolor=cmap(pi)))
         for row in range(self.num_rows + 1):
             plt.axhline(
@@ -317,21 +334,26 @@ class TopoGraph(nx.Graph):
                 alpha=0.5,
             )
         plt.plot(0, 0, 1, 1, ls="-", c="black", lw=10)
-        nx.draw_networkx(
-            self,
-            pos=node_pos,
-            node_size=1000,
-            node_color=node_colors,
-            font_size=10,
-            edge_color=edge_colors,
-            width=edge_width,
-            edgecolors=node_edge_colors,
-            linewidths=node_line_widths,
-            labels=node_labels,
-            connectionstyle="angle3,angleA=90,angleB=0",
-            arrows=True,
-        )
-        nx.draw_networkx_edge_labels(self, node_pos, edge_labels, rotate=False)
+        try:
+            nx.draw_networkx(
+                self,
+                pos=node_pos,
+                node_size=1000,
+                node_color=node_colors,
+                font_size=10,
+                edge_color=edge_colors,
+                width=edge_width,
+                edgecolors=node_edge_colors,
+                linewidths=node_line_widths,
+                labels=node_labels,
+                connectionstyle="angle3,angleA=90,angleB=0",
+                arrows=True,
+            )
+            nx.draw_networkx_edge_labels(self, node_pos, edge_labels, rotate=False)
+        except nx.NetworkXError as err:
+            # for node in self.nodes():
+            #    print(f"{node} {self.nodes[node]}")
+            raise err
         plt.box(False)
         plt.title(title_str).set_fontsize(6 * math.sqrt(self.num_rows))
         plt.tight_layout()
