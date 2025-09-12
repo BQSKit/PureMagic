@@ -37,27 +37,56 @@ class RealCircuit(list):
 
     def get_layers(self):
         layer_i = 0
-        nodes_used = set()
-        nodes_left = set()
-        for node in self:
-            nodes_left.add(node.id)
+        pps_used = set()
+        pps_left = set()
+        for pp in self:
+            pps_left.add(pp.id)
         layers = []
-        while nodes_left:
+        while pps_left:
             layer = []
-            nodes_left_copy = nodes_left.copy()
-            nodes_used_copy = nodes_used.copy()
-            for node_id in nodes_left_copy:
-                node = self[node_id]
-                for parent in node.parents:
-                    if parent not in nodes_used_copy:
+            pps_left_copy = pps_left.copy()
+            pps_used_copy = pps_used.copy()
+            for pp_id in pps_left_copy:
+                pp = self[pp_id]
+                for parent in pp.parents:
+                    if parent not in pps_used_copy:
                         break
                 else:
-                    layer.append(node)
-                    nodes_used.add(node.id)
-                    nodes_left.remove(node.id)
+                    layer.append(pp)
+                    pps_used.add(pp.id)
+                    pps_left.remove(pp.id)
             layer_i += 1
             layers.append(layer)
         return layers
+
+    def get_statistics(self):
+        layers = self.get_layers()
+        num_noncliffords = [0] * len(layers)
+        num_odd_ys = [0] * len(layers)
+        num_ys = [0] * len(layers)
+        num_nonclifford_layers = 0
+        for i, layer in enumerate(layers):
+            nonclifford_layer = False
+            for pp in layer:
+                if not pp.is_clifford():
+                    num_noncliffords[i] += 1
+                    nonclifford_layer = True
+                if pp.num_ys > 0:
+                    num_ys[i] += 1
+                    if pp.num_ys % 2 == 1:
+                        num_odd_ys[i] += 1
+            if nonclifford_layer:
+                num_nonclifford_layers += 1
+        return (
+            len(layers),
+            max(num_noncliffords),
+            np.mean(num_noncliffords),
+            max(num_odd_ys),
+            np.mean(num_odd_ys),
+            max(num_ys),
+            np.mean(num_ys),
+            num_nonclifford_layers,
+        )
 
     def check_clifford_relations(self):
         for node in self:

@@ -58,6 +58,22 @@ def main():
     circuit = realcircuit.RealCircuit(args)
     circuit.split_ys()
     circuit.check_clifford_relations()
+    (
+        num_layers,
+        max_noncliffords,
+        avg_noncliffords,
+        max_odd_ys,
+        avg_odd_ys,
+        max_ys,
+        avg_ys,
+        num_nonclifford_layers,
+    ) = circuit.get_statistics()
+    print("Circuit statistics:")
+    print(f"  Layers:                  {num_layers}")
+    print(f"  Non-clifford layers:     {num_nonclifford_layers}")
+    print(f"  Non-cliffords per layer: {avg_noncliffords:.2f} avg, {max_noncliffords} max")
+    print(f"  Odd Ys per layer:        {avg_odd_ys:.2f} avg, {max_odd_ys} max")
+    print(f"  Ys per layer:            {avg_ys:.2f} avg, {max_ys} max")
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:
@@ -74,7 +90,6 @@ def main():
         f"Scheduled {num_scheduled} in {tot_num_steps} time steps ({speedup:.3f} speedup) "
         f"qubit cost {qubit_cost}"
     )
-    num_layers = len(circuit.get_layers())
     speedup = float(num_scheduled) / num_layers
     opt_qubit_cost = topo_graph.num_qubits * num_layers
     print(
