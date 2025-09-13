@@ -139,13 +139,15 @@ class TopoGraph(nx.Graph):
         node_grid[0][row] = self.add_labeled_node("b", 0, row)
         node_grid[self.num_cols - 1][row] = self.add_labeled_node("b", self.num_cols - 1, row)
         for col in range(1, self.num_cols - 1):
-            if col % 2 == 1:
+            if self.num_cols > 9:
                 node_grid[col][row] = self.add_labeled_node("m", col, row)
-            elif col % 4 == 0:
-                node_grid[col][row] = self.add_labeled_node("a", col, row)
             else:
-                # node_grid[col][row] = self.add_labeled_node("e", col, row)
-                node_grid[col][row] = self.add_labeled_node("m", col, row)
+                if col % 2 == 1:
+                    node_grid[col][row] = self.add_labeled_node("m", col, row)
+                elif col % 4 == 0:
+                    node_grid[col][row] = self.add_labeled_node("a", col, row)
+                else:
+                    node_grid[col][row] = self.add_labeled_node("m", col, row)
 
     def add_border_column(self, col, node_grid):
         for row in range(1, self.num_rows - 1):
@@ -178,7 +180,10 @@ class TopoGraph(nx.Graph):
                 for row in range(1, self.num_rows - 1):
                     if row % 3 + 1 == 2:
                         if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
-                            node_grid[col][row] = self.add_labeled_node("e", col, row)
+                            if self.num_cols <= 9 or col % 8 == 0:
+                                node_grid[col][row] = self.add_labeled_node("e", col, row)
+                            else:
+                                node_grid[col][row] = self.add_labeled_node("a", col, row)
                         else:
                             node_grid[col][row] = self.add_labeled_node("b", col, row)
                     else:
