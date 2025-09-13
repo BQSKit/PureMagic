@@ -534,9 +534,9 @@ class Scheduler:
         print(f"  magic:       {magic_frac:.3f}")
         print(f"  ancilla:     {ancilla_frac:.3f}")
         print(f"  estabilizer: {estabilizer_frac:.3f}")
-        print(f"  overall:     {overall_frac:.3f}")
+        # print(f"  overall:     {overall_frac:.3f}")
         print("Magic state cultivation time:")
         print(f"  average: {np.mean(self.busy_count_list):.2f}")
         print(f"  min:     {np.min(self.busy_count_list):.0f}")
         print(f"  max:     {np.max(self.busy_count_list):.0f}")
-        return num_steps, len(scheduled)
+        return num_steps, len(scheduled), overall_frac
