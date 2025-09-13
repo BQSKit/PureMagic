@@ -83,7 +83,7 @@ def main():
     if "topo" in args.plot:
         topo_graph.plot(".topo")
     single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
-    tot_num_steps, num_scheduled = single_scheduler.schedule_circuit(circuit)
+    tot_num_steps, num_scheduled, space_utilization = single_scheduler.schedule_circuit(circuit)
     speedup = float(num_scheduled) / tot_num_steps
     qubit_cost = topo_graph.num_qubits * tot_num_steps
     print(
@@ -95,7 +95,8 @@ def main():
     print(
         f"Optimal time steps {num_layers} ({speedup:.3f} speedup) " f"qubit cost {opt_qubit_cost}"
     )
-    print(f"Scheduling efficiency {(float(opt_qubit_cost) / qubit_cost):.3f}")
+    print(f"Scheduling time efficiency {(float(opt_qubit_cost) / qubit_cost):.3f}")
+    print(f"Scheduling space efficiency {space_utilization:.3f}")
 
 
 if __name__ == "__main__":
