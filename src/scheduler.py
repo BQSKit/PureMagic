@@ -309,7 +309,7 @@ class Scheduler:
                 working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
             )
 
-        if not all([node in g for node in terminal_nodes]):
+        if g is None or not all([node in g for node in terminal_nodes]):
             self.print_sched(
                 f"No path from root node {root_node} to terminal node for pp"
                 f" {pauli_product.get_product_str()}",

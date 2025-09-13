@@ -69,107 +69,20 @@ class TopoGraph(nx.Graph):
         # 2 rows for magic, 2 per patch row, rows for bus qubits
         self.num_rows = 2 + 2 * patch_rows + bus_rows
         if self.num_cols > 0 and self.num_rows > 0:
+            print("Layout dimensions:", self.num_cols, self.num_rows)
             self.gen_topo()
             frac_data = float(self.num_data_qubits) / self.num_qubits
             frac_bus = float(self.num_bus_qubits) / self.num_qubits
             frac_magic = float(self.num_magic_qubits) / self.num_qubits
             frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
             frac_estabilizer = float(self.num_estabilizer_qubits) / self.num_qubits
-            if self.num_data_qubits != min_num_qubits:
-                print(f"Adjusted data qubits from {min_num_qubits} to {self.num_data_qubits}")
-            print("Layout dimensions:", self.num_cols, self.num_rows)
             print("Number of qubits:")
             print(f"  data:         {self.num_data_qubits} ({frac_data:.3f})")
             print(f"  bus:          {self.num_bus_qubits} ({frac_bus:.3f})")
             print(f"  magic:        {self.num_magic_qubits} ({frac_magic:.3f})")
             print(f"  ancilla:      {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
-            print(f"  e-stabilizer: {self.num_estabilizer_qubits} ({frac_ancilla:.3f})")
+            print(f"  e-stabilizer: {self.num_estabilizer_qubits} ({frac_estabilizer:.3f})")
             print(f"  total:        {self.num_qubits}")
-
-    def is_magic_column(self, col):
-        return col % 2 == 1
-
-    def add_labeled_node(self, label, col, row):
-        node_colors = {
-            "m": "#FFBB99",
-            "b": "#aaaaaa",
-            "d": "#9999FF",
-            "a": "#FF88AA",
-            "e": "#99CC99",
-        }
-        node_label = get_node_label(label, col, row)
-        self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
-        if is_magic_node(node_label):
-            self.nodes[node_label]["busy_count"] = 0
-        # print(f"{node_label} at {self.nodes[node_label]["pos"]}")
-        return node_label
-
-    def add_bus_qubit(self, col, row):
-        node_label = self.add_labeled_node("b", col, row)
-        if col > 0:
-            ch = (
-                "m"
-                if self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)
-                else "b"
-            )
-            self.add_edge(node_label, get_node_label(ch, col - 1, row))
-        if col < self.num_cols - 1:
-            ch = (
-                "m"
-                if self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)
-                else "b"
-            )
-            self.add_edge(node_label, get_node_label(ch, col + 1, row))
-
-    def add_data_qubit(self, qi, col, row, op):
-        q = int(qi / 2) if op.upper() == "X" else int(qi / 2) - 1
-        node_label1 = "d" + str(q) + op
-        node_label2 = "d" + str(q + 1) + op
-        other = None
-        self.add_node(
-            node_label1,
-            pos=[float(col) - 0.25, self.num_rows - 1 - row],
-            color="#9999FF",
-            other=other,
-        )
-        # print(f"{node_label1} at {self.nodes[node_label1]["pos"]}")
-        self.add_node(
-            node_label2,
-            pos=[float(col) + 0.25, self.num_rows - 1 - row],
-            color="#9999FF",
-            other=other,
-        )
-        # print(f"{node_label2} at {self.nodes[node_label2]["pos"]}")
-        self.add_edge(get_node_label("b", col - 1, row), node_label1)
-        self.add_edge(get_node_label("b", col + 1, row), node_label2)
-
-    def add_ancilla_qubit(self, col, row):
-        node_label = self.add_labeled_node("a", col, row)
-        if col > 0:
-            if not (self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)):
-                self.add_edge(node_label, get_node_label("b", col - 1, row))
-        if col < self.num_cols - 1:
-            if not (self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)):
-                self.add_edge(node_label, get_node_label("b", col + 1, row))
-        # assume fixed ancilla in first and last row
-        if row == 0:
-            self.add_edge(node_label, get_node_label("b", col, row + 1))
-        elif row == self.num_rows - 1:
-            self.add_edge(node_label, get_node_label("b", col, row - 1))
-
-    def add_estabilizer_qubit(self, col, row):
-        node_label = self.add_labeled_node("e", col, row)
-        if col > 0:
-            if not (self.is_magic_column(col - 1) and (row == 0 or row == self.num_rows - 1)):
-                self.add_edge(node_label, get_node_label("b", col - 1, row))
-        if col < self.num_cols - 1:
-            if not (self.is_magic_column(col + 1) and (row == 0 or row == self.num_rows - 1)):
-                self.add_edge(node_label, get_node_label("b", col + 1, row))
-        # assume fixed ancilla in first and last row
-        if row == 0:
-            self.add_edge(node_label, get_node_label("b", col, row + 1))
-        elif row == self.num_rows - 1:
-            self.add_edge(node_label, get_node_label("b", col, row - 1))
 
     def shuffle_qubits(self):
         qubit_order = list(range(self.num_data_qubits))
@@ -192,59 +105,91 @@ class TopoGraph(nx.Graph):
             qubit_map["dd" + str(i) + "Z"] = "d" + str(i) + "Z"
         nx.relabel_nodes(self, qubit_map, copy=False)
 
-    def gen_topo(self):
-        # add left edge bus column
-        col = 0
-        # print(f"Adding bus col {col}")
-        for row in range(1, self.num_rows - 1):
-            node_label = self.add_labeled_node("m", col, row)
-            self.add_edge(node_label, get_node_label("b", col + 1, row))
-            # if row < self.num_rows - 2:
-            #    self.add_edge(node_label, get_node_label("b", col, row + 1))
+    def add_labeled_node(self, label, col, row):
+        node_colors = {
+            "m": "#FFBB99",
+            "b": "#aaaaaa",
+            "d": "#9999FF",
+            "a": "#FF88AA",
+            "e": "#99CC99",
+        }
+        node_label = get_node_label(label, col, row)
+        self.add_node(node_label, pos=[col, self.num_rows - 1 - row], color=node_colors[label])
+        if is_magic_node(node_label):
+            self.nodes[node_label]["busy_count"] = 0
+        return node_label
 
-        qi = 0
-        spacing = 3
+    def add_data_qubit(self, qi, col, row, op, node_grid):
+        q = int(qi / 2) if op == "X" else int(qi / 2) - 1
+        node_label1 = "d" + str(q) + op
+        node_label2 = "d" + str(q + 1) + op
+        self.add_node(
+            node_label1,
+            pos=[float(col) - 0.25, self.num_rows - 1 - row],
+            color="#9999FF",
+        )
+        self.add_node(
+            node_label2,
+            pos=[float(col) + 0.25, self.num_rows - 1 - row],
+            color="#9999FF",
+        )
+        node_grid[col][row] = f"d{str(q)}/{str(q+1)}{op}"
+
+    def add_border_row(self, row, node_grid):
+        node_grid[0][row] = self.add_labeled_node("b", 0, row)
+        node_grid[self.num_cols - 1][row] = self.add_labeled_node("b", self.num_cols - 1, row)
         for col in range(1, self.num_cols - 1):
-            if self.is_magic_column(col):
-                # print(f"Adding magic col {col}")
-                node_label = self.add_labeled_node("m", col, 0)
-                self.add_edge(node_label, get_node_label("b", col, 1))
-                for row in range(1, self.num_rows - 2):
-                    node_label = self.add_labeled_node("b", col, row)
-                    self.add_edge(node_label, get_node_label("b", col, row + 1))
-                prev_node_label = self.add_labeled_node("b", col, self.num_rows - 2)
-                node_label = self.add_labeled_node("m", col, self.num_rows - 1)
-                self.add_edge(node_label, prev_node_label, other="")
+            if col % 2 == 1:
+                node_grid[col][row] = self.add_labeled_node("m", col, row)
+            elif col % 4 == 0:
+                node_grid[col][row] = self.add_labeled_node("a", col, row)
             else:
-                # print(f"Adding data col {col}")
-                bus_rows = 0
-                data_rows = 0
-                for row in range(0, self.num_rows):
-                    offset = row - 1
-                    if row == 0 or row == self.num_rows - 1:
-                        if not self.is_magic_column(col):
-                            if col % 4 == 0:
-                                self.add_ancilla_qubit(col, row)
-                            else:
-                                self.add_estabilizer_qubit(col, row)
-                    elif row == self.num_rows - 1 or offset % spacing == 0:
-                        if not self.is_magic_column(col) or (row != 0 and row == self.num_rows - 1):
-                            self.add_bus_qubit(col, row)
-                            bus_rows += 1
-                    else:
-                        self.add_data_qubit(qi, col, row, "X" if data_rows % 2 == 0 else "Z")
-                        qi += 2
-                        data_rows += 1
+                node_grid[col][row] = self.add_labeled_node("e", col, row)
 
-        # add right edge bus column
-        last_col = self.num_cols - 1
-        # print(f"Adding bus col {last_col}")
+    def add_border_column(self, col, node_grid):
         for row in range(1, self.num_rows - 1):
-            node_label = self.add_labeled_node("m", last_col, row)
-            self.add_edge(node_label, get_node_label("b", last_col - 1, row))
-            # if row < self.num_rows - 2:
-            #    self.add_edge(node_label, get_node_label("b", last_col, row + 1))
+            node_grid[col][row] = self.add_labeled_node("m", col, row)
 
+    def link_nbs(self, node1, node2):
+        if is_magic_node(node1) and is_magic_node(node2):
+            return
+        if is_data_node(node1):
+            node1_left, node1_right = node1.split("/")
+            node1 = node1_left + node1_right[-1]
+        elif is_data_node(node2):
+            _, node2_right = node2.split("/")
+            node2 = "d" + node2_right
+        self.add_edge(node1, node2)
+
+    def gen_topo(self):
+        # first add all the nodes
+        node_grid = [[]] * self.num_cols
+        for i in range(len(node_grid)):
+            node_grid[i] = [""] * self.num_rows
+        # add top row
+        self.add_border_row(0, node_grid)
+        # add left edge column
+        self.add_border_column(0, node_grid)
+        # add center nodes
+        qi = 0
+        for col in range(1, self.num_cols - 1):
+            if col % 2 == 0:  # data column
+                for row in range(1, self.num_rows - 1):
+                    if row % 3 + 1 == 2:
+                        node_grid[col][row] = self.add_labeled_node("b", col, row)
+                    else:
+                        self.add_data_qubit(
+                            qi, col, row, "X" if row % 3 + 1 == 3 else "Z", node_grid
+                        )
+                        qi += 2
+            else:  # bus column
+                for row in range(1, self.num_rows - 1):
+                    node_grid[col][row] = self.add_labeled_node("b", col, row)
+        # add right edge column
+        self.add_border_column(self.num_cols - 1, node_grid)
+        # add bottom row
+        self.add_border_row(self.num_rows - 1, node_grid)
+        # summary statistics
         self.num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
         self.num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
         self.num_bus_qubits = sum([is_bus_node(node) for node in self.nodes])
@@ -257,6 +202,23 @@ class TopoGraph(nx.Graph):
             + self.num_ancilla_qubits
             + self.num_estabilizer_qubits
         )
+        # now add all the edges
+        print("Topology:")
+        for row in range(0, self.num_rows):
+            print("  ", end="")
+            for col in range(0, self.num_cols):
+                node = node_grid[col][row]
+                if self.num_data_qubits <= 100:
+                    print(f"{node:8}", end=" ")
+                else:
+                    print(f"{node:9}", end=" ")
+                if col > 0:
+                    self.link_nbs(node, node_grid[col - 1][row])
+                nb_node = node_grid[col][row - 1]
+                if row > 0 and not is_data_node(node) and not is_data_node(nb_node):
+                    self.link_nbs(node, nb_node)
+            print("")
+
         if self.args.rnd_order:
             self.shuffle_qubits()
 
