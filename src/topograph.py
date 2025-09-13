@@ -144,7 +144,8 @@ class TopoGraph(nx.Graph):
             elif col % 4 == 0:
                 node_grid[col][row] = self.add_labeled_node("a", col, row)
             else:
-                node_grid[col][row] = self.add_labeled_node("e", col, row)
+                # node_grid[col][row] = self.add_labeled_node("e", col, row)
+                node_grid[col][row] = self.add_labeled_node("m", col, row)
 
     def add_border_column(self, col, node_grid):
         for row in range(1, self.num_rows - 1):
@@ -176,7 +177,10 @@ class TopoGraph(nx.Graph):
             if col % 2 == 0:  # data column
                 for row in range(1, self.num_rows - 1):
                     if row % 3 + 1 == 2:
-                        node_grid[col][row] = self.add_labeled_node("b", col, row)
+                        if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
+                            node_grid[col][row] = self.add_labeled_node("e", col, row)
+                        else:
+                            node_grid[col][row] = self.add_labeled_node("b", col, row)
                     else:
                         self.add_data_qubit(
                             qi, col, row, "X" if row % 3 + 1 == 3 else "Z", node_grid

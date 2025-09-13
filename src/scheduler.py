@@ -142,35 +142,35 @@ class Scheduler:
         g = self.get_topo_subgraph(
             working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
         )
-        visited = {root_node}
+        visited = set([root_node])
+        # need to keep track of whether we have visited the estabilizer because we visit it twice
+        visited_estabilizer_again = False
         num_found_terminals = 1
         queue = [root_node]
         pauli_product_graph = nx.Graph()
         while len(queue):
             node = queue.pop(0)
-            # self.print_sched(f"popped node {node}")
             pauli_product_graph.add_node(node)
             if is_data_node(root_node):
                 return pauli_product_graph
             for nb in g[node]:
-                # self.print_sched(f"  visiting nb {nb}")
                 if nb in visited:
-                    # self.print_sched("  -> visited")
-                    continue
-                else:
-                    visited.add(nb)
-                    pauli_product_graph.add_edge(node, nb)
-                    # self.print_sched(f"  add edge {node}->{nb}")
-                    if is_bus_node(nb):
-                        # self.print_sched(f"  push bus node {nb}")
-                        queue.append(nb)
+                    if not is_estabilizer_node(nb):
+                        continue
+                    elif visited_estabilizer_again:
+                        continue
                     else:
-                        num_found_terminals += 1
-                        # self.print_sched(f"  found terminal {nb} {num_found_terminals}")
-                        if num_found_terminals == len(terminal_nodes):
-                            self.trim_dangling_nodes(pauli_product_graph)
-                            # self.print_sched("  trimmed dangling nodes")
-                            return pauli_product_graph
+                        visited_estabilizer_again = True
+                visited.add(nb)
+                pauli_product_graph.add_edge(node, nb)
+                # if is_bus_node(nb) or is_estabilizer_node(node):
+                if is_bus_node(nb):
+                    queue.append(nb)
+                else:
+                    num_found_terminals += 1
+                    if num_found_terminals == len(terminal_nodes):
+                        self.trim_dangling_nodes(pauli_product_graph)
+                        return pauli_product_graph
         return None
 
     def find_terminal_nodes(self, g, pauli_product):
@@ -183,7 +183,6 @@ class Scheduler:
             for op in ops:
                 node = "d" + str(oi) + op.upper()
                 if node not in g:
-                    # self.print_sched(f"Node {node} not in topo graph for finding terminal nodes")
                     return []
                 terminal_nodes.append(node)
         return terminal_nodes
@@ -211,7 +210,6 @@ class Scheduler:
             node for node in g.nodes if is_magic_node(node) and g.nodes[node]["busy_count"] == 0
         ]
         if len(magic_nodes) == 0:
-            # self.print_sched(f"Could not find magic node for terminals {terminal_nodes}")
             return None
         return self.find_best_starting_node(g, terminal_nodes, magic_nodes)
 
@@ -250,7 +248,6 @@ class Scheduler:
         if not pauli_product.is_clifford():
             root_node = self.find_best_magic_node(working_topo_graph, terminal_nodes)
             if root_node == None:
-                # self.print_sched(f"Could not find magic root node for product {pauli_product}")
                 return None
             terminal_nodes.insert(0, root_node)
         else:
@@ -262,7 +259,6 @@ class Scheduler:
                 # if there is more than one terminal, root node must be a bus node
                 root_node = self.find_best_bus_node(working_topo_graph, terminal_nodes)
                 if root_node is None:
-                    # self.print_sched(f"Could not find bus root node for product {pauli_product}")
                     return None
                 terminal_nodes.insert(0, root_node)
 
@@ -270,7 +266,6 @@ class Scheduler:
         if pauli_product.num_ys > 0 and pauli_product.num_ys % 2 != 0:
             ancilla_node = self.find_best_ancilla_node(working_topo_graph, terminal_nodes)
             if ancilla_node == None:
-                # self.print_sched(f"Could not find ancilla root node for product {pauli_product}")
                 return None
             terminal_nodes.append(ancilla_node)
 
@@ -278,10 +273,9 @@ class Scheduler:
         if pauli_product.need_estabilizer:
             estabilizer_node = self.find_best_estabilizer_node(working_topo_graph, terminal_nodes)
             if estabilizer_node == None:
-                # self.print_sched(
-                #    f"Could not find estabilizer root node for product {pauli_product}"
-                # )
                 return None
+            terminal_nodes.append(estabilizer_node)
+            # append a second time to force a path through the estabilizer
             terminal_nodes.append(estabilizer_node)
 
         # check path exists from root node to all other terminals
@@ -461,7 +455,7 @@ class Scheduler:
         if "paths" in self.args.plot:
             path_dir = Path(self.args.circuit).stem + ".paths"
             Path(path_dir).mkdir(exist_ok=True)
-            plot_steps = 100
+            plot_steps = 50
         total_to_schedule = len(real_circuit)
         prev_perc_complete = 0
         print(f"Scheduling {total_to_schedule} products:    ", end="")
@@ -520,12 +514,27 @@ class Scheduler:
         estabilizer_frac = float(self.sum_estabilizer_qubits) / (
             self.topo_graph.num_estabilizer_qubits * num_steps
         )
-        print("\nOverall qubit fractions used:")
-        print(f"  data:    {data_frac:.3f}")
-        print(f"  bus:     {bus_frac:.3f}")
-        print(f"  magic:   {magic_frac:.3f}")
-        print(f"  ancilla: {ancilla_frac:.3f}")
+        overall_frac = (
+            float(
+                # we always need all the data qubits, even if they don't get fully utilized
+                self.topo_graph.num_data_qubits * num_steps
+                # self.sum_data_qubits
+                + self.sum_bus_qubits
+                + self.sum_magic_qubits
+                + self.sum_ancilla_qubits
+                + self.sum_estabilizer_qubits
+            )
+            / num_steps
+            / self.topo_graph.num_qubits
+        )
+
+        print("\nQubit fractions used:")
+        print(f"  data:        {data_frac:.3f}")
+        print(f"  bus:         {bus_frac:.3f}")
+        print(f"  magic:       {magic_frac:.3f}")
+        print(f"  ancilla:     {ancilla_frac:.3f}")
         print(f"  estabilizer: {estabilizer_frac:.3f}")
+        print(f"  overall:     {overall_frac:.3f}")
         print("Magic state cultivation time:")
         print(f"  average: {np.mean(self.busy_count_list):.2f}")
         print(f"  min:     {np.min(self.busy_count_list):.0f}")
