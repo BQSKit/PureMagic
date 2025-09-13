@@ -175,16 +175,11 @@ class Scheduler:
 
     def find_terminal_nodes(self, g, pauli_product):
         terminal_nodes = []
-        for oi, operator in enumerate(pauli_product.operators):
-            # the product has blank spaces for unused qubits
-            if operator == " ":
-                continue
-            ops = ["X", "Z"] if operator == "Y" else [operator]
-            for op in ops:
-                node = "d" + str(oi) + op.upper()
-                if node not in g:
-                    return []
-                terminal_nodes.append(node)
+        for operator in pauli_product.operators:
+            node = "d" + str(operator.qubit) + operator.basis.upper()
+            if node not in g:
+                return []
+            terminal_nodes.append(node)
         return terminal_nodes
 
     def find_best_starting_node(self, g, terminal_nodes, starting_nodes):
@@ -348,9 +343,8 @@ class Scheduler:
                 # are met if the product couldn't be scheduled, then every qubit in that product is
                 # now out of bounds so remove from the graph
                 nodes_to_remove = []
-                for i, operator in enumerate(pp.operators):
-                    if operator != " ":
-                        nodes_to_remove.append("d" + str(i) + operator)
+                for operator in pp.operators:
+                    nodes_to_remove.append("d" + operator.__str__())
                 if len(nodes_to_remove) > 0:
                     num_dependent_nodes += len(nodes_to_remove)
                     working_topo_graph.remove_nodes_from(nodes_to_remove)
@@ -358,7 +352,7 @@ class Scheduler:
                 num_nodes = pp_graph.number_of_nodes()
                 self.print_sched(f"Scheduled {pp.__str__()} with {num_nodes} nodes")
                 pp_paths.append((pp, pp_graph))
-                num_scheduled += pp.qubits_used
+                num_scheduled += len(pp.operators)
                 for node in pp_graph.nodes():
                     if is_bus_node(node):
                         num_bus_scheduled += 1

@@ -9,10 +9,19 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/../../quilt")
 import quilt.angle
 
 
+class Operator:
+    def __init__(self, qubit, basis):
+        self.qubit = qubit
+        self.basis = basis
+
+    def __str__(self):
+        return f"{self.qubit}{self.basis}"
+
+
 class PauliProduct:
     def __init__(self):
         self.operators = []
-        self.qubits_used = 0
+        self.max_qubit = 0
         self.parents = []
         self.children = []
         self.angle = None
@@ -26,20 +35,14 @@ class PauliProduct:
         self.parents = [int(x) for x in literal_eval(parents_str)]
         self.children = [int(x) for x in literal_eval(children_str)]
         terms = pp_str.split(".")
-        qubit_list = []
-        operator_list = []
         for term in terms:
             if not term.startswith("Pauli"):
                 raise RuntimeError("Term does not start with Pauli")
-            qubit_list.append(int(term.split(")")[1].split("<")[0]))
-            operator_list.append(term[5])
-            if operator_list[-1] == "Y":
+            self.operators.append(Operator(int(term.split(")")[1].split("<")[0]), term[5]))
+            if self.operators[-1].basis == "Y":
                 self.num_ys += 1
             # phase = term[7:0]
-        self.qubits_used = len(qubit_list)
-        self.operators = [" "] * (max(qubit_list) + 1)
-        for i, term in enumerate(terms):
-            self.operators[qubit_list[i]] = operator_list[i]
+        self.max_qubit = max([op.qubit for op in self.operators])
         angle_parts = pp_str.split("<")[1][6:].split("/")
         if angle_parts[0] == "pi":
             numerator = 1
@@ -58,12 +61,11 @@ class PauliProduct:
     def get_product_str(self):
         s = ""
         for i in range(len(self.operators)):
-            if self.operators[i] != " ":
-                s += str(i) + self.operators[i]
+            s += self.operators[i].__str__()
         return s.strip()
 
     def get_qubits(self):
-        return [i for i, o in enumerate(self.operators) if o != " "]
+        return [op.qubit for op in self.operators]
 
     def __str__(self):
         s = (
