@@ -15,7 +15,7 @@ import numpy as np
 import pickle
 from pathlib import Path
 from utils import timer
-import pauliproduct
+from pauliproduct import PauliProduct, Operator
 
 
 class RealCircuit(list):
@@ -30,9 +30,9 @@ class RealCircuit(list):
     def load_circuit(self):
         dag_df = pd.read_csv(self.args.circuit, sep="\t")
         for i, row in dag_df.iterrows():
-            self.append(pauliproduct.PauliProduct())
+            self.append(PauliProduct())
             self[-1].set_vals(row["id"], row["product"], row["parents"], row["children"])
-        self.num_qubits = max(len(pp.operators) for pp in self)
+        self.num_qubits = max(pp.max_qubit for pp in self)
         print(f"Loaded circuit with {len(self)} products and {self.num_qubits} qubits")
 
     def get_layers(self):
@@ -103,22 +103,24 @@ class RealCircuit(list):
         new_pp_id = len(self)
         for pp in self:
             if pp.num_ys > 0:
-                new_pp = pauliproduct.PauliProduct()
+                new_pp = PauliProduct()
                 new_pp.id = new_pp_id
                 new_pp_id += 1
                 new_pp.angle = pp.angle
                 new_pp.num_ys = pp.num_ys
                 new_pp.need_estabilizer = True
-                new_pp.operators = [" "] * len(pp.operators)
+                new_pp.operators = []
+                pp_operators_updated = []
                 # convert product to X only
-                for qi, op in enumerate(pp.operators):
-                    if op == "Y":
-                        pp.operators[qi] = "x"
-                        new_pp.operators[qi] = "z"
-                        new_pp.qubits_used += 1
-                    elif op == "Z":
-                        pp.operators[qi] = " "
-                        new_pp.operators[qi] = "Z"
+                for i, op in enumerate(pp.operators):
+                    if op.basis == "X":
+                        pp_operators_updated.append(op)
+                    elif op.basis == "Z":
+                        new_pp.operators.append(op)
+                    elif op.basis == "Y":
+                        pp_operators_updated.append(Operator(op.qubit, "x"))
+                        new_pp.operators.append(Operator(op.qubit, "z"))
+                pp.operators = pp_operators_updated
                 # now set the parents and children appropriately
                 new_pp.children = pp.children.copy()
                 new_pp.parents = [pp.id]
@@ -194,30 +196,23 @@ class RealCircuit(list):
             if col == max_layer:
                 break
             for pauli_product in layer:
-                start_pos = 0
-                end_pos = 0
-                pp_rows = len(pauli_product.operators)
-                for start_pos in range(pp_rows):
-                    if pauli_product.operators[start_pos] != " ":
-                        if show_product_ids:
-                            ax.text(
-                                col,
-                                start_pos - 0.15,
-                                pauli_product.id,
-                                va="center",
-                                fontsize=fontsize * 0.8,
-                                stretch="condensed",
-                                rotation="vertical",
-                            )
-                        break
-                for i in range(start_pos, pp_rows):
-                    if pauli_product.operators[i] != " ":
-                        end_pos = i
-                for i in range(start_pos, end_pos + 1):
-                    if pauli_product.operators[i] == " ":
-                        continue
+                for op in pauli_product.operators:
+                    if show_product_ids:
+                        ax.text(
+                            col,
+                            op.qubit - 0.15,
+                            pauli_product.id,
+                            va="center",
+                            fontsize=fontsize * 0.8,
+                            stretch="condensed",
+                            rotation="vertical",
+                        )
+                    break
+                for op in pauli_product.operators:
                     if num_layers <= 100 and not show_product_ids:
-                        ax.text(col, i, pauli_product.operators[i], va="center", fontsize=fontsize)
+                        ax.text(col, op.qubit, op.basis, va="center", fontsize=fontsize)
+                start_pos = pauli_product.operators[0].qubit
+                end_pos = pauli_product.operators[-1].qubit
                 rect_height = end_pos - start_pos
                 top_shift = 0.11 * math.sqrt(num_rows)
                 height_shift = 0.08 * math.sqrt(num_rows) + top_shift
