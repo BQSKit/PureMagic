@@ -59,10 +59,7 @@ class PauliProduct:
         return self.angle.is_clifford()
 
     def get_product_str(self):
-        s = ""
-        for i in range(len(self.operators)):
-            s += self.operators[i].__str__()
-        return s.strip()
+        return "".join(str(op) for op in self.operators).strip()
 
     def get_qubits(self):
         return [op.qubit for op in self.operators]
