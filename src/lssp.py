@@ -68,7 +68,7 @@ def main():
     print(f"  Non-cliffords per layer: {avg_noncliffords:.2f} avg, {max_noncliffords} max")
     print(f"  Odd Ys per layer:        {avg_odd_ys:.2f} avg, {max_odd_ys} max")
     print(f"  Ys per layer:            {avg_ys:.2f} avg, {max_ys} max")
-    circuit.print_layers()
+    circuit.print()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:
