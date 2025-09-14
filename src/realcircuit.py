@@ -147,15 +147,8 @@ class RealCircuit(list):
             s = str(i) + " " + pauli_product.__str__() + "\n"
         return s
 
-    def print(self, fname):
-        f = open(fname, "w")
-        print("id product Ys ES children parents", file=f)
-        for i, pauli_product in enumerate(self):
-            print(f"{pauli_product.__str__()}", file=f)
-        f.close()
-
     @timer
-    def print_layers(self):
+    def print(self):
         layers = self.get_layers()
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
         print(f"Printing circuit layers to {circuit_fname}.txt")
