@@ -134,23 +134,6 @@ class RealCircuit(list):
             f"{len(self)} products in the circuit"
         )
 
-    def draw_graph(self):
-        g = nx.DiGraph()
-        for node in self:
-            g.add_node(node.id)
-            for child in node.children:
-                g.add_edge(node.id, child)
-
-        layers = self.get_layers()
-        pos = {}
-        for layer_i, layer in enumerate(layers):
-            for node in layer:
-                g.nodes[node.id]["layer"] = layer_i
-                pos[node.id] = [layer_i, self.num_qubits - node.get_qubits()[0]]
-        print("Number of nodes", g.number_of_nodes())
-        nx.draw_networkx(g, pos=pos)
-        plt.show()
-
     def __str__(self):
         s = ""
         for i, pauli_product in enumerate(self):
@@ -166,74 +149,69 @@ class RealCircuit(list):
 
     @timer
     def plot(self, show_product_ids):
-        plt.rcParams["font.size"] = 20
-        circuit_fname = Path(self.args.circuit).stem + ".circuit"
-        print("Drawing circuit...", circuit_fname)
-        self.print(circuit_fname + ".txt")
-
-        plt.close()
-        fig = plt.figure(figsize=(18, 9))
-        ax = fig.add_subplot(111)
-        num_rows = self.num_qubits
-        # scale the fontsize
-        fs_slope = 10.0 / (56.0 - 4.0)
-        fontsize = max(int(np.ceil(16.0 - (num_rows - 4.0) * fs_slope)), 6)
-        # for i in range(num_rows):
-        #    ax.text(0 - 2.5, i, "|q" + str(i) + ">", va="center", fontsize=fontsize)
         layers = self.get_layers()
-        print("Number of layers", len(layers))
         min_layer = 0
         max_layer = len(layers)
         if len(self.args.plot_circuit_range) > 0:
             min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
             max_layer = min(len(layers), max_layer)
             min_layer = min(max_layer, min_layer)
-        num_layers = max_layer - min_layer
+        self.plot_range(layers[min_layer:max_layer], min_layer, show_product_ids)
+
+    def plot_range(self, layers, min_layer, show_product_ids):
+        plt.rcParams["font.size"] = 10
+        circuit_fname = Path(self.args.circuit).stem + ".circuit"
+        print("Printing circuit to ", circuit_fname + ".txt")
+        circuit_ofile = open(circuit_fname + ".txt", "w")
+
+        plt.close()
+        num_rows = self.num_qubits
+        num_layers = len(layers)
+        max_layer = min_layer + num_layers
+        fig = plt.figure(figsize=(0.17 * float(num_layers), 0.22 * float(num_rows)))
+        ax = fig.add_subplot(111)
 
         for col, layer in enumerate(layers):
-            if col < min_layer:
-                continue
-            if col == max_layer:
-                break
+            col += min_layer
             for pauli_product in layer:
-                for op in pauli_product.operators:
-                    if show_product_ids:
-                        ax.text(
-                            col,
-                            op.qubit - 0.15,
-                            pauli_product.id,
-                            va="center",
-                            fontsize=fontsize * 0.8,
-                            stretch="condensed",
-                            rotation="vertical",
-                        )
-                    break
-                for op in pauli_product.operators:
-                    if num_layers <= 100 and not show_product_ids:
-                        ax.text(col, op.qubit, op.basis, va="center", fontsize=fontsize)
+                print(f"{col}: {str(pauli_product)}", file=circuit_ofile)
+                if show_product_ids:
+                    ax.text(
+                        col,
+                        pauli_product.operators[0].qubit - 0.15,
+                        pauli_product.id,
+                        va="center",
+                        fontsize=8,
+                        stretch="condensed",
+                        rotation="vertical",
+                    )
+                else:
+                    for op in pauli_product.operators:
+                        ax.text(col, op.qubit, op.basis, va="center", fontsize=8)
                 start_pos = pauli_product.operators[0].qubit
                 end_pos = pauli_product.operators[-1].qubit
-                rect_height = end_pos - start_pos
-                top_shift = 0.11 * math.sqrt(num_rows)
-                height_shift = 0.08 * math.sqrt(num_rows) + top_shift
+                rect_height = (end_pos - start_pos) + 0.8
                 ax.add_patch(
                     patches.Rectangle(
-                        (col - 0.1, start_pos - top_shift),
+                        (col - 0.1, start_pos - 0.4),
                         0.8,
-                        rect_height + height_shift,
-                        # edgecolor="black",
+                        rect_height,
                         lw=0.2,
                         edgecolor="none",
                         facecolor="#cccc22" if pauli_product.is_clifford() else "#22ff22",
                     )
                 )
+        circuit_ofile.close()
         plt.xlim(min_layer, max_layer)
-        plt.ylim(num_rows - 0.5, -0.5)
+        plt.ylim(num_rows + 0.5, -0.5)
+        plt.xticks(range(min_layer, max_layer, 5))
+        ax.tick_params(axis="x", which="both", top=True, labeltop=True)
+        plt.yticks(range(0, num_rows + 1))
         plt.xlabel("Time Steps")
         plt.ylabel("Qubits")
         plt.title(Path(self.args.circuit).stem)
         plt.tight_layout()
-        plt.savefig(circuit_fname + ".pdf")
+        # plt.savefig(circuit_fname + ".pdf")
         plt.savefig(circuit_fname + ".png")
         # plt.show()
 
