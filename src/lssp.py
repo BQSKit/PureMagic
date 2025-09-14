@@ -18,12 +18,6 @@ def get_args():
         "--plot", "-p", nargs="+", type=str, default="none", choices=plot_options, help="Plotting"
     )
     parser.add_argument(
-        "--plot-circuit-range",
-        type=str,
-        default="",
-        help="Min and max depths of circuit to plot: NN:NN",
-    )
-    parser.add_argument(
         "--circuit", "-c", type=str, required=True, default="None", help="Circuit file name"
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
@@ -74,6 +68,7 @@ def main():
     print(f"  Non-cliffords per layer: {avg_noncliffords:.2f} avg, {max_noncliffords} max")
     print(f"  Odd Ys per layer:        {avg_odd_ys:.2f} avg, {max_odd_ys} max")
     print(f"  Ys per layer:            {avg_ys:.2f} avg, {max_ys} max")
+    circuit.print_layers()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:

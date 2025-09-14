@@ -95,7 +95,14 @@ class RealCircuit(list):
                 for child_id in node.children:
                     if not self[child_id].is_clifford():
                         raise RuntimeError(
-                            f"Node {node.id} is a clifford but has a non-clifford child {child_id}"
+                            f"Node {node.id} is a clifford with a non-clifford child {child_id}"
+                        )
+            # a non-clifford shouldn't have any clifford parents
+            else:
+                for parent_id in node.parents:
+                    if self[parent_id].is_clifford():
+                        raise RuntimeError(
+                            f"Node {node.id} is a non-clifford with a clifford parent {parent_id}"
                         )
 
     def split_ys(self):
@@ -148,22 +155,35 @@ class RealCircuit(list):
         f.close()
 
     @timer
-    def plot(self, show_product_ids):
+    def print_layers(self):
         layers = self.get_layers()
-        min_layer = 0
-        max_layer = len(layers)
-        if len(self.args.plot_circuit_range) > 0:
-            min_layer, max_layer = [int(s) for s in self.args.plot_circuit_range.split(":")]
-            max_layer = min(len(layers), max_layer)
-            min_layer = min(max_layer, min_layer)
-        self.plot_range(layers[min_layer:max_layer], min_layer, show_product_ids)
-
-    def plot_range(self, layers, min_layer, show_product_ids):
-        plt.rcParams["font.size"] = 10
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
-        print("Printing circuit to ", circuit_fname + ".txt")
-        circuit_ofile = open(circuit_fname + ".txt", "w")
+        print(f"Printing circuit layers to {circuit_fname}.txt")
+        f = open(circuit_fname + ".txt", "w")
+        print("layer id product Ys ES children parents", file=f)
+        for col, layer in enumerate(layers):
+            for pauli_product in layer:
+                print(f"{col}: {str(pauli_product)}", file=f)
+        f.close()
 
+    @timer
+    def plot(self, show_product_ids):
+        circuit_fname = Path(self.args.circuit).stem + ".circuit"
+        layers = self.get_layers()
+        layer_chunk = 1000
+        num_layers = len(layers)
+        for min_layer in range(0, num_layers, layer_chunk):
+            max_layer = min(num_layers, min_layer + layer_chunk)
+            self.plot_range(
+                circuit_fname + f":{min_layer}:{max_layer}",
+                layers[min_layer:max_layer],
+                min_layer,
+                show_product_ids,
+            )
+
+    def plot_range(self, circuit_fname, layers, min_layer, show_product_ids):
+        print(f"Plotting circuit to {circuit_fname}.png")
+        plt.rcParams["font.size"] = 10
         plt.close()
         num_rows = self.num_qubits
         num_layers = len(layers)
@@ -174,7 +194,6 @@ class RealCircuit(list):
         for col, layer in enumerate(layers):
             col += min_layer
             for pauli_product in layer:
-                print(f"{col}: {str(pauli_product)}", file=circuit_ofile)
                 if show_product_ids:
                     ax.text(
                         col,
@@ -201,7 +220,6 @@ class RealCircuit(list):
                         facecolor="#cccc22" if pauli_product.is_clifford() else "#22ff22",
                     )
                 )
-        circuit_ofile.close()
         plt.xlim(min_layer, max_layer)
         plt.ylim(num_rows + 0.5, -0.5)
         plt.xticks(range(min_layer, max_layer, 5))
@@ -211,9 +229,7 @@ class RealCircuit(list):
         plt.ylabel("Qubits")
         plt.title(Path(self.args.circuit).stem)
         plt.tight_layout()
-        # plt.savefig(circuit_fname + ".pdf")
         plt.savefig(circuit_fname + ".png")
-        # plt.show()
 
     def plot_freqs(self):
         hist_fname = Path(self.args.circuit).stem + ".freqs"
