@@ -214,20 +214,27 @@ class TopoGraph(nx.Graph):
         # now add all the edges
         print("Topology:")
         for row in range(0, self.num_rows):
-            print("  ", end="")
             for col in range(0, self.num_cols):
                 node = node_grid[col][row]
-                if self.num_data_qubits <= 100:
-                    print(f"{node:8}", end=" ")
-                else:
-                    print(f"{node:9}", end=" ")
                 if col > 0:
                     self.link_nbs(node, node_grid[col - 1][row])
                 nb_node = node_grid[col][row - 1]
                 if row > 0 and not is_data_node(node) and not is_data_node(nb_node):
                     self.link_nbs(node, nb_node)
-            print("")
-
+        # print topology to a file
+        topo_fname = Path(self.args.circuit).stem + ".topo.txt"
+        f = open(topo_fname, "w")
+        print(f"Printing topology to {topo_fname}...")
+        for row in range(0, self.num_rows):
+            print("  ", end="", file=f)
+            for col in range(0, self.num_cols):
+                node = node_grid[col][row]
+                if self.num_data_qubits <= 100:
+                    print(f"{node:8}", end=" ", file=f)
+                else:
+                    print(f"{node:9}", end=" ", file=f)
+            print("", file=f)
+        f.close()
         if self.args.rnd_order:
             self.shuffle_qubits()
 
