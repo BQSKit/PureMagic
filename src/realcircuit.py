@@ -153,7 +153,7 @@ class RealCircuit(list):
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
         print(f"Printing circuit layers to {circuit_fname}.txt")
         f = open(circuit_fname + ".txt", "w")
-        print("layer id product Ys ES children parents", file=f)
+        print("layer id product Ys ES? clifford? children parents", file=f)
         for col, layer in enumerate(layers):
             for pauli_product in layer:
                 print(f"{col}: {str(pauli_product)}", file=f)
@@ -187,6 +187,8 @@ class RealCircuit(list):
         for col, layer in enumerate(layers):
             col += min_layer
             for pauli_product in layer:
+                ppcolor = "#cccc22" if pauli_product.is_clifford() else "#22ff22"
+                textcolor = "#3333dd" if pauli_product.is_clifford() else "#dd00dd"
                 if show_product_ids:
                     ax.text(
                         col,
@@ -196,10 +198,20 @@ class RealCircuit(list):
                         fontsize=8,
                         stretch="condensed",
                         rotation="vertical",
+                        color=textcolor,
                     )
                 else:
                     for op in pauli_product.operators:
-                        ax.text(col, op.qubit, op.basis, va="center", fontsize=8)
+                        ax.text(
+                            col,
+                            op.qubit,
+                            op.basis,
+                            va="center",
+                            fontsize=8,
+                            family="monospace",
+                            color=textcolor,
+                            bbox=dict(facecolor=ppcolor, pad=0.3, edgecolor="none"),
+                        )
                 start_pos = pauli_product.operators[0].qubit
                 end_pos = pauli_product.operators[-1].qubit
                 rect_height = (end_pos - start_pos) + 0.8
@@ -210,7 +222,8 @@ class RealCircuit(list):
                         rect_height,
                         lw=0.2,
                         edgecolor="none",
-                        facecolor="#cccc22" if pauli_product.is_clifford() else "#22ff22",
+                        facecolor=ppcolor,
+                        # alpha=0.6
                     )
                 )
         plt.xlim(min_layer, max_layer)
