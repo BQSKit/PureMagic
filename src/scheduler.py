@@ -449,7 +449,7 @@ class Scheduler:
         if "paths" in self.args.plot:
             path_dir = Path(self.args.circuit).stem + ".paths"
             Path(path_dir).mkdir(exist_ok=True)
-            plot_steps = 50
+            plot_steps = 100
         total_to_schedule = len(real_circuit)
         prev_perc_complete = 0
         print(f"Scheduling {total_to_schedule} products:    ", end="")
