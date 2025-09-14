@@ -65,6 +65,9 @@ class PauliProduct:
         return [op.qubit for op in self.operators]
 
     def __str__(self):
+        ancilla_str = "A" if self.num_ys % 2 == 1 else "-"
+        es_str = "E" if self.need_estabilizer else "-"
+        clifford_str = "clifford" if self.is_clifford() else "non-clifford"
         s = (
             str(self.id)
             + " "
@@ -72,9 +75,11 @@ class PauliProduct:
             + " "
             + str(self.angle)
             + " "
-            + str(self.num_ys)
+            + ancilla_str
             + " "
-            + str(self.need_estabilizer)
+            + es_str
+            + " "
+            + clifford_str
             + " "
             + str(self.children)
             + " "
