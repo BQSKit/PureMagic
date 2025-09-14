@@ -328,5 +328,5 @@ class TopoGraph(nx.Graph):
         plt.box(False)
         plt.title(title_str).set_fontsize(6 * math.sqrt(self.num_rows))
         plt.tight_layout()
-        plt.savefig(topo_fname + ".pdf")
+        # plt.savefig(topo_fname + ".pdf")
         plt.savefig(topo_fname + ".png")
