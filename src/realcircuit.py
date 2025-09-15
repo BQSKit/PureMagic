@@ -203,14 +203,16 @@ class RealCircuit(list):
                 else:
                     for op in pauli_product.operators:
                         ax.text(
-                            col,
+                            col + 0.1,
                             op.qubit,
                             op.basis,
                             va="center",
-                            fontsize=8,
+                            fontsize=7,
                             family="monospace",
                             color=textcolor,
-                            bbox=dict(facecolor=ppcolor, pad=0.3, edgecolor="none"),
+                            bbox=dict(
+                                facecolor=ppcolor, pad=0.1, edgecolor="none", boxstyle="square"
+                            ),
                         )
                 start_pos = pauli_product.operators[0].qubit
                 end_pos = pauli_product.operators[-1].qubit
