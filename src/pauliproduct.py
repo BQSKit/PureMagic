@@ -4,9 +4,7 @@ import os
 import numpy as np
 from ast import literal_eval
 
-# hack to ensure we find the quilt files - could also set PYTHONPATH before executing
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/../../quilt")
-import quilt.angle
+from angle import Angle
 
 
 class Operator:
@@ -52,7 +50,7 @@ class PauliProduct:
             denominator = 1
         else:
             denominator = int(angle_parts[1].split(")")[0])
-        self.angle = quilt.angle.Angle(numerator, denominator)
+        self.angle = Angle(numerator, denominator)
 
     def is_clifford(self):
         assert self.angle is not None
