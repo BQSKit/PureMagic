@@ -26,6 +26,7 @@ class PauliProduct:
         self.id = -1
         self.num_ys = 0
         self.need_estabilizer = False
+        self.need_ancilla = False
 
     def set_vals(self, pp_id, pp_str, parents_str, children_str):
         terms = pp_str.split(".")
@@ -40,6 +41,8 @@ class PauliProduct:
             if self.operators[-1].basis == "Y":
                 self.num_ys += 1
             # phase = term[7:0]
+        if self.num_ys % 2 == 1:
+            self.need_ancilla = True
         self.max_qubit = max([op.qubit for op in self.operators])
         angle_parts = pp_str.split("<")[1][6:].split("/")
         if angle_parts[0] == "pi":

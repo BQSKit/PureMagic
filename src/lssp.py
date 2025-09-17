@@ -36,11 +36,6 @@ def get_args():
     parser.add_argument(
         "--log-scheduler", action="store_true", help="Log scheduler actions to .sched file"
     )
-    parser.add_argument(
-        "--use-steiner-trees",
-        action="store_true",
-        help="Use Steiner trees instead of BFS for laying out products (slower)",
-    )
     args = parser.parse_args()
     print("Arguments:\n ", "\n  ".join(f"{k}={v}" for k, v in vars(args).items()))
     return args

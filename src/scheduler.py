@@ -44,73 +44,6 @@ class Scheduler:
                     "pp " + str(pp.id) + " scheduled before parent " + str(parent_id)
                 )
 
-    def get_topo_digraph(self, g, root_node, ancilla_node, estabilizer_node):
-        dg = g.to_directed()
-        # now strip the directed edges coming out of the data nodes, to prevent paths that go into
-        # then out of data nodes
-        edges_to_remove = []
-        for edge in dg.edges():
-            if is_data_node(edge[0]):
-                edges_to_remove.append(edge)
-        dg.remove_edges_from(edges_to_remove)
-        nodes_to_remove = []
-        for node in dg.nodes():
-            if (
-                (is_magic_node(node) and node != root_node)
-                or (is_ancilla_node(node) and node != ancilla_node)
-                or (is_estabilizer_node(node) and node != estabilizer_node)
-            ):
-                nodes_to_remove.append(node)
-        dg.remove_nodes_from(nodes_to_remove)
-        return dg
-
-    def mehlhorn_steiner_tree(self, g, terminal_nodes, root_node, ancilla_node, estabilizer_node):
-        # this is exactly like the steiner tree computation in the networkx library, except that
-        # for the dijkstra path calculation and the shortest path, we use a digraph with the edges
-        # that go from the data nodes outwards removed. This prevents trees that pass through the
-        # data nodes, instead of just terminating at the data nodes
-        dg = self.get_topo_digraph(g, root_node, ancilla_node, estabilizer_node)
-        paths = nx.multi_source_dijkstra_path(dg, terminal_nodes)
-
-        d_1 = {}
-        s = {}
-        for v in g.nodes():
-            if v not in paths:
-                continue
-            s[v] = paths[v][0]
-            d_1[(v, s[v])] = len(paths[v]) - 1
-
-        # G1-G4 names match those from the Mehlhorn 1988 paper.
-        G_1_prime = nx.Graph()
-        for u, v, data in g.edges(data=True):
-            if u not in s or v not in s:
-                continue
-            su, sv = s[u], s[v]
-            weight_here = d_1[(u, su)] + data.get("weight", 1) + d_1[(v, sv)]
-            if not G_1_prime.has_edge(su, sv):
-                G_1_prime.add_edge(su, sv, weight=weight_here)
-            else:
-                new_weight = min(weight_here, G_1_prime[su][sv]["weight"])
-                G_1_prime.add_edge(su, sv, weight=new_weight)
-
-        G_2 = nx.minimum_spanning_edges(G_1_prime, data=True)
-
-        G_3 = nx.Graph()
-        for u, v, _ in G_2:
-            path = nx.shortest_path(dg, u, v, "weight")
-            for n1, n2 in nx.utils.pairwise(path):
-                G_3.add_edge(n1, n2)
-
-        G_3_mst = list(nx.minimum_spanning_edges(G_3, data=False))
-        G_4 = g.edge_subgraph(G_3_mst).copy()
-        nx.approximation.steinertree._remove_nonterminal_leaves(G_4, terminal_nodes)  # type: ignore
-        edges = G_4.edges()
-        T = g.edge_subgraph(edges)
-        for node in T.nodes():
-            if is_data_node(node) and T.degree(node) > 1:
-                print("Failure in tree construction: data node", node, "has degree", T.degree(node))
-        return T
-
     def trim_dangling_nodes(self, g):
         while True:
             dangling_nodes = []
@@ -121,27 +54,14 @@ class Scheduler:
                 break
             g.remove_nodes_from(dangling_nodes)
 
-    def get_topo_subgraph(self, g, terminal_nodes, root_node, ancilla_node, estabilizer_node):
-        subg = copy.deepcopy(g)
+    def get_bfs_schedule(self, working_topo_graph, terminal_nodes, root_node):
+        # get relevant subgraph
+        subg = copy.deepcopy(working_topo_graph)
         nodes_to_remove = []
         for node in subg.nodes():
-            if is_magic_node(node) and node != root_node:
-                nodes_to_remove.append(node)
-            elif is_ancilla_node(node) and node != ancilla_node:
-                nodes_to_remove.append(node)
-            elif is_estabilizer_node(node) and node != estabilizer_node:
-                nodes_to_remove.append(node)
-            elif is_data_node(node) and node not in terminal_nodes:
+            if not is_bus_node(node) and node not in terminal_nodes:
                 nodes_to_remove.append(node)
         subg.remove_nodes_from(nodes_to_remove)
-        return subg
-
-    def get_bfs_schedule(
-        self, working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
-    ):
-        g = self.get_topo_subgraph(
-            working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
-        )
         visited = set([root_node])
         # need to keep track of whether we have visited the estabilizer because we visit it twice
         visited_estabilizer_again = False
@@ -153,7 +73,7 @@ class Scheduler:
             pauli_product_graph.add_node(node)
             if is_data_node(root_node):
                 return pauli_product_graph
-            for nb in g[node]:
+            for nb in subg[node]:
                 if nb in visited:
                     if not is_estabilizer_node(nb):
                         continue
@@ -163,7 +83,6 @@ class Scheduler:
                         visited_estabilizer_again = True
                 visited.add(nb)
                 pauli_product_graph.add_edge(node, nb)
-                # if is_bus_node(nb) or is_estabilizer_node(node):
                 if is_bus_node(nb):
                     queue.append(nb)
                 else:
@@ -236,6 +155,10 @@ class Scheduler:
         return self.find_best_starting_node(g, terminal_nodes, estabilizer_nodes)
 
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
+        # there are several different cases:
+        # for a non-clifford, we need to start at a magic node. If we need a Y ancilla
+
+        # initially terminal nodes contain onlly the data qubits
         terminal_nodes = self.find_terminal_nodes(working_topo_graph, pauli_product)
         if len(terminal_nodes) == 0:
             return None
@@ -251,20 +174,18 @@ class Scheduler:
                 g.add_node(terminal_nodes[0])
                 return copy.deepcopy(g)
             else:
-                # if there is more than one terminal, root node must be a bus node
+                # if there is more than one terminal, thq root node must be a bus node
                 root_node = self.find_best_bus_node(working_topo_graph, terminal_nodes)
                 if root_node is None:
                     return None
                 terminal_nodes.insert(0, root_node)
 
-        ancilla_node = None
-        if pauli_product.num_ys > 0 and pauli_product.num_ys % 2 != 0:
+        if pauli_product.need_ancilla:
             ancilla_node = self.find_best_ancilla_node(working_topo_graph, terminal_nodes)
             if ancilla_node == None:
                 return None
             terminal_nodes.append(ancilla_node)
 
-        estabilizer_node = None
         if pauli_product.need_estabilizer:
             estabilizer_node = self.find_best_estabilizer_node(working_topo_graph, terminal_nodes)
             if estabilizer_node == None:
@@ -281,22 +202,10 @@ class Scheduler:
                     f"{terminal_node} for pp {pauli_product.get_product_str()}",
                 )
                 return None
-        if self.args.use_steiner_trees:
-            self.print_sched(
-                f"Trying steiner tree from root {root_node} for {pauli_product}"
-                f", terminals {terminal_nodes}"
-            )
-            g = self.mehlhorn_steiner_tree(
-                working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
-            )
-        else:
-            self.print_sched(
-                f"Trying BFS from root {root_node} for {pauli_product}"
-                f", terminals {terminal_nodes}"
-            )
-            g = self.get_bfs_schedule(
-                working_topo_graph, terminal_nodes, root_node, ancilla_node, estabilizer_node
-            )
+        self.print_sched(
+            f"Trying BFS from root {root_node} for {pauli_product}" f", terminals {terminal_nodes}"
+        )
+        g = self.get_bfs_schedule(working_topo_graph, terminal_nodes, root_node)
 
         if g is None or not all([node in g for node in terminal_nodes]):
             self.print_sched(
@@ -358,10 +267,6 @@ class Scheduler:
                         num_bus_scheduled += 1
                     elif is_magic_node(node):
                         self.topo_graph.nodes[node]["busy_count"] = self.gen_busy_count()
-                        # self.print_sched(
-                        #    f"Busy count for node {node} is set to "
-                        #    f"{self.topo_graph.nodes[node]["busy_count"]}"
-                        # )
                         num_magic_scheduled += 1
                     elif is_data_node(node):
                         num_data_scheduled += 1
