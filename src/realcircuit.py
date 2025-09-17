@@ -115,6 +115,8 @@ class RealCircuit(list):
                 new_pp_id += 1
                 new_pp.angle = pp.angle
                 new_pp.num_ys = pp.num_ys
+                if new_pp.num_ys % 2 == 1:
+                    new_pp.need_ancilla = True
                 new_pp.need_estabilizer = True
                 new_pp.operators = []
                 pp_operators_updated = []
