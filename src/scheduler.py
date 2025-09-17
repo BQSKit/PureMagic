@@ -54,161 +54,133 @@ class Scheduler:
                 break
             g.remove_nodes_from(dangling_nodes)
 
-    def get_bfs_schedule(self, working_topo_graph, terminal_nodes, root_node):
-        # get relevant subgraph
-        subg = copy.deepcopy(working_topo_graph)
-        nodes_to_remove = []
-        for node in subg.nodes():
-            if node != root_node and not is_bus_node(node) and node not in terminal_nodes:
-                nodes_to_remove.append(node)
-        subg.remove_nodes_from(nodes_to_remove)
+    def get_bfs_graph(self, g, root_node, data_nodes, need_ancilla, nodes_to_exclude):
+        # visited_estabilizer_again = False
         visited = set([root_node])
-        # need to keep track of whether we have visited the estabilizer because we visit it twice
-        visited_estabilizer_again = False
-        num_found_terminals = 0
         queue = [root_node]
-        pauli_product_graph = nx.Graph()
+        bfs_graph = nx.Graph()
+        found_ancilla = False
+        num_terminals_reqd = len(data_nodes)
+        num_found_terminals = 0
         while len(queue):
             node = queue.pop(0)
-            pauli_product_graph.add_node(node)
-            if is_data_node(root_node):
-                return pauli_product_graph
-            for nb in subg[node]:
+            bfs_graph.add_node(node)
+            for nb in g[node]:
+                if nodes_to_exclude is not None and nb in nodes_to_exclude:
+                    continue
+                if not is_bus_node(nb):
+                    if need_ancilla and not found_ancilla and is_ancilla_node(nb):
+                        found_ancilla = True
+                    elif not nb in data_nodes:
+                        continue
                 if nb in visited:
-                    if not is_estabilizer_node(nb):
-                        continue
-                    elif visited_estabilizer_again:
-                        continue
-                    else:
-                        visited_estabilizer_again = True
+                    continue
+                #    if not is_estabilizer_node(nb):
+                #        continue
+                #    elif visited_estabilizer_again:
+                #        continue
+                #    else:
+                #        visited_estabilizer_again = True
                 visited.add(nb)
-                pauli_product_graph.add_edge(node, nb)
+                bfs_graph.add_edge(node, nb)
                 if is_bus_node(nb):
                     queue.append(nb)
                 else:
-                    num_found_terminals += 1
-                    if num_found_terminals == len(terminal_nodes):
-                        self.trim_dangling_nodes(pauli_product_graph)
-                        return pauli_product_graph
+                    if not is_ancilla_node(nb):
+                        num_found_terminals += 1
+                    if num_found_terminals == num_terminals_reqd:
+                        if need_ancilla and not found_ancilla:
+                            continue
+                        self.trim_dangling_nodes(bfs_graph)
+                        return bfs_graph
         return None
 
-    def find_terminal_nodes(self, g, pauli_product):
-        terminal_nodes = []
-        for operator in pauli_product.operators:
-            node = "d" + str(operator.qubit) + operator.basis.upper()
-            if node not in g:
-                return []
-            terminal_nodes.append(node)
-        return terminal_nodes
-
-    def find_best_starting_node(self, g, terminal_nodes, starting_nodes):
-        # find the starting node that connects to all terminals with the summed shortest path
-        best_path_len = None
-        best_start_node = None
-        for start_node in starting_nodes:
-            try:
-                sum_path_len = 0.0
-                for terminal_node in terminal_nodes:
-                    sum_path_len += nx.shortest_path_length(g, start_node, terminal_node)
-                if best_path_len == None or sum_path_len < best_path_len:
-                    best_path_len = sum_path_len
-                    best_start_node = start_node
-            except nx.NetworkXNoPath:
-                # path not found - can't use this starting node
-                self.print_sched(f"Path not found from {start_node} to terminals {terminal_nodes}")
-                continue
-        return best_start_node
-
-    def find_best_magic_node(self, g, terminal_nodes):
+    def schedule_non_clifford(self, working_topo_graph, data_nodes, pauli_product):
         magic_nodes = [
-            node for node in g.nodes if is_magic_node(node) and g.nodes[node]["busy_count"] == 0
+            node
+            for node in working_topo_graph.nodes
+            if is_magic_node(node) and working_topo_graph.nodes[node]["busy_count"] == 0
         ]
         if len(magic_nodes) == 0:
             return None
-        return self.find_best_starting_node(g, terminal_nodes, magic_nodes)
+        # if pauli_product.need_estabilizer:
+        if False:
+            estabilizer_nodes = [
+                node for node in working_topo_graph.nodes if is_estabilizer_node(node)
+            ]
+            # get candidate graphs connecting estabilizer to terminal nodes
+            estabilizer_graphs = []
+            for estabilizer_node in estabilizer_nodes:
+                estabilizer_graph = self.get_bfs_graph(
+                    working_topo_graph,
+                    estabilizer_node,
+                    data_nodes,
+                    pauli_product.need_ancilla,
+                    None,
+                )
+                if estabilizer_graph is not None:
+                    estabilizer_graphs.append((estabilizer_node, estabilizer_graph))
+            # get shortest path from magic node to terminals through estabilizer
+            best_path_g = None
+            selected_estabilizer_graph = None
+            for magic_node in magic_nodes:
+                for estabilizer_node, estabilizer_graph in estabilizer_graphs:
+                    path_g = self.get_bfs_graph(
+                        working_topo_graph,
+                        magic_node,
+                        [estabilizer_node],
+                        False,
+                        estabilizer_graph.nodes,
+                    )
+                    if path_g is None:
+                        continue
+                    if (
+                        best_path_g is None
+                        or path_g.number_of_edges() < best_path_g.number_of_edges()
+                    ):
+                        best_path_g = path_g
+                        selected_estabilizer_graph = estabilizer_graph
+            if best_path_g is None or selected_estabilizer_graph is None:
+                return None
+            # finally, connect the magic->estabilizer graph with the estabilizer-terminals graph
+            for node in best_path_g.nodes:
+                if not is_estabilizer_node(node):
+                    selected_estabilizer_graph.add_node(node)
+            for edge in best_path_g.edges:
+                selected_estabilizer_graph.add_edge(edge)
+        else:
+            best_graph = None
+            self.print_sched(f"Paths for {pauli_product}:")
+            for magic_node in magic_nodes:
+                # g = self.get_bfs_graph(working_topo_graph, magic_node, terminal_nodes, False, None)
+                g = self.get_bfs_graph(
+                    working_topo_graph, magic_node, data_nodes, pauli_product.need_ancilla, None
+                )
+                if g is None:
+                    self.print_sched(f"  no tree from magic node {magic_node}")
+                    continue
+                self.print_sched(f"  tree from {magic_node} has length {g.number_of_edges()}")
+                if best_graph is None or g.number_of_edges() < best_graph.number_of_edges():
+                    best_graph = g
+            return best_graph
 
-    def find_best_bus_node(self, g, terminal_nodes):
-        # can start from any bus node adjacent to a terminal node
-        starting_nodes = set(
-            neighbor
-            for terminal in terminal_nodes
-            for neighbor in g.neighbors(terminal)
-            if is_bus_node(neighbor)
-        )
-        if len(starting_nodes) == 0:
-            self.print_sched(f"Could not find starting bus node for terminals {terminal_nodes}")
-            return None
-        return self.find_best_starting_node(g, terminal_nodes, starting_nodes)
-
-    def find_best_ancilla_node(self, g, terminal_nodes):
-        ancilla_nodes = [node for node in g.nodes if is_ancilla_node(node)]
-        if len(ancilla_nodes) == 0:
-            self.print_sched(f"Could not find ancilla node for terminals {terminal_nodes}")
-            return None
-        return self.find_best_starting_node(g, terminal_nodes, ancilla_nodes)
-
-    def find_best_estabilizer_node(self, g, terminal_nodes):
-        estabilizer_nodes = [node for node in g.nodes if is_estabilizer_node(node)]
-        if len(estabilizer_nodes) == 0:
-            self.print_sched(f"Could not find estabilizer node for terminals {terminal_nodes}")
-            return None
-        return self.find_best_starting_node(g, terminal_nodes, estabilizer_nodes)
+    def schedule_clifford(self, working_topo_graph, terminal_nodes, pauli_product):
+        return None
 
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
         # initially terminal nodes contain onlly the data qubits
-        terminal_nodes = self.find_terminal_nodes(working_topo_graph, pauli_product)
-        if len(terminal_nodes) == 0:
+        data_nodes = []
+        for operator in pauli_product.operators:
+            node = "d" + str(operator.qubit) + operator.basis.upper()
+            if node not in working_topo_graph:
+                return None
+            data_nodes.append(node)
+        if len(data_nodes) == 0:
             return None
-        root_node = None
         if not pauli_product.is_clifford():
-            root_node = self.find_best_magic_node(working_topo_graph, terminal_nodes)
-            if root_node == None:
-                return None
+            return self.schedule_non_clifford(working_topo_graph, data_nodes, pauli_product)
         else:
-            if len(terminal_nodes) == 1:
-                g = nx.Graph()
-                g.add_node(terminal_nodes[0])
-                return copy.deepcopy(g)
-            else:
-                # if there is more than one terminal, thq root node must be a bus node
-                root_node = self.find_best_bus_node(working_topo_graph, terminal_nodes)
-                if root_node is None:
-                    return None
-
-        if pauli_product.need_ancilla:
-            ancilla_node = self.find_best_ancilla_node(working_topo_graph, terminal_nodes)
-            if ancilla_node == None:
-                return None
-            terminal_nodes.append(ancilla_node)
-
-        if pauli_product.need_estabilizer:
-            estabilizer_node = self.find_best_estabilizer_node(working_topo_graph, terminal_nodes)
-            if estabilizer_node == None:
-                return None
-            terminal_nodes.append(estabilizer_node)
-            # append a second time to force a path through the estabilizer
-            terminal_nodes.append(estabilizer_node)
-
-        # check path exists from root node to all other terminals
-        for terminal_node in terminal_nodes:
-            if not nx.has_path(working_topo_graph, root_node, terminal_node):
-                self.print_sched(
-                    f"Check: no path from root node {root_node} to terminal node "
-                    f"{terminal_node} for pp {pauli_product.get_product_str()}",
-                )
-                return None
-        self.print_sched(
-            f"Trying BFS from root {root_node} for {pauli_product}" f", terminals {terminal_nodes}"
-        )
-        g = self.get_bfs_schedule(working_topo_graph, terminal_nodes, root_node)
-
-        if g is None or not all([node in g for node in terminal_nodes]):
-            self.print_sched(
-                f"No path from root node {root_node} to terminal node for pp"
-                f" {pauli_product.get_product_str()}",
-            )
-            return None
-        return copy.deepcopy(g)
+            return self.schedule_clifford(working_topo_graph, data_nodes, pauli_product)
 
     def gen_busy_count(self):
         busy_count = int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)))
@@ -270,7 +242,7 @@ class Scheduler:
                     elif is_estabilizer_node(node):
                         num_estabilizers_scheduled += 1
                 # now remove the Pauli product path from the graph
-                working_topo_graph.remove_nodes_from(pp_graph.nodes)
+                working_topo_graph.remove_nodes_from(pp_graph.nodes)  # type: ignore
                 orphaned_nodes = []
                 for node in working_topo_graph.nodes:
                     if working_topo_graph.degree(node) == 0:

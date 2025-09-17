@@ -179,7 +179,8 @@ class TopoGraph(nx.Graph):
             if col % 2 == 0:  # data column
                 for row in range(1, self.num_rows - 1):
                     if row % 3 + 1 == 2:
-                        if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
+                        # if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
+                        if row != 1 and col % 4 == 0:
                             if self.num_cols <= 9 or col % 8 == 0:
                                 node_grid[col][row] = self.add_labeled_node("e", col, row)
                             else:
