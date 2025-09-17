@@ -110,6 +110,7 @@ class RealCircuit(list):
         new_pp_id = len(self)
         for pp in self:
             if pp.num_ys > 0:
+                assert not pp.is_clifford()
                 new_pp = PauliProduct()
                 new_pp.id = new_pp_id
                 new_pp_id += 1

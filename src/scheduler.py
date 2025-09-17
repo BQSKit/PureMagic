@@ -54,33 +54,30 @@ class Scheduler:
                 break
             g.remove_nodes_from(dangling_nodes)
 
-    def get_bfs_graph(self, g, root_node, data_nodes, need_ancilla, nodes_to_exclude):
-        # visited_estabilizer_again = False
+    def get_bfs_graph(self, g, root_node, terminal_nodes, need_ancilla, nodes_to_exclude):
         visited = set([root_node])
         queue = [root_node]
         bfs_graph = nx.Graph()
         found_ancilla = False
-        num_terminals_reqd = len(data_nodes)
+        num_terminals_reqd = len(terminal_nodes)
         num_found_terminals = 0
         while len(queue):
             node = queue.pop(0)
             bfs_graph.add_node(node)
             for nb in g[node]:
-                if nodes_to_exclude is not None and nb in nodes_to_exclude:
+                if (
+                    nodes_to_exclude is not None
+                    and nb in nodes_to_exclude
+                    and nb not in terminal_nodes
+                ):
                     continue
                 if not is_bus_node(nb):
                     if need_ancilla and not found_ancilla and is_ancilla_node(nb):
                         found_ancilla = True
-                    elif not nb in data_nodes:
+                    elif not nb in terminal_nodes:
                         continue
                 if nb in visited:
                     continue
-                #    if not is_estabilizer_node(nb):
-                #        continue
-                #    elif visited_estabilizer_again:
-                #        continue
-                #    else:
-                #        visited_estabilizer_again = True
                 visited.add(nb)
                 bfs_graph.add_edge(node, nb)
                 if is_bus_node(nb):
@@ -95,6 +92,21 @@ class Scheduler:
                         return bfs_graph
         return None
 
+    def find_best_tree(self, working_topo_graph, root_nodes, data_nodes, pauli_product):
+        best_graph = None
+        self.print_sched(f"Paths for {pauli_product}:")
+        for root_node in root_nodes:
+            g = self.get_bfs_graph(
+                working_topo_graph, root_node, data_nodes, pauli_product.need_ancilla, None
+            )
+            if g is None:
+                self.print_sched(f"  no tree from root node {root_node}")
+                continue
+            self.print_sched(f"  tree from {root_node} has length {g.number_of_edges()}")
+            if best_graph is None or g.number_of_edges() < best_graph.number_of_edges():
+                best_graph = g
+        return best_graph
+
     def schedule_non_clifford(self, working_topo_graph, data_nodes, pauli_product):
         magic_nodes = [
             node
@@ -103,8 +115,8 @@ class Scheduler:
         ]
         if len(magic_nodes) == 0:
             return None
-        # if pauli_product.need_estabilizer:
-        if False:
+        if pauli_product.need_estabilizer:
+            self.print_sched(f"Scheduling non-clifford with estabilizer {pauli_product}")
             estabilizer_nodes = [
                 node for node in working_topo_graph.nodes if is_estabilizer_node(node)
             ]
@@ -119,9 +131,14 @@ class Scheduler:
                     None,
                 )
                 if estabilizer_graph is not None:
+                    self.print_sched(
+                        f"  found graph from {estabilizer_node} of size "
+                        f"{estabilizer_graph.number_of_edges()}"
+                    )
                     estabilizer_graphs.append((estabilizer_node, estabilizer_graph))
             # get shortest path from magic node to terminals through estabilizer
             best_path_g = None
+            best_graph_size = None
             selected_estabilizer_graph = None
             for magic_node in magic_nodes:
                 for estabilizer_node, estabilizer_graph in estabilizer_graphs:
@@ -134,11 +151,10 @@ class Scheduler:
                     )
                     if path_g is None:
                         continue
-                    if (
-                        best_path_g is None
-                        or path_g.number_of_edges() < best_path_g.number_of_edges()
-                    ):
+                    graph_size = path_g.number_of_edges() + estabilizer_graph.number_of_edges()
+                    if best_path_g is None or graph_size < best_graph_size:
                         best_path_g = path_g
+                        best_graph_size = graph_size
                         selected_estabilizer_graph = estabilizer_graph
             if best_path_g is None or selected_estabilizer_graph is None:
                 return None
@@ -147,25 +163,23 @@ class Scheduler:
                 if not is_estabilizer_node(node):
                     selected_estabilizer_graph.add_node(node)
             for edge in best_path_g.edges:
-                selected_estabilizer_graph.add_edge(edge)
+                selected_estabilizer_graph.add_edge(*edge)
+            return selected_estabilizer_graph
         else:
-            best_graph = None
-            self.print_sched(f"Paths for {pauli_product}:")
-            for magic_node in magic_nodes:
-                # g = self.get_bfs_graph(working_topo_graph, magic_node, terminal_nodes, False, None)
-                g = self.get_bfs_graph(
-                    working_topo_graph, magic_node, data_nodes, pauli_product.need_ancilla, None
-                )
-                if g is None:
-                    self.print_sched(f"  no tree from magic node {magic_node}")
-                    continue
-                self.print_sched(f"  tree from {magic_node} has length {g.number_of_edges()}")
-                if best_graph is None or g.number_of_edges() < best_graph.number_of_edges():
-                    best_graph = g
-            return best_graph
+            return self.find_best_tree(working_topo_graph, magic_nodes, data_nodes, pauli_product)
 
-    def schedule_clifford(self, working_topo_graph, terminal_nodes, pauli_product):
-        return None
+    def schedule_clifford(self, working_topo_graph, data_nodes, pauli_product):
+        # cliffords don't have Ys
+        assert not pauli_product.need_estabilizer and not pauli_product.need_ancilla
+        # root node needs to be a bus node next to one of the data nodes
+        root_nodes = set()
+        for node in data_nodes:
+            for nb in working_topo_graph[node]:
+                if is_bus_node(nb):
+                    root_nodes.add(nb)
+        if len(root_nodes) == 0:
+            return None
+        return self.find_best_tree(working_topo_graph, root_nodes, data_nodes, pauli_product)
 
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
         # initially terminal nodes contain onlly the data qubits
@@ -335,7 +349,7 @@ class Scheduler:
                     print(f"\x08\x08\x08{perc_complete:02}%", end="")
                     prev_perc_complete = perc_complete
             self.print_sched(
-                f"Step: {num_steps}"
+                f"Step {num_steps}: "
                 f"{[str(pp.id) + ":" + pp.get_product_str() for pp in to_schedule]}"
             )
             node_labels = {}
