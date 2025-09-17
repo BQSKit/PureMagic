@@ -59,13 +59,13 @@ class Scheduler:
         subg = copy.deepcopy(working_topo_graph)
         nodes_to_remove = []
         for node in subg.nodes():
-            if not is_bus_node(node) and node not in terminal_nodes:
+            if node != root_node and not is_bus_node(node) and node not in terminal_nodes:
                 nodes_to_remove.append(node)
         subg.remove_nodes_from(nodes_to_remove)
         visited = set([root_node])
         # need to keep track of whether we have visited the estabilizer because we visit it twice
         visited_estabilizer_again = False
-        num_found_terminals = 1
+        num_found_terminals = 0
         queue = [root_node]
         pauli_product_graph = nx.Graph()
         while len(queue):
@@ -155,9 +155,6 @@ class Scheduler:
         return self.find_best_starting_node(g, terminal_nodes, estabilizer_nodes)
 
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
-        # there are several different cases:
-        # for a non-clifford, we need to start at a magic node. If we need a Y ancilla
-
         # initially terminal nodes contain onlly the data qubits
         terminal_nodes = self.find_terminal_nodes(working_topo_graph, pauli_product)
         if len(terminal_nodes) == 0:
@@ -167,7 +164,6 @@ class Scheduler:
             root_node = self.find_best_magic_node(working_topo_graph, terminal_nodes)
             if root_node == None:
                 return None
-            terminal_nodes.insert(0, root_node)
         else:
             if len(terminal_nodes) == 1:
                 g = nx.Graph()
@@ -178,7 +174,6 @@ class Scheduler:
                 root_node = self.find_best_bus_node(working_topo_graph, terminal_nodes)
                 if root_node is None:
                     return None
-                terminal_nodes.insert(0, root_node)
 
         if pauli_product.need_ancilla:
             ancilla_node = self.find_best_ancilla_node(working_topo_graph, terminal_nodes)
@@ -195,7 +190,7 @@ class Scheduler:
             terminal_nodes.append(estabilizer_node)
 
         # check path exists from root node to all other terminals
-        for terminal_node in terminal_nodes[1:]:
+        for terminal_node in terminal_nodes:
             if not nx.has_path(working_topo_graph, root_node, terminal_node):
                 self.print_sched(
                     f"Check: no path from root node {root_node} to terminal node "
