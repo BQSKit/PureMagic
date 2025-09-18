@@ -53,46 +53,33 @@ class TopoGraph(nx.Graph):
         self.num_ancilla_qubits = 0
         self.num_estabilizer_qubits = 0
         self.num_qubits = 0
+        self.node_grid = [[]]
+        self.num_rows = 0
+        self.num_cols = 0
 
     @timer
     def set_topo(self, args, min_num_qubits, rng):
         self.args = args
         self.rng = rng
-        sq_dim = int(np.floor(np.sqrt(min_num_qubits)))
-        patch_rows = int(sq_dim / 2) + sq_dim % 2
-        bus_rows = patch_rows + 1
-        # print(f"patch rows {patch_rows}, bus rows {bus_rows}")
-        qubits_per_col = 2 * patch_rows
-        num_data_cols = int(np.ceil(min_num_qubits / qubits_per_col))
-        # a bus column on both sides of the data columns plus 2 extra for side columns for magic
-        self.num_cols = 2 * num_data_cols + 3
-        # 2 rows for magic, 2 per patch row, rows for bus qubits
-        self.num_rows = 2 + 2 * patch_rows + bus_rows
-        if self.num_cols > 0 and self.num_rows > 0:
-            print("Layout dimensions:", self.num_cols, self.num_rows)
-            self.gen_topo()
-            frac_data = float(self.num_data_qubits) / self.num_qubits
-            frac_bus = float(self.num_bus_qubits) / self.num_qubits
-            frac_magic = float(self.num_magic_qubits) / self.num_qubits
-            frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
-            frac_estabilizer = float(self.num_estabilizer_qubits) / self.num_qubits
-            print("Number of qubits:")
-            print(f"  data:         {self.num_data_qubits} ({frac_data:.3f})")
-            print(f"  bus:          {self.num_bus_qubits} ({frac_bus:.3f})")
-            print(f"  magic:        {self.num_magic_qubits} ({frac_magic:.3f})")
-            print(f"  ancilla:      {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
-            print(f"  e-stabilizer: {self.num_estabilizer_qubits} ({frac_estabilizer:.3f})")
-            print(f"  total:        {self.num_qubits}")
+        if args.topo == "":
+            sq_dim = int(np.floor(np.sqrt(min_num_qubits)))
+            patch_rows = int(sq_dim / 2) + sq_dim % 2
+            bus_rows = patch_rows + 1
+            # print(f"patch rows {patch_rows}, bus rows {bus_rows}")
+            qubits_per_col = 2 * patch_rows
+            num_data_cols = int(np.ceil(min_num_qubits / qubits_per_col))
+            # a bus column on both sides of the data columns plus 2 extra for side columns for magic
+            self.num_cols = 2 * num_data_cols + 3
+            # 2 rows for magic, 2 per patch row, rows for bus qubits
+            self.num_rows = 2 + 2 * patch_rows + bus_rows
+            if self.num_cols > 0 and self.num_rows > 0:
+                self.gen_topo()
+        else:
+            self.read_topo_from_file()
 
     def shuffle_qubits(self):
         qubit_order = list(range(self.num_data_qubits))
         self.rng.shuffle(qubit_order)
-        # very good for grover 5 node
-        # qubit_order = [4, 1, 0, 5, 3, 2]
-        # very bad for grover 5 node
-        # qubit_order = [1, 0, 4, 2, 5, 3]
-        # qubit_order = list(range(0, self.num_data_qubits, 2))
-        # qubit_order.extend(list(range(1, self.num_data_qubits, 2)))
         print("Using qubit order:", qubit_order)
         qubit_map = {}
         for i, new_i in enumerate(qubit_order):
@@ -119,7 +106,7 @@ class TopoGraph(nx.Graph):
             self.nodes[node_label]["busy_count"] = 0
         return node_label
 
-    def add_data_qubit(self, qi, col, row, op, node_grid):
+    def add_data_qubit(self, qi, col, row, op):
         q = int(qi / 2) if op == "X" else int(qi / 2) - 1
         node_label1 = "d" + str(q) + op
         node_label2 = "d" + str(q + 1) + op
@@ -133,25 +120,26 @@ class TopoGraph(nx.Graph):
             pos=[float(col) + 0.25, self.num_rows - 1 - row],
             color="#9999FF",
         )
-        node_grid[col][row] = f"d{str(q)}/{str(q+1)}{op}"
+        combined_label = f"d{str(q)}/{str(q+1)}{op}"
+        return combined_label
 
-    def add_border_row(self, row, node_grid):
-        node_grid[0][row] = self.add_labeled_node("b", 0, row)
-        node_grid[self.num_cols - 1][row] = self.add_labeled_node("b", self.num_cols - 1, row)
+    def add_border_row(self, row):
+        self.node_grid[0][row] = self.add_labeled_node("b", 0, row)
+        self.node_grid[self.num_cols - 1][row] = self.add_labeled_node("b", self.num_cols - 1, row)
         for col in range(1, self.num_cols - 1):
             if self.num_cols > 9:
-                node_grid[col][row] = self.add_labeled_node("m", col, row)
+                self.node_grid[col][row] = self.add_labeled_node("m", col, row)
             else:
                 if col % 2 == 1:
-                    node_grid[col][row] = self.add_labeled_node("m", col, row)
+                    self.node_grid[col][row] = self.add_labeled_node("m", col, row)
                 elif col % 4 == 0:
-                    node_grid[col][row] = self.add_labeled_node("a", col, row)
+                    self.node_grid[col][row] = self.add_labeled_node("a", col, row)
                 else:
-                    node_grid[col][row] = self.add_labeled_node("m", col, row)
+                    self.node_grid[col][row] = self.add_labeled_node("m", col, row)
 
-    def add_border_column(self, col, node_grid):
+    def add_border_column(self, col):
         for row in range(1, self.num_rows - 1):
-            node_grid[col][row] = self.add_labeled_node("m", col, row)
+            self.node_grid[col][row] = self.add_labeled_node("m", col, row)
 
     def link_nbs(self, node1, node2):
         if is_magic_node(node1) and is_magic_node(node2):
@@ -164,41 +152,7 @@ class TopoGraph(nx.Graph):
             node2 = "d" + node2_right
         self.add_edge(node1, node2)
 
-    def gen_topo(self):
-        # first add all the nodes
-        node_grid = [[]] * self.num_cols
-        for i in range(len(node_grid)):
-            node_grid[i] = [""] * self.num_rows
-        # add top row
-        self.add_border_row(0, node_grid)
-        # add left edge column
-        self.add_border_column(0, node_grid)
-        # add center nodes
-        qi = 0
-        for col in range(1, self.num_cols - 1):
-            if col % 2 == 0:  # data column
-                for row in range(1, self.num_rows - 1):
-                    if row % 3 + 1 == 2:
-                        # if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
-                        if row != 1 and col % 4 == 0:
-                            if self.num_cols <= 9 or col % 8 == 0:
-                                node_grid[col][row] = self.add_labeled_node("e", col, row)
-                            else:
-                                node_grid[col][row] = self.add_labeled_node("a", col, row)
-                        else:
-                            node_grid[col][row] = self.add_labeled_node("b", col, row)
-                    else:
-                        self.add_data_qubit(
-                            qi, col, row, "X" if row % 3 + 1 == 3 else "Z", node_grid
-                        )
-                        qi += 2
-            else:  # bus column
-                for row in range(1, self.num_rows - 1):
-                    node_grid[col][row] = self.add_labeled_node("b", col, row)
-        # add right edge column
-        self.add_border_column(self.num_cols - 1, node_grid)
-        # add bottom row
-        self.add_border_row(self.num_rows - 1, node_grid)
+    def update_statistics(self):
         # summary statistics
         self.num_data_qubits = int(sum([is_data_node(node) for node in self.nodes]) / 2)
         self.num_magic_qubits = sum([is_magic_node(node) for node in self.nodes])
@@ -212,32 +166,129 @@ class TopoGraph(nx.Graph):
             + self.num_ancilla_qubits
             + self.num_estabilizer_qubits
         )
+        frac_data = float(self.num_data_qubits) / self.num_qubits
+        frac_bus = float(self.num_bus_qubits) / self.num_qubits
+        frac_magic = float(self.num_magic_qubits) / self.num_qubits
+        frac_ancilla = float(self.num_ancilla_qubits) / self.num_qubits
+        frac_estabilizer = float(self.num_estabilizer_qubits) / self.num_qubits
+        print("Number of qubits:")
+        print(f"  data:         {self.num_data_qubits} ({frac_data:.3f})")
+        print(f"  bus:          {self.num_bus_qubits} ({frac_bus:.3f})")
+        print(f"  magic:        {self.num_magic_qubits} ({frac_magic:.3f})")
+        print(f"  ancilla:      {self.num_ancilla_qubits} ({frac_ancilla:.3f})")
+        print(f"  e-stabilizer: {self.num_estabilizer_qubits} ({frac_estabilizer:.3f})")
+        print(f"  total:        {self.num_qubits}")
+
+    def set_edges(self):
         # now add all the edges
-        print("Topology:")
         for row in range(0, self.num_rows):
             for col in range(0, self.num_cols):
-                node = node_grid[col][row]
+                node = self.node_grid[col][row]
                 if col > 0:
-                    self.link_nbs(node, node_grid[col - 1][row])
-                nb_node = node_grid[col][row - 1]
+                    self.link_nbs(node, self.node_grid[col - 1][row])
+                nb_node = self.node_grid[col][row - 1]
                 if row > 0 and not is_data_node(node) and not is_data_node(nb_node):
                     self.link_nbs(node, nb_node)
+
+    def gen_topo(self):
+        # first add all the nodes
+        self.node_grid = [[]] * self.num_cols
+        for i in range(len(self.node_grid)):
+            self.node_grid[i] = [""] * self.num_rows
+        # add top row
+        self.add_border_row(0)
+        # add left edge column
+        self.add_border_column(0)
+        # add center nodes
+        qi = 0
+        for col in range(1, self.num_cols - 1):
+            if col % 2 == 0:  # data column
+                for row in range(1, self.num_rows - 1):
+                    if row % 3 + 1 == 2:
+                        # if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
+                        if row != 1 and col % 4 == 0:
+                            if self.num_cols <= 9 or col % 8 == 0:
+                                self.node_grid[col][row] = self.add_labeled_node("e", col, row)
+                            else:
+                                self.node_grid[col][row] = self.add_labeled_node("a", col, row)
+                        else:
+                            self.node_grid[col][row] = self.add_labeled_node("b", col, row)
+                    else:
+                        self.node_grid[col][row] = self.add_data_qubit(
+                            qi, col, row, "X" if row % 3 + 1 == 3 else "Z"
+                        )
+                        qi += 2
+            else:  # bus column
+                for row in range(1, self.num_rows - 1):
+                    self.node_grid[col][row] = self.add_labeled_node("b", col, row)
+        # add right edge column
+        self.add_border_column(self.num_cols - 1)
+        # add bottom row
+        self.add_border_row(self.num_rows - 1)
+
+        self.set_edges()
+        print("Generated topology with dimensions:", self.num_cols, self.num_rows)
+        self.update_statistics()
+        self.print_topo()
+
+        if self.args.rnd_order:
+            self.shuffle_qubits()
+
+    def print_topo(self):
         # print topology to a file
         topo_fname = Path(self.args.circuit).stem + ".topo.txt"
         f = open(topo_fname, "w")
         print(f"Printing topology to {topo_fname}...")
         for row in range(0, self.num_rows):
-            print("  ", end="", file=f)
             for col in range(0, self.num_cols):
-                node = node_grid[col][row]
-                if self.num_data_qubits <= 100:
-                    print(f"{node:8}", end=" ", file=f)
+                node = self.node_grid[col][row]
+                if is_data_node(node):
+                    print(f"{node[0]}{node[-1]} ", end="", file=f)
                 else:
-                    print(f"{node:9}", end=" ", file=f)
+                    print(f"{node[0]}  ", end="", file=f)
+                # if self.num_data_qubits <= 100:
+                #    print(f"{node:8}", end=" ", file=f)
+                # else:
+                #    print(f"{node:9}", end=" ", file=f)
             print("", file=f)
         f.close()
-        if self.args.rnd_order:
-            self.shuffle_qubits()
+
+    @timer
+    def read_topo_from_file(self):
+        rows = []
+        # Read the grid layout
+        with open(self.args.topo, "r") as f:
+            for line in f:
+                row = line.strip().split()
+                if not row:
+                    continue
+                rows.append(row)
+        # Transpose grid from row-major to col-major order
+        self.num_rows = len(rows)
+        self.num_cols = len(rows[0])
+        self.node_grid = [[]] * self.num_cols
+        for i in range(len(self.node_grid)):
+            self.node_grid[i] = [""] * self.num_rows
+        for row_i, row in enumerate(rows):
+            for col_i, col in enumerate(row):
+                self.node_grid[col_i][row_i] = col
+        # Add nodes
+        di = 0
+        for col in range(self.num_cols):
+            for row in range(self.num_rows):
+                node = self.node_grid[col][row]
+                if node.startswith("d"):
+                    op = node[1]
+                    self.node_grid[col][row] = self.add_data_qubit(di, col, row, op)
+                    di += 2
+                else:
+                    self.node_grid[col][row] = self.add_labeled_node(node, col, row)
+
+        # Add edges
+        self.set_edges()
+        print("Read topology with dimensions:", self.num_cols, self.num_rows)
+        self.update_statistics()
+        self.print_topo()
 
     @timer
     def plot(self, fname_added="", pauli_product_paths=[], title_str="", node_labels=None):

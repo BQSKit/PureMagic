@@ -20,6 +20,13 @@ def get_args():
     parser.add_argument(
         "--circuit", "-c", type=str, required=True, default="None", help="Circuit file name"
     )
+    parser.add_argument(
+        "--topo",
+        "-t",
+        type=str,
+        default="",
+        help="Topology file name (topology will be generated if this is not set",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--rnd-order", action="store_true", help="Randomly order the qubits")
     parser.add_argument(
