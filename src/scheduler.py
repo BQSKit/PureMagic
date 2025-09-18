@@ -15,6 +15,11 @@ from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node,
 from utils import timer
 
 
+def get_node_pos(node):
+    node_col, node_row = node[1:].split("-")
+    return int(node_col), int(node_row)
+
+
 class Scheduler:
     def __init__(self, args, rank, num_ranks, rng, topo_graph):
         self.args = args
@@ -54,7 +59,7 @@ class Scheduler:
                 break
             g.remove_nodes_from(dangling_nodes)
 
-    def get_bfs_graph(self, g, root_node, terminal_nodes, need_ancilla, nodes_to_exclude):
+    def get_bfs_graph(self, g, root_node, terminal_nodes, which_ancilla, nodes_to_exclude):
         visited = set([root_node])
         queue = [root_node]
         bfs_graph = nx.Graph()
@@ -65,6 +70,8 @@ class Scheduler:
             node = queue.pop(0)
             bfs_graph.add_node(node)
             for nb in g[node]:
+                if nb in visited:
+                    continue
                 if (
                     nodes_to_exclude is not None
                     and nb in nodes_to_exclude
@@ -72,12 +79,22 @@ class Scheduler:
                 ):
                     continue
                 if not is_bus_node(nb):
-                    if need_ancilla and not found_ancilla and is_ancilla_node(nb):
+                    # Match the which_ancilla with the correct side
+                    # (left or top for X, right or bottom for Y)
+                    if which_ancilla != "" and not found_ancilla and is_ancilla_node(nb):
+                        node_col, node_row = get_node_pos(node)
+                        nb_col, nb_row = get_node_pos(nb)
+                        if which_ancilla == "X":
+                            if node_col >= nb_col and node_row >= nb_row:
+                                continue
+                        elif which_ancilla == "Z":
+                            if node_col <= nb_col and node_row <= nb_row:
+                                continue
+                        else:
+                            raise RuntimeError(f"illegal which_ancilla {which_ancilla}")
                         found_ancilla = True
                     elif not nb in terminal_nodes:
                         continue
-                if nb in visited:
-                    continue
                 visited.add(nb)
                 bfs_graph.add_edge(node, nb)
                 if is_bus_node(nb):
@@ -86,7 +103,7 @@ class Scheduler:
                     if not is_ancilla_node(nb):
                         num_found_terminals += 1
                     if num_found_terminals == num_terminals_reqd:
-                        if need_ancilla and not found_ancilla:
+                        if which_ancilla != "" and not found_ancilla:
                             continue
                         self.trim_dangling_nodes(bfs_graph)
                         return bfs_graph
@@ -95,10 +112,11 @@ class Scheduler:
     def find_best_tree(self, working_topo_graph, root_nodes, data_nodes, pauli_product):
         best_graph = None
         self.print_sched(f"Paths for {pauli_product}:")
+        which_ancilla = (
+            pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
+        )
         for root_node in root_nodes:
-            g = self.get_bfs_graph(
-                working_topo_graph, root_node, data_nodes, pauli_product.need_ancilla, None
-            )
+            g = self.get_bfs_graph(working_topo_graph, root_node, data_nodes, which_ancilla, None)
             if g is None:
                 self.print_sched(f"  no tree from root node {root_node}")
                 continue
@@ -117,6 +135,9 @@ class Scheduler:
             return None
         if pauli_product.need_estabilizer:
             self.print_sched(f"Scheduling non-clifford with estabilizer {pauli_product}")
+            which_ancilla = (
+                pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
+            )
             estabilizer_nodes = [
                 node for node in working_topo_graph.nodes if is_estabilizer_node(node)
             ]
@@ -124,11 +145,7 @@ class Scheduler:
             estabilizer_graphs = []
             for estabilizer_node in estabilizer_nodes:
                 estabilizer_graph = self.get_bfs_graph(
-                    working_topo_graph,
-                    estabilizer_node,
-                    data_nodes,
-                    pauli_product.need_ancilla,
-                    None,
+                    working_topo_graph, estabilizer_node, data_nodes, which_ancilla, None
                 )
                 if estabilizer_graph is not None:
                     self.print_sched(
@@ -146,7 +163,7 @@ class Scheduler:
                         working_topo_graph,
                         magic_node,
                         [estabilizer_node],
-                        False,
+                        "",
                         estabilizer_graph.nodes,
                     )
                     if path_g is None:
