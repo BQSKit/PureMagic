@@ -54,24 +54,8 @@ def get_args():
 def main():
     rng = np.random.default_rng(seed=args.rseed)
     circuit = realcircuit.RealCircuit(args)
-    # circuit.split_ys()
-    # circuit.check_clifford_relations()
-    (
-        num_layers,
-        max_noncliffords,
-        avg_noncliffords,
-        max_odd_ys,
-        avg_odd_ys,
-        max_ys,
-        avg_ys,
-        num_nonclifford_layers,
-    ) = circuit.get_statistics()
-    print("Circuit statistics:")
-    print(f"  Layers:                  {num_layers}")
-    print(f"  Non-clifford layers:     {num_nonclifford_layers}")
-    print(f"  Non-cliffords per layer: {avg_noncliffords:.2f} avg, {max_noncliffords} max")
-    print(f"  Odd Ys per layer:        {avg_odd_ys:.2f} avg, {max_odd_ys} max")
-    print(f"  Ys per layer:            {avg_ys:.2f} avg, {max_ys} max")
+    circuit.split_ys()
+    num_layers = circuit.get_statistics()
     circuit.print()
     if "circuit" in args.plot:
         circuit.plot(args.show_product_ids)

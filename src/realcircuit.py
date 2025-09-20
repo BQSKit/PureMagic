@@ -95,33 +95,19 @@ class RealCircuit(list):
                         num_odd_ys[i] += 1
             if nonclifford_layer:
                 num_nonclifford_layers += 1
-        return (
-            len(layers),
-            max(num_noncliffords),
-            np.mean(num_noncliffords),
-            max(num_odd_ys),
-            np.mean(num_odd_ys),
-            max(num_ys),
-            np.mean(num_ys),
-            num_nonclifford_layers,
+        num_layers = len(layers)
+        print("Circuit statistics:")
+        print(f"  Layers:                  {num_layers}")
+        print(f"  Non-clifford layers:     {num_nonclifford_layers}")
+        print(
+            f"  Non-cliffords per layer: {np.mean(num_noncliffords):.2f} avg, "
+            f"{max(num_noncliffords)} max"
         )
-
-    def check_clifford_relations(self):
-        for node in self:
-            # a clifford shouldn't have any non-clifford children
-            if node.is_clifford:
-                for child_id in node.children:
-                    if not self[child_id].is_clifford:
-                        raise RuntimeError(
-                            f"Node {node.id} is a clifford with a non-clifford child {child_id}"
-                        )
-            # a non-clifford shouldn't have any clifford parents
-            else:
-                for parent_id in node.parents:
-                    if self[parent_id].is_clifford:
-                        raise RuntimeError(
-                            f"Node {node.id} is a non-clifford with a clifford parent {parent_id}"
-                        )
+        print(
+            f"  Odd Ys per layer:        {np.mean(num_odd_ys):.2f} avg, " f"{max(num_odd_ys)} max"
+        )
+        print(f"  Ys per layer:            {np.mean(num_ys):.2f} avg, {max(num_ys)} max")
+        return num_layers
 
     def split_ys(self):
         new_pps = []
