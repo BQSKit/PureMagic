@@ -62,14 +62,13 @@ def main():
     if "freqs" in args.plot:
         circuit.plot_freqs()
 
-    sys.exit(0)
-
     topo_graph = topograph.TopoGraph()
     topo_graph.set_topo(args, circuit.num_qubits, rng)
     if "topo" in args.plot:
         topo_graph.plot(".topo")
     # topo_editor = TopoEditor(topo_graph)
     # topo_editor.run()
+
     single_scheduler = scheduler.Scheduler(args, 0, 1, rng, topo_graph)
     tot_num_steps, num_scheduled, space_utilization = single_scheduler.schedule_circuit(circuit)
     speedup = float(num_scheduled) / tot_num_steps

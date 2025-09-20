@@ -45,14 +45,6 @@ class RealCircuit(list):
                     self[current_id].children.append(pp.id)
                 current_pps[op.qubit] = pp.id
 
-        circuit_fname = Path(self.args.circuit).stem + ".circuit-flat.txt"
-        print(f"Printing circuit layers to {circuit_fname}")
-        f = open(circuit_fname, "w")
-        print("id product ancilla? ES? clifford? children parents", file=f)
-        for pp in self:
-            print(f"{str(pp)}", file=f)
-        f.close()
-
     def get_layers(self):
         layer_i = 0
         pps_used = set()
@@ -117,7 +109,7 @@ class RealCircuit(list):
                 new_pp = PauliProduct()
                 new_pp.id = new_pp_id
                 new_pp_id += 1
-                new_pp.is_clifford = False
+                new_pp.is_clifford = pp.is_clifford
                 new_pp.num_ys = pp.num_ys
                 if new_pp.num_ys % 2 == 1:
                     new_pp.need_ancilla = True
@@ -174,7 +166,7 @@ class RealCircuit(list):
         for min_layer in range(0, num_layers, layer_chunk):
             max_layer = min(num_layers, min_layer + layer_chunk)
             self.plot_range(
-                circuit_fname + f"-{min_layer}-{max_layer}",
+                circuit_fname + f"-{min_layer}",
                 layers[min_layer:max_layer],
                 min_layer,
                 show_product_ids,
