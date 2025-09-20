@@ -6,6 +6,7 @@ import copy
 from pathlib import Path
 import numpy as np
 import warnings
+import time
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="networkx backend defined more than once")
@@ -219,6 +220,8 @@ class Scheduler:
         return busy_count
 
     def schedule_timestep(self, step_i, to_schedule):
+        start_t = time.perf_counter()
+
         num_busy = 0
         for node in self.topo_graph.nodes:
             if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] > 0:
@@ -308,6 +311,10 @@ class Scheduler:
             f"({frac_estabilizers:.2f})",
         )
         self.print_sched(f"Removed {num_dependent_nodes} dependent nodes")
+        end_t = time.perf_counter()
+        elapsed_time = end_t - start_t
+        self.print_sched(f"Scheduling timestep took {elapsed_time:0.4f} s")
+
         self.sum_data_qubits += num_scheduled
         self.sum_bus_qubits += num_bus_scheduled
         self.sum_magic_qubits += num_magic_scheduled
