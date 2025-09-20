@@ -54,8 +54,8 @@ def get_args():
 def main():
     rng = np.random.default_rng(seed=args.rseed)
     circuit = realcircuit.RealCircuit(args)
-    circuit.split_ys()
-    circuit.check_clifford_relations()
+    # circuit.split_ys()
+    # circuit.check_clifford_relations()
     (
         num_layers,
         max_noncliffords,
@@ -77,6 +77,9 @@ def main():
         circuit.plot(args.show_product_ids)
     if "freqs" in args.plot:
         circuit.plot_freqs()
+
+    sys.exit(0)
+
     topo_graph = topograph.TopoGraph()
     topo_graph.set_topo(args, circuit.num_qubits, rng)
     if "topo" in args.plot:

@@ -28,12 +28,30 @@ class RealCircuit(list):
 
     @timer
     def load_circuit(self):
-        dag_df = pd.read_csv(self.args.circuit, sep="\t")
-        for i, row in dag_df.iterrows():
+        f = open(self.args.circuit, "r")
+        product_strings = f.readlines()
+        for i, product_string in enumerate(product_strings):
             self.append(PauliProduct())
-            self[-1].set_vals(row["id"], row["product"], row["parents"], row["children"])
-        self.num_qubits = max(pp.max_qubit for pp in self)
+            self[-1].set_from_str(i, product_string.strip())
+        self.num_qubits = max(pp.max_qubit for pp in self) + 1
         print(f"Loaded circuit with {len(self)} products and {self.num_qubits} qubits")
+        # set parents and children
+        current_pps = [-1] * self.num_qubits
+        for pp in self:
+            for op in pp.operators:
+                current_id = current_pps[op.qubit]
+                if current_id != -1:
+                    pp.parents.append(current_id)
+                    self[current_id].children.append(pp.id)
+                current_pps[op.qubit] = pp.id
+
+        circuit_fname = Path(self.args.circuit).stem + ".circuit-flat.txt"
+        print(f"Printing circuit layers to {circuit_fname}")
+        f = open(circuit_fname, "w")
+        print("id product ancilla? ES? clifford? children parents", file=f)
+        for pp in self:
+            print(f"{str(pp)}", file=f)
+        f.close()
 
     def get_layers(self):
         layer_i = 0
@@ -68,7 +86,7 @@ class RealCircuit(list):
         for i, layer in enumerate(layers):
             nonclifford_layer = False
             for pp in layer:
-                if not pp.is_clifford():
+                if not pp.is_clifford:
                     num_noncliffords[i] += 1
                     nonclifford_layer = True
                 if pp.num_ys > 0:
@@ -91,16 +109,16 @@ class RealCircuit(list):
     def check_clifford_relations(self):
         for node in self:
             # a clifford shouldn't have any non-clifford children
-            if node.is_clifford():
+            if node.is_clifford:
                 for child_id in node.children:
-                    if not self[child_id].is_clifford():
+                    if not self[child_id].is_clifford:
                         raise RuntimeError(
                             f"Node {node.id} is a clifford with a non-clifford child {child_id}"
                         )
             # a non-clifford shouldn't have any clifford parents
             else:
                 for parent_id in node.parents:
-                    if self[parent_id].is_clifford():
+                    if self[parent_id].is_clifford:
                         raise RuntimeError(
                             f"Node {node.id} is a non-clifford with a clifford parent {parent_id}"
                         )
@@ -110,11 +128,10 @@ class RealCircuit(list):
         new_pp_id = len(self)
         for pp in self:
             if pp.num_ys > 0:
-                assert not pp.is_clifford()
                 new_pp = PauliProduct()
                 new_pp.id = new_pp_id
                 new_pp_id += 1
-                new_pp.angle = pp.angle
+                new_pp.is_clifford = False
                 new_pp.num_ys = pp.num_ys
                 if new_pp.num_ys % 2 == 1:
                     new_pp.need_ancilla = True
@@ -153,10 +170,10 @@ class RealCircuit(list):
     @timer
     def print(self):
         layers = self.get_layers()
-        circuit_fname = Path(self.args.circuit).stem + ".circuit"
-        print(f"Printing circuit layers to {circuit_fname}.txt")
-        f = open(circuit_fname + ".txt", "w")
-        print("layer id product Ys ES? clifford? children parents", file=f)
+        circuit_fname = Path(self.args.circuit).stem + ".circuit.txt"
+        print(f"Printing circuit layers to {circuit_fname}")
+        f = open(circuit_fname, "w")
+        print("layer id product ancilla? ES? clifford? children parents", file=f)
         for col, layer in enumerate(layers):
             for pauli_product in layer:
                 print(f"{col}: {str(pauli_product)}", file=f)
@@ -171,7 +188,7 @@ class RealCircuit(list):
         for min_layer in range(0, num_layers, layer_chunk):
             max_layer = min(num_layers, min_layer + layer_chunk)
             self.plot_range(
-                circuit_fname + f":{min_layer}:{max_layer}",
+                circuit_fname + f"-{min_layer}-{max_layer}",
                 layers[min_layer:max_layer],
                 min_layer,
                 show_product_ids,
@@ -181,7 +198,7 @@ class RealCircuit(list):
         print(f"Plotting circuit to {circuit_fname}.png")
         plt.rcParams["font.size"] = 10
         plt.close()
-        num_rows = self.num_qubits
+        num_rows = self.num_qubits - 1
         num_layers = len(layers)
         max_layer = min_layer + num_layers
         fig = plt.figure(figsize=(0.17 * float(num_layers), 0.22 * float(num_rows)))
@@ -190,8 +207,8 @@ class RealCircuit(list):
         for col, layer in enumerate(layers):
             col += min_layer
             for pauli_product in layer:
-                ppcolor = "#cccc22" if pauli_product.is_clifford() else "#22ff22"
-                textcolor = "#3333dd" if pauli_product.is_clifford() else "#dd00dd"
+                ppcolor = "#cccc22" if pauli_product.is_clifford else "#22ff22"
+                textcolor = "#3333dd" if pauli_product.is_clifford else "#dd00dd"
                 if show_product_ids:
                     ax.text(
                         col,
