@@ -25,6 +25,7 @@ class RealCircuit(list):
         self.num_pauli_products = 0
         self.num_qubits = 0
         self.load_circuit()
+        self.layers = None
 
     @timer
     def load_circuit(self):
@@ -45,6 +46,7 @@ class RealCircuit(list):
                     self[current_id].children.append(pp.id)
                 current_pps[op.qubit] = pp.id
 
+    @timer
     def get_layers(self):
         layer_i = 0
         pps_used = set()
@@ -54,28 +56,30 @@ class RealCircuit(list):
         layers = []
         while pps_left:
             layer = []
-            pps_left_copy = pps_left.copy()
-            pps_used_copy = pps_used.copy()
-            for pp_id in pps_left_copy:
+            pps_selected = []
+            for pp_id in pps_left:
                 pp = self[pp_id]
                 for parent in pp.parents:
-                    if parent not in pps_used_copy:
+                    if parent not in pps_used:
                         break
                 else:
                     layer.append(pp)
-                    pps_used.add(pp.id)
-                    pps_left.remove(pp.id)
+                    pps_selected.append(pp.id)
             layer_i += 1
             layers.append(layer)
+            for pp in pps_selected:
+                pps_left.remove(pp)
+                pps_used.add(pp)
         return layers
 
+    @timer
     def get_statistics(self):
-        layers = self.get_layers()
-        num_noncliffords = [0] * len(layers)
-        num_odd_ys = [0] * len(layers)
-        num_ys = [0] * len(layers)
+        self.layers = self.get_layers()
+        num_noncliffords = [0] * len(self.layers)
+        num_odd_ys = [0] * len(self.layers)
+        num_ys = [0] * len(self.layers)
         num_nonclifford_layers = 0
-        for i, layer in enumerate(layers):
+        for i, layer in enumerate(self.layers):
             nonclifford_layer = False
             for pp in layer:
                 if not pp.is_clifford:
@@ -87,7 +91,7 @@ class RealCircuit(list):
                         num_odd_ys[i] += 1
             if nonclifford_layer:
                 num_nonclifford_layers += 1
-        num_layers = len(layers)
+        num_layers = len(self.layers)
         print("Circuit statistics:")
         print(f"  Layers:                  {num_layers}")
         print(f"  Non-clifford layers:     {num_nonclifford_layers}")
@@ -147,12 +151,13 @@ class RealCircuit(list):
 
     @timer
     def print(self):
-        layers = self.get_layers()
+        if self.layers is None:
+            self.layers = self.get_layers()
         circuit_fname = Path(self.args.circuit).stem + ".circuit.txt"
         print(f"Printing circuit layers to {circuit_fname}")
         f = open(circuit_fname, "w")
         print("layer id product ancilla? ES? clifford? children parents", file=f)
-        for col, layer in enumerate(layers):
+        for col, layer in enumerate(self.layers):
             for pauli_product in layer:
                 print(f"{col}: {str(pauli_product)}", file=f)
         f.close()
