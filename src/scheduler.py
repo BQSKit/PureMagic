@@ -112,16 +112,21 @@ class Scheduler:
 
     def find_best_tree(self, working_topo_graph, root_nodes, data_nodes, pauli_product):
         best_graph = None
-        self.print_sched(f"  Paths for {pauli_product}:")
+        self.print_sched(f"  Find best tree for {pauli_product}:")
         which_ancilla = (
             pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
         )
         for root_node in root_nodes:
             g = self.get_bfs_graph(working_topo_graph, root_node, data_nodes, which_ancilla, None)
             if g is None:
-                self.print_sched(f"    no tree from root node {root_node}")
+                self.print_sched(
+                    f"    No tree from root node {root_node} to {data_nodes}, "
+                    f"{which_ancilla if which_ancilla != "" else ""} "
+                )
                 continue
-            self.print_sched(f"    tree from {root_node} has length {g.number_of_edges()}")
+            self.print_sched(
+                f"    Tree from {root_node} to {data_nodes} has size " f"{g.number_of_edges()}"
+            )
             if best_graph is None or g.number_of_edges() < best_graph.number_of_edges():
                 best_graph = g
         return best_graph
@@ -133,6 +138,7 @@ class Scheduler:
             if is_magic_node(node) and working_topo_graph.nodes[node]["busy_count"] == 0
         ]
         if len(magic_nodes) == 0:
+            self.print_sched("  No available magic nodes")
             return None
         if pauli_product.need_estabilizer:
             which_ancilla = (
@@ -148,11 +154,16 @@ class Scheduler:
                     working_topo_graph, estabilizer_node, data_nodes, which_ancilla, None
                 )
                 if estabilizer_graph is not None:
-                    # self.print_sched(
-                    #    f"  found graph from {estabilizer_node} of size "
-                    #    f"{estabilizer_graph.number_of_edges()}"
-                    # )
+                    self.print_sched(
+                        f"  Found graph from {estabilizer_node} of size "
+                        f"{estabilizer_graph.number_of_edges()}"
+                    )
                     estabilizer_graphs.append((estabilizer_node, estabilizer_graph))
+            if len(estabilizer_graphs) == 0:
+                self.print_sched(
+                    f"  No estabilizer tree found from {estabilizer_nodes} to " f"  {data_nodes}"
+                )
+                return None
             # get shortest path from magic node to terminals through estabilizer
             best_path_g = None
             best_graph_size = None
@@ -174,6 +185,10 @@ class Scheduler:
                         best_graph_size = graph_size
                         selected_estabilizer_graph = estabilizer_graph
             if best_path_g is None or selected_estabilizer_graph is None:
+                self.print_sched(
+                    f"  No path from magic nodes {magic_nodes} "
+                    f"to estabilizer nodes {estabilizer_nodes}"
+                )
                 return None
             # finally, connect the magic->estabilizer graph with the estabilizer-terminals graph
             for node in best_path_g.nodes:
@@ -198,16 +213,18 @@ class Scheduler:
         return self.find_best_tree(working_topo_graph, root_nodes, data_nodes, pauli_product)
 
     def schedule_pauli_product(self, working_topo_graph, pauli_product):
+        self.print_sched(f"Trying to schedule {pauli_product}")
         # initially terminal nodes contain onlly the data qubits
         data_nodes = []
         for operator in pauli_product.operators:
             node = "d" + str(operator.qubit) + operator.basis.upper()
             if node not in working_topo_graph:
+                self.print_sched(f"  Node {node} not in working graph")
                 return None
             data_nodes.append(node)
         if len(data_nodes) == 0:
+            self.print_sched(f"  No data nodes found in working graph")
             return None
-        self.print_sched(f"Trying to schedule {pauli_product}")
         if not pauli_product.is_clifford:
             return self.schedule_non_clifford(working_topo_graph, data_nodes, pauli_product)
         else:
@@ -238,13 +255,23 @@ class Scheduler:
         num_estabilizers_scheduled = 0
         num_dependent_nodes = 0
         next_to_schedule = []
+        schedule_pp_timer = 0
         for pp in to_schedule:
             if working_topo_graph.number_of_nodes() == 0:
                 self.print_sched("No more nodes")
                 break
+            t = time.perf_counter()
             pp_graph = self.schedule_pauli_product(working_topo_graph, pp)
+            schedule_pp_timer += time.perf_counter() - t
+
             if pp_graph == None:
-                self.print_sched(f"* Could not schedule {pp}")
+                self.print_sched(
+                    f"  * Could not schedule on graph of "
+                    f"{working_topo_graph.number_of_nodes()}/{self.topo_graph.number_of_nodes()} "
+                    f"nodes and "
+                    f"{working_topo_graph.number_of_edges()}/{self.topo_graph.number_of_edges()} "
+                    f"edges"
+                )
                 next_to_schedule.append(pp)
                 # now the circuit could include multiple timeteps, so we need to ensure dependencies
                 # are met if the product couldn't be scheduled, then every qubit in that product is
@@ -255,9 +282,12 @@ class Scheduler:
                 if len(nodes_to_remove) > 0:
                     num_dependent_nodes += len(nodes_to_remove)
                     working_topo_graph.remove_nodes_from(nodes_to_remove)
+                del nodes_to_remove
             else:
                 num_nodes = pp_graph.number_of_nodes()
-                self.print_sched(f"Scheduled {pp.__str__()} with {num_nodes} nodes")
+                self.print_sched(
+                    f"  * Scheduled with {num_nodes} nodes and {pp_graph.number_of_edges()} edges"
+                )
                 pp_paths.append((pp, pp_graph))
                 num_scheduled += len(pp.operators)
                 for node in pp_graph.nodes():
@@ -279,6 +309,10 @@ class Scheduler:
                     if working_topo_graph.degree(node) == 0:
                         orphaned_nodes.append(node)
                 working_topo_graph.remove_nodes_from(orphaned_nodes)
+                del orphaned_nodes
+
+        working_topo_graph.clear()
+        del working_topo_graph
 
         self.print_sched("Scheduling results:")
         frac_paths = float(len(pp_paths)) / len(to_schedule)
@@ -313,7 +347,10 @@ class Scheduler:
         self.print_sched(f"Removed {num_dependent_nodes} dependent nodes")
         end_t = time.perf_counter()
         elapsed_time = end_t - start_t
-        self.print_sched(f"Scheduling timestep took {elapsed_time:0.4f} s")
+        self.print_sched(
+            f"Scheduling timestep took {elapsed_time:0.4f} s, "
+            f" scheduling paulis took {schedule_pp_timer:0.4f} s"
+        )
 
         self.sum_data_qubits += num_scheduled
         self.sum_bus_qubits += num_bus_scheduled
