@@ -147,56 +147,53 @@ class Scheduler:
             estabilizer_nodes = [
                 node for node in working_topo_graph.nodes if is_estabilizer_node(node)
             ]
-            # get candidate graphs connecting estabilizer to terminal nodes
-            estabilizer_graphs = []
-            for estabilizer_node in estabilizer_nodes:
+            magic_graphs = []
+            # find shortest path from a magic node to an estabilizer node
+            for magic_node in magic_nodes:
+                for estabilizer_node in estabilizer_nodes:
+                    path_g = self.get_bfs_graph(
+                        working_topo_graph, magic_node, [estabilizer_node], "", None
+                    )
+                    if path_g is None:
+                        continue
+                    self.print_sched(
+                        f"  Found graph from {magic_node} to {estabilizer_node} of size "
+                        f"{path_g.number_of_edges()}"
+                    )
+                    magic_graphs.append((magic_node, estabilizer_node, path_g))
+            if len(magic_graphs) == 0:
+                self.print_sched(f"  No path found from {magic_nodes} to " f"  {estabilizer_nodes}")
+                return None
+            # get graph connecting estabilizers to terminal nodes
+            best_g = None
+            best_graph_size = None
+            selected_magic_graph = None
+            for magic_node, estabilizer_node, path_g in magic_graphs:
                 estabilizer_graph = self.get_bfs_graph(
-                    working_topo_graph, estabilizer_node, data_nodes, which_ancilla, None
+                    working_topo_graph, estabilizer_node, data_nodes, which_ancilla, path_g
                 )
                 if estabilizer_graph is not None:
                     self.print_sched(
                         f"  Found graph from {estabilizer_node} of size "
                         f"{estabilizer_graph.number_of_edges()}"
                     )
-                    estabilizer_graphs.append((estabilizer_node, estabilizer_graph))
-            if len(estabilizer_graphs) == 0:
-                self.print_sched(
-                    f"  No estabilizer tree found from {estabilizer_nodes} to " f"  {data_nodes}"
-                )
-                return None
-            # get shortest path from magic node to terminals through estabilizer
-            best_path_g = None
-            best_graph_size = None
-            selected_estabilizer_graph = None
-            for magic_node in magic_nodes:
-                for estabilizer_node, estabilizer_graph in estabilizer_graphs:
-                    path_g = self.get_bfs_graph(
-                        working_topo_graph,
-                        magic_node,
-                        [estabilizer_node],
-                        "",
-                        estabilizer_graph.nodes,
-                    )
-                    if path_g is None:
-                        continue
                     graph_size = path_g.number_of_edges() + estabilizer_graph.number_of_edges()
-                    if best_path_g is None or graph_size < best_graph_size:
-                        best_path_g = path_g
+                    if best_g is None or graph_size < best_graph_size:
+                        best_g = estabilizer_graph
                         best_graph_size = graph_size
-                        selected_estabilizer_graph = estabilizer_graph
-            if best_path_g is None or selected_estabilizer_graph is None:
+                        selected_magic_graph = path_g
+            if best_g is None or selected_magic_graph is None:
                 self.print_sched(
-                    f"  No path from magic nodes {magic_nodes} "
-                    f"to estabilizer nodes {estabilizer_nodes}"
+                    f"  No path from estabilizer nodes {estabilizer_nodes} to {data_nodes}"
                 )
                 return None
             # finally, connect the magic->estabilizer graph with the estabilizer-terminals graph
-            for node in best_path_g.nodes:
+            for node in best_g.nodes:
                 if not is_estabilizer_node(node):
-                    selected_estabilizer_graph.add_node(node)
-            for edge in best_path_g.edges:
-                selected_estabilizer_graph.add_edge(*edge)
-            return selected_estabilizer_graph
+                    selected_magic_graph.add_node(node)
+            for edge in best_g.edges:
+                selected_magic_graph.add_edge(*edge)
+            return selected_magic_graph
         else:
             return self.find_best_tree(working_topo_graph, magic_nodes, data_nodes, pauli_product)
 
