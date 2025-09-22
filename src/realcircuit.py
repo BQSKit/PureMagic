@@ -165,14 +165,15 @@ class RealCircuit(list):
     @timer
     def plot(self, show_product_ids):
         circuit_fname = Path(self.args.circuit).stem + ".circuit"
-        layers = self.get_layers()
+        if self.layers is None:
+            self.layers = self.get_layers()
         layer_chunk = 1000
-        num_layers = len(layers)
+        num_layers = len(self.layers)
         for min_layer in range(0, num_layers, layer_chunk):
             max_layer = min(num_layers, min_layer + layer_chunk)
             self.plot_range(
                 circuit_fname + f"-{min_layer}",
-                layers[min_layer:max_layer],
+                self.layers[min_layer:max_layer],
                 min_layer,
                 show_product_ids,
             )
