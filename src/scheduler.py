@@ -60,7 +60,7 @@ class Scheduler:
                 break
             g.remove_nodes_from(dangling_nodes)
 
-    def get_bfs_graph(self, g, root_node, terminal_nodes, which_ancilla, nodes_to_exclude):
+    def get_bfs_graph(self, root_node, terminal_nodes, which_ancilla, nodes_to_exclude):
         visited = set([root_node])
         queue = [root_node]
         bfs_graph = nx.Graph()
@@ -70,7 +70,9 @@ class Scheduler:
         while len(queue):
             node = queue.pop(0)
             bfs_graph.add_node(node)
-            for nb in g[node]:
+            for nb in self.topo_graph.neighbors(node):
+                if self.topo_graph.nodes[nb]["used"]:
+                    continue
                 if nb in visited:
                     continue
                 if (
@@ -110,14 +112,14 @@ class Scheduler:
                         return bfs_graph
         return None
 
-    def find_best_tree(self, working_topo_graph, root_nodes, data_nodes, pauli_product):
+    def find_best_tree(self, root_nodes, data_nodes, pauli_product):
         best_graph = None
         self.print_sched(f"  Find best tree for {pauli_product}:")
         which_ancilla = (
             pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
         )
         for root_node in root_nodes:
-            g = self.get_bfs_graph(working_topo_graph, root_node, data_nodes, which_ancilla, None)
+            g = self.get_bfs_graph(root_node, data_nodes, which_ancilla, None)
             if g is None:
                 self.print_sched(
                     f"    No tree from root node {root_node} to {data_nodes}, "
@@ -131,11 +133,11 @@ class Scheduler:
                 best_graph = g
         return best_graph
 
-    def schedule_non_clifford(self, working_topo_graph, data_nodes, pauli_product):
+    def schedule_non_clifford(self, data_nodes, pauli_product):
         magic_nodes = [
             node
-            for node in working_topo_graph.nodes
-            if is_magic_node(node) and working_topo_graph.nodes[node]["busy_count"] == 0
+            for node in self.topo_graph.nodes
+            if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] == 0
         ]
         if len(magic_nodes) == 0:
             self.print_sched("  No available magic nodes")
@@ -145,15 +147,15 @@ class Scheduler:
                 pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
             )
             estabilizer_nodes = [
-                node for node in working_topo_graph.nodes if is_estabilizer_node(node)
+                node
+                for node in self.topo_graph.nodes
+                if is_estabilizer_node(node) and not self.topo_graph.nodes[node]["used"]
             ]
             magic_graphs = []
             # find shortest path from a magic node to an estabilizer node
             for magic_node in magic_nodes:
                 for estabilizer_node in estabilizer_nodes:
-                    magic_path_g = self.get_bfs_graph(
-                        working_topo_graph, magic_node, [estabilizer_node], "", None
-                    )
+                    magic_path_g = self.get_bfs_graph(magic_node, [estabilizer_node], "", None)
                     if magic_path_g is None:
                         continue
                     self.print_sched(
@@ -177,7 +179,7 @@ class Scheduler:
                     # in this case we cannot get a shorter graph from this magic->estabilizer path
                     continue
                 estabilizer_graph = self.get_bfs_graph(
-                    working_topo_graph, estabilizer_node, data_nodes, which_ancilla, magic_path_g
+                    estabilizer_node, data_nodes, which_ancilla, magic_path_g
                 )
                 if estabilizer_graph is not None:
                     self.print_sched(
@@ -204,37 +206,41 @@ class Scheduler:
                 selected_magic_graph.add_edge(*edge)
             return selected_magic_graph
         else:
-            return self.find_best_tree(working_topo_graph, magic_nodes, data_nodes, pauli_product)
+            return self.find_best_tree(magic_nodes, data_nodes, pauli_product)
 
-    def schedule_clifford(self, working_topo_graph, data_nodes, pauli_product):
+    def schedule_clifford(self, data_nodes, pauli_product):
         # FIXME: deal with estabilizers and ancilla
         # root node needs to be a bus node next to one of the data nodes
         root_nodes = set()
         for node in data_nodes:
-            for nb in working_topo_graph[node]:
+            if self.topo_graph.nodes[node]["used"]:
+                continue
+            for nb in self.topo_graph.neighbors(node):
+                if self.topo_graph.nodes[nb]["used"]:
+                    continue
                 if is_bus_node(nb):
                     root_nodes.add(nb)
         if len(root_nodes) == 0:
             return None
-        return self.find_best_tree(working_topo_graph, root_nodes, data_nodes, pauli_product)
+        return self.find_best_tree(root_nodes, data_nodes, pauli_product)
 
-    def schedule_pauli_product(self, working_topo_graph, pauli_product):
+    def schedule_pauli_product(self, pauli_product):
         self.print_sched(f"Trying to schedule {pauli_product}")
         # initially terminal nodes contain onlly the data qubits
         data_nodes = []
         for operator in pauli_product.operators:
             node = "d" + str(operator.qubit) + operator.basis.upper()
-            if node not in working_topo_graph:
-                self.print_sched(f"  Node {node} not in working graph")
+            if self.topo_graph.nodes[node]["used"]:
+                self.print_sched(f"  Node {node} is already used")
                 return None
             data_nodes.append(node)
         if len(data_nodes) == 0:
             self.print_sched(f"  No data nodes found in working graph")
             return None
         if not pauli_product.is_clifford:
-            return self.schedule_non_clifford(working_topo_graph, data_nodes, pauli_product)
+            return self.schedule_non_clifford(data_nodes, pauli_product)
         else:
-            return self.schedule_clifford(working_topo_graph, data_nodes, pauli_product)
+            return self.schedule_clifford(data_nodes, pauli_product)
 
     def gen_busy_count(self):
         busy_count = int(round(self.rng.exponential(scale=1.0 / self.args.magic_state_lambda)))
@@ -251,8 +257,10 @@ class Scheduler:
                 self.topo_graph.nodes[node]["busy_count"] -= 1
                 if self.topo_graph.nodes[node]["busy_count"] > 0:
                     num_busy += 1
+            # ensure all nodes are available at the start of the timestep
+            self.topo_graph.nodes[node]["used"] = False
         pp_paths = []
-        working_topo_graph = copy.deepcopy(self.topo_graph)
+        # working_topo_graph = copy.deepcopy(self.topo_graph)
         num_scheduled = 0
         num_bus_scheduled = 0
         num_data_scheduled = 0
@@ -263,32 +271,22 @@ class Scheduler:
         next_to_schedule = []
         schedule_pp_timer = 0
         for pp in to_schedule:
-            if working_topo_graph.number_of_nodes() == 0:
+            if self.topo_graph.number_of_nodes() == 0:
                 self.print_sched("No more nodes")
                 break
             t = time.perf_counter()
-            pp_graph = self.schedule_pauli_product(working_topo_graph, pp)
+            pp_graph = self.schedule_pauli_product(pp)
             schedule_pp_timer += time.perf_counter() - t
 
             if pp_graph == None:
-                self.print_sched(
-                    f"  * Could not schedule on graph of "
-                    f"{working_topo_graph.number_of_nodes()}/{self.topo_graph.number_of_nodes()} "
-                    f"nodes and "
-                    f"{working_topo_graph.number_of_edges()}/{self.topo_graph.number_of_edges()} "
-                    f"edges"
-                )
+                self.print_sched("  * Could not schedule on graph")
                 next_to_schedule.append(pp)
                 # now the circuit could include multiple timeteps, so we need to ensure dependencies
                 # are met if the product couldn't be scheduled, then every qubit in that product is
                 # now out of bounds so remove from the graph
-                nodes_to_remove = []
                 for operator in pp.operators:
-                    nodes_to_remove.append("d" + operator.__str__())
-                if len(nodes_to_remove) > 0:
-                    num_dependent_nodes += len(nodes_to_remove)
-                    working_topo_graph.remove_nodes_from(nodes_to_remove)
-                del nodes_to_remove
+                    self.topo_graph.nodes["d" + operator.__str__().upper()]["used"] = True
+                    num_dependent_nodes += 1
             else:
                 num_nodes = pp_graph.number_of_nodes()
                 self.print_sched(
@@ -308,17 +306,8 @@ class Scheduler:
                         num_ancilla_scheduled += 1
                     elif is_estabilizer_node(node):
                         num_estabilizers_scheduled += 1
-                # now remove the Pauli product path from the graph
-                working_topo_graph.remove_nodes_from(pp_graph.nodes)  # type: ignore
-                orphaned_nodes = []
-                for node in working_topo_graph.nodes:
-                    if working_topo_graph.degree(node) == 0:
-                        orphaned_nodes.append(node)
-                working_topo_graph.remove_nodes_from(orphaned_nodes)
-                del orphaned_nodes
-
-        working_topo_graph.clear()
-        del working_topo_graph
+                    # ensure we can't use this node again
+                    self.topo_graph.nodes[node]["used"] = True
 
         self.print_sched("Scheduling results:")
         frac_paths = float(len(pp_paths)) / len(to_schedule)
