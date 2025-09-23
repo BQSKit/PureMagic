@@ -71,18 +71,20 @@ class Scheduler:
                     ):
                         # FIXME: is the left and right really necessary given we can create the
                         # ancilla on the fly?
+                        match_ancilla = False
                         # Match the which_ancilla with the correct side
                         # (left or top for X, right or bottom for Y)
-                        node_col, node_row = get_node_pos(node)
-                        nb_col, nb_row = get_node_pos(nb)
-                        if which_ancilla == "X":
-                            if node_col >= nb_col and node_row >= nb_row:
-                                continue
-                        elif which_ancilla == "Z":
-                            if node_col <= nb_col and node_row <= nb_row:
-                                continue
-                        else:
-                            raise RuntimeError(f"illegal which_ancilla {which_ancilla}")
+                        if match_ancilla:
+                            node_col, node_row = get_node_pos(node)
+                            nb_col, nb_row = get_node_pos(nb)
+                            if which_ancilla == "X":
+                                if node_col >= nb_col and node_row >= nb_row:
+                                    continue
+                            elif which_ancilla == "Z":
+                                if node_col <= nb_col and node_row <= nb_row:
+                                    continue
+                            else:
+                                raise RuntimeError(f"illegal which_ancilla {which_ancilla}")
                         self.print_sched(f"    Selecting {nb} as {which_ancilla}")
                         g.add_node(nb)
                         g.add_edge(node, nb)
@@ -224,11 +226,27 @@ class Scheduler:
 
     def schedule_clifford(self, data_nodes, pauli_product):
         # FIXME: deal with estabilizers and ancilla
+        if len(data_nodes) == 1:
+            node = data_nodes[0]
+            if self.topo_graph.nodes[node]["used"]:
+                return None
+            g = nx.Graph()
+            g.add_node(node)
+            if pauli_product.need_ancilla:
+                for nb in self.topo_graph.neighbors(node):
+                    if is_bus_node(nb) and not self.topo_graph.nodes[nb]["used"]:
+                        g.add_node(nb)
+                        g.add_edge(node, nb)
+                        break
+                else:
+                    return None
+            self.print_sched(f"Scheduled clifford on {g.nodes} nodes")
+            return g
         # root node needs to be a bus node next to one of the data nodes
         root_nodes = set()
         for node in data_nodes:
             if self.topo_graph.nodes[node]["used"]:
-                continue
+                return None
             for nb in self.topo_graph.neighbors(node):
                 if self.topo_graph.nodes[nb]["used"]:
                     continue
@@ -236,7 +254,10 @@ class Scheduler:
                     root_nodes.add(nb)
         if len(root_nodes) == 0:
             return None
-        return self.find_best_tree(root_nodes, data_nodes, pauli_product)
+        g = self.find_best_tree(root_nodes, data_nodes, pauli_product)
+        if not g is None:
+            self.print_sched(f"Scheduled clifford in {g.nodes} nodes")
+        return g
 
     def schedule_pauli_product(self, pauli_product):
         self.print_sched(f"Trying to schedule {pauli_product}")
