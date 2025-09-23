@@ -60,11 +60,39 @@ class Scheduler:
                 break
             g.remove_nodes_from(dangling_nodes)
 
+    def find_ancilla(self, g, which_ancilla):
+        for node in g.nodes:
+            if is_bus_node(node):
+                for nb in self.topo_graph.neighbors(node):
+                    if (
+                        is_bus_node(nb)
+                        and not self.topo_graph.nodes[nb]["used"]
+                        and nb not in g.nodes
+                    ):
+                        # FIXME: is the left and right really necessary given we can create the
+                        # ancilla on the fly?
+                        # Match the which_ancilla with the correct side
+                        # (left or top for X, right or bottom for Y)
+                        node_col, node_row = get_node_pos(node)
+                        nb_col, nb_row = get_node_pos(nb)
+                        if which_ancilla == "X":
+                            if node_col >= nb_col and node_row >= nb_row:
+                                continue
+                        elif which_ancilla == "Z":
+                            if node_col <= nb_col and node_row <= nb_row:
+                                continue
+                        else:
+                            raise RuntimeError(f"illegal which_ancilla {which_ancilla}")
+                        self.print_sched(f"    Selecting {nb} as {which_ancilla}")
+                        g.add_node(nb)
+                        g.add_edge(node, nb)
+                        return True
+        return False
+
     def get_bfs_graph(self, root_node, terminal_nodes, which_ancilla, nodes_to_exclude):
         visited = set([root_node])
         queue = [root_node]
         bfs_graph = nx.Graph()
-        found_ancilla = False
         num_terminals_reqd = len(terminal_nodes)
         num_found_terminals = 0
         while len(queue):
@@ -81,23 +109,8 @@ class Scheduler:
                     and nb not in terminal_nodes
                 ):
                     continue
-                if not is_bus_node(nb):
-                    # Match the which_ancilla with the correct side
-                    # (left or top for X, right or bottom for Y)
-                    if which_ancilla != "" and not found_ancilla and is_ancilla_node(nb):
-                        node_col, node_row = get_node_pos(node)
-                        nb_col, nb_row = get_node_pos(nb)
-                        if which_ancilla == "X":
-                            if node_col >= nb_col and node_row >= nb_row:
-                                continue
-                        elif which_ancilla == "Z":
-                            if node_col <= nb_col and node_row <= nb_row:
-                                continue
-                        else:
-                            raise RuntimeError(f"illegal which_ancilla {which_ancilla}")
-                        found_ancilla = True
-                    elif not nb in terminal_nodes:
-                        continue
+                if not is_bus_node(nb) and not nb in terminal_nodes:
+                    continue
                 visited.add(nb)
                 bfs_graph.add_edge(node, nb)
                 if is_bus_node(nb):
@@ -106,9 +119,10 @@ class Scheduler:
                     if not is_ancilla_node(nb):
                         num_found_terminals += 1
                     if num_found_terminals == num_terminals_reqd:
-                        if which_ancilla != "" and not found_ancilla:
-                            continue
                         self.trim_dangling_nodes(bfs_graph)
+                        if which_ancilla != "":
+                            if not self.find_ancilla(bfs_graph, which_ancilla):
+                                return None
                         return bfs_graph
         return None
 
@@ -314,7 +328,7 @@ class Scheduler:
         frac_data = float(num_data_scheduled) / self.topo_graph.num_data_qubits
         frac_bus = float(num_bus_scheduled) / self.topo_graph.num_bus_qubits
         frac_magic = float(num_magic_scheduled) / self.topo_graph.num_magic_qubits
-        frac_ancilla = float(num_ancilla_scheduled) / self.topo_graph.num_ancilla_qubits
+        # frac_ancilla = float(num_ancilla_scheduled) / self.topo_graph.num_ancilla_qubits
         frac_estabilizers = (
             float(num_estabilizers_scheduled) / self.topo_graph.num_estabilizer_qubits
         )
@@ -331,10 +345,10 @@ class Scheduler:
             f"  magic:       {num_magic_scheduled}/{self.topo_graph.num_magic_qubits} "
             f"({frac_magic:.2f})",
         )
-        self.print_sched(
-            f"  ancilla:     {num_ancilla_scheduled}/{self.topo_graph.num_ancilla_qubits} "
-            f"({frac_ancilla:.2f})",
-        )
+        # self.print_sched(
+        #    f"  ancilla:     {num_ancilla_scheduled}/{self.topo_graph.num_ancilla_qubits} "
+        #    f"({frac_ancilla:.2f})",
+        # )
         self.print_sched(
             f"  estabilizer: {num_estabilizers_scheduled}/{self.topo_graph.num_estabilizer_qubits} "
             f"({frac_estabilizers:.2f})",
@@ -441,9 +455,9 @@ class Scheduler:
         data_frac = float(self.sum_data_qubits) / (self.topo_graph.num_data_qubits * num_steps)
         bus_frac = float(self.sum_bus_qubits) / (self.topo_graph.num_bus_qubits * num_steps)
         magic_frac = float(self.sum_magic_qubits) / (self.topo_graph.num_magic_qubits * num_steps)
-        ancilla_frac = float(self.sum_ancilla_qubits) / (
-            self.topo_graph.num_ancilla_qubits * num_steps
-        )
+        # ancilla_frac = float(self.sum_ancilla_qubits) / (
+        #    self.topo_graph.num_ancilla_qubits * num_steps
+        # )
         estabilizer_frac = float(self.sum_estabilizer_qubits) / (
             self.topo_graph.num_estabilizer_qubits * num_steps
         )
@@ -465,7 +479,7 @@ class Scheduler:
         print(f"  data:        {data_frac:.3f}")
         print(f"  bus:         {bus_frac:.3f}")
         print(f"  magic:       {magic_frac:.3f}")
-        print(f"  ancilla:     {ancilla_frac:.3f}")
+        # print(f"  ancilla:     {ancilla_frac:.3f}")
         print(f"  estabilizer: {estabilizer_frac:.3f}")
         # print(f"  overall:     {overall_frac:.3f}")
         print("Magic state cultivation time:")

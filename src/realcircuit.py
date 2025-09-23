@@ -67,9 +67,9 @@ class RealCircuit(list):
                     pps_selected.append(pp.id)
             layer_i += 1
             layers.append(layer)
-            for pp in pps_selected:
-                pps_left.remove(pp)
-                pps_used.add(pp)
+            for pp_id in pps_selected:
+                pps_left.remove(pp_id)
+                pps_used.add(pp_id)
         return layers
 
     @timer
