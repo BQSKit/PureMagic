@@ -129,6 +129,21 @@ class Scheduler:
                         return bfs_graph
         return None
 
+    def get_nodes_by_dist(self, nodes, pauli_product):
+        # sort nodes by distance to pp data nodes
+        min_distances = []
+        for node in nodes:
+            min_d = 1000000
+            for op in pauli_product.operators:
+                data_node = f"d{str(op).upper()}"
+                d = self.get_node_dist(node, data_node)
+                if d < min_d:
+                    min_d = d
+            min_distances.append(min_d)
+        node_distances = list(zip(nodes, min_distances))
+        node_distances.sort(key=lambda x: x[1])
+        return node_distances
+
     def find_tree(self, root_nodes, data_nodes, pauli_product):
         self.print_sched(f"  Find tree for {pauli_product}:")
         which_ancilla = (
@@ -148,7 +163,7 @@ class Scheduler:
             return g
         return None
 
-    def find_estabilizer_tree(self, magic_node_distances, data_nodes, pauli_product):
+    def find_estabilizer_tree(self, magic_nodes, data_nodes, pauli_product):
         which_ancilla = (
             pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
         )
@@ -157,10 +172,11 @@ class Scheduler:
             for node in self.topo_graph.nodes
             if is_estabilizer_node(node) and not self.topo_graph.nodes[node]["used"]
         ]
+        estabilizer_distances = self.get_nodes_by_dist(estabilizer_nodes, pauli_product)
         magic_path_dists = []
-        for magic_node, magic_d in magic_node_distances:
-            for estabilizer_node in estabilizer_nodes:
-                d = self.get_node_dist(magic_node, estabilizer_node) + magic_d
+        for magic_node in magic_nodes:
+            for estabilizer_node, estabilizer_d in estabilizer_distances:
+                d = self.get_node_dist(magic_node, estabilizer_node) + estabilizer_d
                 magic_path_dists.append((magic_node, estabilizer_node, d))
         magic_path_dists.sort(key=lambda x: x[2])
         for magic_node, estabilizer_node, d in magic_path_dists:
@@ -190,13 +206,13 @@ class Scheduler:
                 estabilizer_g.add_edge(*edge)
             self.print_sched(
                 f"  Final graph has {estabilizer_g.number_of_edges()} edges "
-                f"(estimated distance {d})"
+                f"(estimated distance {d:.0f})"
             )
             return estabilizer_g
         self.print_sched(f"  No path from estabilizer nodes {estabilizer_nodes} to {data_nodes}")
         return None
 
-    def get_magic_nodes_by_dist(self, pauli_product):
+    def schedule_non_clifford(self, data_nodes, pauli_product):
         magic_nodes = [
             node
             for node in self.topo_graph.nodes
@@ -205,33 +221,13 @@ class Scheduler:
         if len(magic_nodes) == 0:
             self.print_sched("  No available magic nodes")
             return None
-
-        # sort magic nodes by distance to pp data nodes
-        min_magic_distances = []
-        for magic_node in magic_nodes:
-            min_d = 1000000
-            for op in pauli_product.operators:
-                data_node = f"d{str(op).upper()}"
-                d = self.get_node_dist(magic_node, data_node)
-                if d < min_d:
-                    min_d = d
-            min_magic_distances.append(min_d)
-        magic_node_distances = list(zip(magic_nodes, min_magic_distances))
-        magic_node_distances.sort(key=lambda x: x[1])
-        return magic_node_distances
-
-    def schedule_non_clifford(self, data_nodes, pauli_product):
-        # sort magic nodes by distance to pp data nodes
-        magic_node_distances = self.get_magic_nodes_by_dist(pauli_product)
-        if magic_node_distances == None:
-            return None
-
         if pauli_product.need_estabilizer:
-            return self.find_estabilizer_tree(magic_node_distances, data_nodes, pauli_product)
+            return self.find_estabilizer_tree(magic_nodes, data_nodes, pauli_product)
         else:
-            return self.find_tree(
-                [node for node, _ in magic_node_distances], data_nodes, pauli_product
-            )
+            magic_nodes_sorted = [
+                node for node, _ in self.get_nodes_by_dist(magic_nodes, pauli_product)
+            ]
+            return self.find_tree(magic_nodes_sorted, data_nodes, pauli_product)
 
     def schedule_clifford(self, data_nodes, pauli_product):
         # FIXME: deal with estabilizers and ancilla
