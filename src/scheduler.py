@@ -300,8 +300,8 @@ class Scheduler:
             # ensure all nodes are available at the start of the timestep
             self.topo_graph.nodes[node]["used"] = False
 
-        # sort the pps to schedule from smallest to largest
-        to_schedule.sort(key=lambda pp: len(pp.operators), reverse=False)
+        # sort the pps to schedule; reverse sort seems to work better
+        to_schedule.sort(key=lambda pp: len(pp.operators), reverse=True)
 
         pp_paths = []
         # working_topo_graph = copy.deepcopy(self.topo_graph)
