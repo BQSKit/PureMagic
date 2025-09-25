@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import warnings
 import time
+import math
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="networkx backend defined more than once")
@@ -14,11 +15,6 @@ with warnings.catch_warnings():
 
 from topograph import is_bus_node, is_data_node, is_magic_node, is_ancilla_node, is_estabilizer_node
 from utils import timer
-
-
-def get_node_pos(node):
-    node_col, node_row = node[1:].split("-")
-    return int(node_col), int(node_row)
 
 
 class Scheduler:
@@ -50,6 +46,11 @@ class Scheduler:
                     "pp " + str(pp.id) + " scheduled before parent " + str(parent_id)
                 )
 
+    def get_node_dist(self, node1, node2):
+        pos1 = self.topo_graph.nodes[node1]["pos"]
+        pos2 = self.topo_graph.nodes[node2]["pos"]
+        return math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
+
     def trim_dangling_nodes(self, g):
         while True:
             dangling_nodes = []
@@ -75,8 +76,12 @@ class Scheduler:
                         # Match the which_ancilla with the correct side
                         # (left or top for X, right or bottom for Y)
                         if match_ancilla:
-                            node_col, node_row = get_node_pos(node)
-                            nb_col, nb_row = get_node_pos(nb)
+                            node_col, node_row = self.topo_graph.node[node]["pos"]
+                            nb_col, nb_row = self.topo_graph.node[nb]["pos"]
+                            self.print_sched(
+                                f"NODE {nb} pos {nb_col},{nb_row} "
+                                f"attr {self.topo_graph.nodes[nb]["pos"]}"
+                            )
                             if which_ancilla == "X":
                                 if node_col >= nb_col and node_row >= nb_row:
                                     continue
@@ -91,7 +96,7 @@ class Scheduler:
                         return True
         return False
 
-    def get_bfs_graph(self, root_node, terminal_nodes, which_ancilla, nodes_to_exclude):
+    def get_bfs_graph(self, root_node, terminal_nodes, which_ancilla, exclude):
         visited = set([root_node])
         queue = [root_node]
         bfs_graph = nx.Graph()
@@ -105,11 +110,7 @@ class Scheduler:
                     continue
                 if nb in visited:
                     continue
-                if (
-                    nodes_to_exclude is not None
-                    and nb in nodes_to_exclude
-                    and nb not in terminal_nodes
-                ):
+                if exclude is not None and nb in exclude and nb not in terminal_nodes:
                     continue
                 if not is_bus_node(nb) and not nb in terminal_nodes:
                     continue
@@ -128,9 +129,8 @@ class Scheduler:
                         return bfs_graph
         return None
 
-    def find_best_tree(self, root_nodes, data_nodes, pauli_product):
-        best_graph = None
-        self.print_sched(f"  Find best tree for {pauli_product}:")
+    def find_tree(self, root_nodes, data_nodes, pauli_product):
+        self.print_sched(f"  Find tree for {pauli_product}:")
         which_ancilla = (
             pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
         )
@@ -145,11 +145,58 @@ class Scheduler:
             self.print_sched(
                 f"    Tree from {root_node} to {data_nodes} has size " f"{g.number_of_edges()}"
             )
-            if best_graph is None or g.number_of_edges() < best_graph.number_of_edges():
-                best_graph = g
-        return best_graph
+            return g
+        return None
 
-    def schedule_non_clifford(self, data_nodes, pauli_product):
+    def find_estabilizer_tree(self, magic_node_distances, data_nodes, pauli_product):
+        which_ancilla = (
+            pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
+        )
+        estabilizer_nodes = [
+            node
+            for node in self.topo_graph.nodes
+            if is_estabilizer_node(node) and not self.topo_graph.nodes[node]["used"]
+        ]
+        magic_path_dists = []
+        for magic_node, magic_d in magic_node_distances:
+            for estabilizer_node in estabilizer_nodes:
+                d = self.get_node_dist(magic_node, estabilizer_node) + magic_d
+                magic_path_dists.append((magic_node, estabilizer_node, d))
+        magic_path_dists.sort(key=lambda x: x[2])
+        for magic_node, estabilizer_node, d in magic_path_dists:
+            magic_path_g = self.get_bfs_graph(magic_node, [estabilizer_node], "", exclude=None)
+            if magic_path_g is None:
+                self.print_sched(f"  No path from {magic_node} to {estabilizer_node}")
+                continue
+            self.print_sched(
+                f"  Found graph from {magic_node} to {estabilizer_node} of size "
+                f"{magic_path_g.number_of_edges()}"
+            )
+            estabilizer_g = self.get_bfs_graph(
+                estabilizer_node, data_nodes, which_ancilla, exclude=magic_path_g
+            )
+            if estabilizer_g is None:
+                self.print_sched(f"  No path from {estabilizer_node} to {pauli_product}")
+                continue
+            self.print_sched(
+                f"  Found graph from {estabilizer_node} ({magic_node}) of size "
+                f"{estabilizer_g.number_of_edges()}"
+            )
+            # Now connect the magic->estabilizer graph with the estabilizer-terminals graph
+            for node in magic_path_g.nodes:
+                if not is_estabilizer_node(node):
+                    estabilizer_g.add_node(node)
+            for edge in magic_path_g.edges:
+                estabilizer_g.add_edge(*edge)
+            self.print_sched(
+                f"  Final graph has {estabilizer_g.number_of_edges()} edges "
+                f"(estimated distance {d})"
+            )
+            return estabilizer_g
+        self.print_sched(f"  No path from estabilizer nodes {estabilizer_nodes} to {data_nodes}")
+        return None
+
+    def get_magic_nodes_by_dist(self, pauli_product):
         magic_nodes = [
             node
             for node in self.topo_graph.nodes
@@ -158,71 +205,33 @@ class Scheduler:
         if len(magic_nodes) == 0:
             self.print_sched("  No available magic nodes")
             return None
-        if pauli_product.need_estabilizer:
-            which_ancilla = (
-                pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
-            )
-            estabilizer_nodes = [
-                node
-                for node in self.topo_graph.nodes
-                if is_estabilizer_node(node) and not self.topo_graph.nodes[node]["used"]
-            ]
-            magic_graphs = []
-            # find shortest path from a magic node to an estabilizer node
-            for magic_node in magic_nodes:
-                for estabilizer_node in estabilizer_nodes:
-                    magic_path_g = self.get_bfs_graph(magic_node, [estabilizer_node], "", None)
-                    if magic_path_g is None:
-                        continue
-                    self.print_sched(
-                        f"  Found graph from {magic_node} to {estabilizer_node} of size "
-                        f"{magic_path_g.number_of_edges()}"
-                    )
-                    magic_graphs.append((magic_node, estabilizer_node, magic_path_g))
-            if len(magic_graphs) == 0:
-                self.print_sched(f"  No path found from {magic_nodes} to " f"  {estabilizer_nodes}")
-                return None
-            # sort the magic graphs that we will try the shortest paths first when looking for the
-            # following estabilizer-data tree
-            magic_graphs.sort(key=lambda x: x[2].number_of_edges())
 
-            # get graph connecting estabilizers to terminal nodes
-            best_g = None
-            best_size = None
-            selected_magic_graph = None
-            for magic_node, estabilizer_node, magic_path_g in magic_graphs:
-                if best_size is not None and best_size <= magic_path_g.number_of_edges():
-                    # in this case we cannot get a shorter graph from this magic->estabilizer path
-                    continue
-                estabilizer_graph = self.get_bfs_graph(
-                    estabilizer_node, data_nodes, which_ancilla, magic_path_g
-                )
-                if estabilizer_graph is not None:
-                    self.print_sched(
-                        f"  Found graph from {estabilizer_node} ({magic_node}) of size "
-                        f"{estabilizer_graph.number_of_edges()}"
-                    )
-                    graph_size = (
-                        magic_path_g.number_of_edges() + estabilizer_graph.number_of_edges()
-                    )
-                    if best_g is None or graph_size < best_size:
-                        best_g = estabilizer_graph
-                        best_size = graph_size
-                        selected_magic_graph = magic_path_g
-            if best_g is None or selected_magic_graph is None:
-                self.print_sched(
-                    f"  No path from estabilizer nodes {estabilizer_nodes} to {data_nodes}"
-                )
-                return None
-            # finally, connect the magic->estabilizer graph with the estabilizer-terminals graph
-            for node in best_g.nodes:
-                if not is_estabilizer_node(node):
-                    selected_magic_graph.add_node(node)
-            for edge in best_g.edges:
-                selected_magic_graph.add_edge(*edge)
-            return selected_magic_graph
+        # sort magic nodes by distance to pp data nodes
+        min_magic_distances = []
+        for magic_node in magic_nodes:
+            min_d = 1000000
+            for op in pauli_product.operators:
+                data_node = f"d{str(op).upper()}"
+                d = self.get_node_dist(magic_node, data_node)
+                if d < min_d:
+                    min_d = d
+            min_magic_distances.append(min_d)
+        magic_node_distances = list(zip(magic_nodes, min_magic_distances))
+        magic_node_distances.sort(key=lambda x: x[1])
+        return magic_node_distances
+
+    def schedule_non_clifford(self, data_nodes, pauli_product):
+        # sort magic nodes by distance to pp data nodes
+        magic_node_distances = self.get_magic_nodes_by_dist(pauli_product)
+        if magic_node_distances == None:
+            return None
+
+        if pauli_product.need_estabilizer:
+            return self.find_estabilizer_tree(magic_node_distances, data_nodes, pauli_product)
         else:
-            return self.find_best_tree(magic_nodes, data_nodes, pauli_product)
+            return self.find_tree(
+                [node for node, _ in magic_node_distances], data_nodes, pauli_product
+            )
 
     def schedule_clifford(self, data_nodes, pauli_product):
         # FIXME: deal with estabilizers and ancilla
@@ -254,14 +263,14 @@ class Scheduler:
                     root_nodes.add(nb)
         if len(root_nodes) == 0:
             return None
-        g = self.find_best_tree(root_nodes, data_nodes, pauli_product)
+        g = self.find_tree(root_nodes, data_nodes, pauli_product)
         if not g is None:
             self.print_sched(f"Scheduled clifford in {g.nodes} nodes")
         return g
 
     def schedule_pauli_product(self, pauli_product):
         self.print_sched(f"Trying to schedule {pauli_product}")
-        # initially terminal nodes contain onlly the data qubits
+        # initially terminal nodes contain only the data qubits
         data_nodes = []
         for operator in pauli_product.operators:
             node = "d" + str(operator.qubit) + operator.basis.upper()
@@ -294,6 +303,10 @@ class Scheduler:
                     num_busy += 1
             # ensure all nodes are available at the start of the timestep
             self.topo_graph.nodes[node]["used"] = False
+
+        # sort the pps to schedule from smallest to largest
+        to_schedule.sort(key=lambda pp: len(pp.operators), reverse=False)
+
         pp_paths = []
         # working_topo_graph = copy.deepcopy(self.topo_graph)
         num_scheduled = 0
