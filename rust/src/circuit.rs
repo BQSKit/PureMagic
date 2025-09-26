@@ -315,26 +315,13 @@ impl Circuit {
         let mut file = File::create(&output_fname)?;
 
         let layers = self.get_layers();
-        let total_layers = layers.len();
 
-        writeln!(file, "\nCircuit ({} layers):", total_layers)?;
+        writeln!(file, "layer id product ancilla? ES? clifford? children parents")?;
         for (i, layer) in layers.iter().enumerate() {
-            write!(file, "Layer {}: ", i)?;
-            for pp in layer {
-                write!(file, "{} ", pp.id)?;
-            }
-            writeln!(file)?;
-
-            for pp in layer {
-                write!(file, "  {}  parents: ", pp)?;
-                for parent in &pp.parents {
-                    write!(file, "{} ", parent)?;
-                }
-                write!(file, " children: ")?;
-                for child in &pp.children {
-                    write!(file, "{} ", child)?;
-                }
-                writeln!(file)?;
+            let mut sorted_layer = layer.clone();
+            sorted_layer.sort_by_key(|pp| pp.id);
+            for pp in sorted_layer {
+                writeln!(file, "{}: {}", i, pp)?;
             }
         }
         println!("Wrote circuit to {}", output_fname);
