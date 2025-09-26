@@ -56,13 +56,13 @@ impl Circuit {
         let mut relationships = Vec::new();
         let mut current_pps = vec![-1; self.num_qubits];
 
-        for (idx, pp) in self.products.iter().enumerate() {
+        for pp in self.products.iter() {
             for op in &pp.operators {
                 let current_id = current_pps[op.qubit];
                 if current_id != -1 {
-                    relationships.push((idx as i32, current_id));
+                    relationships.push((pp.id as i32, current_id));
                 }
-                current_pps[op.qubit] = idx as i32;
+                current_pps[op.qubit] = pp.id as i32;
             }
         }
         // Apply relationships in batch
@@ -84,7 +84,6 @@ impl Circuit {
         while !pps_left.is_empty() {
             let mut layer = Vec::new();
             let mut pps_selected = Vec::new();
-
             for &pp_id in &pps_left {
                 let pp = &self.products[pp_id];
                 if pp.parents.iter().all(|&parent| pps_used.contains(&(parent as usize))) {
@@ -100,16 +99,14 @@ impl Circuit {
                 pps_used.insert(pp_id);
             }
         }
-
         layers
     }
 
     pub fn split_ys(&mut self) {
-        // Collect all Y products and their modifications
         let mut modifications = Vec::new();
         let start_id = self.products.len() as i32;
-
-        for (idx, pp) in self.products.iter().enumerate() {
+        // split Ys and gather changes for original PPs in modifications vector
+        for pp in self.products.iter() {
             if pp.num_ys > 0 {
                 let mut new_pp = PauliProduct::new();
                 new_pp.id = start_id + modifications.len() as i32;
@@ -117,63 +114,39 @@ impl Circuit {
                 new_pp.num_ys = pp.num_ys;
                 new_pp.need_ancilla = pp.num_ys % 2 == 1;
                 new_pp.need_estabilizer = true;
-
                 // Convert Y operators to X and Z parts
-                let mut x_ops = Vec::new();
+                let mut pp_operators_updated = Vec::new();
                 for op in &pp.operators {
                     match op.basis {
-                        'X' => x_ops.push(op.clone()),
+                        'X' => pp_operators_updated.push(op.clone()),
                         'Y' => {
-                            x_ops.push(Operator { qubit: op.qubit, basis: 'X' });
-                            new_pp.operators.push(Operator { qubit: op.qubit, basis: 'Z' });
+                            pp_operators_updated.push(Operator { qubit: op.qubit, basis: 'x' });
+                            new_pp.operators.push(Operator { qubit: op.qubit, basis: 'z' });
                         }
                         'Z' => new_pp.operators.push(op.clone()),
                         _ => {}
                     }
                 }
-
-                modifications.push((idx, x_ops, new_pp));
+                new_pp.children = pp.children.clone();
+                new_pp.parents.push(pp.id);
+                modifications.push((pp.id, pp_operators_updated, new_pp));
             }
         }
-
         let modifications_len = modifications.len();
-
-        // Second pass: collect child updates
-        let mut all_child_updates = Vec::new();
-        for (pp_idx, _, new_pp) in &modifications {
-            let original_id = self.products[*pp_idx].id;
-
-            // Find updates needed for each child
-            let child_updates: Vec<_> = new_pp
-                .children
-                .iter()
-                .filter_map(|&child_id| {
-                    let child = &self.products[child_id as usize];
-                    child
-                        .parents
-                        .iter()
-                        .position(|&x| x == original_id)
-                        .map(|pos| (child_id, pos, new_pp.id))
-                })
-                .collect();
-
-            all_child_updates.extend(child_updates);
-        }
-
-        // Third pass: apply modifications
-        for (pp_idx, x_ops, new_pp) in modifications {
+        // update original products from modification vector information, and add new products
+        for (pp_id, pp_operators_updated, new_pp) in modifications {
             // Update original product
-            let pp = &mut self.products[pp_idx];
-            pp.operators = x_ops;
+            let pp = &mut self.products[pp_id as usize];
+            pp.operators = pp_operators_updated;
             pp.children = vec![new_pp.id];
-
+            for child_id in new_pp.children.iter() {
+                let pp_child = &mut self.products[*child_id as usize];
+                if let Some(pos) = pp_child.parents.iter().position(|&x| x == pp_id) {
+                    pp_child.parents[pos] = new_pp.id;
+                }
+            }
             // Add the new product
             self.products.push(new_pp);
-        }
-
-        // Fourth pass: update child references
-        for (child_id, pos, new_parent_id) in all_child_updates {
-            self.products[child_id as usize].parents[pos] = new_parent_id;
         }
 
         println!(
