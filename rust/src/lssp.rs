@@ -17,51 +17,40 @@ struct Args {
     /// Random seed
     #[arg(short = 'r', long, default_value = "29")]
     rseed: u64,
-
     /// Circuit file name
-    #[arg(short, long)]
+    #[arg(short, long = "circuit")]
     circuit_fname: String,
-
     /// Topology file name (topology will be generated if this is not set)
-    #[arg(short, long, default_value = "")]
-    topo: String,
-
+    #[arg(short, long = "topo", default_value = "")]
+    topo_fname: String,
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
-
-    /// Randomly order the qubits
-    #[arg(long)]
-    rnd_order: bool,
-
     /// Lambda parameter for exponential distribution of timesteps
     #[arg(short = 'm', long, default_value = "0.0387396")]
     magic_state_lambda: f64,
-
     /// Show product IDs when plotting the circuit
     #[arg(long)]
     show_product_ids: bool,
-
     /// Log scheduler actions to .sched file
     #[arg(short = 'l', long)]
     log_scheduler: bool,
-
     /// Plotting options
     #[arg(short, long, value_delimiter = ' ', default_value = "none")]
     plot: Vec<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _timer = Timer::new("main");
+
     let args = Args::parse();
 
-    // Print arguments
     println!("Arguments:");
     for (key, value) in [
         ("rseed", args.rseed.to_string()),
         ("circuit", args.circuit_fname.clone()),
-        ("topo", args.topo.clone()),
+        ("topo", args.topo_fname.clone()),
         ("verbose", args.verbose.to_string()),
-        ("rnd_order", args.rnd_order.to_string()),
         ("magic_state_lambda", args.magic_state_lambda.to_string()),
         ("show_product_ids", args.show_product_ids.to_string()),
         ("log_scheduler", args.log_scheduler.to_string()),

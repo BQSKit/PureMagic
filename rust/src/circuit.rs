@@ -11,7 +11,6 @@ use std::{
 pub struct Circuit {
     products: Vec<PauliProduct>,
     circuit_fname: String,
-    num_pauli_products: usize,
     pub(crate) num_qubits: usize,
     layers: Option<Vec<Vec<usize>>>,
 }
@@ -21,7 +20,6 @@ impl Circuit {
         let mut circuit = Circuit {
             products: Vec::new(),
             circuit_fname: fname.to_string(),
-            num_pauli_products: 0,
             num_qubits: 0,
             layers: None,
         };
@@ -46,13 +44,7 @@ impl Circuit {
         }
 
         // Find maximum qubit
-        self.num_qubits = self
-            .products
-            .iter()
-            .map(|pp| pp.max_qubit)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
 
         println!(
             "Loaded circuit with {} products and {} qubits",
@@ -95,11 +87,7 @@ impl Circuit {
 
             for &pp_id in &pps_left {
                 let pp = &self.products[pp_id];
-                if pp
-                    .parents
-                    .iter()
-                    .all(|&parent| pps_used.contains(&(parent as usize)))
-                {
+                if pp.parents.iter().all(|&parent| pps_used.contains(&(parent as usize))) {
                     layer.push(pp);
                     pps_selected.push(pp_id);
                 }
@@ -136,14 +124,8 @@ impl Circuit {
                     match op.basis {
                         'X' => x_ops.push(op.clone()),
                         'Y' => {
-                            x_ops.push(Operator {
-                                qubit: op.qubit,
-                                basis: 'X',
-                            });
-                            new_pp.operators.push(Operator {
-                                qubit: op.qubit,
-                                basis: 'Z',
-                            });
+                            x_ops.push(Operator { qubit: op.qubit, basis: 'X' });
+                            new_pp.operators.push(Operator { qubit: op.qubit, basis: 'Z' });
                         }
                         'Z' => new_pp.operators.push(op.clone()),
                         _ => {}
@@ -206,10 +188,7 @@ impl Circuit {
 
         // Get circuit filename
         let circuit_path = Path::new(&self.circuit_fname);
-        let circuit_stem = circuit_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("circuit");
+        let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
 
         // Create output files
         let layers = self.get_layers();
@@ -222,12 +201,8 @@ impl Circuit {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
 
-            let chunk_fname = format!(
-                "{}.circuit.{:04}-{:04}",
-                circuit_stem,
-                chunk_start,
-                chunk_end - 1
-            );
+            let chunk_fname =
+                format!("{}.circuit.{:04}-{:04}", circuit_stem, chunk_start, chunk_end - 1);
 
             let png_name = format!("{}.png", chunk_fname);
             // Create drawing area
@@ -247,12 +222,7 @@ impl Circuit {
                 .set_label_area_size(LabelAreaPosition::Left, 60)
                 .set_label_area_size(LabelAreaPosition::Bottom, 40)
                 .caption(
-                    format!(
-                        "{} (Layers {}-{})",
-                        circuit_stem,
-                        chunk_start,
-                        chunk_end - 1
-                    ),
+                    format!("{} (Layers {}-{})", circuit_stem, chunk_start, chunk_end - 1),
                     ("sans-serif", 20),
                 )
                 .build_cartesian_2d(
@@ -278,9 +248,7 @@ impl Circuit {
                         chart.draw_series(std::iter::once(Text::new(
                             pp.id.to_string(),
                             (col as f32, pp.get_qubits()[0] as f32 - 0.15),
-                            ("monospace", 8)
-                                .into_font()
-                                .transform(FontTransform::Rotate90),
+                            ("monospace", 8).into_font().transform(FontTransform::Rotate90),
                         )))?;
                     } else {
                         for op in &pp.operators {
@@ -313,12 +281,7 @@ impl Circuit {
                 }
             }
 
-            println!(
-                "Saved layers {}-{} to {}.png",
-                chunk_start,
-                chunk_end - 1,
-                chunk_fname
-            );
+            println!("Saved layers {}-{} to {}.png", chunk_start, chunk_end - 1, chunk_fname);
         }
 
         Ok(())
@@ -350,35 +313,23 @@ impl Circuit {
             }
         }
 
-        println!("\nCircuit statistics:");
-        println!("  Number of layers:              {}", layers.len());
+        println!("Circuit statistics:");
+        println!("  Layers:                  {}", layers.len());
+        println!("  Non-Clifford layers:     {}", num_nonclifford_layers);
         println!(
-            "  Number of non-Clifford layers: {}",
-            num_nonclifford_layers
-        );
-        println!(
-            "  Max non-Clifford/layer:        {}",
+            "  Non-Cliffords per layer:  {:.2} avg, {} max",
+            num_noncliffords.iter().sum::<i32>() as f64 / layers.len() as f64,
             *num_noncliffords.iter().max().unwrap_or(&0)
         );
         println!(
-            "  Avg non-Clifford/layer:        {:.3}",
-            num_noncliffords.iter().sum::<i32>() as f64 / layers.len() as f64
-        );
-        println!(
-            "  Max odd Y products/layer:      {}",
+            "  Odd Y products per layer: {:.2} avg, {} max",
+            num_odd_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
             *num_odd_ys.iter().max().unwrap_or(&0)
         );
         println!(
-            "  Avg odd Y products/layer:      {:.3}",
-            num_odd_ys.iter().sum::<i32>() as f64 / layers.len() as f64
-        );
-        println!(
-            "  Max Y products/layer:          {}",
+            "  Y products per layer:     {:.2} avg, {} max",
+            num_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
             *num_ys.iter().max().unwrap_or(&0)
-        );
-        println!(
-            "  Avg Y products/layer:          {:.3}",
-            num_ys.iter().sum::<i32>() as f64 / layers.len() as f64
         );
 
         layers.len()
@@ -386,11 +337,8 @@ impl Circuit {
 
     pub fn print(&self) -> io::Result<()> {
         let circuit_path = Path::new(&self.circuit_fname);
-        let circuit_stem = circuit_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("circuit");
-        let output_fname = format!("{}.circuit", circuit_stem);
+        let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
+        let output_fname = format!("{}.circuit.txt", circuit_stem);
         let mut file = File::create(&output_fname)?;
 
         let layers = self.get_layers();
@@ -416,6 +364,7 @@ impl Circuit {
                 writeln!(file)?;
             }
         }
+        println!("Wrote circuit to {}", output_fname);
         Ok(())
     }
 }
