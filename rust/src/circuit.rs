@@ -1,0 +1,421 @@
+use crate::pauliproduct::{Operator, PauliProduct};
+use crate::utils::Timer;
+
+use plotters::prelude::*;
+use std::{
+    fs::File,
+    io::{self, BufRead, BufReader, Write},
+    path::Path,
+};
+
+pub struct Circuit {
+    products: Vec<PauliProduct>,
+    circuit_fname: String,
+    num_pauli_products: usize,
+    pub(crate) num_qubits: usize,
+    layers: Option<Vec<Vec<usize>>>,
+}
+
+impl Circuit {
+    pub fn new(fname: &String) -> io::Result<Self> {
+        let mut circuit = Circuit {
+            products: Vec::new(),
+            circuit_fname: fname.to_string(),
+            num_pauli_products: 0,
+            num_qubits: 0,
+            layers: None,
+        };
+        circuit.load_circuit()?;
+        Ok(circuit)
+    }
+
+    fn load_circuit(&mut self) -> io::Result<()> {
+        let _timer = Timer::new("load_circuit");
+
+        let file = File::open(&self.circuit_fname)?;
+        let reader = BufReader::new(file);
+
+        // Read and parse products
+        for (i, line) in reader.lines().enumerate() {
+            let product_string = line?.trim().to_string();
+            let mut product = PauliProduct::new();
+            product
+                .set_from_str(i as i32, &product_string)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            self.products.push(product);
+        }
+
+        // Find maximum qubit
+        self.num_qubits = self
+            .products
+            .iter()
+            .map(|pp| pp.max_qubit)
+            .max()
+            .unwrap_or(0)
+            + 1;
+
+        println!(
+            "Loaded circuit with {} products and {} qubits",
+            self.products.len(),
+            self.num_qubits
+        );
+
+        // Collect parent/child relationships
+        let mut relationships = Vec::new();
+        let mut current_pps = vec![-1; self.num_qubits];
+
+        for (idx, pp) in self.products.iter().enumerate() {
+            for op in &pp.operators {
+                let current_id = current_pps[op.qubit];
+                if current_id != -1 {
+                    relationships.push((idx as i32, current_id));
+                }
+                current_pps[op.qubit] = idx as i32;
+            }
+        }
+        // Apply relationships in batch
+        for (child_id, parent_id) in relationships {
+            self.products[child_id as usize].parents.push(parent_id);
+            self.products[parent_id as usize].children.push(child_id);
+        }
+
+        Ok(())
+    }
+
+    pub fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
+        let _timer = Timer::new("get_layers");
+
+        let mut pps_used = std::collections::HashSet::new();
+        let mut pps_left: std::collections::HashSet<_> = (0..self.products.len()).collect();
+        let mut layers = Vec::new();
+
+        while !pps_left.is_empty() {
+            let mut layer = Vec::new();
+            let mut pps_selected = Vec::new();
+
+            for &pp_id in &pps_left {
+                let pp = &self.products[pp_id];
+                if pp
+                    .parents
+                    .iter()
+                    .all(|&parent| pps_used.contains(&(parent as usize)))
+                {
+                    layer.push(pp);
+                    pps_selected.push(pp_id);
+                }
+            }
+
+            layers.push(layer);
+
+            for pp_id in pps_selected {
+                pps_left.remove(&pp_id);
+                pps_used.insert(pp_id);
+            }
+        }
+
+        layers
+    }
+
+    pub fn split_ys(&mut self) {
+        // Collect all Y products and their modifications
+        let mut modifications = Vec::new();
+        let start_id = self.products.len() as i32;
+
+        for (idx, pp) in self.products.iter().enumerate() {
+            if pp.num_ys > 0 {
+                let mut new_pp = PauliProduct::new();
+                new_pp.id = start_id + modifications.len() as i32;
+                new_pp.is_clifford = pp.is_clifford;
+                new_pp.num_ys = pp.num_ys;
+                new_pp.need_ancilla = pp.num_ys % 2 == 1;
+                new_pp.need_estabilizer = true;
+
+                // Convert Y operators to X and Z parts
+                let mut x_ops = Vec::new();
+                for op in &pp.operators {
+                    match op.basis {
+                        'X' => x_ops.push(op.clone()),
+                        'Y' => {
+                            x_ops.push(Operator {
+                                qubit: op.qubit,
+                                basis: 'X',
+                            });
+                            new_pp.operators.push(Operator {
+                                qubit: op.qubit,
+                                basis: 'Z',
+                            });
+                        }
+                        'Z' => new_pp.operators.push(op.clone()),
+                        _ => {}
+                    }
+                }
+
+                modifications.push((idx, x_ops, new_pp));
+            }
+        }
+
+        let modifications_len = modifications.len();
+
+        // Second pass: collect child updates
+        let mut all_child_updates = Vec::new();
+        for (pp_idx, _, new_pp) in &modifications {
+            let original_id = self.products[*pp_idx].id;
+
+            // Find updates needed for each child
+            let child_updates: Vec<_> = new_pp
+                .children
+                .iter()
+                .filter_map(|&child_id| {
+                    let child = &self.products[child_id as usize];
+                    child
+                        .parents
+                        .iter()
+                        .position(|&x| x == original_id)
+                        .map(|pos| (child_id, pos, new_pp.id))
+                })
+                .collect();
+
+            all_child_updates.extend(child_updates);
+        }
+
+        // Third pass: apply modifications
+        for (pp_idx, x_ops, new_pp) in modifications {
+            // Update original product
+            let pp = &mut self.products[pp_idx];
+            pp.operators = x_ops;
+            pp.children = vec![new_pp.id];
+
+            // Add the new product
+            self.products.push(new_pp);
+        }
+
+        // Fourth pass: update child references
+        for (child_id, pos, new_parent_id) in all_child_updates {
+            self.products[child_id as usize].parents[pos] = new_parent_id;
+        }
+
+        println!(
+            "After splitting {} Y products there are {} products in the circuit",
+            modifications_len,
+            self.products.len()
+        );
+    }
+
+    pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let _timer = Timer::new("plot");
+
+        // Get circuit filename
+        let circuit_path = Path::new(&self.circuit_fname);
+        let circuit_stem = circuit_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("circuit");
+
+        // Create output files
+        let layers = self.get_layers();
+        let min_layer = 0;
+        let max_layer = layers.len();
+
+        // Split into chunks of 1000 layers
+        const LAYERS_PER_FILE: usize = 1000;
+        for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
+            let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
+            let chunk_layers = chunk_end - chunk_start;
+
+            let chunk_fname = format!(
+                "{}.circuit.{:04}-{:04}",
+                circuit_stem,
+                chunk_start,
+                chunk_end - 1
+            );
+
+            let png_name = format!("{}.png", chunk_fname);
+            // Create drawing area
+            let root = BitMapBackend::new(
+                &png_name,
+                (
+                    (chunk_layers as f32 * 0.17 * 1800.0) as u32,
+                    (self.num_qubits as f32 * 0.22 * 900.0) as u32,
+                ),
+            )
+            .into_drawing_area();
+
+            root.fill(&WHITE)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .margin(50)
+                .set_label_area_size(LabelAreaPosition::Left, 60)
+                .set_label_area_size(LabelAreaPosition::Bottom, 40)
+                .caption(
+                    format!(
+                        "{} (Layers {}-{})",
+                        circuit_stem,
+                        chunk_start,
+                        chunk_end - 1
+                    ),
+                    ("sans-serif", 20),
+                )
+                .build_cartesian_2d(
+                    chunk_start as f32..chunk_end as f32,
+                    -0.5f32..self.num_qubits as f32 + 0.5,
+                )?;
+
+            // Configure axes
+            chart
+                .configure_mesh()
+                .x_labels(chunk_layers)
+                .x_label_formatter(&|x| format!("{}", x))
+                .x_desc("Time Steps")
+                .y_desc("Qubits")
+                .draw()?;
+
+            // Draw products
+            for (col, layer) in layers[chunk_start..chunk_end].iter().enumerate() {
+                for pp in layer {
+                    let col = col + chunk_start;
+
+                    if show_product_ids {
+                        chart.draw_series(std::iter::once(Text::new(
+                            pp.id.to_string(),
+                            (col as f32, pp.get_qubits()[0] as f32 - 0.15),
+                            ("monospace", 8)
+                                .into_font()
+                                .transform(FontTransform::Rotate90),
+                        )))?;
+                    } else {
+                        for op in &pp.operators {
+                            if op.basis != ' ' {
+                                chart.draw_series(std::iter::once(Text::new(
+                                    op.basis.to_string(),
+                                    (col as f32 + 0.1, op.qubit as f32),
+                                    ("monospace", 7).into_font(),
+                                )))?;
+                            }
+                        }
+                    }
+
+                    // Draw background rectangle
+                    let start_pos = pp.get_qubits()[0];
+                    let end_pos = *pp.get_qubits().last().unwrap();
+                    let rect_height = (end_pos - start_pos) as f32 + 0.8;
+
+                    chart.draw_series(std::iter::once(Rectangle::new(
+                        [
+                            (col as f32 - 0.1, start_pos as f32 - 0.4),
+                            (col as f32 + 0.7, start_pos as f32 + rect_height),
+                        ],
+                        if pp.is_clifford {
+                            RGBColor(0xCC, 0xCC, 0x22).filled()
+                        } else {
+                            RGBColor(0x22, 0xFF, 0x22).filled()
+                        },
+                    )))?;
+                }
+            }
+
+            println!(
+                "Saved layers {}-{} to {}.png",
+                chunk_start,
+                chunk_end - 1,
+                chunk_fname
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn get_statistics(&self) -> usize {
+        let layers = self.get_layers();
+        let mut num_noncliffords = vec![0; layers.len()];
+        let mut num_odd_ys = vec![0; layers.len()];
+        let mut num_ys = vec![0; layers.len()];
+        let mut num_nonclifford_layers = 0;
+
+        for (i, layer) in layers.iter().enumerate() {
+            let mut nonclifford_layer = false;
+            for pp in layer {
+                if !pp.is_clifford {
+                    num_noncliffords[i] += 1;
+                    nonclifford_layer = true;
+                }
+                if pp.num_ys > 0 {
+                    num_ys[i] += 1;
+                    if pp.num_ys % 2 == 1 {
+                        num_odd_ys[i] += 1;
+                    }
+                }
+            }
+            if nonclifford_layer {
+                num_nonclifford_layers += 1;
+            }
+        }
+
+        println!("\nCircuit statistics:");
+        println!("  Number of layers:              {}", layers.len());
+        println!(
+            "  Number of non-Clifford layers: {}",
+            num_nonclifford_layers
+        );
+        println!(
+            "  Max non-Clifford/layer:        {}",
+            *num_noncliffords.iter().max().unwrap_or(&0)
+        );
+        println!(
+            "  Avg non-Clifford/layer:        {:.3}",
+            num_noncliffords.iter().sum::<i32>() as f64 / layers.len() as f64
+        );
+        println!(
+            "  Max odd Y products/layer:      {}",
+            *num_odd_ys.iter().max().unwrap_or(&0)
+        );
+        println!(
+            "  Avg odd Y products/layer:      {:.3}",
+            num_odd_ys.iter().sum::<i32>() as f64 / layers.len() as f64
+        );
+        println!(
+            "  Max Y products/layer:          {}",
+            *num_ys.iter().max().unwrap_or(&0)
+        );
+        println!(
+            "  Avg Y products/layer:          {:.3}",
+            num_ys.iter().sum::<i32>() as f64 / layers.len() as f64
+        );
+
+        layers.len()
+    }
+
+    pub fn print(&self) -> io::Result<()> {
+        let circuit_path = Path::new(&self.circuit_fname);
+        let circuit_stem = circuit_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("circuit");
+        let output_fname = format!("{}.circuit", circuit_stem);
+        let mut file = File::create(&output_fname)?;
+
+        let layers = self.get_layers();
+        let total_layers = layers.len();
+
+        writeln!(file, "\nCircuit ({} layers):", total_layers)?;
+        for (i, layer) in layers.iter().enumerate() {
+            write!(file, "Layer {}: ", i)?;
+            for pp in layer {
+                write!(file, "{} ", pp.id)?;
+            }
+            writeln!(file)?;
+
+            for pp in layer {
+                write!(file, "  {}  parents: ", pp)?;
+                for parent in &pp.parents {
+                    write!(file, "{} ", parent)?;
+                }
+                write!(file, " children: ")?;
+                for child in &pp.children {
+                    write!(file, "{} ", child)?;
+                }
+                writeln!(file)?;
+            }
+        }
+        Ok(())
+    }
+}
