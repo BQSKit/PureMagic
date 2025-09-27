@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circuit.plot(args.show_product_ids)?;
     }
     // Initialize topology
-    let mut topo_graph = TopoGraph::new(&args.circuit_fname, rng);
+    let mut topo_graph = TopoGraph::new(&args.circuit_fname, &args.topo_fname, rng);
     topo_graph.set_topo(circuit.num_qubits);
     topo_graph.print()?;
 

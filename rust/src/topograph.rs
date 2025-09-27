@@ -3,7 +3,7 @@ use plotters::prelude::*;
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,6 +37,7 @@ pub struct TopoGraph {
     num_qubits: usize,
     rng: StdRng,
     topo_fname: String,
+    circuit_fname: String,
 }
 
 impl Node {
@@ -56,7 +57,7 @@ impl Node {
 }
 
 impl TopoGraph {
-    pub fn new(fname: &String, rng: StdRng) -> Self {
+    pub fn new(circuit_fname: &String, topo_fname: &String, rng: StdRng) -> Self {
         TopoGraph {
             nodes: HashMap::new(),
             node_grid: Vec::new(),
@@ -69,7 +70,8 @@ impl TopoGraph {
             num_estabilizer_qubits: 0,
             num_qubits: 0,
             rng,
-            topo_fname: fname.to_string(),
+            circuit_fname: circuit_fname.to_string(),
+            topo_fname: topo_fname.to_string(),
         }
     }
 
@@ -102,23 +104,29 @@ impl TopoGraph {
     pub fn set_topo(&mut self, min_num_qubits: usize) {
         let _timer = Timer::new("set_topo");
 
-        let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
-        let patch_rows = sq_dim / 2 + sq_dim % 2;
-        let bus_rows = patch_rows + 1;
+        if !self.topo_fname.is_empty() {
+            if let Err(e) = self.read_topo_from_file() {
+                eprintln!("Error reading topology file: {}", e);
+            }
+        } else {
+            let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
+            let patch_rows = sq_dim / 2 + sq_dim % 2;
+            let bus_rows = patch_rows + 1;
 
-        let qubits_per_col = 2 * patch_rows;
-        let num_data_cols = ((min_num_qubits as f64) / (qubits_per_col as f64)).ceil() as usize;
+            let qubits_per_col = 2 * patch_rows;
+            let num_data_cols = ((min_num_qubits as f64) / (qubits_per_col as f64)).ceil() as usize;
 
-        self.num_cols = 2 * num_data_cols + 3;
-        self.num_rows = 2 + 2 * patch_rows + bus_rows;
+            self.num_cols = 2 * num_data_cols + 3;
+            self.num_rows = 2 + 2 * patch_rows + bus_rows;
 
-        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+            self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
 
-        if self.num_cols > 0 && self.num_rows > 0 {
-            println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
-            self.gen_topo();
-            self.update_statistics();
+            if self.num_cols > 0 && self.num_rows > 0 {
+                println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
+                self.gen_topo();
+            }
         }
+        self.update_statistics();
     }
 
     fn gen_topo(&mut self) {
@@ -292,7 +300,7 @@ impl TopoGraph {
     }
 
     pub fn print(&self) -> io::Result<()> {
-        let topo_path = Path::new(&self.topo_fname);
+        let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
         let output_fname = format!("{}.topo.txt", topo_stem);
         let mut file = File::create(&output_fname)?;
@@ -325,7 +333,7 @@ impl TopoGraph {
     pub fn plot(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = Timer::new("plot");
 
-        let topo_path = Path::new(&self.topo_fname);
+        let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
         let output_fname = format!("{}.topo", topo_stem);
 
@@ -391,6 +399,57 @@ impl TopoGraph {
         // Create SVG version
         let svg_root = SVGBackend::new(&svg_name, (1800, 900)).into_drawing_area();
         svg_root.present()?;
+
+        Ok(())
+    }
+
+    pub fn read_topo_from_file(&mut self) -> io::Result<()> {
+        let _timer = Timer::new("read_topo_from_file");
+        // Read the grid layout
+        let mut rows = Vec::new();
+        let file = File::open(&self.topo_fname)?;
+        for line in io::BufReader::new(file).lines() {
+            let line = line?;
+            let row: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
+            if !row.is_empty() {
+                rows.push(row);
+            }
+        }
+        // Transpose grid from row-major to col-major order
+        self.num_rows = rows.len();
+        self.num_cols = rows[0].len();
+        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+
+        for (row_i, row) in rows.iter().enumerate() {
+            for (col_i, col) in row.iter().enumerate() {
+                self.node_grid[col_i][row_i] = Some(col.clone());
+            }
+        }
+        // Add nodes
+        let mut di = 0;
+        for col in 0..self.num_cols {
+            for row in 0..self.num_rows {
+                if let Some(ref node) = self.node_grid[col][row] {
+                    if node.starts_with('d') {
+                        let op = node.chars().nth(1).unwrap_or('X');
+                        self.add_data_qubit(di, col, row, op == 'X');
+                        di += 2;
+                    } else {
+                        let node_type = match node.chars().next() {
+                            Some('m') => NodeType::Magic,
+                            Some('b') => NodeType::Bus,
+                            Some('a') => NodeType::Ancilla,
+                            Some('e') => NodeType::Estabilizer,
+                            _ => continue,
+                        };
+                        self.node_grid[col][row] = Some(self.add_node(col, row, node_type));
+                    }
+                }
+            }
+        }
+        // Add edges
+        self.set_edges();
+        println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
 
         Ok(())
     }
