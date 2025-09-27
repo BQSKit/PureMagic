@@ -369,12 +369,28 @@ impl TopoGraph {
         root.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&root)
             .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
+        // draw background grey
+        chart.draw_series(std::iter::once(Rectangle::new(
+            [(-0.5, -0.5), (self.num_cols as f32 - 0.5, self.num_rows as f32 - 0.5)],
+            RGBColor(230, 230, 230).filled(),
+        )))?;
+        // draw white horizontal lines
+        for row in 0..=self.num_rows {
+            chart.draw_series(LineSeries::new(
+                vec![(-0.5, row as f32 - 0.5), (self.num_cols as f32 - 0.5, row as f32 - 0.5)],
+                WHITE.stroke_width(3),
+            ))?;
+        }
+        // Draw white vertical lines
+        for col in 0..=self.num_cols {
+            chart.draw_series(LineSeries::new(
+                vec![(col as f32 - 0.5, -0.5), (col as f32 - 0.5, self.num_rows as f32 - 0.5)],
+                WHITE.stroke_width(3),
+            ))?;
+        }
         // Draw edges
         for node in self.nodes.values() {
             for edge in &node.edges {
-                if is_data_node(edge) {
-                    println!("edge from {} to data node {}", node.label, edge);
-                }
                 if let Some(other) = self.nodes.get(edge) {
                     chart.draw_series(LineSeries::new(
                         vec![
