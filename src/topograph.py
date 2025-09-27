@@ -112,6 +112,8 @@ class TopoGraph(nx.Graph):
         self.node_grid[0][row] = self.add_labeled_node("b", 0, row)
         self.node_grid[self.num_cols - 1][row] = self.add_labeled_node("b", self.num_cols - 1, row)
         for col in range(1, self.num_cols - 1):
+            self.node_grid[col][row] = self.add_labeled_node("m", col, row)
+            continue
             if self.num_cols > 9:
                 self.node_grid[col][row] = self.add_labeled_node("m", col, row)
             else:
@@ -190,12 +192,8 @@ class TopoGraph(nx.Graph):
             if col % 2 == 0:  # data column
                 for row in range(1, self.num_rows - 1):
                     if row % 3 + 1 == 2:
-                        # if row % 6 + 1 == 5 and row != self.num_rows - 2 and col % 4 == 0:
                         if row != 1 and row != self.num_rows - 2 and col % 4 == 0:
-                            # if self.num_cols <= 9 or col % 8 == 0:
                             self.node_grid[col][row] = self.add_labeled_node("e", col, row)
-                            # else:
-                            #    self.node_grid[col][row] = self.add_labeled_node("a", col, row)
                         else:
                             self.node_grid[col][row] = self.add_labeled_node("b", col, row)
                     else:
