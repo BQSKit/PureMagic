@@ -77,21 +77,6 @@ class TopoGraph(nx.Graph):
         else:
             self.read_topo_from_file()
 
-    def shuffle_qubits(self):
-        qubit_order = list(range(self.num_data_qubits))
-        self.rng.shuffle(qubit_order)
-        print("Using qubit order:", qubit_order)
-        qubit_map = {}
-        for i, new_i in enumerate(qubit_order):
-            qubit_map["d" + str(i) + "X"] = "dd" + str(new_i) + "X"
-            qubit_map["d" + str(i) + "Z"] = "dd" + str(new_i) + "Z"
-        nx.relabel_nodes(self, qubit_map, copy=False)
-        qubit_map = {}
-        for i in range(self.num_data_qubits):
-            qubit_map["dd" + str(i) + "X"] = "d" + str(i) + "X"
-            qubit_map["dd" + str(i) + "Z"] = "d" + str(i) + "Z"
-        nx.relabel_nodes(self, qubit_map, copy=False)
-
     def add_labeled_node(self, label, col, row):
         node_colors = {
             "m": "#FFBB99",
@@ -230,9 +215,6 @@ class TopoGraph(nx.Graph):
         print("Generated topology with dimensions:", self.num_cols, self.num_rows)
         self.update_statistics()
         self.print_topo()
-
-        if self.args.rnd_order:
-            self.shuffle_qubits()
 
     def print_topo(self):
         # print topology to a file

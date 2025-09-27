@@ -1,18 +1,7 @@
 #!/usr/bin/env -S python -u
-
-import os
-import sys
-import warnings
-
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message="networkx backend defined more than once")
-    import networkx as nx
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-import math
 import numpy as np
-import pickle
 from pathlib import Path
 from utils import timer
 from pauliproduct import PauliProduct, Operator
@@ -22,7 +11,6 @@ class RealCircuit(list):
     def __init__(self, args):
         list.__init__(self)
         self.args = args
-        self.num_pauli_products = 0
         self.num_qubits = 0
         self.load_circuit()
         self.layers = None
@@ -48,7 +36,6 @@ class RealCircuit(list):
 
     @timer
     def get_layers(self):
-        layer_i = 0
         pps_used = set()
         pps_left = set()
         for pp in self:
@@ -65,7 +52,6 @@ class RealCircuit(list):
                 else:
                     layer.append(pp)
                     pps_selected.append(pp.id)
-            layer_i += 1
             layers.append(layer)
             for pp_id in pps_selected:
                 pps_left.remove(pp_id)
