@@ -191,6 +191,22 @@ impl TopoGraph {
         is_magic_node(label1) && is_magic_node(label2)
     }
 
+    fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
+        // Find indices of numbers and operator
+        let d_pos = label.find('d')?;
+        let slash_pos = label.find('/')?;
+        let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
+        // Extract the numbers and operator
+        let first_num = &label[d_pos + 1..slash_pos];
+        let second_num = &label[slash_pos + 1..op_pos];
+        let operator = &label[op_pos..=op_pos];
+        if left {
+            return Some(format!("d{}{}", first_num, operator));
+        } else {
+            return Some(format!("d{}{}", second_num, operator));
+        }
+    }
+
     fn set_edges(&mut self) {
         let mut edges_to_add = Vec::new();
 
@@ -205,7 +221,6 @@ impl TopoGraph {
                             }
                         }
                     }
-
                     // Add vertical edges
                     if row > 0 {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
@@ -217,10 +232,19 @@ impl TopoGraph {
                 }
             }
         }
-
         // Add all edges
         for (label1, label2) in edges_to_add {
-            self.add_edge(&label1, &label2);
+            if is_data_node(&label1) {
+                if let Some(ref d) = self.get_data_label_side(&label1, true) {
+                    self.add_edge(d, &label2);
+                }
+            } else if is_data_node(&label2) {
+                if let Some(ref d) = self.get_data_label_side(&label2, false) {
+                    self.add_edge(&label1, &d);
+                }
+            } else {
+                self.add_edge(&label1, &label2);
+            }
         }
     }
 
@@ -335,29 +359,22 @@ impl TopoGraph {
 
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
-        let output_fname = format!("{}.topo", topo_stem);
-
-        let png_name = format!("{}.png", output_fname);
-        let svg_name = format!("{}.svg", output_fname);
-
+        let png_fname = format!("{}.topo.png", topo_stem);
         // Create output files
-        let root = BitMapBackend::new(&png_name, (1800, 900)).into_drawing_area();
+        let root = BitMapBackend::new(
+            &png_fname,
+            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
+        )
+        .into_drawing_area();
         root.fill(&WHITE)?;
-
-        // Calculate bounds
-        let margin = 50;
         let mut chart = ChartBuilder::on(&root)
-            .margin(margin)
-            .set_label_area_size(LabelAreaPosition::Left, 60)
-            .set_label_area_size(LabelAreaPosition::Bottom, 40)
-            .caption("Topology Graph", ("sans-serif", 20))
             .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
-
-        chart.configure_mesh().disable_mesh().draw()?;
-
         // Draw edges
         for node in self.nodes.values() {
             for edge in &node.edges {
+                if is_data_node(edge) {
+                    println!("edge from {} to data node {}", node.label, edge);
+                }
                 if let Some(other) = self.nodes.get(edge) {
                     chart.draw_series(LineSeries::new(
                         vec![
@@ -369,14 +386,12 @@ impl TopoGraph {
                 }
             }
         }
-
         // Draw nodes
         for node in self.nodes.values() {
             let (x, y) = node.pos;
-
             chart.draw_series(std::iter::once(Circle::new(
                 (x as f32, y as f32),
-                5,
+                22,
                 match node.node_type {
                     NodeType::Magic => RGBColor(0xFF, 0xBB, 0x99),
                     NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
@@ -386,20 +401,14 @@ impl TopoGraph {
                 }
                 .filled(),
             )))?;
-
             chart.draw_series(std::iter::once(Text::new(
                 node.label.clone(),
-                (x as f32, y as f32 - 0.2),
-                ("sans-serif", 15).into_font(),
+                (x as f32 - 0.17, y as f32 + 0.09),
+                ("sans-serif", 18).into_font(),
             )))?;
         }
-
         root.present()?;
-
-        // Create SVG version
-        let svg_root = SVGBackend::new(&svg_name, (1800, 900)).into_drawing_area();
-        svg_root.present()?;
-
+        println!("Plotted topology to {}", png_fname);
         Ok(())
     }
 
