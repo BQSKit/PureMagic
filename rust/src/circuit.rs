@@ -77,34 +77,55 @@ impl Circuit {
 
     fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
         let _timer = Timer::new("get_layers");
-        if self.layers.borrow().is_none() {
-            let mut pps_used = std::collections::HashSet::new();
-            let mut pps_left: std::collections::HashSet<_> = (0..self.products.len()).collect();
-            let mut index_layers = Vec::new();
-            while !pps_left.is_empty() {
-                let mut layer_indices = Vec::new();
-                let mut pps_selected = Vec::new();
-                for &pp_id in &pps_left {
-                    let pp = &self.products[pp_id];
-                    if pp.parents.iter().all(|&parent| pps_used.contains(&(parent as usize))) {
-                        layer_indices.push(pp_id);
-                        pps_selected.push(pp_id);
+        // Return cached layers if available
+        if let Some(cached) = self.layers.borrow().as_ref() {
+            return cached
+                .iter()
+                .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+                .collect();
+        }
+        // Pre-calculate in-degrees (number of unprocessed parents) for each product
+        let mut in_degrees: Vec<usize> = self.products.iter().map(|pp| pp.parents.len()).collect();
+        // Keep track of products ready to be processed (those with no remaining parents)
+        let mut ready: Vec<usize> = in_degrees
+            .iter()
+            .enumerate()
+            .filter(|&(_, &degree)| degree == 0)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        let mut index_layers = Vec::new();
+        let mut processed = 0;
+        // Process products level by level
+        while !ready.is_empty() {
+            // Current layer contains all ready products
+            index_layers.push(ready.clone());
+            processed += ready.len();
+            // Find products that become ready after processing current layer
+            let mut next_ready = Vec::new();
+            for &current in &ready {
+                // Decrease in-degree for all children
+                for &child_id in &self.products[current].children {
+                    let child_idx = child_id as usize;
+                    in_degrees[child_idx] -= 1;
+                    // If all parents processed, product becomes ready
+                    if in_degrees[child_idx] == 0 {
+                        next_ready.push(child_idx);
                     }
                 }
-                index_layers.push(layer_indices);
-                for pp_id in pps_selected {
-                    pps_left.remove(&pp_id);
-                    pps_used.insert(pp_id);
-                }
             }
-            // Cache the computed layers
-            *self.layers.borrow_mut() = Some(index_layers);
+            ready = next_ready;
         }
-        // Convert cached indices to references
-        self.layers
-            .borrow()
-            .as_ref()
-            .unwrap()
+        // Verify all products were processed
+        debug_assert_eq!(
+            processed,
+            self.products.len(),
+            "Circuit contains cycles or unreachable products"
+        );
+        // Cache the computed layers
+        *self.layers.borrow_mut() = Some(index_layers.clone());
+        // Convert indices to references
+        index_layers
             .iter()
             .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
             .collect()
