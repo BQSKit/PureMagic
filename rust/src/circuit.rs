@@ -3,6 +3,7 @@ use crate::utils::Timer;
 
 use plotters::prelude::*;
 use std::{
+    cell::RefCell,
     fs::File,
     io::{self, BufRead, BufReader, Write},
     path::Path,
@@ -12,7 +13,7 @@ pub struct Circuit {
     products: Vec<PauliProduct>,
     circuit_fname: String,
     pub(crate) num_qubits: usize,
-    layers: Option<Vec<Vec<usize>>>,
+    layers: RefCell<Option<Vec<Vec<usize>>>>,
 }
 
 impl Circuit {
@@ -21,7 +22,7 @@ impl Circuit {
             products: Vec::new(),
             circuit_fname: fname.to_string(),
             num_qubits: 0,
-            layers: None,
+            layers: RefCell::new(None),
         };
         circuit.load_circuit()?;
         Ok(circuit)
@@ -74,32 +75,39 @@ impl Circuit {
         Ok(())
     }
 
-    pub fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
+    fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
         let _timer = Timer::new("get_layers");
-
-        let mut pps_used = std::collections::HashSet::new();
-        let mut pps_left: std::collections::HashSet<_> = (0..self.products.len()).collect();
-        let mut layers = Vec::new();
-
-        while !pps_left.is_empty() {
-            let mut layer = Vec::new();
-            let mut pps_selected = Vec::new();
-            for &pp_id in &pps_left {
-                let pp = &self.products[pp_id];
-                if pp.parents.iter().all(|&parent| pps_used.contains(&(parent as usize))) {
-                    layer.push(pp);
-                    pps_selected.push(pp_id);
+        if self.layers.borrow().is_none() {
+            let mut pps_used = std::collections::HashSet::new();
+            let mut pps_left: std::collections::HashSet<_> = (0..self.products.len()).collect();
+            let mut index_layers = Vec::new();
+            while !pps_left.is_empty() {
+                let mut layer_indices = Vec::new();
+                let mut pps_selected = Vec::new();
+                for &pp_id in &pps_left {
+                    let pp = &self.products[pp_id];
+                    if pp.parents.iter().all(|&parent| pps_used.contains(&(parent as usize))) {
+                        layer_indices.push(pp_id);
+                        pps_selected.push(pp_id);
+                    }
+                }
+                index_layers.push(layer_indices);
+                for pp_id in pps_selected {
+                    pps_left.remove(&pp_id);
+                    pps_used.insert(pp_id);
                 }
             }
-
-            layers.push(layer);
-
-            for pp_id in pps_selected {
-                pps_left.remove(&pp_id);
-                pps_used.insert(pp_id);
-            }
+            // Cache the computed layers
+            *self.layers.borrow_mut() = Some(index_layers);
         }
-        layers
+        // Convert cached indices to references
+        self.layers
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+            .collect()
     }
 
     pub fn split_ys(&mut self) {
