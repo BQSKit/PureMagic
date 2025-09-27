@@ -4,6 +4,7 @@ use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeType {
@@ -68,13 +69,25 @@ impl TopoGraph {
             num_estabilizer_qubits: 0,
             num_qubits: 0,
             rng,
-            topo_fname: format!("{}.topo", fname),
+            topo_fname: fname.to_string(),
         }
     }
 
-    fn add_node(&mut self, label: &str, x: f64, y: f64, node_type: NodeType) {
-        let node = Node::new(label.to_string(), x, y, node_type);
+    fn add_node(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
+        let ch = match node_type {
+            NodeType::Magic => "m",
+            NodeType::Ancilla => "a",
+            NodeType::Bus => "b",
+            NodeType::Data => "d",
+            NodeType::Estabilizer => "e",
+            _ => "",
+        };
+
+        let label = format!("{}{}-{}", ch, col, row);
+        let node =
+            Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
         self.nodes.insert(label.to_string(), node);
+        label
     }
 
     fn add_edge(&mut self, label1: &str, label2: &str) {
@@ -118,16 +131,11 @@ impl TopoGraph {
                 // Data column
                 for row in 1..self.num_rows - 1 {
                     if row % 3 + 1 == 2 {
-                        if row % 6 + 1 == 5 && row != self.num_rows - 2 && col % 4 == 0 {
-                            let label = format!("e{}", self.num_estabilizer_qubits);
-                            self.add_node(&label, col as f64, row as f64, NodeType::Estabilizer);
-                            self.node_grid[col][row] = Some(label);
-                            self.num_estabilizer_qubits += 1;
+                        if row != 1 && row != self.num_rows - 2 && col % 4 == 0 {
+                            self.node_grid[col][row] =
+                                Some(self.add_node(col, row, NodeType::Estabilizer));
                         } else {
-                            let label = format!("b{}", self.num_bus_qubits);
-                            self.add_node(&label, col as f64, row as f64, NodeType::Bus);
-                            self.node_grid[col][row] = Some(label);
-                            self.num_bus_qubits += 1;
+                            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Bus));
                         }
                     } else {
                         self.add_data_qubit(qi, col, row, row % 3 + 1 == 3);
@@ -137,10 +145,7 @@ impl TopoGraph {
             } else {
                 // Bus column
                 for row in 1..self.num_rows - 1 {
-                    let label = format!("b{}", self.num_bus_qubits);
-                    self.add_node(&label, col as f64, row as f64, NodeType::Bus);
-                    self.node_grid[col][row] = Some(label);
-                    self.num_bus_qubits += 1;
+                    self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Bus));
                 }
             }
         }
@@ -154,11 +159,24 @@ impl TopoGraph {
     fn add_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
-        let label = format!("d{}{}", q, op);
-
-        self.add_node(&label, col as f64, row as f64, NodeType::Data);
-        self.node_grid[col][row] = Some(label);
-        self.num_data_qubits += 1;
+        let label1 = format!("d{}{}", q, op);
+        let node1 = Node::new(
+            label1.to_string(),
+            col as f64 - 0.25,
+            (self.num_rows - 1 - row) as f64,
+            NodeType::Data,
+        );
+        self.nodes.insert(label1.to_string(), node1);
+        let label2 = format!("d{}{}", q + 1, op);
+        let node2 = Node::new(
+            label2.to_string(),
+            col as f64 + 0.25,
+            (self.num_rows - 1 - row) as f64,
+            NodeType::Data,
+        );
+        self.nodes.insert(label2.to_string(), node2);
+        let combined_label = format!("d{}/{}{}", q, q + 1, op);
+        self.node_grid[col][row] = Some(combined_label);
     }
 
     fn is_magic_pair(&self, label1: &str, label2: &str) -> bool {
@@ -200,43 +218,18 @@ impl TopoGraph {
 
     fn add_border_row(&mut self, row: usize) {
         // Add corner bus nodes
-        let bus_label = format!("b{}", self.num_bus_qubits);
-        self.add_node(&bus_label, 0.0, row as f64, NodeType::Bus);
-        self.node_grid[0][row] = Some(bus_label.clone());
-        self.num_bus_qubits += 1;
-
-        let bus_label = format!("b{}", self.num_bus_qubits);
-        self.add_node(&bus_label, (self.num_cols - 1) as f64, row as f64, NodeType::Bus);
-        self.node_grid[self.num_cols - 1][row] = Some(bus_label);
-        self.num_bus_qubits += 1;
-
+        self.node_grid[0][row] = Some(self.add_node(0, row, NodeType::Bus));
+        self.node_grid[self.num_cols - 1][row] =
+            Some(self.add_node(self.num_cols - 1, row, NodeType::Bus));
         // Add alternating magic/ancilla nodes
         for col in 1..self.num_cols - 1 {
-            let (label, node_type) = if col % 2 == 1 {
-                (format!("m{}", self.num_magic_qubits), NodeType::Magic)
-            } else if col % 4 == 0 {
-                (format!("a{}", self.num_ancilla_qubits), NodeType::Ancilla)
-            } else {
-                (format!("m{}", self.num_magic_qubits), NodeType::Magic)
-            };
-
-            self.add_node(&label, col as f64, row as f64, node_type);
-            self.node_grid[col][row] = Some(label);
-
-            match node_type {
-                NodeType::Magic => self.num_magic_qubits += 1,
-                NodeType::Ancilla => self.num_ancilla_qubits += 1,
-                _ => {}
-            }
+            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
         }
     }
 
     fn add_border_column(&mut self, col: usize) {
         for row in 1..self.num_rows - 1 {
-            let label = format!("m{}", self.num_magic_qubits);
-            self.add_node(&label, col as f64, row as f64, NodeType::Magic);
-            self.node_grid[col][row] = Some(label);
-            self.num_magic_qubits += 1;
+            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
         }
     }
 
@@ -299,32 +292,45 @@ impl TopoGraph {
     }
 
     pub fn print(&self) -> io::Result<()> {
-        let mut file = File::create(&format!("{}.txt", self.topo_fname))?;
+        let topo_path = Path::new(&self.topo_fname);
+        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
+        let output_fname = format!("{}.topo.txt", topo_stem);
+        let mut file = File::create(&output_fname)?;
 
-        writeln!(file, "Topology:")?;
         for row in 0..self.num_rows {
-            write!(file, "  ")?;
             for col in 0..self.num_cols {
                 if let Some(ref label) = self.node_grid[col][row] {
-                    if self.num_data_qubits <= 100 {
-                        write!(file, "{:8} ", label)?;
+                    write!(file, "{:8}  ", label)?;
+                    /*
+                    if is_data_node(label) {
+                        write!(
+                            file,
+                            "{}{} ",
+                            label.chars().nth(0).unwrap_or(' '),
+                            label.chars().last().unwrap_or(' ')
+                        )?;
                     } else {
-                        write!(file, "{:9} ", label)?;
+                        write!(file, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
                     }
+                     */
                 }
             }
             writeln!(file)?;
         }
 
-        println!("Wrote topology to {}.txt", self.topo_fname);
+        println!("Wrote topology to {}", output_fname);
         Ok(())
     }
 
     pub fn plot(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = Timer::new("plot");
 
-        let png_name = format!("{}.png", self.topo_fname);
-        let svg_name = format!("{}.svg", self.topo_fname);
+        let topo_path = Path::new(&self.topo_fname);
+        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
+        let output_fname = format!("{}.topo", topo_stem);
+
+        let png_name = format!("{}.png", output_fname);
+        let svg_name = format!("{}.svg", output_fname);
 
         // Create output files
         let root = BitMapBackend::new(&png_name, (1800, 900)).into_drawing_area();
