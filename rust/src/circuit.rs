@@ -187,32 +187,25 @@ impl Circuit {
 
     pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = Timer::new("plot");
-
         // Get circuit filename
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
-
         // Create output files
         let layers = self.get_layers();
         let min_layer = 0;
         let max_layer = layers.len();
-
         // Split into chunks of 1000 layers
         const LAYERS_PER_FILE: usize = 1000;
         for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
-
-            let chunk_fname =
-                format!("{}.circuit.{:04}-{:04}", circuit_stem, chunk_start, chunk_end - 1);
-
-            let png_name = format!("{}.png", chunk_fname);
+            let png_fname = format!("{}.circuit-{}.png", circuit_stem, chunk_start);
             // Create drawing area
             let root = BitMapBackend::new(
-                &png_name,
+                &png_fname,
                 (
-                    (chunk_layers as f32 * 0.17 * 1800.0) as u32,
-                    (self.num_qubits as f32 * 0.22 * 900.0) as u32,
+                    (chunk_layers as f32 * 0.17 * 100.0) as u32,
+                    (self.num_qubits as f32 * 0.22 * 100.0) as u32,
                 ),
             )
             .into_drawing_area();
@@ -229,23 +222,43 @@ impl Circuit {
                 )
                 .build_cartesian_2d(
                     chunk_start as f32..chunk_end as f32,
-                    -0.5f32..self.num_qubits as f32 + 0.5,
+                    //-0.5f32..self.num_qubits as f32 + 0.5,
+                    ((self.num_qubits - 1) as f32 + 0.5)..(-0.5f32),
                 )?;
-
             // Configure axes
             chart
                 .configure_mesh()
-                .x_labels(chunk_layers)
+                .x_labels(chunk_layers / 5)
                 .x_label_formatter(&|x| format!("{}", x))
+                .y_labels((self.num_qubits + 1) as usize)
+                .y_label_formatter(&|y| format!("{}", y))
                 .x_desc("Time Steps")
                 .y_desc("Qubits")
+                .x_label_style(("sans-serif", 14))
+                .y_label_style(("sans-serif", 14))
+                .axis_desc_style(("sans-serif", 16))
+                .disable_mesh()
                 .draw()?;
-
             // Draw products
             for (col, layer) in layers[chunk_start..chunk_end].iter().enumerate() {
                 for pp in layer {
                     let col = col + chunk_start;
+                    // Draw background rectangle
+                    let start_pos = pp.get_qubits()[0];
+                    let end_pos = *pp.get_qubits().last().unwrap();
+                    let rect_height = (end_pos - start_pos) as f32 + 0.8;
 
+                    chart.draw_series(std::iter::once(Rectangle::new(
+                        [
+                            (col as f32 - 0.1, start_pos as f32 - 0.4),
+                            (col as f32 + 0.7, start_pos as f32 + rect_height - 0.4),
+                        ],
+                        if pp.is_clifford {
+                            RGBColor(0xCC, 0xCC, 0x22).filled()
+                        } else {
+                            RGBColor(0x22, 0xFF, 0x22).filled()
+                        },
+                    )))?;
                     if show_product_ids {
                         chart.draw_series(std::iter::once(Text::new(
                             pp.id.to_string(),
@@ -257,35 +270,16 @@ impl Circuit {
                             if op.basis != ' ' {
                                 chart.draw_series(std::iter::once(Text::new(
                                     op.basis.to_string(),
-                                    (col as f32 + 0.1, op.qubit as f32),
-                                    ("monospace", 7).into_font(),
+                                    (col as f32 + 0.1, op.qubit as f32 - 0.4),
+                                    ("monospace", 10).into_font(),
                                 )))?;
                             }
                         }
                     }
-
-                    // Draw background rectangle
-                    let start_pos = pp.get_qubits()[0];
-                    let end_pos = *pp.get_qubits().last().unwrap();
-                    let rect_height = (end_pos - start_pos) as f32 + 0.8;
-
-                    chart.draw_series(std::iter::once(Rectangle::new(
-                        [
-                            (col as f32 - 0.1, start_pos as f32 - 0.4),
-                            (col as f32 + 0.7, start_pos as f32 + rect_height),
-                        ],
-                        if pp.is_clifford {
-                            RGBColor(0xCC, 0xCC, 0x22).filled()
-                        } else {
-                            RGBColor(0x22, 0xFF, 0x22).filled()
-                        },
-                    )))?;
                 }
             }
-
-            println!("Saved layers {}-{} to {}.png", chunk_start, chunk_end - 1, chunk_fname);
+            println!("Saved layers {}-{} to {}", chunk_start, chunk_end - 1, png_fname);
         }
-
         Ok(())
     }
 
