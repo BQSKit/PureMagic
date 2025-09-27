@@ -36,31 +36,36 @@ class RealCircuit(list):
 
     @timer
     def get_layers(self):
-        pps_used = set()
-        pps_left = set()
-        for pp in self:
-            pps_left.add(pp.id)
+        # Pre-calculate in-degrees (number of unprocessed parents) for each product
+        in_degrees = [len(pp.parents) for pp in self]
+        # Initialize queue with products that have no parents
+        ready = [idx for idx, degree in enumerate(in_degrees) if degree == 0]
         layers = []
-        while pps_left:
-            layer = []
-            pps_selected = []
-            for pp_id in pps_left:
-                pp = self[pp_id]
-                for parent in pp.parents:
-                    if parent not in pps_used:
-                        break
-                else:
-                    layer.append(pp)
-                    pps_selected.append(pp.id)
-            layers.append(layer)
-            for pp_id in pps_selected:
-                pps_left.remove(pp_id)
-                pps_used.add(pp_id)
+        processed = 0
+        # Process products level by level using a queue-based approach
+        while ready:
+            sorted_ready = sorted(ready, key=lambda idx: self[idx].id)
+            layers.append([self[idx] for idx in sorted_ready])
+            processed += len(ready)
+
+            next_ready = []
+            for current in ready:
+                # Process children of current node
+                for child_id in self[current].children:
+                    child_idx = child_id
+                    in_degrees[child_idx] -= 1
+                    if in_degrees[child_idx] == 0:
+                        next_ready.append(child_idx)
+
+            ready = next_ready
+        # Verify all products were processed
+        assert processed == len(self), "Circuit contains cycles or unreachable products"
         return layers
 
     @timer
     def get_statistics(self):
-        self.layers = self.get_layers()
+        if self.layers is None:
+            self.layers = self.get_layers()
         num_noncliffords = [0] * len(self.layers)
         num_odd_ys = [0] * len(self.layers)
         num_ys = [0] * len(self.layers)
