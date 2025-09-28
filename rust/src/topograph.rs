@@ -391,13 +391,11 @@ impl TopoGraph {
 
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
-        let png_fname = format!("{}.topo.png", topo_stem);
+        let svg_fname = format!("{}.topo.svg", topo_stem);
         // Create output files
-        let root = BitMapBackend::new(
-            &png_fname,
-            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
-        )
-        .into_drawing_area();
+        let root =
+            SVGBackend::new(&svg_fname, (self.num_cols as u32 * 100, self.num_rows as u32 * 100))
+                .into_drawing_area();
         root.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&root)
             .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
@@ -456,7 +454,7 @@ impl TopoGraph {
             )))?;
         }
         root.present()?;
-        println!("Plotted topology to {}", png_fname);
+        println!("Plotted topology to {}", svg_fname);
         Ok(())
     }
 
