@@ -143,10 +143,10 @@ impl Circuit {
         for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
-            let svg_fname = format!("{}.circuit-{}.svg", circuit_stem, chunk_start);
+            let png_fname = format!("{}.circuit-{}.png", circuit_stem, chunk_start);
             // Create drawing area
-            let root = SVGBackend::new(
-                &svg_fname,
+            let root = BitMapBackend::new(
+                &png_fname,
                 (
                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
                     (self.num_qubits as f32 * 0.22 * 100.0) as u32,
@@ -222,7 +222,7 @@ impl Circuit {
                     }
                 }
             }
-            println!("Saved layers {}-{} to {}", chunk_start, chunk_end - 1, svg_fname);
+            println!("Saved layers {}-{} to {}", chunk_start, chunk_end - 1, png_fname);
         }
         Ok(())
     }
