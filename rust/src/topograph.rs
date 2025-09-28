@@ -17,11 +17,12 @@ pub enum NodeType {
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    node_type: NodeType,
-    label: String,
-    pos: (f64, f64),
-    busy_count: Option<i32>,
-    edges: HashSet<String>, // Store connected node labels
+    pub node_type: NodeType,
+    pub label: String,
+    pub pos: (f64, f64),
+    pub busy_count: Option<i32>,
+    pub edges: HashSet<String>,
+    pub used: bool,
 }
 
 pub struct TopoGraph {
@@ -48,6 +49,7 @@ impl Node {
             pos: (x, y),
             busy_count: if node_type == NodeType::Magic { Some(0) } else { None },
             edges: HashSet::new(),
+            used: false,
         }
     }
 
@@ -57,7 +59,7 @@ impl Node {
 }
 
 impl TopoGraph {
-    pub fn new(circuit_fname: &String, topo_fname: &String, rng: StdRng) -> Self {
+    pub fn new() -> Self {
         TopoGraph {
             nodes: HashMap::new(),
             node_grid: Vec::new(),
@@ -69,13 +71,25 @@ impl TopoGraph {
             num_ancilla_qubits: 0,
             num_estabilizer_qubits: 0,
             num_qubits: 0,
-            rng,
-            circuit_fname: circuit_fname.to_string(),
-            topo_fname: topo_fname.to_string(),
+            rng: StdRng::from_entropy(),
+            circuit_fname: String::new(),
+            topo_fname: String::new(),
         }
     }
 
-    fn add_node(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
+    pub fn get_node(&self, node_label: &str) -> &Node {
+        self.nodes.get(node_label).expect("Node not found")
+    }
+
+    pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values()
+    }
+
+    pub fn contains_node(&self, node_label: &str) -> bool {
+        self.nodes.contains_key(node_label)
+    }
+
+    pub fn add_node(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
         let ch = match node_type {
             NodeType::Magic => "m",
             NodeType::Ancilla => "a",
@@ -92,7 +106,11 @@ impl TopoGraph {
         label
     }
 
-    fn add_edge(&mut self, label1: &str, label2: &str) {
+    pub fn add_node_copied(&mut self, node: Node) {
+        self.nodes.insert(node.label.to_string(), node);
+    }
+
+    pub fn add_edge(&mut self, label1: &str, label2: &str) {
         if let Some(node1) = self.nodes.get_mut(label1) {
             node1.add_edge(label2);
         }
@@ -101,8 +119,17 @@ impl TopoGraph {
         }
     }
 
-    pub fn set_topo(&mut self, min_num_qubits: usize) {
+    pub fn set_topo(
+        &mut self,
+        min_num_qubits: usize,
+        circuit_fname: &String,
+        topo_fname: &String,
+        rng: StdRng,
+    ) {
         let _timer = Timer::new("set_topo");
+        self.rng = rng;
+        self.circuit_fname = circuit_fname.to_string();
+        self.topo_fname = topo_fname.to_string();
 
         if !self.topo_fname.is_empty() {
             if let Err(e) = self.read_topo_from_file() {
@@ -187,10 +214,6 @@ impl TopoGraph {
         self.node_grid[col][row] = Some(combined_label);
     }
 
-    fn is_magic_pair(&self, label1: &str, label2: &str) -> bool {
-        is_magic_node(label1) && is_magic_node(label2)
-    }
-
     fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
         // Find indices of numbers and operator
         let d_pos = label.find('d')?;
@@ -216,7 +239,7 @@ impl TopoGraph {
                     // Add horizontal edges
                     if col > 0 {
                         if let Some(ref left_label) = self.node_grid[col - 1][row] {
-                            if !self.is_magic_pair(label, left_label) {
+                            if !label.starts_with('m') || !left_label.starts_with('m') {
                                 edges_to_add.push((label.clone(), left_label.clone()));
                             }
                         }
@@ -224,7 +247,7 @@ impl TopoGraph {
                     // Add vertical edges
                     if row > 0 {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
-                            if !is_data_node(label) && !is_data_node(up_label) {
+                            if !label.starts_with('d') && !up_label.starts_with('d') {
                                 edges_to_add.push((label.clone(), up_label.clone()));
                             }
                         }
@@ -234,11 +257,11 @@ impl TopoGraph {
         }
         // Add all edges
         for (label1, label2) in edges_to_add {
-            if is_data_node(&label1) {
+            if label1.starts_with('d') {
                 if let Some(ref d) = self.get_data_label_side(&label1, true) {
                     self.add_edge(d, &label2);
                 }
-            } else if is_data_node(&label2) {
+            } else if label2.starts_with('d') {
                 if let Some(ref d) = self.get_data_label_side(&label2, false) {
                     self.add_edge(&label1, &d);
                 }
@@ -478,24 +501,25 @@ impl TopoGraph {
 
         Ok(())
     }
-}
 
-pub fn is_magic_node(node: &str) -> bool {
-    node.starts_with('m')
-}
-
-pub fn is_bus_node(node: &str) -> bool {
-    node.starts_with('b')
-}
-
-pub fn is_data_node(node: &str) -> bool {
-    node.starts_with('d')
-}
-
-pub fn is_ancilla_node(node: &str) -> bool {
-    node.starts_with('a')
-}
-
-pub fn is_estabilizer_node(node: &str) -> bool {
-    node.starts_with('e')
+    pub fn trim_dangling_bus_nodes(&mut self) {
+        loop {
+            // Find dangling bus nodes
+            let mut dangling_labels: Vec<String> = Vec::new();
+            for (label, node) in self.nodes.iter() {
+                // there is at most one path going into the bus node
+                if node.node_type == NodeType::Bus && node.edges.len() <= 1 {
+                    dangling_labels.push(label.clone());
+                }
+            }
+            // Remove dangling nodes if any found
+            if dangling_labels.is_empty() {
+                break;
+            } else {
+                for label in dangling_labels {
+                    self.nodes.remove(&label);
+                }
+            }
+        }
+    }
 }
