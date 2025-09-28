@@ -3,7 +3,7 @@ use plotters::prelude::*;
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,48 +77,6 @@ impl TopoGraph {
         }
     }
 
-    pub fn get_node(&self, node_label: &str) -> &Node {
-        self.nodes.get(node_label).expect("Node not found")
-    }
-
-    pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.values()
-    }
-
-    pub fn contains_node(&self, node_label: &str) -> bool {
-        self.nodes.contains_key(node_label)
-    }
-
-    pub fn add_node(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
-        let ch = match node_type {
-            NodeType::Magic => "m",
-            NodeType::Ancilla => "a",
-            NodeType::Bus => "b",
-            NodeType::Data => "d",
-            NodeType::Estabilizer => "e",
-            _ => "",
-        };
-
-        let label = format!("{}{}-{}", ch, col, row);
-        let node =
-            Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
-        self.nodes.insert(label.to_string(), node);
-        label
-    }
-
-    pub fn add_node_copied(&mut self, node: Node) {
-        self.nodes.insert(node.label.to_string(), node);
-    }
-
-    pub fn add_edge(&mut self, label1: &str, label2: &str) {
-        if let Some(node1) = self.nodes.get_mut(label1) {
-            node1.add_edge(label2);
-        }
-        if let Some(node2) = self.nodes.get_mut(label2) {
-            node2.add_edge(label1);
-        }
-    }
-
     pub fn set_topo(
         &mut self,
         min_num_qubits: usize,
@@ -156,6 +114,57 @@ impl TopoGraph {
         self.update_statistics();
     }
 
+    pub fn read_topo_from_file(&mut self) -> io::Result<()> {
+        let _timer = Timer::new("read_topo_from_file");
+        // Read the grid layout
+        let mut rows = Vec::new();
+        let file = File::open(&self.topo_fname)?;
+        for line in io::BufReader::new(file).lines() {
+            let line = line?;
+            let row: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
+            if !row.is_empty() {
+                rows.push(row);
+            }
+        }
+        // Transpose grid from row-major to col-major order
+        self.num_rows = rows.len();
+        self.num_cols = rows[0].len();
+        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+
+        for (row_i, row) in rows.iter().enumerate() {
+            for (col_i, col) in row.iter().enumerate() {
+                self.node_grid[col_i][row_i] = Some(col.clone());
+            }
+        }
+        // Add nodes
+        let mut di = 0;
+        for col in 0..self.num_cols {
+            for row in 0..self.num_rows {
+                if let Some(ref node) = self.node_grid[col][row] {
+                    if node.starts_with('d') {
+                        let op = node.chars().nth(1).unwrap_or('X');
+                        self.add_data_qubit(di, col, row, op == 'X');
+                        di += 2;
+                    } else {
+                        let node_type = match node.chars().next() {
+                            Some('m') => NodeType::Magic,
+                            Some('b') => NodeType::Bus,
+                            Some('a') => NodeType::Ancilla,
+                            Some('e') => NodeType::Estabilizer,
+                            _ => continue,
+                        };
+                        self.node_grid[col][row] = Some(self.add_node(col, row, node_type));
+                    }
+                }
+            }
+        }
+        // Add edges
+        self.set_edges();
+        println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
+
+        Ok(())
+    }
+
     fn gen_topo(&mut self) {
         self.add_border_row(0);
         self.add_border_column(0);
@@ -191,6 +200,23 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
+    fn add_border_row(&mut self, row: usize) {
+        // Add corner bus nodes
+        self.node_grid[0][row] = Some(self.add_node(0, row, NodeType::Bus));
+        self.node_grid[self.num_cols - 1][row] =
+            Some(self.add_node(self.num_cols - 1, row, NodeType::Bus));
+        // Add alternating magic/ancilla nodes
+        for col in 1..self.num_cols - 1 {
+            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
+        }
+    }
+
+    fn add_border_column(&mut self, col: usize) {
+        for row in 1..self.num_rows - 1 {
+            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
+        }
+    }
+
     fn add_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
@@ -212,22 +238,6 @@ impl TopoGraph {
         self.nodes.insert(label2.to_string(), node2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label);
-    }
-
-    fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
-        // Find indices of numbers and operator
-        let d_pos = label.find('d')?;
-        let slash_pos = label.find('/')?;
-        let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
-        // Extract the numbers and operator
-        let first_num = &label[d_pos + 1..slash_pos];
-        let second_num = &label[slash_pos + 1..op_pos];
-        let operator = &label[op_pos..=op_pos];
-        if left {
-            return Some(format!("d{}{}", first_num, operator));
-        } else {
-            return Some(format!("d{}{}", second_num, operator));
-        }
     }
 
     fn set_edges(&mut self) {
@@ -271,20 +281,19 @@ impl TopoGraph {
         }
     }
 
-    fn add_border_row(&mut self, row: usize) {
-        // Add corner bus nodes
-        self.node_grid[0][row] = Some(self.add_node(0, row, NodeType::Bus));
-        self.node_grid[self.num_cols - 1][row] =
-            Some(self.add_node(self.num_cols - 1, row, NodeType::Bus));
-        // Add alternating magic/ancilla nodes
-        for col in 1..self.num_cols - 1 {
-            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
-        }
-    }
-
-    fn add_border_column(&mut self, col: usize) {
-        for row in 1..self.num_rows - 1 {
-            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
+    fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
+        // Find indices of numbers and operator
+        let d_pos = label.find('d')?;
+        let slash_pos = label.find('/')?;
+        let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
+        // Extract the numbers and operator
+        let first_num = &label[d_pos + 1..slash_pos];
+        let second_num = &label[slash_pos + 1..op_pos];
+        let operator = &label[op_pos..=op_pos];
+        if left {
+            return Some(format!("d{}{}", first_num, operator));
+        } else {
+            return Some(format!("d{}{}", second_num, operator));
         }
     }
 
@@ -451,57 +460,6 @@ impl TopoGraph {
         Ok(())
     }
 
-    pub fn read_topo_from_file(&mut self) -> io::Result<()> {
-        let _timer = Timer::new("read_topo_from_file");
-        // Read the grid layout
-        let mut rows = Vec::new();
-        let file = File::open(&self.topo_fname)?;
-        for line in io::BufReader::new(file).lines() {
-            let line = line?;
-            let row: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
-            if !row.is_empty() {
-                rows.push(row);
-            }
-        }
-        // Transpose grid from row-major to col-major order
-        self.num_rows = rows.len();
-        self.num_cols = rows[0].len();
-        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
-
-        for (row_i, row) in rows.iter().enumerate() {
-            for (col_i, col) in row.iter().enumerate() {
-                self.node_grid[col_i][row_i] = Some(col.clone());
-            }
-        }
-        // Add nodes
-        let mut di = 0;
-        for col in 0..self.num_cols {
-            for row in 0..self.num_rows {
-                if let Some(ref node) = self.node_grid[col][row] {
-                    if node.starts_with('d') {
-                        let op = node.chars().nth(1).unwrap_or('X');
-                        self.add_data_qubit(di, col, row, op == 'X');
-                        di += 2;
-                    } else {
-                        let node_type = match node.chars().next() {
-                            Some('m') => NodeType::Magic,
-                            Some('b') => NodeType::Bus,
-                            Some('a') => NodeType::Ancilla,
-                            Some('e') => NodeType::Estabilizer,
-                            _ => continue,
-                        };
-                        self.node_grid[col][row] = Some(self.add_node(col, row, node_type));
-                    }
-                }
-            }
-        }
-        // Add edges
-        self.set_edges();
-        println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
-
-        Ok(())
-    }
-
     pub fn trim_dangling_bus_nodes(&mut self) {
         loop {
             // Find dangling bus nodes
@@ -520,6 +478,48 @@ impl TopoGraph {
                     self.nodes.remove(&label);
                 }
             }
+        }
+    }
+
+    pub fn get_node(&self, node_label: &str) -> &Node {
+        self.nodes.get(node_label).expect("Node not found")
+    }
+
+    pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values()
+    }
+
+    pub fn contains_node(&self, node_label: &str) -> bool {
+        self.nodes.contains_key(node_label)
+    }
+
+    pub fn add_node(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
+        let ch = match node_type {
+            NodeType::Magic => "m",
+            NodeType::Ancilla => "a",
+            NodeType::Bus => "b",
+            NodeType::Data => "d",
+            NodeType::Estabilizer => "e",
+            _ => "",
+        };
+
+        let label = format!("{}{}-{}", ch, col, row);
+        let node =
+            Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
+        self.nodes.insert(label.to_string(), node);
+        label
+    }
+
+    pub fn add_node_copied(&mut self, node: Node) {
+        self.nodes.insert(node.label.to_string(), node);
+    }
+
+    pub fn add_edge(&mut self, label1: &str, label2: &str) {
+        if let Some(node1) = self.nodes.get_mut(label1) {
+            node1.add_edge(label2);
+        }
+        if let Some(node2) = self.nodes.get_mut(label2) {
+            node2.add_edge(label1);
         }
     }
 }
