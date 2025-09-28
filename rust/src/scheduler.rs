@@ -1,4 +1,5 @@
 use crate::circuit::Circuit;
+use crate::pauliproduct::PauliProduct;
 use crate::topograph::{NodeType, TopoGraph};
 use crate::utils::Timer;
 use petgraph::graphmap::NodeTrait;
@@ -124,5 +125,40 @@ impl Scheduler {
             }
         }
         false
+    }
+
+    fn schedule_pauli_product(&self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
+        if self.log_scheduler {
+            println!("Trying to schedule {}", pauli_product);
+        }
+        // Initially terminal nodes contain only the data qubits
+        let mut data_nodes = Vec::new();
+
+        for op in &pauli_product.operators {
+            let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+            // Check if node is already used
+            if self.topo.get_node(&node_label).used {
+                if self.log_scheduler {
+                    println!("  Node {} is already used", node_label);
+                }
+                return None;
+            }
+            data_nodes.push(node_label);
+        }
+
+        if data_nodes.is_empty() {
+            if self.log_scheduler {
+                println!("  No data nodes found in working graph");
+            }
+            return None;
+        }
+        None
+        /*
+        if !pauli_product.is_clifford {
+            self.schedule_non_clifford(&data_nodes, pauli_product)
+        } else {
+            self.schedule_clifford(&data_nodes, pauli_product)
+        }
+         */
     }
 }
