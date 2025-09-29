@@ -315,9 +315,6 @@ class Scheduler:
         next_to_schedule = []
         schedule_pp_timer = 0
         for pp in to_schedule:
-            if self.topo_graph.number_of_nodes() == 0:
-                self.print_sched("No more nodes")
-                break
             t = time.perf_counter()
             pp_graph = self.schedule_pauli_product(pp)
             schedule_pp_timer += time.perf_counter() - t
@@ -358,7 +355,6 @@ class Scheduler:
         frac_data = float(num_data_scheduled) / self.topo_graph.num_data_qubits
         frac_bus = float(num_bus_scheduled) / self.topo_graph.num_bus_qubits
         frac_magic = float(num_magic_scheduled) / self.topo_graph.num_magic_qubits
-        # frac_ancilla = float(num_ancilla_scheduled) / self.topo_graph.num_ancilla_qubits
         frac_estabilizers = (
             float(num_estabilizers_scheduled) / self.topo_graph.num_estabilizer_qubits
         )
@@ -375,10 +371,6 @@ class Scheduler:
             f"  magic:       {num_magic_scheduled}/{self.topo_graph.num_magic_qubits} "
             f"({frac_magic:.2f})",
         )
-        # self.print_sched(
-        #    f"  ancilla:     {num_ancilla_scheduled}/{self.topo_graph.num_ancilla_qubits} "
-        #    f"({frac_ancilla:.2f})",
-        # )
         self.print_sched(
             f"  estabilizer: {num_estabilizers_scheduled}/{self.topo_graph.num_estabilizer_qubits} "
             f"({frac_estabilizers:.2f})",

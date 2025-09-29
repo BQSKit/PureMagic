@@ -1,5 +1,4 @@
 use clap::Parser;
-use rand::prelude::*;
 use std::time::Instant;
 
 mod circuit;
@@ -60,8 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let start = Instant::now();
-    let rng = StdRng::seed_from_u64(args.rseed);
-
     // Initialize circuit
     let mut circuit = Circuit::new(&args.circuit_fname)?;
     circuit.split_ys();
@@ -74,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Initialize topology
     let mut topo_graph = TopoGraph::new();
-    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname, rng);
+    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname);
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {
