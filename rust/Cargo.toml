@@ -13,13 +13,14 @@ num-rational = "0.4"  # For Fraction support
 itertools = "0.11"
 petgraph = "0.6"
 plotters = { version = "0.3.7", features = ["svg_backend"] }
-rand = { version = "0.8", features = ["std"] }
+rand_simple = "0.2"
 # Standard error handling
 thiserror = "1.0"
 # Command line argument parsing
 clap = { version = "4.4", features = ["derive"] }
 # Logging and output formatting
 log = "0.4"
+simple-logging = "2.0"
 env_logger = "0.10"
 colored = "2.0"
 # Optional performance improvements

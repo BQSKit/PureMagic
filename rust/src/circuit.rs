@@ -11,8 +11,8 @@ use std::{
 
 pub struct Circuit {
     products: Vec<PauliProduct>,
-    circuit_fname: String,
-    pub(crate) num_qubits: usize,
+    pub circuit_fname: String,
+    pub num_qubits: usize,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
 }
 

@@ -1,6 +1,5 @@
 use crate::utils::Timer;
 use plotters::prelude::*;
-use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, Write};
@@ -30,13 +29,14 @@ pub struct TopoGraph {
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
     num_rows: usize,
-    num_data_qubits: usize,
-    num_bus_qubits: usize,
-    num_magic_qubits: usize,
-    num_ancilla_qubits: usize,
-    num_estabilizer_qubits: usize,
-    num_qubits: usize,
-    rng: StdRng,
+    pub num_data_qubits: usize,
+    pub num_bus_qubits: usize,
+    pub num_magic_qubits: usize,
+    pub num_ancilla_qubits: usize,
+    pub num_estabilizer_qubits: usize,
+    pub num_qubits: usize,
+    pub num_edges: usize,
+    pub num_nodes: usize,
     topo_fname: String,
     circuit_fname: String,
 }
@@ -71,21 +71,15 @@ impl TopoGraph {
             num_ancilla_qubits: 0,
             num_estabilizer_qubits: 0,
             num_qubits: 0,
-            rng: StdRng::from_entropy(),
+            num_edges: 0,
+            num_nodes: 0,
             circuit_fname: String::new(),
             topo_fname: String::new(),
         }
     }
 
-    pub fn set_topo(
-        &mut self,
-        min_num_qubits: usize,
-        circuit_fname: &String,
-        topo_fname: &String,
-        rng: StdRng,
-    ) {
+    pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String, topo_fname: &String) {
         let _timer = Timer::new("set_topo");
-        self.rng = rng;
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
 
@@ -238,6 +232,7 @@ impl TopoGraph {
         self.nodes.insert(label2.to_string(), node2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label);
+        self.num_nodes += 2;
     }
 
     fn set_edges(&mut self) {
@@ -485,8 +480,16 @@ impl TopoGraph {
         self.nodes.get(node_label).expect("Node not found")
     }
 
+    pub fn get_node_mut(&mut self, node_label: &str) -> &mut Node {
+        self.nodes.get_mut(node_label).expect("Node not found")
+    }
+
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
+    }
+
+    pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
+        self.nodes.values_mut()
     }
 
     pub fn contains_node(&self, node_label: &str) -> bool {
@@ -500,18 +503,19 @@ impl TopoGraph {
             NodeType::Bus => "b",
             NodeType::Data => "d",
             NodeType::Estabilizer => "e",
-            _ => "",
         };
 
         let label = format!("{}{}-{}", ch, col, row);
         let node =
             Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
         self.nodes.insert(label.to_string(), node);
+        self.num_nodes += 1;
         label
     }
 
     pub fn add_node_copied(&mut self, node: Node) {
         self.nodes.insert(node.label.to_string(), node);
+        self.num_nodes += 1;
     }
 
     pub fn add_edge(&mut self, label1: &str, label2: &str) {
@@ -521,5 +525,6 @@ impl TopoGraph {
         if let Some(node2) = self.nodes.get_mut(label2) {
             node2.add_edge(label1);
         }
+        self.num_edges += 1;
     }
 }
