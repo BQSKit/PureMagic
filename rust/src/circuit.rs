@@ -18,12 +18,10 @@ pub struct Circuit {
 
 impl Circuit {
     pub fn new(fname: &String) -> io::Result<Self> {
-        let mut circuit = Circuit {
-            products: Vec::new(),
-            circuit_fname: fname.to_string(),
-            num_qubits: 0,
-            layers: RefCell::new(None),
-        };
+        let mut circuit = Circuit { products: Vec::new(),
+                                    circuit_fname: fname.to_string(),
+                                    num_qubits: 0,
+                                    layers: RefCell::new(None) };
         circuit.load_circuit()?;
         Ok(circuit)
     }
@@ -38,20 +36,17 @@ impl Circuit {
         for (i, line) in reader.lines().enumerate() {
             let product_string = line?.trim().to_string();
             let mut product = PauliProduct::new();
-            product
-                .set_from_str(i as i32, &product_string)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            product.set_from_str(i as i32, &product_string)
+                   .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
             self.products.push(product);
         }
 
         // Find maximum qubit
         self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
 
-        println!(
-            "Loaded circuit with {} products and {} qubits",
-            self.products.len(),
-            self.num_qubits
-        );
+        println!("Loaded circuit with {} products and {} qubits",
+                 self.products.len(),
+                 self.num_qubits);
 
         // Collect parent/child relationships
         let mut relationships = Vec::new();
@@ -122,11 +117,9 @@ impl Circuit {
             self.products.push(new_pp);
         }
 
-        println!(
-            "After splitting {} Y products there are {} products in the circuit",
-            modifications_len,
-            self.products.len()
-        );
+        println!("After splitting {} Y products there are {} products in the circuit",
+                 modifications_len,
+                 self.products.len());
     }
 
     pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -156,33 +149,32 @@ impl Circuit {
 
             root.fill(&WHITE)?;
 
-            let mut chart = ChartBuilder::on(&root)
-                .margin(50)
-                .set_label_area_size(LabelAreaPosition::Left, 60)
-                .set_label_area_size(LabelAreaPosition::Bottom, 40)
-                .caption(
-                    format!("{} (Layers {}-{})", circuit_stem, chunk_start, chunk_end - 1),
-                    ("sans-serif", 20),
-                )
-                .build_cartesian_2d(
-                    chunk_start as f32..chunk_end as f32,
-                    //-0.5f32..self.num_qubits as f32 + 0.5,
-                    ((self.num_qubits - 1) as f32 + 0.5)..(-0.5f32),
-                )?;
+            let mut chart =
+                ChartBuilder::on(&root).margin(50)
+                                       .set_label_area_size(LabelAreaPosition::Left, 60)
+                                       .set_label_area_size(LabelAreaPosition::Bottom, 40)
+                                       .caption(format!("{} (Layers {}-{})",
+                                                        circuit_stem,
+                                                        chunk_start,
+                                                        chunk_end - 1),
+                                                ("sans-serif", 20))
+                                       .build_cartesian_2d(chunk_start as f32..chunk_end as f32,
+                                                           //-0.5f32..self.num_qubits as f32 + 0.5,
+                                                           ((self.num_qubits - 1) as f32 + 0.5)
+                                                           ..(-0.5f32))?;
             // Configure axes
-            chart
-                .configure_mesh()
-                .x_labels(chunk_layers / 5)
-                .x_label_formatter(&|x| format!("{}", x))
-                .y_labels((self.num_qubits + 1) as usize)
-                .y_label_formatter(&|y| format!("{}", y))
-                .x_desc("Time Steps")
-                .y_desc("Qubits")
-                .x_label_style(("sans-serif", 14))
-                .y_label_style(("sans-serif", 14))
-                .axis_desc_style(("sans-serif", 16))
-                .disable_mesh()
-                .draw()?;
+            chart.configure_mesh()
+                 .x_labels(chunk_layers / 5)
+                 .x_label_formatter(&|x| format!("{}", x))
+                 .y_labels((self.num_qubits + 1) as usize)
+                 .y_label_formatter(&|y| format!("{}", y))
+                 .x_desc("Time Steps")
+                 .y_desc("Qubits")
+                 .x_label_style(("sans-serif", 14))
+                 .y_label_style(("sans-serif", 14))
+                 .axis_desc_style(("sans-serif", 16))
+                 .disable_mesh()
+                 .draw()?;
             // Draw products
             for (col, layer) in layers[chunk_start..chunk_end].iter().enumerate() {
                 for pp in layer {
@@ -256,21 +248,15 @@ impl Circuit {
         println!("Circuit statistics:");
         println!("  Layers:                  {}", layers.len());
         println!("  Non-Clifford layers:     {}", num_nonclifford_layers);
-        println!(
-            "  Non-Cliffords per layer:  {:.2} avg, {} max",
-            num_noncliffords.iter().sum::<i32>() as f64 / layers.len() as f64,
-            *num_noncliffords.iter().max().unwrap_or(&0)
-        );
-        println!(
-            "  Odd Y products per layer: {:.2} avg, {} max",
-            num_odd_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
-            *num_odd_ys.iter().max().unwrap_or(&0)
-        );
-        println!(
-            "  Y products per layer:     {:.2} avg, {} max",
-            num_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
-            *num_ys.iter().max().unwrap_or(&0)
-        );
+        println!("  Non-Cliffords per layer:  {:.2} avg, {} max",
+                 num_noncliffords.iter().sum::<i32>() as f64 / layers.len() as f64,
+                 *num_noncliffords.iter().max().unwrap_or(&0));
+        println!("  Odd Y products per layer: {:.2} avg, {} max",
+                 num_odd_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
+                 *num_odd_ys.iter().max().unwrap_or(&0));
+        println!("  Y products per layer:     {:.2} avg, {} max",
+                 num_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
+                 *num_ys.iter().max().unwrap_or(&0));
 
         layers.len()
     }
@@ -299,20 +285,18 @@ impl Circuit {
         let _timer = Timer::new("get_layers");
         // Return cached layers if available
         if let Some(cached) = self.layers.borrow().as_ref() {
-            return cached
-                .iter()
-                .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
-                .collect();
+            return cached.iter()
+                         .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+                         .collect();
         }
         // Pre-calculate in-degrees (number of unprocessed parents) for each product
         let mut in_degrees: Vec<usize> = self.products.iter().map(|pp| pp.parents.len()).collect();
         // Keep track of products ready to be processed (those with no remaining parents)
-        let mut ready: Vec<usize> = in_degrees
-            .iter()
-            .enumerate()
-            .filter(|&(_, &degree)| degree == 0)
-            .map(|(idx, _)| idx)
-            .collect();
+        let mut ready: Vec<usize> = in_degrees.iter()
+                                              .enumerate()
+                                              .filter(|&(_, &degree)| degree == 0)
+                                              .map(|(idx, _)| idx)
+                                              .collect();
 
         let mut index_layers = Vec::new();
         let mut processed = 0;
@@ -337,17 +321,14 @@ impl Circuit {
             ready = next_ready;
         }
         // Verify all products were processed
-        debug_assert_eq!(
-            processed,
-            self.products.len(),
-            "Circuit contains cycles or unreachable products"
-        );
+        debug_assert_eq!(processed,
+                         self.products.len(),
+                         "Circuit contains cycles or unreachable products");
         // Cache the computed layers
         *self.layers.borrow_mut() = Some(index_layers.clone());
         // Convert indices to references
-        index_layers
-            .iter()
-            .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
-            .collect()
+        index_layers.iter()
+                    .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+                    .collect()
     }
 }
