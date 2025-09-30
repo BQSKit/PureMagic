@@ -22,15 +22,13 @@ pub struct Scheduler {
     sum_ancilla_qubits: usize,
     sum_estabilizer_qubits: usize,
     busy_count_list: Vec<i32>,
+    schedule_non_clifford_timer: IntermittentTimer,
     schedule_clifford_timer: IntermittentTimer,
 }
 
 impl Scheduler {
     pub fn new(
-        circuit: Circuit,
-        topo: TopoGraph,
-        magic_state_lambda: f64,
-        log_scheduler: bool,
+        circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_scheduler: bool,
         plot_option: String,
     ) -> Self {
         if log_scheduler {
@@ -54,6 +52,7 @@ impl Scheduler {
             sum_ancilla_qubits: 0,
             sum_estabilizer_qubits: 0,
             busy_count_list: Vec::new(),
+            schedule_non_clifford_timer: IntermittentTimer::new("schedule non-clifford", ""),
             schedule_clifford_timer: IntermittentTimer::new("schedule clifford", ""),
         }
     }
@@ -192,6 +191,7 @@ impl Scheduler {
             / (num_steps * self.topo.num_qubits) as f64;
 
         self.schedule_clifford_timer.done();
+        self.schedule_non_clifford_timer.done();
         // Print final statistics
         println!("\nQubit fractions used:");
         println!("  data:        {:.3}", data_frac);
@@ -212,9 +212,7 @@ impl Scheduler {
     }
 
     fn schedule_timestep(
-        &mut self,
-        step_i: usize,
-        to_schedule: &[PauliProduct],
+        &mut self, step_i: usize, to_schedule: &[PauliProduct],
     ) -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
         let mut num_busy = 0;
@@ -358,8 +356,10 @@ impl Scheduler {
             return None;
         }
         if !pauli_product.is_clifford {
-            //
-            None
+            self.schedule_non_clifford_timer.start();
+            let g = self.schedule_non_clifford(&data_nodes, pauli_product);
+            self.schedule_non_clifford_timer.stop();
+            g
         } else {
             self.schedule_clifford_timer.start();
             let g = self.schedule_clifford(&data_nodes, pauli_product);
@@ -368,10 +368,147 @@ impl Scheduler {
         }
     }
 
+    fn schedule_non_clifford(
+        &self, data_nodes: &[String], pauli_product: &PauliProduct,
+    ) -> Option<TopoGraph> {
+        // Find available magic nodes (busy_count == 0)
+        let magic_nodes: Vec<String> = self
+            .topo
+            .iter_nodes()
+            .filter(|node| node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0)
+            .map(|node| node.label.clone())
+            .collect();
+        if magic_nodes.is_empty() {
+            log::info!("  No available magic nodes");
+            return None;
+        }
+        if pauli_product.need_estabilizer {
+            self.find_estabilizer_tree(&magic_nodes, data_nodes, pauli_product)
+        } else {
+            let magic_nodes_sorted = self
+                .get_nodes_by_dist(&magic_nodes, pauli_product)
+                .into_iter()
+                .map(|(node, _)| node)
+                .collect::<Vec<_>>();
+            self.find_tree(&magic_nodes_sorted.iter().cloned().collect(), data_nodes, pauli_product)
+        }
+    }
+
+    fn find_estabilizer_tree(
+        &self, magic_nodes: &[String], data_nodes: &[String], pauli_product: &PauliProduct,
+    ) -> Option<TopoGraph> {
+        let which_ancilla = if pauli_product.need_ancilla {
+            pauli_product
+                .operators
+                .first()
+                .map(|op| op.basis.to_ascii_uppercase().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        // Find available estabilizer nodes
+        let estabilizer_nodes: Vec<String> = self
+            .topo
+            .iter_nodes()
+            .filter(|node| node.node_type == NodeType::Estabilizer && !node.used)
+            .map(|node| node.label.clone())
+            .collect();
+        // Get distances from estabilizer nodes to data nodes
+        let estabilizer_distances = self.get_nodes_by_dist(&estabilizer_nodes, pauli_product);
+        // Calculate distances from magic nodes through estabilizer nodes
+        let mut magic_path_dists = Vec::new();
+        for magic_node in magic_nodes {
+            for (estabilizer_node, estabilizer_d) in &estabilizer_distances {
+                let d = self.get_node_dist(magic_node, estabilizer_node) + estabilizer_d;
+                magic_path_dists.push((magic_node.clone(), estabilizer_node.clone(), d));
+            }
+        }
+        magic_path_dists.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+        // Try each magic-estabilizer path
+        for (magic_node, estabilizer_node, d) in magic_path_dists {
+            // Find path from magic to estabilizer
+            let magic_path_g =
+                self.get_bfs_graph(&magic_node, &[estabilizer_node.clone()], "", None);
+            if magic_path_g.is_none() {
+                log::info!("  No path from {} to {}", magic_node, estabilizer_node);
+                continue;
+            }
+            let magic_path_g = magic_path_g.unwrap();
+            log::info!(
+                "  Found graph from {} to {} of size {}",
+                magic_node,
+                estabilizer_node,
+                magic_path_g.num_edges
+            );
+            // Find path from estabilizer to data nodes
+            let estabilizer_g = self.get_bfs_graph(
+                &estabilizer_node,
+                data_nodes,
+                &which_ancilla,
+                Some(&magic_path_g),
+            );
+            if estabilizer_g.is_none() {
+                log::info!("  No path from {} to {}", estabilizer_node, pauli_product);
+                continue;
+            }
+            let mut estabilizer_g = estabilizer_g.unwrap();
+            log::info!(
+                "  Found graph from {} ({}) of size {}",
+                estabilizer_node,
+                magic_node,
+                estabilizer_g.num_edges
+            );
+            // Merge the two graphs
+            for node in magic_path_g.iter_nodes() {
+                if node.node_type != NodeType::Estabilizer {
+                    estabilizer_g.add_node(node.clone());
+                }
+            }
+            for (from, to) in magic_path_g.iter_edges() {
+                estabilizer_g.add_edge(from, to);
+            }
+            log::info!(
+                "  Final graph has {} edges (estimated distance {:.0})",
+                estabilizer_g.num_edges,
+                d
+            );
+            return Some(estabilizer_g);
+        }
+        log::info!("  No path from estabilizer nodes {:?} to {:?}", estabilizer_nodes, data_nodes);
+        None
+    }
+
+    fn get_nodes_by_dist(
+        &self, nodes: &[String], pauli_product: &PauliProduct,
+    ) -> Vec<(String, f64)> {
+        // Sort nodes by distance to pp data nodes
+        let mut node_distances = Vec::new();
+
+        for node in nodes {
+            let mut min_d = f64::MAX;
+            for op in &pauli_product.operators {
+                let data_node = format!("d{}", op.to_string().to_ascii_uppercase());
+                let d = self.get_node_dist(node, &data_node);
+                if d < min_d {
+                    min_d = d;
+                }
+            }
+            node_distances.push((node.clone(), min_d));
+        }
+        node_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        node_distances
+    }
+
+    fn get_node_dist(&self, node1: &str, node2: &str) -> f64 {
+        let pos1 = self.topo.get_node(node1).pos;
+        let pos2 = self.topo.get_node(node2).pos;
+        let dx = pos1.0 as f64 - pos2.0 as f64;
+        let dy = pos1.1 as f64 - pos2.1 as f64;
+        (dx * dx + dy * dy).sqrt()
+    }
+
     fn schedule_clifford(
-        &self,
-        data_nodes: &[String],
-        pauli_product: &PauliProduct,
+        &self, data_nodes: &[String], pauli_product: &PauliProduct,
     ) -> Option<TopoGraph> {
         // Handle single data node case
         if data_nodes.len() == 1 {
@@ -382,14 +519,14 @@ impl Scheduler {
             }
 
             let mut g = TopoGraph::new();
-            g.add_node_copied(node.clone());
+            g.add_node(node.clone());
 
             if pauli_product.need_ancilla {
                 // Try to find an available bus neighbor
                 for nb_label in node.edges.iter() {
                     let nb = self.topo.get_node(nb_label);
                     if nb.node_type == NodeType::Bus && !nb.used {
-                        g.add_node_copied(nb.clone());
+                        g.add_node(nb.clone());
                         g.add_edge(node_label, nb_label);
                         break;
                     }
@@ -431,10 +568,7 @@ impl Scheduler {
     }
 
     fn find_tree(
-        &self,
-        root_nodes: &HashSet<String>,
-        data_nodes: &[String],
-        pauli_product: &PauliProduct,
+        &self, root_nodes: &HashSet<String>, data_nodes: &[String], pauli_product: &PauliProduct,
     ) -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product);
         // Determine which_ancilla based on first operator's basis
@@ -474,10 +608,7 @@ impl Scheduler {
     }
 
     fn get_bfs_graph(
-        &self,
-        root_node: &str,
-        terminal_nodes: &[String],
-        which_ancilla: &str,
+        &self, root_node: &str, terminal_nodes: &[String], which_ancilla: &str,
         exclude: Option<&TopoGraph>,
     ) -> Option<TopoGraph> {
         let mut visited = HashSet::new();
@@ -489,7 +620,7 @@ impl Scheduler {
         let num_terminals_reqd = terminal_nodes.len();
         let mut num_found_terminals = 0;
 
-        bfs_graph.add_node_copied(self.topo.get_node(root_node).clone());
+        bfs_graph.add_node(self.topo.get_node(root_node).clone());
 
         while let Some(node_label) = queue.pop_front() {
             let node = self.topo.get_node(&node_label);
@@ -512,7 +643,7 @@ impl Scheduler {
                     continue;
                 }
                 visited.insert(nb_label.clone());
-                bfs_graph.add_node_copied(nb.clone());
+                bfs_graph.add_node(nb.clone());
                 bfs_graph.add_edge(&node_label, &nb_label);
                 if nb.node_type == NodeType::Bus {
                     queue.push_back(nb_label.to_string());
@@ -553,7 +684,7 @@ impl Scheduler {
                     // ancilla on the fly?
                     log::info!("    Selecting {} as {}", nb_label, which_ancilla);
                     // Add the node and edge to the graph
-                    graph.add_node_copied(nb.clone());
+                    graph.add_node(nb.clone());
                     graph.add_edge(&node_label, nb_label);
                     return true;
                 }
