@@ -27,34 +27,31 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(
-        circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_scheduler: bool,
-        plot_option: String,
-    ) -> Self {
+    pub fn new(circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_scheduler: bool,
+               plot_option: String)
+               -> Self {
         if log_scheduler {
-            let circuit_stem = Path::new(&circuit.circuit_fname)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("circuit");
+            let circuit_stem = Path::new(&circuit.circuit_fname).file_stem()
+                                                                .and_then(|s| s.to_str())
+                                                                .unwrap_or("circuit");
             let sched_fname = format!("{}.sched", circuit_stem);
             simple_logging::log_to_file(&sched_fname, log::LevelFilter::Info)
                 .expect("Failed to initialize logging");
         }
-        Scheduler {
-            circuit,
-            topo,
-            rng_exp: Exponential::new(29),
-            magic_state_lambda,
-            plot_option,
-            sum_data_qubits: 0,
-            sum_bus_qubits: 0,
-            sum_magic_qubits: 0,
-            sum_ancilla_qubits: 0,
-            sum_estabilizer_qubits: 0,
-            busy_count_list: Vec::new(),
-            schedule_non_clifford_timer: IntermittentTimer::new("schedule non-clifford", ""),
-            schedule_clifford_timer: IntermittentTimer::new("schedule clifford", ""),
-        }
+        Scheduler { circuit,
+                    topo,
+                    rng_exp: Exponential::new(29),
+                    magic_state_lambda,
+                    plot_option,
+                    sum_data_qubits: 0,
+                    sum_bus_qubits: 0,
+                    sum_magic_qubits: 0,
+                    sum_ancilla_qubits: 0,
+                    sum_estabilizer_qubits: 0,
+                    busy_count_list: Vec::new(),
+                    schedule_non_clifford_timer: IntermittentTimer::new("schedule non-clifford",
+                                                                        ""),
+                    schedule_clifford_timer: IntermittentTimer::new("schedule clifford", "") }
     }
 
     pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
@@ -64,12 +61,11 @@ impl Scheduler {
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         // Initialize magic nodes with busy counts
         // Collect magic node labels first to avoid borrow conflicts
-        let magic_labels: Vec<String> = self
-            .topo
-            .iter_nodes()
-            .filter(|node| node.node_type == NodeType::Magic)
-            .map(|node| node.label.clone())
-            .collect();
+        let magic_labels: Vec<String> = self.topo
+                                            .iter_nodes()
+                                            .filter(|node| node.node_type == NodeType::Magic)
+                                            .map(|node| node.label.clone())
+                                            .collect();
         for label in magic_labels {
             let count = self.gen_busy_count();
             self.topo.get_node_mut(&label).busy_count = Some(count);
@@ -84,10 +80,9 @@ impl Scheduler {
         let mut plot_steps = 0;
         let mut path_dir = None;
         if self.plot_option.contains("paths") {
-            let circuit_stem = Path::new(&self.circuit.circuit_fname)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("circuit");
+            let circuit_stem = Path::new(&self.circuit.circuit_fname).file_stem()
+                                                                     .and_then(|s| s.to_str())
+                                                                     .unwrap_or("circuit");
             let dir_name = format!("{}.paths", circuit_stem);
             std::fs::create_dir_all(&dir_name)?;
             path_dir = Some(dir_name);
@@ -112,14 +107,11 @@ impl Scheduler {
                     prev_perc_complete = perc_complete;
                 }
             }
-            log::info!(
-                "Step {}: {:?}",
-                num_steps,
-                to_schedule
-                    .iter()
-                    .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
-                    .collect::<Vec<_>>()
-            );
+            log::info!("Step {}: {:?}",
+                       num_steps,
+                       to_schedule.iter()
+                                  .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
+                                  .collect::<Vec<_>>());
 
             let (title_str, pp_paths, next_to_schedule) =
                 self.schedule_timestep(num_steps, &to_schedule);
@@ -134,10 +126,8 @@ impl Scheduler {
                     }
                 }
                 if !has_busy_magic {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "Cannot schedule on current layout",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::Other,
+                                              "Cannot schedule on current layout"));
                 }
                 to_schedule = next_to_schedule;
                 continue;
@@ -181,14 +171,14 @@ impl Scheduler {
         let magic_frac =
             self.sum_magic_qubits as f64 / (self.topo.num_magic_qubits * num_steps) as f64;
         let estabilizer_frac = self.sum_estabilizer_qubits as f64
-            / (self.topo.num_estabilizer_qubits * num_steps) as f64;
+                               / (self.topo.num_estabilizer_qubits * num_steps) as f64;
 
         let overall_frac = (self.topo.num_data_qubits * num_steps
-            + self.sum_bus_qubits
-            + self.sum_magic_qubits
-            + self.sum_ancilla_qubits
-            + self.sum_estabilizer_qubits) as f64
-            / (num_steps * self.topo.num_qubits) as f64;
+                            + self.sum_bus_qubits
+                            + self.sum_magic_qubits
+                            + self.sum_ancilla_qubits
+                            + self.sum_estabilizer_qubits) as f64
+                           / (num_steps * self.topo.num_qubits) as f64;
 
         self.schedule_clifford_timer.done();
         self.schedule_non_clifford_timer.done();
@@ -212,8 +202,8 @@ impl Scheduler {
     }
 
     fn schedule_timestep(
-        &mut self, step_i: usize, to_schedule: &[PauliProduct],
-    ) -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
+        &mut self, step_i: usize, to_schedule: &[PauliProduct])
+        -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
         let mut num_busy = 0;
         for node in self.topo.iter_nodes_mut() {
@@ -254,11 +244,9 @@ impl Scheduler {
                     }
                 }
                 Some(graph) => {
-                    log::info!(
-                        "  * Scheduled with {} nodes and {} edges",
-                        graph.num_nodes,
-                        graph.num_edges
-                    );
+                    log::info!("  * Scheduled with {} nodes and {} edges",
+                               graph.num_nodes,
+                               graph.num_edges);
                     // Update node statistics and mark as used
                     for node in graph.iter_nodes() {
                         match node.node_type {
@@ -289,30 +277,22 @@ impl Scheduler {
         let frac_estabilizers =
             num_estabilizers_scheduled as f64 / self.topo.num_estabilizer_qubits as f64;
         log::info!("  products:    {}/{} ({:.2})", pp_paths.len(), to_schedule.len(), frac_paths);
-        log::info!(
-            "  data:        {}/{} ({:.2})",
-            num_data_scheduled,
-            self.topo.num_data_qubits,
-            frac_data
-        );
-        log::info!(
-            "  bus:         {}/{} ({:.2})",
-            num_bus_scheduled,
-            self.topo.num_bus_qubits,
-            frac_bus
-        );
-        log::info!(
-            "  magic:       {}/{} ({:.2})",
-            num_magic_scheduled,
-            self.topo.num_magic_qubits,
-            frac_magic
-        );
-        log::info!(
-            "  estabilizer: {}/{} ({:.2})",
-            num_estabilizers_scheduled,
-            self.topo.num_estabilizer_qubits,
-            frac_estabilizers
-        );
+        log::info!("  data:        {}/{} ({:.2})",
+                   num_data_scheduled,
+                   self.topo.num_data_qubits,
+                   frac_data);
+        log::info!("  bus:         {}/{} ({:.2})",
+                   num_bus_scheduled,
+                   self.topo.num_bus_qubits,
+                   frac_bus);
+        log::info!("  magic:       {}/{} ({:.2})",
+                   num_magic_scheduled,
+                   self.topo.num_magic_qubits,
+                   frac_magic);
+        log::info!("  estabilizer: {}/{} ({:.2})",
+                   num_estabilizers_scheduled,
+                   self.topo.num_estabilizer_qubits,
+                   frac_estabilizers);
         log::info!("Removed {} dependent nodes", num_dependent_nodes);
 
         // Update statistics
@@ -327,10 +307,8 @@ impl Scheduler {
             let frac_data = num_data_scheduled as f64 / self.topo.num_data_qubits as f64;
             let frac_bus = num_bus_scheduled as f64 / self.topo.num_bus_qubits as f64;
 
-            let title = format!(
-                "Step {} Products scheduled {:.2}, data {:.2}, bus {:.2}",
-                step_i, frac_paths, frac_data, frac_bus
-            );
+            let title = format!("Step {} Products scheduled {:.2}, data {:.2}, bus {:.2}",
+                                step_i, frac_paths, frac_data, frac_bus);
             (Some(title), Some(pp_paths), next_to_schedule)
         } else {
             (None, None, next_to_schedule)
@@ -368,16 +346,17 @@ impl Scheduler {
         }
     }
 
-    fn schedule_non_clifford(
-        &self, data_nodes: &[String], pauli_product: &PauliProduct,
-    ) -> Option<TopoGraph> {
+    fn schedule_non_clifford(&self, data_nodes: &[String], pauli_product: &PauliProduct)
+                             -> Option<TopoGraph> {
         // Find available magic nodes (busy_count == 0)
-        let magic_nodes: Vec<String> = self
-            .topo
-            .iter_nodes()
-            .filter(|node| node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0)
-            .map(|node| node.label.clone())
-            .collect();
+        let magic_nodes: Vec<String> =
+            self.topo
+                .iter_nodes()
+                .filter(|node| {
+                    node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0
+                })
+                .map(|node| node.label.clone())
+                .collect();
         if magic_nodes.is_empty() {
             log::info!("  No available magic nodes");
             return None;
@@ -385,34 +364,32 @@ impl Scheduler {
         if pauli_product.need_estabilizer {
             self.find_estabilizer_tree(&magic_nodes, data_nodes, pauli_product)
         } else {
-            let magic_nodes_sorted = self
-                .get_nodes_by_dist(&magic_nodes, pauli_product)
-                .into_iter()
-                .map(|(node, _)| node)
-                .collect::<Vec<_>>();
+            let magic_nodes_sorted = self.get_nodes_by_dist(&magic_nodes, pauli_product)
+                                         .into_iter()
+                                         .map(|(node, _)| node)
+                                         .collect::<Vec<_>>();
             self.find_tree(&magic_nodes_sorted.iter().cloned().collect(), data_nodes, pauli_product)
         }
     }
 
-    fn find_estabilizer_tree(
-        &self, magic_nodes: &[String], data_nodes: &[String], pauli_product: &PauliProduct,
-    ) -> Option<TopoGraph> {
+    fn find_estabilizer_tree(&self, magic_nodes: &[String], data_nodes: &[String],
+                             pauli_product: &PauliProduct)
+                             -> Option<TopoGraph> {
         let which_ancilla = if pauli_product.need_ancilla {
-            pauli_product
-                .operators
-                .first()
-                .map(|op| op.basis.to_ascii_uppercase().to_string())
-                .unwrap_or_default()
+            pauli_product.operators
+                         .first()
+                         .map(|op| op.basis.to_ascii_uppercase().to_string())
+                         .unwrap_or_default()
         } else {
             String::new()
         };
         // Find available estabilizer nodes
-        let estabilizer_nodes: Vec<String> = self
-            .topo
-            .iter_nodes()
-            .filter(|node| node.node_type == NodeType::Estabilizer && !node.used)
-            .map(|node| node.label.clone())
-            .collect();
+        let estabilizer_nodes: Vec<String> =
+            self.topo
+                .iter_nodes()
+                .filter(|node| node.node_type == NodeType::Estabilizer && !node.used)
+                .map(|node| node.label.clone())
+                .collect();
         // Get distances from estabilizer nodes to data nodes
         let estabilizer_distances = self.get_nodes_by_dist(&estabilizer_nodes, pauli_product);
         // Calculate distances from magic nodes through estabilizer nodes
@@ -434,30 +411,24 @@ impl Scheduler {
                 continue;
             }
             let magic_path_g = magic_path_g.unwrap();
-            log::info!(
-                "  Found graph from {} to {} of size {}",
-                magic_node,
-                estabilizer_node,
-                magic_path_g.num_edges
-            );
+            log::info!("  Found graph from {} to {} of size {}",
+                       magic_node,
+                       estabilizer_node,
+                       magic_path_g.num_edges);
             // Find path from estabilizer to data nodes
-            let estabilizer_g = self.get_bfs_graph(
-                &estabilizer_node,
-                data_nodes,
-                &which_ancilla,
-                Some(&magic_path_g),
-            );
+            let estabilizer_g = self.get_bfs_graph(&estabilizer_node,
+                                                   data_nodes,
+                                                   &which_ancilla,
+                                                   Some(&magic_path_g));
             if estabilizer_g.is_none() {
                 log::info!("  No path from {} to {}", estabilizer_node, pauli_product);
                 continue;
             }
             let mut estabilizer_g = estabilizer_g.unwrap();
-            log::info!(
-                "  Found graph from {} ({}) of size {}",
-                estabilizer_node,
-                magic_node,
-                estabilizer_g.num_edges
-            );
+            log::info!("  Found graph from {} ({}) of size {}",
+                       estabilizer_node,
+                       magic_node,
+                       estabilizer_g.num_edges);
             // Merge the two graphs
             for node in magic_path_g.iter_nodes() {
                 if node.node_type != NodeType::Estabilizer {
@@ -467,20 +438,17 @@ impl Scheduler {
             for (from, to) in magic_path_g.iter_edges() {
                 estabilizer_g.add_edge(from, to);
             }
-            log::info!(
-                "  Final graph has {} edges (estimated distance {:.0})",
-                estabilizer_g.num_edges,
-                d
-            );
+            log::info!("  Final graph has {} edges (estimated distance {:.0})",
+                       estabilizer_g.num_edges,
+                       d);
             return Some(estabilizer_g);
         }
         log::info!("  No path from estabilizer nodes {:?} to {:?}", estabilizer_nodes, data_nodes);
         None
     }
 
-    fn get_nodes_by_dist(
-        &self, nodes: &[String], pauli_product: &PauliProduct,
-    ) -> Vec<(String, f64)> {
+    fn get_nodes_by_dist(&self, nodes: &[String], pauli_product: &PauliProduct)
+                         -> Vec<(String, f64)> {
         // Sort nodes by distance to pp data nodes
         let mut node_distances = Vec::new();
 
@@ -507,9 +475,8 @@ impl Scheduler {
         (dx * dx + dy * dy).sqrt()
     }
 
-    fn schedule_clifford(
-        &self, data_nodes: &[String], pauli_product: &PauliProduct,
-    ) -> Option<TopoGraph> {
+    fn schedule_clifford(&self, data_nodes: &[String], pauli_product: &PauliProduct)
+                         -> Option<TopoGraph> {
         // Handle single data node case
         if data_nodes.len() == 1 {
             let node_label = &data_nodes[0];
@@ -533,10 +500,8 @@ impl Scheduler {
                 }
                 return None;
             }
-            log::info!(
-                "Scheduled clifford on {:?} nodes",
-                g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>()
-            );
+            log::info!("Scheduled clifford on {:?} nodes",
+                       g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
         }
         // root node needs to be a bus node next to one of the data nodes
@@ -559,25 +524,22 @@ impl Scheduler {
         // Try to find a tree using each root node
         let g = self.find_tree(&root_nodes, data_nodes, pauli_product);
         if let Some(ref g) = g {
-            log::info!(
-                "Scheduled clifford in {:?} nodes",
-                g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>()
-            );
+            log::info!("Scheduled clifford in {:?} nodes",
+                       g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
         }
         g
     }
 
-    fn find_tree(
-        &self, root_nodes: &HashSet<String>, data_nodes: &[String], pauli_product: &PauliProduct,
-    ) -> Option<TopoGraph> {
+    fn find_tree(&self, root_nodes: &HashSet<String>, data_nodes: &[String],
+                 pauli_product: &PauliProduct)
+                 -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product);
         // Determine which_ancilla based on first operator's basis
         let which_ancilla = if pauli_product.need_ancilla {
-            pauli_product
-                .operators
-                .first()
-                .map(|op| op.basis.to_ascii_uppercase().to_string())
-                .unwrap_or_default()
+            pauli_product.operators
+                         .first()
+                         .map(|op| op.basis.to_ascii_uppercase().to_string())
+                         .unwrap_or_default()
         } else {
             String::new()
         };
@@ -585,21 +547,17 @@ impl Scheduler {
             let g = self.get_bfs_graph(root_node_label, data_nodes, &which_ancilla, None);
             match g {
                 None => {
-                    log::info!(
-                        "    No tree from root node {} to {:?}, {}",
-                        root_node_label,
-                        data_nodes,
-                        if which_ancilla.is_empty() { "" } else { &which_ancilla }
-                    );
+                    log::info!("    No tree from root node {} to {:?}, {}",
+                               root_node_label,
+                               data_nodes,
+                               if which_ancilla.is_empty() { "" } else { &which_ancilla });
                     continue;
                 }
                 Some(graph) => {
-                    log::info!(
-                        "    Tree from {} to {:?} has size {}",
-                        root_node_label,
-                        data_nodes,
-                        graph.num_edges,
-                    );
+                    log::info!("    Tree from {} to {:?} has size {}",
+                               root_node_label,
+                               data_nodes,
+                               graph.num_edges,);
                     return Some(graph);
                 }
             }
@@ -607,10 +565,9 @@ impl Scheduler {
         None
     }
 
-    fn get_bfs_graph(
-        &self, root_node: &str, terminal_nodes: &[String], which_ancilla: &str,
-        exclude: Option<&TopoGraph>,
-    ) -> Option<TopoGraph> {
+    fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &[String], which_ancilla: &str,
+                     exclude: Option<&TopoGraph>)
+                     -> Option<TopoGraph> {
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
         let mut bfs_graph = TopoGraph::new();
@@ -668,11 +625,10 @@ impl Scheduler {
 
     fn find_ancilla(&self, graph: &mut TopoGraph, which_ancilla: &str) -> bool {
         // Collect bus nodes first to avoid borrowing issues
-        let bus_nodes: Vec<_> = graph
-            .iter_nodes()
-            .filter(|node| node.node_type == NodeType::Bus)
-            .map(|node| node.label.clone())
-            .collect();
+        let bus_nodes: Vec<_> = graph.iter_nodes()
+                                     .filter(|node| node.node_type == NodeType::Bus)
+                                     .map(|node| node.label.clone())
+                                     .collect();
 
         for node_label in bus_nodes {
             // Check neighbors in the topology
@@ -701,18 +657,15 @@ impl Scheduler {
 
     fn check_dependencies(&self, pp: &PauliProduct, scheduled: &HashSet<i32>) -> io::Result<()> {
         if scheduled.contains(&pp.id) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("pp {} already scheduled", pp.id),
-            ));
+            return Err(io::Error::new(io::ErrorKind::Other,
+                                      format!("pp {} already scheduled", pp.id)));
         }
 
         for &parent_id in &pp.parents {
             if !scheduled.contains(&parent_id) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("pp {} scheduled before parent {}", pp.id, parent_id),
-                ));
+                return Err(io::Error::new(io::ErrorKind::Other,
+                                          format!("pp {} scheduled before parent {}",
+                                                  pp.id, parent_id)));
             }
         }
 

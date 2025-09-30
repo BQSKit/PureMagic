@@ -47,16 +47,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     println!("Arguments:");
-    for (key, value) in [
-        ("rseed", args.rseed.to_string()),
-        ("circuit", args.circuit_fname.clone()),
-        ("topo", args.topo_fname.clone()),
-        ("verbose", args.verbose.to_string()),
-        ("magic_state_lambda", args.magic_state_lambda.to_string()),
-        ("show_product_ids", args.show_product_ids.to_string()),
-        ("log_scheduler", args.log_scheduler.to_string()),
-        ("plot", format!("{:?}", args.plot)),
-    ] {
+    for (key, value) in [("rseed", args.rseed.to_string()),
+                         ("circuit", args.circuit_fname.clone()),
+                         ("topo", args.topo_fname.clone()),
+                         ("verbose", args.verbose.to_string()),
+                         ("magic_state_lambda", args.magic_state_lambda.to_string()),
+                         ("show_product_ids", args.show_product_ids.to_string()),
+                         ("log_scheduler", args.log_scheduler.to_string()),
+                         ("plot", format!("{:?}", args.plot))]
+    {
         println!("  {}={}", key, value);
     }
 
@@ -82,30 +81,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let num_qubits = topo_graph.num_qubits;
 
-    let mut scheduler = Scheduler::new(
-        circuit,
-        topo_graph,
-        args.magic_state_lambda,
-        args.log_scheduler,
-        args.plot.join(" "),
-    );
+    let mut scheduler = Scheduler::new(circuit,
+                                       topo_graph,
+                                       args.magic_state_lambda,
+                                       args.log_scheduler,
+                                       args.plot.join(" "));
 
     let (tot_num_steps, num_scheduled, space_utilization) = scheduler.schedule_circuit()?;
 
     // Calculate and print statistics
     let speedup = num_scheduled as f64 / tot_num_steps as f64;
     let qubit_cost = num_qubits * tot_num_steps;
-    println!(
-        "Scheduled {} in {} time steps ({:.3} speedup) qubit cost {}",
-        num_scheduled, tot_num_steps, speedup, qubit_cost
-    );
+    println!("Scheduled {} in {} time steps ({:.3} speedup) qubit cost {}",
+             num_scheduled, tot_num_steps, speedup, qubit_cost);
 
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
     let opt_qubit_cost = num_qubits * num_layers;
-    println!(
-        "Optimal time steps {} ({:.3} speedup) qubit cost {}",
-        num_layers, optimal_speedup, opt_qubit_cost
-    );
+    println!("Optimal time steps {} ({:.3} speedup) qubit cost {}",
+             num_layers, optimal_speedup, opt_qubit_cost);
 
     println!("Scheduling time efficiency {:.3}", opt_qubit_cost as f64 / qubit_cost as f64);
     println!("Scheduling space efficiency {:.3}", space_utilization);

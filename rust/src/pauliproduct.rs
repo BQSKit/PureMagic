@@ -28,17 +28,15 @@ pub struct PauliProduct {
 
 impl Default for PauliProduct {
     fn default() -> Self {
-        PauliProduct {
-            operators: Vec::new(),
-            max_qubit: 0,
-            parents: Vec::new(),
-            children: Vec::new(),
-            id: -1,
-            num_ys: 0,
-            need_estabilizer: false,
-            need_ancilla: false,
-            is_clifford: false,
-        }
+        PauliProduct { operators: Vec::new(),
+                       max_qubit: 0,
+                       parents: Vec::new(),
+                       children: Vec::new(),
+                       id: -1,
+                       num_ys: 0,
+                       need_estabilizer: false,
+                       need_ancilla: false,
+                       is_clifford: false }
     }
 }
 
@@ -68,16 +66,15 @@ impl PauliProduct {
                     match angle {
                         "<M>" => self.is_clifford = true,
                         "<pi/8>" => self.is_clifford = false,
-                        _ => return Err(format!("Unknown angle {} in product {}", angle, s).into()),
+                        _ => {
+                            return Err(format!("Unknown angle {} in product {}", angle, s).into());
+                        }
                     }
                     break;
                 }
                 _ => {
-                    return Err(format!(
-                        "Illegal character {} at position {} in product {}",
-                        c, i, s
-                    )
-                    .into());
+                    return Err(format!("Illegal character {} at position {} in product {}",
+                                       c, i, s).into());
                 }
             }
         }
@@ -106,16 +103,14 @@ impl fmt::Display for PauliProduct {
         let es_str = if self.need_estabilizer { "E" } else { "-" };
         let clifford_str = if self.is_clifford { "clifford" } else { "non-clifford" };
 
-        write!(
-            f,
-            "{} {} {} {} {} {:?} {:?}",
-            self.id,
-            self.get_product_str(),
-            ancilla_str,
-            es_str,
-            clifford_str,
-            self.children,
-            self.parents
-        )
+        write!(f,
+               "{} {} {} {} {} {:?} {:?}",
+               self.id,
+               self.get_product_str(),
+               ancilla_str,
+               es_str,
+               clifford_str,
+               self.children,
+               self.parents)
     }
 }

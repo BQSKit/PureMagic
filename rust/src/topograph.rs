@@ -43,14 +43,12 @@ pub struct TopoGraph {
 
 impl Node {
     fn new(label: String, x: f64, y: f64, node_type: NodeType) -> Self {
-        Node {
-            node_type,
-            label,
-            pos: (x, y),
-            busy_count: if node_type == NodeType::Magic { Some(0) } else { None },
-            edges: HashSet::new(),
-            used: false,
-        }
+        Node { node_type,
+               label,
+               pos: (x, y),
+               busy_count: if node_type == NodeType::Magic { Some(0) } else { None },
+               edges: HashSet::new(),
+               used: false }
     }
 
     fn add_edge(&mut self, other: &str) {
@@ -60,22 +58,20 @@ impl Node {
 
 impl TopoGraph {
     pub fn new() -> Self {
-        TopoGraph {
-            nodes: HashMap::new(),
-            node_grid: Vec::new(),
-            num_cols: 0,
-            num_rows: 0,
-            num_data_qubits: 0,
-            num_bus_qubits: 0,
-            num_magic_qubits: 0,
-            num_ancilla_qubits: 0,
-            num_estabilizer_qubits: 0,
-            num_qubits: 0,
-            num_edges: 0,
-            num_nodes: 0,
-            circuit_fname: String::new(),
-            topo_fname: String::new(),
-        }
+        TopoGraph { nodes: HashMap::new(),
+                    node_grid: Vec::new(),
+                    num_cols: 0,
+                    num_rows: 0,
+                    num_data_qubits: 0,
+                    num_bus_qubits: 0,
+                    num_magic_qubits: 0,
+                    num_ancilla_qubits: 0,
+                    num_estabilizer_qubits: 0,
+                    num_qubits: 0,
+                    num_edges: 0,
+                    num_nodes: 0,
+                    circuit_fname: String::new(),
+                    topo_fname: String::new() }
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String, topo_fname: &String) {
@@ -216,20 +212,16 @@ impl TopoGraph {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
         let label1 = format!("d{}{}", q, op);
-        let node1 = Node::new(
-            label1.to_string(),
-            col as f64 - 0.25,
-            (self.num_rows - 1 - row) as f64,
-            NodeType::Data,
-        );
+        let node1 = Node::new(label1.to_string(),
+                              col as f64 - 0.25,
+                              (self.num_rows - 1 - row) as f64,
+                              NodeType::Data);
         self.nodes.insert(label1.to_string(), node1);
         let label2 = format!("d{}{}", q + 1, op);
-        let node2 = Node::new(
-            label2.to_string(),
-            col as f64 + 0.25,
-            (self.num_rows - 1 - row) as f64,
-            NodeType::Data,
-        );
+        let node2 = Node::new(label2.to_string(),
+                              col as f64 + 0.25,
+                              (self.num_rows - 1 - row) as f64,
+                              NodeType::Data);
         self.nodes.insert(label2.to_string(), node2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label);
@@ -333,38 +325,28 @@ impl TopoGraph {
         self.num_ancilla_qubits = ancilla_count;
         self.num_estabilizer_qubits = estabilizer_count;
         self.num_qubits = self.num_data_qubits
-            + self.num_bus_qubits
-            + self.num_magic_qubits
-            + self.num_ancilla_qubits
-            + self.num_estabilizer_qubits;
+                          + self.num_bus_qubits
+                          + self.num_magic_qubits
+                          + self.num_ancilla_qubits
+                          + self.num_estabilizer_qubits;
 
         let total = self.num_qubits as f64;
         println!("Number of qubits:");
-        println!(
-            "  data:         {} ({:.3})",
-            self.num_data_qubits,
-            self.num_data_qubits as f64 / total
-        );
-        println!(
-            "  bus:          {} ({:.3})",
-            self.num_bus_qubits,
-            self.num_bus_qubits as f64 / total
-        );
-        println!(
-            "  magic:        {} ({:.3})",
-            self.num_magic_qubits,
-            self.num_magic_qubits as f64 / total
-        );
-        println!(
-            "  ancilla:      {} ({:.3})",
-            self.num_ancilla_qubits,
-            self.num_ancilla_qubits as f64 / total
-        );
-        println!(
-            "  e-stabilizer: {} ({:.3})",
-            self.num_estabilizer_qubits,
-            self.num_estabilizer_qubits as f64 / total
-        );
+        println!("  data:         {} ({:.3})",
+                 self.num_data_qubits,
+                 self.num_data_qubits as f64 / total);
+        println!("  bus:          {} ({:.3})",
+                 self.num_bus_qubits,
+                 self.num_bus_qubits as f64 / total);
+        println!("  magic:        {} ({:.3})",
+                 self.num_magic_qubits,
+                 self.num_magic_qubits as f64 / total);
+        println!("  ancilla:      {} ({:.3})",
+                 self.num_ancilla_qubits,
+                 self.num_ancilla_qubits as f64 / total);
+        println!("  e-stabilizer: {} ({:.3})",
+                 self.num_estabilizer_qubits,
+                 self.num_estabilizer_qubits as f64 / total);
         println!("  total:        {}", self.num_qubits);
     }
 
@@ -412,61 +394,64 @@ impl TopoGraph {
         )
         .into_drawing_area();
         root.fill(&WHITE)?;
-        let mut chart = ChartBuilder::on(&root)
-            .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
+        let mut chart = ChartBuilder::on(&root).build_cartesian_2d(-1f32..self.num_cols as f32,
+                                                                   -1f32..self.num_rows as f32)?;
         // draw background grey
-        chart.draw_series(std::iter::once(Rectangle::new(
-            [(-0.5, -0.5), (self.num_cols as f32 - 0.5, self.num_rows as f32 - 0.5)],
-            RGBColor(230, 230, 230).filled(),
-        )))?;
+        chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
+                                                          (self.num_cols as f32 - 0.5,
+                                                           self.num_rows as f32 - 0.5)],
+                                                         RGBColor(230, 230, 230).filled())))?;
         // draw white horizontal lines
         for row in 0..=self.num_rows {
-            chart.draw_series(LineSeries::new(
-                vec![(-0.5, row as f32 - 0.5), (self.num_cols as f32 - 0.5, row as f32 - 0.5)],
-                WHITE.stroke_width(3),
-            ))?;
+            chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
+                                                   (self.num_cols as f32 - 0.5,
+                                                    row as f32 - 0.5)],
+                                              WHITE.stroke_width(3)))?;
         }
         // Draw white vertical lines
         for col in 0..=self.num_cols {
-            chart.draw_series(LineSeries::new(
-                vec![(col as f32 - 0.5, -0.5), (col as f32 - 0.5, self.num_rows as f32 - 0.5)],
-                WHITE.stroke_width(3),
-            ))?;
+            chart.draw_series(LineSeries::new(vec![(col as f32 - 0.5, -0.5),
+                                                   (col as f32 - 0.5,
+                                                    self.num_rows as f32 - 0.5)],
+                                              WHITE.stroke_width(3)))?;
         }
         // Draw edges
         for node in self.nodes.values() {
             for edge in &node.edges {
                 if let Some(other) = self.nodes.get(edge) {
-                    chart.draw_series(LineSeries::new(
-                        vec![
-                            (node.pos.0 as f32, node.pos.1 as f32),
-                            (other.pos.0 as f32, other.pos.1 as f32),
-                        ],
-                        &BLACK.mix(0.5),
-                    ))?;
+                    chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32,
+                                                            node.pos.1 as f32),
+                                                           (other.pos.0 as f32,
+                                                            other.pos.1 as f32),],
+                                                      &BLACK.mix(0.5)))?;
                 }
             }
         }
         // Draw nodes
         for node in self.nodes.values() {
             let (x, y) = node.pos;
-            chart.draw_series(std::iter::once(Circle::new(
-                (x as f32, y as f32),
-                22,
-                match node.node_type {
-                    NodeType::Magic => RGBColor(0xFF, 0xBB, 0x99),
-                    NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
-                    NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
-                    NodeType::Ancilla => RGBColor(0xFF, 0x88, 0xAA),
-                    NodeType::Estabilizer => RGBColor(0x99, 0xCC, 0x99),
-                }
-                .filled(),
-            )))?;
-            chart.draw_series(std::iter::once(Text::new(
-                node.label.clone(),
-                (x as f32 - 0.17, y as f32 + 0.09),
-                ("sans-serif", 18).into_font(),
-            )))?;
+            chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
+                                                          22,
+                                                          match node.node_type {
+                                                              NodeType::Magic => {
+                                                                  RGBColor(0xFF, 0xBB, 0x99)
+                                                              }
+                                                              NodeType::Bus => {
+                                                                  RGBColor(0xAA, 0xAA, 0xAA)
+                                                              }
+                                                              NodeType::Data => {
+                                                                  RGBColor(0x99, 0x99, 0xFF)
+                                                              }
+                                                              NodeType::Ancilla => {
+                                                                  RGBColor(0xFF, 0x88, 0xAA)
+                                                              }
+                                                              NodeType::Estabilizer => {
+                                                                  RGBColor(0x99, 0xCC, 0x99)
+                                                              }
+                                                          }.filled())))?;
+            chart.draw_series(std::iter::once(Text::new(node.label.clone(),
+                                                        (x as f32 - 0.17, y as f32 + 0.09),
+                                                        ("sans-serif", 18).into_font())))?;
         }
         root.present()?;
         println!("Plotted topology to {}", png_fname);
@@ -508,8 +493,10 @@ impl TopoGraph {
 
     pub fn iter_edges(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.nodes.iter().flat_map(|(node_label, node)| {
-            node.edges.iter().map(move |edge_label| (node_label.as_str(), edge_label.as_str()))
-        })
+                             node.edges
+                                 .iter()
+                                 .map(move |edge_label| (node_label.as_str(), edge_label.as_str()))
+                         })
     }
 
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {

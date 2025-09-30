@@ -13,11 +13,9 @@ impl Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        println!(
-            "\x1b[36mTiming: {} took {:.2} s\x1b[0m",
-            self.name,
-            self.start.elapsed().as_secs_f64()
-        );
+        println!("\x1b[36mTiming: {} took {:.2} s\x1b[0m",
+                 self.name,
+                 self.start.elapsed().as_secs_f64());
     }
 }
 
@@ -31,21 +29,17 @@ pub struct IntermittentTimer {
 
 impl IntermittentTimer {
     pub fn new(name: &str, interval_label: &str) -> Self {
-        IntermittentTimer {
-            start_time: None,
-            total_elapsed: Duration::new(0, 0),
-            last_interval: Duration::new(0, 0),
-            name: name.to_string(),
-            interval_label: interval_label.to_string(),
-        }
+        IntermittentTimer { start_time: None,
+                            total_elapsed: Duration::new(0, 0),
+                            last_interval: Duration::new(0, 0),
+                            name: name.to_string(),
+                            interval_label: interval_label.to_string() }
     }
 
     pub fn done(&self) {
-        println!(
-            "\x1b[36mTiming: {} took {:.2} s\x1b[0m",
-            self.name,
-            self.total_elapsed.as_secs_f64()
-        );
+        println!("\x1b[36mTiming: {} took {:.2} s\x1b[0m",
+                 self.name,
+                 self.total_elapsed.as_secs_f64());
     }
 
     #[allow(dead_code)]
