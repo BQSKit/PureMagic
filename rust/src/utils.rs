@@ -7,10 +7,7 @@ pub struct Timer {
 
 impl Timer {
     pub fn new(name: &str) -> Self {
-        Timer {
-            name: name.to_string(),
-            start: Instant::now(),
-        }
+        Timer { name: name.to_string(), start: Instant::now() }
     }
 }
 
@@ -24,7 +21,6 @@ impl Drop for Timer {
     }
 }
 
-#[derive(Debug)]
 pub struct IntermittentTimer {
     start_time: Option<Instant>,
     total_elapsed: Duration,
