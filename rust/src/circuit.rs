@@ -10,7 +10,7 @@ use std::{
 };
 
 pub struct Circuit {
-    products: Vec<PauliProduct>,
+    pub products: Vec<PauliProduct>,
     pub circuit_fname: String,
     pub num_qubits: usize,
     layers: RefCell<Option<Vec<Vec<usize>>>>,

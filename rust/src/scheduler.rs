@@ -1,12 +1,13 @@
 use crate::circuit::Circuit;
 use crate::pauliproduct::PauliProduct;
 use crate::topograph::{NodeType, TopoGraph};
-use crate::utils::Timer;
+use crate::utils::{IntermittentTimer, Timer};
 
 use log;
 use rand_simple::Exponential;
 use simple_logging;
 use std::collections::{HashSet, VecDeque};
+use std::io::{self, Write};
 use std::path::Path;
 
 pub struct Scheduler {
@@ -15,13 +16,13 @@ pub struct Scheduler {
     rng_exp: Exponential,
     magic_state_lambda: f64,
     plot_option: String,
-    used_nodes: HashSet<String>,
     sum_data_qubits: usize,
     sum_bus_qubits: usize,
     sum_magic_qubits: usize,
     sum_ancilla_qubits: usize,
     sum_estabilizer_qubits: usize,
     busy_count_list: Vec<i32>,
+    schedule_clifford_timer: IntermittentTimer,
 }
 
 impl Scheduler {
@@ -47,14 +48,167 @@ impl Scheduler {
             rng_exp: Exponential::new(29),
             magic_state_lambda,
             plot_option,
-            used_nodes: HashSet::new(),
             sum_data_qubits: 0,
             sum_bus_qubits: 0,
             sum_magic_qubits: 0,
             sum_ancilla_qubits: 0,
             sum_estabilizer_qubits: 0,
             busy_count_list: Vec::new(),
+            schedule_clifford_timer: IntermittentTimer::new("schedule clifford", ""),
         }
+    }
+
+    pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
+        let _timer = Timer::new("schedule_circuit");
+        self.rng_exp
+            .try_set_params(self.magic_state_lambda)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        // Initialize magic nodes with busy counts
+        // Collect magic node labels first to avoid borrow conflicts
+        let magic_labels: Vec<String> = self
+            .topo
+            .iter_nodes()
+            .filter(|node| node.node_type == NodeType::Magic)
+            .map(|node| node.label.clone())
+            .collect();
+        for label in magic_labels {
+            let count = self.gen_busy_count();
+            self.topo.get_node_mut(&label).busy_count = Some(count);
+        }
+        // Initialize scheduling
+        let mut to_schedule: Vec<_> =
+            self.circuit.products.iter().filter(|pp| pp.parents.is_empty()).cloned().collect();
+        let mut circuit_products = self.circuit.products.to_vec();
+        let mut scheduled = HashSet::new();
+        let mut num_steps = 0;
+        // Setup path plotting
+        let mut plot_steps = 0;
+        let mut path_dir = None;
+        if self.plot_option.contains("paths") {
+            let circuit_stem = Path::new(&self.circuit.circuit_fname)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("circuit");
+            let dir_name = format!("{}.paths", circuit_stem);
+            std::fs::create_dir_all(&dir_name)?;
+            path_dir = Some(dir_name);
+            plot_steps = 100;
+        }
+        // Progress tracking
+        let total_to_schedule = circuit_products.len();
+        let mut prev_perc_complete = 0;
+        print!("Scheduling {} products:    ", total_to_schedule);
+        if plot_steps > 0 {
+            println!();
+        }
+        // Main scheduling loop
+        while !to_schedule.is_empty() {
+            num_steps += 1;
+            // Update progress
+            if plot_steps == 0 {
+                let perc_complete = (scheduled.len() * 100) / total_to_schedule;
+                if perc_complete > prev_perc_complete {
+                    print!("\x08\x08\x08{:02}%", perc_complete);
+                    std::io::stdout().flush()?;
+                    prev_perc_complete = perc_complete;
+                }
+            }
+            log::info!(
+                "Step {}: {:?}",
+                num_steps,
+                to_schedule
+                    .iter()
+                    .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
+                    .collect::<Vec<_>>()
+            );
+
+            let (title_str, pp_paths, next_to_schedule) =
+                self.schedule_timestep(num_steps, &to_schedule);
+
+            if pp_paths.is_none() {
+                // carry on if there are no available magic nodes
+                let mut has_busy_magic = false;
+                for node in self.topo.iter_nodes() {
+                    if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(0) > 0 {
+                        has_busy_magic = true;
+                        break;
+                    }
+                }
+                if !has_busy_magic {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Cannot schedule on current layout",
+                    ));
+                }
+                to_schedule = next_to_schedule;
+                continue;
+            }
+
+            // Process scheduled products
+            if let Some(pp_paths) = pp_paths {
+                for (pp, _) in &pp_paths {
+                    // Add children to next round if all parents scheduled
+                    for &child_id in &pp.children {
+                        let child = &mut circuit_products[child_id as usize];
+                        child.parents.retain(|&x| x != pp.id);
+                        if child.parents.is_empty() {
+                            to_schedule.push(child.clone());
+                        }
+                    }
+                    self.check_dependencies(pp, &scheduled)?;
+                    scheduled.insert(pp.id);
+                }
+            }
+
+            // Plot if requested
+            if let Some(ref path_dir) = path_dir {
+                if title_str.is_some() && num_steps > 0 && plot_steps > 0 {
+                    //let fname_added = format!(".{}", num_steps);
+                    let curr_dir = std::env::current_dir()?;
+                    std::env::set_current_dir(path_dir)?;
+                    //elf.topo.plot(&fname_added, &pp_paths.unwrap(), &title_str.unwrap())?;
+                    std::env::set_current_dir(curr_dir)?;
+                    plot_steps -= 1;
+                }
+            }
+
+            to_schedule = next_to_schedule;
+        }
+
+        // Calculate statistics
+        let data_frac =
+            self.sum_data_qubits as f64 / (self.topo.num_data_qubits * num_steps) as f64;
+        let bus_frac = self.sum_bus_qubits as f64 / (self.topo.num_bus_qubits * num_steps) as f64;
+        let magic_frac =
+            self.sum_magic_qubits as f64 / (self.topo.num_magic_qubits * num_steps) as f64;
+        let estabilizer_frac = self.sum_estabilizer_qubits as f64
+            / (self.topo.num_estabilizer_qubits * num_steps) as f64;
+
+        let overall_frac = (self.topo.num_data_qubits * num_steps
+            + self.sum_bus_qubits
+            + self.sum_magic_qubits
+            + self.sum_ancilla_qubits
+            + self.sum_estabilizer_qubits) as f64
+            / (num_steps * self.topo.num_qubits) as f64;
+
+        self.schedule_clifford_timer.done();
+        // Print final statistics
+        println!("\nQubit fractions used:");
+        println!("  data:        {:.3}", data_frac);
+        println!("  bus:         {:.3}", bus_frac);
+        println!("  magic:       {:.3}", magic_frac);
+        println!("  estabilizer: {:.3}", estabilizer_frac);
+
+        println!("Magic state cultivation time:");
+        let mean =
+            self.busy_count_list.iter().sum::<i32>() as f64 / self.busy_count_list.len() as f64;
+        let min = self.busy_count_list.iter().min().copied().unwrap_or(0);
+        let max = self.busy_count_list.iter().max().copied().unwrap_or(0);
+        println!("  average: {:.2}", mean);
+        println!("  min:     {}", min);
+        println!("  max:     {}", max);
+
+        Ok((num_steps, scheduled.len(), overall_frac))
     }
 
     fn schedule_timestep(
@@ -185,7 +339,7 @@ impl Scheduler {
         }
     }
 
-    fn schedule_pauli_product(&self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
+    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
         log::info!("Trying to schedule {}", pauli_product);
         // Initially terminal nodes contain only the data qubits
         let mut data_nodes = Vec::new();
@@ -207,7 +361,10 @@ impl Scheduler {
             //
             None
         } else {
-            self.schedule_clifford(&data_nodes, pauli_product)
+            self.schedule_clifford_timer.start();
+            let g = self.schedule_clifford(&data_nodes, pauli_product);
+            self.schedule_clifford_timer.stop();
+            g
         }
     }
 
@@ -409,5 +566,25 @@ impl Scheduler {
         let count = self.rng_exp.sample().round() as i32 + 1;
         self.busy_count_list.push(count);
         count
+    }
+
+    fn check_dependencies(&self, pp: &PauliProduct, scheduled: &HashSet<i32>) -> io::Result<()> {
+        if scheduled.contains(&pp.id) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("pp {} already scheduled", pp.id),
+            ));
+        }
+
+        for &parent_id in &pp.parents {
+            if !scheduled.contains(&parent_id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("pp {} scheduled before parent {}", pp.id, parent_id),
+                ));
+            }
+        }
+
+        Ok(())
     }
 }
