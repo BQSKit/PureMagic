@@ -137,7 +137,7 @@ impl TopoGraph {
                 if let Some(ref node) = self.node_grid[col][row] {
                     if node.starts_with('d') {
                         let op = node.chars().nth(1).unwrap_or('X');
-                        self.add_data_qubit(di, col, row, op == 'X');
+                        self.add_double_data_qubit(di, col, row, op == 'X');
                         di += 2;
                     } else {
                         let node_type = match node.chars().next() {
@@ -147,7 +147,7 @@ impl TopoGraph {
                             Some('e') => NodeType::Estabilizer,
                             _ => continue,
                         };
-                        self.node_grid[col][row] = Some(self.add_node(col, row, node_type));
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                     }
                 }
             }
@@ -171,19 +171,20 @@ impl TopoGraph {
                     if row % 3 + 1 == 2 {
                         if row != 1 && row != self.num_rows - 2 && col % 4 == 0 {
                             self.node_grid[col][row] =
-                                Some(self.add_node(col, row, NodeType::Estabilizer));
+                                Some(self.add_qubit(col, row, NodeType::Estabilizer));
                         } else {
-                            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Bus));
+                            self.node_grid[col][row] =
+                                Some(self.add_qubit(col, row, NodeType::Bus));
                         }
                     } else {
-                        self.add_data_qubit(qi, col, row, row % 3 + 1 == 3);
+                        self.add_double_data_qubit(qi, col, row, row % 3 + 1 == 3);
                         qi += 2;
                     }
                 }
             } else {
                 // Bus column
                 for row in 1..self.num_rows - 1 {
-                    self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Bus));
+                    self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
                 }
             }
         }
@@ -196,22 +197,22 @@ impl TopoGraph {
 
     fn add_border_row(&mut self, row: usize) {
         // Add corner bus nodes
-        self.node_grid[0][row] = Some(self.add_node(0, row, NodeType::Bus));
+        self.node_grid[0][row] = Some(self.add_qubit(0, row, NodeType::Bus));
         self.node_grid[self.num_cols - 1][row] =
-            Some(self.add_node(self.num_cols - 1, row, NodeType::Bus));
+            Some(self.add_qubit(self.num_cols - 1, row, NodeType::Bus));
         // Add alternating magic/ancilla nodes
         for col in 1..self.num_cols - 1 {
-            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
+            self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
         }
     }
 
     fn add_border_column(&mut self, col: usize) {
         for row in 1..self.num_rows - 1 {
-            self.node_grid[col][row] = Some(self.add_node(col, row, NodeType::Magic));
+            self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
         }
     }
 
-    fn add_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
+    fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
         let label1 = format!("d{}{}", q, op);
@@ -233,6 +234,23 @@ impl TopoGraph {
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label);
         self.num_nodes += 2;
+    }
+
+    fn add_qubit(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
+        let ch = match node_type {
+            NodeType::Magic => "m",
+            NodeType::Ancilla => "a",
+            NodeType::Bus => "b",
+            NodeType::Data => "d",
+            NodeType::Estabilizer => "e",
+        };
+
+        let label = format!("{}{}-{}", ch, col, row);
+        let node =
+            Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
+        self.nodes.insert(label.to_string(), node);
+        self.num_nodes += 1;
+        label
     }
 
     fn set_edges(&mut self) {
@@ -488,6 +506,12 @@ impl TopoGraph {
         self.nodes.values()
     }
 
+    pub fn iter_edges(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.nodes.iter().flat_map(|(node_label, node)| {
+            node.edges.iter().map(move |edge_label| (node_label.as_str(), edge_label.as_str()))
+        })
+    }
+
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.nodes.values_mut()
     }
@@ -496,25 +520,9 @@ impl TopoGraph {
         self.nodes.contains_key(node_label)
     }
 
-    pub fn add_node(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
-        let ch = match node_type {
-            NodeType::Magic => "m",
-            NodeType::Ancilla => "a",
-            NodeType::Bus => "b",
-            NodeType::Data => "d",
-            NodeType::Estabilizer => "e",
-        };
-
-        let label = format!("{}{}-{}", ch, col, row);
-        let node =
-            Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
-        self.nodes.insert(label.to_string(), node);
-        self.num_nodes += 1;
-        label
-    }
-
-    pub fn add_node_copied(&mut self, node: Node) {
-        self.nodes.insert(node.label.to_string(), node);
+    pub fn add_node(&mut self, node: Node) {
+        let new_node = Node::new(node.label.to_string(), node.pos.0, node.pos.1, node.node_type);
+        self.nodes.insert(node.label.to_string(), new_node);
         self.num_nodes += 1;
     }
 
