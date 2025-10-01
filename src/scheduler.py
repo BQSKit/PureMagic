@@ -178,6 +178,9 @@ class Scheduler:
                             break
                 if num_unused_nbs == 2:
                     estabilizer_nodes.append(node)
+        if len(estabilizer_nodes) == 0:
+            self.print_sched("  No available estabilizer nodes")
+            return None
         estabilizer_distances = self.get_nodes_by_dist(estabilizer_nodes, pauli_product)
         magic_path_dists = []
         for magic_node in magic_nodes:
