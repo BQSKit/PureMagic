@@ -218,7 +218,7 @@ impl Circuit {
                     }
                 }
             }
-            println!("Saved layers {}-{} to {}", chunk_start, chunk_end - 1, png_fname);
+            println!("Plotted circuit layers {}-{} to {}", chunk_start, chunk_end - 1, png_fname);
         }
         Ok(())
     }

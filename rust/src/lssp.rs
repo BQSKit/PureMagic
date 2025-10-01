@@ -16,28 +16,42 @@ use utils::Timer;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Random seed
-    #[arg(short = 'r', long, default_value = "29")]
+    #[arg(short, long, default_value = "29")]
     rseed: u64,
-    /// Circuit file name
-    #[arg(short, long = "circuit")]
+    /// Name of file containing input circuit (required)
+    #[arg(short, long = "circuit", required = true)]
     circuit_fname: String,
-    /// Topology file name (topology will be generated if this is not set)
+    /// Name of file specifying topology (topology will be auto-generated if this is not set)
     #[arg(short, long = "topo", default_value = "")]
     topo_fname: String,
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
-    /// Lambda parameter for exponential distribution of timesteps
-    #[arg(short = 'm', long, default_value = "0.0387396")]
+    /// Lambda parameter for exponential distribution of magic state cultivation timesteps
+    #[arg(short, long, default_value = "0.0387396")]
     magic_state_lambda: f64,
-    /// Show product IDs when plotting the circuit
+    /// Show product IDs instead of Pauli terms when plotting the circuit
     #[arg(long)]
     show_product_ids: bool,
-    /// Log scheduler actions to .sched file
+    /// Log scheduler actions to <circuit_fname>.sched file
     #[arg(short = 'l', long)]
     log_scheduler: bool,
-    /// Plotting options
-    #[arg(short, long, value_delimiter = ' ', default_value = "none")]
+    /// Plotting options: topo, circuit, paths (specify multiple values in comma separated string)
+    #[arg(
+        short,
+        long,
+        value_delimiter = ',',
+        value_parser = |s: &str| {
+            match s.to_lowercase().as_str() {
+                "topo" | "circuit" | "paths" => Ok(s.to_string()),
+                _ => Err(format!(
+                    "invalid plot option '{}'; must be one of: topo, circuit, paths",
+                    s
+                ))
+            }
+        },
+        default_value = "none"
+    )]
     plot: Vec<String>,
 }
 
