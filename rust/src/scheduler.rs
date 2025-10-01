@@ -114,8 +114,15 @@ impl Scheduler {
                                   .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
                                   .collect::<Vec<_>>());
 
-            let (title_str, pp_paths, next_to_schedule) =
+            let (title_str, pp_paths, mut next_to_schedule) =
                 self.schedule_timestep(num_steps, &to_schedule);
+            for pp in next_to_schedule.clone() {
+                if scheduled.contains(&pp.id) {
+                    return Err(io::Error::new(io::ErrorKind::Other,
+                                              format!("Next to schedule: {} is already scheduled",
+                                                      pp.id)));
+                }
+            }
 
             if pp_paths.is_none() {
                 // carry on if there are no available magic nodes
@@ -135,15 +142,24 @@ impl Scheduler {
             }
             // Process scheduled products
             if let Some(ref pp_paths) = pp_paths {
+                let mut children_to_schedule = HashSet::new();
                 for (pp, _) in pp_paths {
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
                         let child = &mut circuit_products[child_id as usize];
                         child.parents.retain(|&x| x != pp.id);
                         if child.parents.is_empty() {
-                            to_schedule.push(child.clone());
+                            children_to_schedule.insert(child_id);
                         }
                     }
+                }
+                // Extend next_to_schedule with children from HashSet
+                next_to_schedule.extend(
+                    children_to_schedule
+                        .iter()
+                        .map(|&id| circuit_products[id as usize].clone())
+                );
+                for (pp, _) in pp_paths {
                     self.check_dependencies(pp, &scheduled)?;
                     scheduled.insert(pp.id);
                 }
@@ -223,7 +239,6 @@ impl Scheduler {
         to_schedule.sort_by_key(|pp| std::cmp::Reverse(pp.operators.len()));
 
         let mut pp_paths = Vec::new();
-        let mut num_scheduled = 0;
         let mut num_bus_scheduled = 0;
         let mut num_data_scheduled = 0;
         let mut num_magic_scheduled = num_busy;
@@ -236,7 +251,7 @@ impl Scheduler {
             let pp_graph = self.schedule_pauli_product(pp);
             match pp_graph {
                 None => {
-                    log::info!("  * Could not schedule on graph");
+                    log::info!("  * Could not schedule {} on graph", pp.id);
                     next_to_schedule.push(pp.clone());
                     // Mark dependent nodes as used
                     for op in &pp.operators {
@@ -246,7 +261,8 @@ impl Scheduler {
                     }
                 }
                 Some(graph) => {
-                    log::info!("  * Scheduled with {} nodes and {} edges: {:?}",
+                    log::info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
+                               pp.id,
                                graph.num_nodes,
                                graph.num_edges,
                                graph.node_list());
@@ -267,7 +283,6 @@ impl Scheduler {
                         self.topo.get_node_mut(&node.label).used = true;
                     }
                     pp_paths.push((pp.clone(), graph));
-                    num_scheduled += pp.operators.len();
                 }
             }
         }
@@ -324,7 +339,7 @@ impl Scheduler {
     }
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
-        log::info!("Trying to schedule {}", pauli_product);
+        log::info!("Trying to schedule product {}", pauli_product);
         // Initially terminal nodes contain only the data qubits
         let mut data_nodes = Vec::new();
 
@@ -377,7 +392,9 @@ impl Scheduler {
                                          .into_iter()
                                          .map(|(node, _)| node)
                                          .collect::<Vec<_>>();
-            log::info!("  Magic nodes by distance to {}: {:?}", pauli_product, magic_nodes_sorted);
+            log::info!("  Magic nodes by distance to {}: {:?}",
+                       pauli_product.id,
+                       magic_nodes_sorted);
             self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product)
         }
     }
@@ -417,7 +434,7 @@ impl Scheduler {
             let magic_path_g =
                 self.get_bfs_graph(&magic_node, &[estabilizer_node.clone()], "", None);
             if magic_path_g.is_none() {
-                log::info!("  No path from {} to {}", magic_node, estabilizer_node);
+                //log::info!("  No path from {} to {}", magic_node, estabilizer_node);
                 continue;
             }
             let magic_path_g = magic_path_g.unwrap();
@@ -544,7 +561,7 @@ impl Scheduler {
     fn find_tree(&self, root_nodes: &[String], data_nodes: &[String],
                  pauli_product: &PauliProduct)
                  -> Option<TopoGraph> {
-        log::info!("  Find tree for {}:", pauli_product);
+        log::info!("  Find tree for {}:", pauli_product.id);
         // Determine which_ancilla based on first operator's basis
         let which_ancilla = if pauli_product.need_ancilla {
             pauli_product.operators
