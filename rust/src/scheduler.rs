@@ -300,7 +300,7 @@ impl Scheduler {
         log::info!("Removed {} dependent nodes", num_dependent_nodes);
 
         // Update statistics
-        self.sum_data_qubits += num_scheduled;
+        self.sum_data_qubits += num_data_scheduled;
         self.sum_bus_qubits += num_bus_scheduled;
         self.sum_magic_qubits += num_magic_scheduled;
         self.sum_ancilla_qubits += num_ancilla_scheduled;
@@ -310,9 +310,13 @@ impl Scheduler {
             let frac_paths = pp_paths.len() as f64 / to_schedule.len() as f64;
             let frac_data = num_data_scheduled as f64 / self.topo.num_data_qubits as f64;
             let frac_bus = num_bus_scheduled as f64 / self.topo.num_bus_qubits as f64;
-
-            let title = format!("Step {} Products scheduled {:.2}, data {:.2}, bus {:.2}",
-                                step_i, frac_paths, frac_data, frac_bus);
+            let frac_magic = num_magic_scheduled as f64 / self.topo.num_magic_qubits as f64;
+            let frac_estabilizers =
+                num_estabilizers_scheduled as f64 / self.topo.num_estabilizer_qubits as f64;
+            let title =
+                format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
+                                bus {:.2}, magic {:.2}, estabilizer {:.2}",
+                        step_i, frac_paths, frac_data, frac_bus, frac_magic, frac_estabilizers);
             (Some(title), Some(pp_paths), next_to_schedule)
         } else {
             (None, None, next_to_schedule)

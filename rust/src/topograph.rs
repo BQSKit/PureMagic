@@ -585,19 +585,26 @@ impl TopoGraph {
                                                         ("sans-serif", 18).into_font())))?;
         }
         // Draw Pauli product labels
-        let mut label_row = self.num_rows as f32;
-        let label_col = -1.5f32;
-        for (i, (pp, _)) in pauli_product_paths.iter().enumerate() {
-            chart.draw_series(std::iter::once(Text::new(pp.get_product_str(),
-                                                        (label_col, label_row),
-                                                        ("sans-serif", 18).into_font())))?;
-            // Draw text background
-            chart.draw_series(std::iter::once(Rectangle::new([(label_col - 0.3,
-                                                               label_row - 0.2),
-                                                              (label_col + 1.0,
-                                                               label_row + 0.2)],
-                                                             path_colors[i].mix(0.2).filled())))?;
-            label_row -= 0.35;
+        for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
+            if let Some(first_data_node) =
+                path_graph.iter_nodes().filter(|n| matches!(n.node_type, NodeType::Data)).next()
+            {
+                let (x, y) = first_data_node.pos;
+                let product_str = pp.get_product_str();
+                let text_width = product_str.len() as f32 * 0.15;
+                // Draw text background
+                chart.draw_series(std::iter::once(Rectangle::new([(x as f32 - 0.3,
+                                                                   y as f32 + 0.3),
+                                                                  (x as f32 - 0.3
+                                                                   + text_width,
+                                                                   y as f32 + 0.55)],
+                                                                 path_colors[i].mix(0.2)
+                                                                               .filled())))?;
+                // Draw product string
+                chart.draw_series(std::iter::once(Text::new(product_str,
+                                                            (x as f32 - 0.2, y as f32 + 0.5),
+                                                            ("sans-serif", 22).into_font())))?;
+            }
         }
         // Draw title
         if !title_str.is_empty() {
