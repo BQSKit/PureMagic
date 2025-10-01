@@ -67,8 +67,9 @@ impl Scheduler {
                                             .map(|node| node.label.clone())
                                             .collect();
         for label in magic_labels {
-            let count = self.gen_busy_count();
-            self.topo.get_node_mut(&label).busy_count = Some(count);
+            let busy_count = self.gen_busy_count();
+            //log::info!("Set node {} busy count to {}", &label, busy_count);
+            self.topo.get_node_mut(&label).busy_count = Some(busy_count);
         }
         // Initialize scheduling
         let mut to_schedule: Vec<_> =
@@ -163,6 +164,7 @@ impl Scheduler {
 
             to_schedule = next_to_schedule;
         }
+        print!("\x08\x08\x08{:02}%\n", 100.0);
 
         // Calculate statistics
         let data_frac =
@@ -183,7 +185,7 @@ impl Scheduler {
         self.schedule_clifford_timer.done();
         self.schedule_non_clifford_timer.done();
         // Print final statistics
-        println!("\nQubit fractions used:");
+        println!("Qubit fractions used:");
         println!("  data:        {:.3}", data_frac);
         println!("  bus:         {:.3}", bus_frac);
         println!("  magic:       {:.3}", magic_frac);
@@ -244,16 +246,18 @@ impl Scheduler {
                     }
                 }
                 Some(graph) => {
-                    log::info!("  * Scheduled with {} nodes and {} edges",
+                    log::info!("  * Scheduled with {} nodes and {} edges: {:?}",
                                graph.num_nodes,
-                               graph.num_edges);
+                               graph.num_edges,
+                               graph.node_list());
                     // Update node statistics and mark as used
                     for node in graph.iter_nodes() {
                         match node.node_type {
                             NodeType::Bus => num_bus_scheduled += 1,
                             NodeType::Magic => {
-                                self.topo.get_node_mut(&node.label).busy_count =
-                                    Some(self.gen_busy_count());
+                                let busy_count = self.gen_busy_count();
+                                self.topo.get_node_mut(&node.label).busy_count = Some(busy_count);
+                                //log::info!("Set node {} busy count to {}", node.label, busy_count);
                                 num_magic_scheduled += 1;
                             }
                             NodeType::Data => num_data_scheduled += 1,
@@ -361,6 +365,7 @@ impl Scheduler {
             log::info!("  No available magic nodes");
             return None;
         }
+        log::info!("  Found {} available magic nodes", magic_nodes.len());
         if pauli_product.need_estabilizer {
             self.find_estabilizer_tree(&magic_nodes, data_nodes, pauli_product)
         } else {
@@ -368,7 +373,8 @@ impl Scheduler {
                                          .into_iter()
                                          .map(|(node, _)| node)
                                          .collect::<Vec<_>>();
-            self.find_tree(&magic_nodes_sorted.iter().cloned().collect(), data_nodes, pauli_product)
+            log::info!("  Magic nodes by distance to {}: {:?}", pauli_product, magic_nodes_sorted);
+            self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product)
         }
     }
 
@@ -522,7 +528,8 @@ impl Scheduler {
             return None;
         }
         // Try to find a tree using each root node
-        let g = self.find_tree(&root_nodes, data_nodes, pauli_product);
+        let root_nodes_vec: Vec<String> = root_nodes.iter().cloned().collect();
+        let g = self.find_tree(&root_nodes_vec, data_nodes, pauli_product);
         if let Some(ref g) = g {
             log::info!("Scheduled clifford in {:?} nodes",
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
@@ -530,7 +537,7 @@ impl Scheduler {
         g
     }
 
-    fn find_tree(&self, root_nodes: &HashSet<String>, data_nodes: &[String],
+    fn find_tree(&self, root_nodes: &[String], data_nodes: &[String],
                  pauli_product: &PauliProduct)
                  -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product);
@@ -554,7 +561,7 @@ impl Scheduler {
                     continue;
                 }
                 Some(graph) => {
-                    log::info!("    Tree from {} to {:?} has size {}",
+                    log::info!("    Found tree from {} to {:?} of size {}",
                                root_node_label,
                                data_nodes,
                                graph.num_edges,);
@@ -636,9 +643,7 @@ impl Scheduler {
                 let nb = self.topo.get_node(nb_label);
                 // Check if neighbor is an unused bus node not in graph
                 if nb.node_type == NodeType::Bus && !nb.used && !graph.contains_node(nb_label) {
-                    // FIXME: do we need left and right for X and Y, given we can create the
-                    // ancilla on the fly?
-                    log::info!("    Selecting {} as {}", nb_label, which_ancilla);
+                    log::info!("    Selected {} as {} ancilla", nb_label, which_ancilla);
                     // Add the node and edge to the graph
                     graph.add_node(nb.clone());
                     graph.add_edge(&node_label, nb_label);

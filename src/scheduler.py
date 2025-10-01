@@ -90,7 +90,7 @@ class Scheduler:
                                     continue
                             else:
                                 raise RuntimeError(f"illegal which_ancilla {which_ancilla}")
-                        self.print_sched(f"    Selecting {nb} as {which_ancilla}")
+                        self.print_sched(f"    Selecting {nb} as {which_ancilla} ancilla")
                         g.add_node(nb)
                         g.add_edge(node, nb)
                         return True
