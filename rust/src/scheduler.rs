@@ -342,15 +342,27 @@ impl Scheduler {
         log::info!("Trying to schedule product {}", pauli_product);
         // Initially terminal nodes contain only the data qubits
         let mut data_nodes = Vec::new();
-
         for op in &pauli_product.operators {
             let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+            let node = self.topo.get_node(&node_label);
             // Check if node is already used
-            if self.topo.get_node(&node_label).used {
+            if node.used {
                 log::info!("  Node {} is already used", node_label);
                 return None;
             }
-            data_nodes.push(node_label);
+            // check for at least one unused bus nb
+            let mut unused_nb = false;
+            for nb_label in &node.edges {
+                let nb = self.topo.get_node(nb_label);
+                // Check if neighbor is an unused bus node not in graph
+                if nb.node_type == NodeType::Bus && !nb.used {
+                    unused_nb = true;
+                    break;
+                }
+            }
+            if unused_nb {
+                data_nodes.push(node_label);
+            }
         }
         if data_nodes.is_empty() {
             log::info!("  No data nodes found in working graph");
@@ -372,14 +384,22 @@ impl Scheduler {
     fn schedule_non_clifford(&self, data_nodes: &[String], pauli_product: &PauliProduct)
                              -> Option<TopoGraph> {
         // Find available magic nodes (busy_count == 0)
-        let magic_nodes: Vec<String> =
-            self.topo
-                .iter_nodes()
-                .filter(|node| {
-                    node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0
-                })
-                .map(|node| node.label.clone())
-                .collect();
+        let mut magic_nodes = Vec::new();
+        for node in self.topo.iter_nodes() {
+            if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0 {
+                let mut unused_nb = false;
+                for nb_label in &node.edges {
+                    let nb = self.topo.get_node(nb_label);
+                    if nb.node_type == NodeType::Bus && !nb.used {
+                        unused_nb = true;
+                        break;
+                    }
+                }
+                if unused_nb {
+                    magic_nodes.push(node.label.clone());
+                }
+            }
+        }
         if magic_nodes.is_empty() {
             log::info!("  No available magic nodes");
             return None;
@@ -411,12 +431,28 @@ impl Scheduler {
             String::new()
         };
         // Find available estabilizer nodes
-        let estabilizer_nodes: Vec<String> =
-            self.topo
-                .iter_nodes()
-                .filter(|node| node.node_type == NodeType::Estabilizer && !node.used)
-                .map(|node| node.label.clone())
-                .collect();
+        let mut estabilizer_nodes = Vec::new();
+        for node in self.topo.iter_nodes() {
+            if node.node_type == NodeType::Estabilizer {
+                let mut num_unused_nbs = 0;
+                for nb_label in &node.edges {
+                    let nb = self.topo.get_node(nb_label);
+                    if nb.node_type == NodeType::Bus && !nb.used {
+                        num_unused_nbs += 1;
+                        if num_unused_nbs == 2 {
+                            break;
+                        }
+                    }
+                }
+                if num_unused_nbs == 2 {
+                    estabilizer_nodes.push(node.label.clone());
+                }
+            }
+        }
+        if estabilizer_nodes.is_empty() {
+            log::info!("  No available estabilizer nodes");
+            return None;
+        }
         // Get distances from estabilizer nodes to data nodes
         let estabilizer_distances = self.get_nodes_by_dist(&estabilizer_nodes, pauli_product);
         // Calculate distances from magic nodes through estabilizer nodes
