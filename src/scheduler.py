@@ -273,6 +273,13 @@ class Scheduler:
             if self.topo_graph.nodes[node]["used"]:
                 self.print_sched(f"  Node {node} is already used")
                 return None
+            # check at least one bus neighbor is available
+            for nb in self.topo_graph.neighbors(node):
+                if is_bus_node(nb) and not self.topo_graph.nodes[nb]["used"]:
+                    break
+            else:
+                self.print_sched(f"   Node {node} has no available bus neighbors")
+                return None
             data_nodes.append(node)
         if len(data_nodes) == 0:
             self.print_sched(f"  No data nodes found in working graph")
