@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {
-        topo_graph.plot()?;
+        topo_graph.plot(".topo", &[], "")?;
     }
 
     let num_qubits = topo_graph.num_qubits;

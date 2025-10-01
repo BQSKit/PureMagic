@@ -133,10 +133,9 @@ impl Scheduler {
                 to_schedule = next_to_schedule;
                 continue;
             }
-
             // Process scheduled products
-            if let Some(pp_paths) = pp_paths {
-                for (pp, _) in &pp_paths {
+            if let Some(ref pp_paths) = pp_paths {
+                for (pp, _) in pp_paths {
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
                         let child = &mut circuit_products[child_id as usize];
@@ -149,14 +148,15 @@ impl Scheduler {
                     scheduled.insert(pp.id);
                 }
             }
-
             // Plot if requested
             if let Some(ref path_dir) = path_dir {
                 if title_str.is_some() && num_steps > 0 && plot_steps > 0 {
-                    //let fname_added = format!(".{}", num_steps);
+                    let fname_added = format!(".{}", num_steps);
                     let curr_dir = std::env::current_dir()?;
                     std::env::set_current_dir(path_dir)?;
-                    //elf.topo.plot(&fname_added, &pp_paths.unwrap(), &title_str.unwrap())?;
+                    self.topo
+                        .plot(&fname_added, pp_paths.as_ref().unwrap(), &title_str.unwrap())
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                     std::env::set_current_dir(curr_dir)?;
                     plot_steps -= 1;
                 }
