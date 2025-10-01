@@ -545,6 +545,7 @@ impl Scheduler {
             let node_label = &data_nodes[0];
             let node = self.topo.get_node(node_label);
             if node.used {
+                log::info!("  Single node {} is used", node_label);
                 return None;
             }
 
@@ -561,7 +562,10 @@ impl Scheduler {
                         break;
                     }
                 }
-                return None;
+                if g.num_nodes == 0 {
+                    log::info!("  Could not find ancilla for node {}", node_label);
+                    return None;
+                }
             }
             log::info!("Scheduled clifford on {:?} nodes",
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
