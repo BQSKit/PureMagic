@@ -3,10 +3,11 @@ use crate::pauliproduct::PauliProduct;
 use crate::topograph::{NodeType, TopoGraph};
 use crate::utils::{IntermittentTimer, Timer};
 
+use indexmap::IndexSet;
 use log;
 use rand_simple::Exponential;
 use simple_logging;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -28,7 +29,7 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new(circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_scheduler: bool,
-               plot_option: String)
+               plot_option: String, rseed: u32)
                -> Self {
         if log_scheduler {
             let circuit_stem = Path::new(&circuit.circuit_fname).file_stem()
@@ -40,7 +41,7 @@ impl Scheduler {
         }
         Scheduler { circuit,
                     topo,
-                    rng_exp: Exponential::new(29),
+                    rng_exp: Exponential::new(rseed),
                     magic_state_lambda,
                     plot_option,
                     sum_data_qubits: 0,
@@ -75,7 +76,7 @@ impl Scheduler {
         let mut to_schedule: Vec<_> =
             self.circuit.products.iter().filter(|pp| pp.parents.is_empty()).cloned().collect();
         let mut circuit_products = self.circuit.products.to_vec();
-        let mut scheduled = HashSet::new();
+        let mut scheduled = IndexSet::new();
         let mut num_steps = 0;
         // Setup path plotting
         let mut plot_steps = 0;
@@ -142,7 +143,7 @@ impl Scheduler {
             }
             // Process scheduled products
             if let Some(ref pp_paths) = pp_paths {
-                let mut children_to_schedule = HashSet::new();
+                let mut children_to_schedule = IndexSet::new();
                 for (pp, _) in pp_paths {
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
@@ -153,7 +154,7 @@ impl Scheduler {
                         }
                     }
                 }
-                // Extend next_to_schedule with children from HashSet
+                // Extend next_to_schedule with children from IndexSet
                 next_to_schedule.extend(
                     children_to_schedule
                         .iter()
@@ -510,21 +511,21 @@ impl Scheduler {
         None
     }
 
-    fn get_nodes_by_dist(&self, nodes: &[String], pauli_product: &PauliProduct)
+    fn get_nodes_by_dist(&self, node_labels: &[String], pauli_product: &PauliProduct)
                          -> Vec<(String, f64)> {
         // Sort nodes by distance to pp data nodes
         let mut node_distances = Vec::new();
 
-        for node in nodes {
+        for node_label in node_labels {
             let mut min_d = f64::MAX;
             for op in &pauli_product.operators {
-                let data_node = format!("d{}", op.to_string().to_ascii_uppercase());
-                let d = self.get_node_dist(node, &data_node);
+                let data_node_label = format!("d{}", op.to_string().to_ascii_uppercase());
+                let d = self.get_node_dist(node_label, &data_node_label);
                 if d < min_d {
                     min_d = d;
                 }
             }
-            node_distances.push((node.clone(), min_d));
+            node_distances.push((node_label.clone(), min_d));
         }
         node_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         node_distances
@@ -572,7 +573,7 @@ impl Scheduler {
             return Some(g);
         }
         // root node needs to be a bus node next to one of the data nodes
-        let mut root_nodes = HashSet::new();
+        let mut root_nodes = IndexSet::new();
         for node_label in data_nodes {
             let node = self.topo.get_node(node_label);
             if node.used {
@@ -638,7 +639,7 @@ impl Scheduler {
     fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &[String], which_ancilla: &str,
                      exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
-        let mut visited = HashSet::with_capacity(self.topo.num_nodes);
+        let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
         let mut bfs_graph = TopoGraph::new();
 
@@ -722,7 +723,7 @@ impl Scheduler {
         count
     }
 
-    fn check_dependencies(&self, pp: &PauliProduct, scheduled: &HashSet<i32>) -> io::Result<()> {
+    fn check_dependencies(&self, pp: &PauliProduct, scheduled: &IndexSet<i32>) -> io::Result<()> {
         if scheduled.contains(&pp.id) {
             return Err(io::Error::new(io::ErrorKind::Other,
                                       format!("pp {} already scheduled", pp.id)));

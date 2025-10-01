@@ -1,5 +1,4 @@
 use clap::Parser;
-use std::time::Instant;
 
 mod circuit;
 mod pauliproduct;
@@ -17,7 +16,7 @@ use utils::Timer;
 struct Args {
     /// Random seed
     #[arg(short, long, default_value = "29")]
-    rseed: u64,
+    rseed: u32,
     /// Name of file containing input circuit (required)
     #[arg(short, long = "circuit", required = true)]
     circuit_fname: String,
@@ -43,14 +42,14 @@ struct Args {
         value_delimiter = ',',
         value_parser = |s: &str| {
             match s.to_lowercase().as_str() {
-                "topo" | "circuit" | "paths" => Ok(s.to_string()),
+                "topo" | "circuit" | "paths" | "" => Ok(s.to_string()),
                 _ => Err(format!(
                     "invalid plot option '{}'; must be one of: topo, circuit, paths",
                     s
                 ))
             }
         },
-        default_value = "none"
+        default_value = ""
     )]
     plot: Vec<String>,
 }
@@ -73,7 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {}={}", key, value);
     }
 
-    let start = Instant::now();
     // Initialize circuit
     let mut circuit = Circuit::new(&args.circuit_fname)?;
     circuit.split_ys();
@@ -99,7 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        topo_graph,
                                        args.magic_state_lambda,
                                        args.log_scheduler,
-                                       args.plot.join(" "));
+                                       args.plot.join(" "),
+                                       args.rseed);
 
     let (tot_num_steps, num_scheduled, space_utilization) = scheduler.schedule_circuit()?;
 
@@ -117,6 +116,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Scheduling time efficiency {:.3}", opt_qubit_cost as f64 / qubit_cost as f64);
     println!("Scheduling space efficiency {:.3}", space_utilization);
 
-    println!("Total time: {:?}", start.elapsed());
     Ok(())
 }
