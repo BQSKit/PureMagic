@@ -1,3 +1,4 @@
+use crate::pauliproduct::PauliProduct;
 use crate::utils::Timer;
 use plotters::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -350,114 +351,6 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    pub fn print(&self) -> io::Result<()> {
-        let topo_path = Path::new(&self.circuit_fname);
-        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
-        let output_fname = format!("{}.topo.txt", topo_stem);
-        let mut file = File::create(&output_fname)?;
-
-        for row in 0..self.num_rows {
-            for col in 0..self.num_cols {
-                if let Some(ref label) = self.node_grid[col][row] {
-                    write!(file, "{:8}  ", label)?;
-                    /*
-                    if is_data_node(label) {
-                        write!(
-                            file,
-                            "{}{} ",
-                            label.chars().nth(0).unwrap_or(' '),
-                            label.chars().last().unwrap_or(' ')
-                        )?;
-                    } else {
-                        write!(file, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
-                    }
-                     */
-                }
-            }
-            writeln!(file)?;
-        }
-
-        println!("Wrote topology to {}", output_fname);
-        Ok(())
-    }
-
-    pub fn plot(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let _timer = Timer::new("plot");
-
-        let topo_path = Path::new(&self.circuit_fname);
-        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
-        let png_fname = format!("{}.topo.png", topo_stem);
-        // Create output files
-        let root = BitMapBackend::new(
-            &png_fname,
-            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
-        )
-        .into_drawing_area();
-        root.fill(&WHITE)?;
-        let mut chart = ChartBuilder::on(&root).build_cartesian_2d(-1f32..self.num_cols as f32,
-                                                                   -1f32..self.num_rows as f32)?;
-        // draw background grey
-        chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
-                                                          (self.num_cols as f32 - 0.5,
-                                                           self.num_rows as f32 - 0.5)],
-                                                         RGBColor(230, 230, 230).filled())))?;
-        // draw white horizontal lines
-        for row in 0..=self.num_rows {
-            chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
-                                                   (self.num_cols as f32 - 0.5,
-                                                    row as f32 - 0.5)],
-                                              WHITE.stroke_width(3)))?;
-        }
-        // Draw white vertical lines
-        for col in 0..=self.num_cols {
-            chart.draw_series(LineSeries::new(vec![(col as f32 - 0.5, -0.5),
-                                                   (col as f32 - 0.5,
-                                                    self.num_rows as f32 - 0.5)],
-                                              WHITE.stroke_width(3)))?;
-        }
-        // Draw edges
-        for node in self.nodes.values() {
-            for edge in &node.edges {
-                if let Some(other) = self.nodes.get(edge) {
-                    chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32,
-                                                            node.pos.1 as f32),
-                                                           (other.pos.0 as f32,
-                                                            other.pos.1 as f32),],
-                                                      &BLACK.mix(0.5)))?;
-                }
-            }
-        }
-        // Draw nodes
-        for node in self.nodes.values() {
-            let (x, y) = node.pos;
-            chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
-                                                          22,
-                                                          match node.node_type {
-                                                              NodeType::Magic => {
-                                                                  RGBColor(0xFF, 0xBB, 0x99)
-                                                              }
-                                                              NodeType::Bus => {
-                                                                  RGBColor(0xAA, 0xAA, 0xAA)
-                                                              }
-                                                              NodeType::Data => {
-                                                                  RGBColor(0x99, 0x99, 0xFF)
-                                                              }
-                                                              NodeType::Ancilla => {
-                                                                  RGBColor(0xFF, 0x88, 0xAA)
-                                                              }
-                                                              NodeType::Estabilizer => {
-                                                                  RGBColor(0x99, 0xCC, 0x99)
-                                                              }
-                                                          }.filled())))?;
-            chart.draw_series(std::iter::once(Text::new(node.label.clone(),
-                                                        (x as f32 - 0.17, y as f32 + 0.09),
-                                                        ("sans-serif", 18).into_font())))?;
-        }
-        root.present()?;
-        println!("Plotted topology to {}", png_fname);
-        Ok(())
-    }
-
     pub fn trim_dangling_bus_nodes(&mut self) {
         let mut num_trimmed = 0;
         loop {
@@ -510,6 +403,10 @@ impl TopoGraph {
         self.nodes.contains_key(node_label)
     }
 
+    pub fn contains_edge(&self, label1: &str, label2: &str) -> bool {
+        if let Some(node) = self.nodes.get(label1) { node.edges.contains(label2) } else { false }
+    }
+
     pub fn add_node(&mut self, node: Node) {
         let new_node = Node::new(node.label.to_string(), node.pos.0, node.pos.1, node.node_type);
         self.nodes.insert(node.label.to_string(), new_node);
@@ -547,4 +444,190 @@ impl TopoGraph {
     pub fn node_list(&self) -> Vec<String> {
         self.nodes.keys().cloned().collect()
     }
+
+    pub fn print(&self) -> io::Result<()> {
+        let topo_path = Path::new(&self.circuit_fname);
+        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
+        let output_fname = format!("{}.topo.txt", topo_stem);
+        let mut file = File::create(&output_fname)?;
+
+        for row in 0..self.num_rows {
+            for col in 0..self.num_cols {
+                if let Some(ref label) = self.node_grid[col][row] {
+                    write!(file, "{:8}  ", label)?;
+                    /*
+                    if is_data_node(label) {
+                        write!(
+                            file,
+                            "{}{} ",
+                            label.chars().nth(0).unwrap_or(' '),
+                            label.chars().last().unwrap_or(' ')
+                        )?;
+                    } else {
+                        write!(file, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
+                    }
+                     */
+                }
+            }
+            writeln!(file)?;
+        }
+
+        println!("Wrote topology to {}", output_fname);
+        Ok(())
+    }
+
+    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, TopoGraph)],
+                title_str: &str)
+                -> Result<(), Box<dyn std::error::Error>> {
+        let _timer = Timer::new("plot");
+        let topo_path = Path::new(&self.circuit_fname);
+        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
+        let png_fname = format!("{}{}.png", topo_stem, fname_added);
+        // Create output file
+        let root = BitMapBackend::new(
+            &png_fname,
+            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
+        )
+        .into_drawing_area();
+
+        root.fill(&WHITE)?;
+        let mut chart = ChartBuilder::on(&root).build_cartesian_2d(-1f32..self.num_cols as f32,
+                                                                   -1f32..self.num_rows as f32)?;
+        // Draw background
+        chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
+                                                          (self.num_cols as f32 - 0.5,
+                                                           self.num_rows as f32 - 0.5)],
+                                                         RGBColor(230, 230, 230).filled())))?;
+        // Draw grid lines
+        for row in 0..=self.num_rows {
+            chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
+                                                   (self.num_cols as f32 - 0.5,
+                                                    row as f32 - 0.5),],
+                                              WHITE.stroke_width(3)))?;
+        }
+        for col in 0..=self.num_cols {
+            chart.draw_series(LineSeries::new(vec![(col as f32 - 0.5, -0.5),
+                                                   (col as f32 - 0.5,
+                                                    self.num_rows as f32 - 0.5),],
+                                              WHITE.stroke_width(3)))?;
+        }
+        // Generate colors for Pauli product paths
+        let num_colors = pauli_product_paths.len().max(1);
+        let path_colors: Vec<RGBAColor> =
+            (0..num_colors).map(|i| {
+                               let hue = (i as f64) / (num_colors as f64);
+                               let (r, g, b) = hsv_to_rgb(hue, 0.8, 0.9);
+                               RGBColor(r, g, b).to_rgba()
+                           })
+                           .collect();
+        // Draw edges with path coloring
+        for node in self.nodes.values() {
+            for edge in &node.edges {
+                if let Some(other) = self.nodes.get(edge) {
+                    let mut edge_color = &BLACK.mix(0.5).to_rgba();
+                    let mut stroke_width = 1;
+                    // Check if edge is part of any path
+                    for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
+                        if path_graph.contains_edge(&node.label, edge) {
+                            edge_color = &path_colors[i];
+                            stroke_width = 6;
+                            break;
+                        }
+                    }
+                    chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32,
+                                                            node.pos.1 as f32),
+                                                           (other.pos.0 as f32,
+                                                            other.pos.1 as f32),],
+                                                      edge_color.stroke_width(stroke_width)))?;
+                }
+            }
+        }
+        // Draw nodes with path highlighting
+        for node in self.nodes.values() {
+            let (x, y) = node.pos;
+            let mut border_color = None;
+            // Check if node is part of any path
+            for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
+                if path_graph.contains_node(&node.label) {
+                    border_color = Some(&path_colors[i]);
+                    break;
+                }
+            }
+            // Draw node circle
+            chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
+                                                          22,
+                                                          match node.node_type {
+                                                              NodeType::Magic => {
+                                                                  RGBColor(0xFF, 0xBB, 0x99)
+                                                              }
+                                                              NodeType::Bus => {
+                                                                  RGBColor(0xAA, 0xAA, 0xAA)
+                                                              }
+                                                              NodeType::Data => {
+                                                                  RGBColor(0x99, 0x99, 0xFF)
+                                                              }
+                                                              NodeType::Ancilla => {
+                                                                  RGBColor(0xFF, 0x88, 0xAA)
+                                                              }
+                                                              NodeType::Estabilizer => {
+                                                                  RGBColor(0x99, 0xCC, 0x99)
+                                                              }
+                                                          }.filled())))?;
+            // Draw border if part of a path
+            if let Some(color) = border_color {
+                chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
+                                                              22,
+                                                              color.stroke_width(3))))?;
+            }
+            // Draw label
+            chart.draw_series(std::iter::once(Text::new(node.label.clone(),
+                                                        (x as f32 - 0.17, y as f32 + 0.09),
+                                                        ("sans-serif", 18).into_font())))?;
+        }
+        // Draw Pauli product labels
+        let mut label_row = self.num_rows as f32;
+        let label_col = -1.5f32;
+        for (i, (pp, _)) in pauli_product_paths.iter().enumerate() {
+            chart.draw_series(std::iter::once(Text::new(pp.get_product_str(),
+                                                        (label_col, label_row),
+                                                        ("sans-serif", 18).into_font())))?;
+            // Draw text background
+            chart.draw_series(std::iter::once(Rectangle::new([(label_col - 0.3,
+                                                               label_row - 0.2),
+                                                              (label_col + 1.0,
+                                                               label_row + 0.2)],
+                                                             path_colors[i].mix(0.2).filled())))?;
+            label_row -= 0.35;
+        }
+        // Draw title
+        if !title_str.is_empty() {
+            chart.draw_series(std::iter::once(Text::new(title_str.to_string(),
+                                                        (-0.5, -0.8),
+                                                        ("sans-serif",
+                                                         (6.0 * (self.num_rows as f64).sqrt())
+                                                         as u32)
+                                                                .into_font())))?;
+        }
+        root.present()?;
+        println!("Plotted topology to {}", png_fname);
+        Ok(())
+    }
+}
+
+// Helper function to convert HSV to RGB
+fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
+    let c = v * s;
+    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+
+    let (r, g, b) = match (h * 6.0).floor() as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+
+    (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
 }
