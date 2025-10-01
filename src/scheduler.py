@@ -213,11 +213,16 @@ class Scheduler:
         return None
 
     def schedule_non_clifford(self, data_nodes, pauli_product):
-        magic_nodes = [
-            node
-            for node in self.topo_graph.nodes
-            if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] == 0
-        ]
+        magic_nodes = []
+        for node in self.topo_graph.nodes:
+            if is_magic_node(node) and self.topo_graph.nodes[node]["busy_count"] == 0:
+                for nb in self.topo_graph.neighbors(node):
+                    if is_bus_node(nb) and not self.topo_graph.nodes[node]["used"]:
+                        break
+                else:
+                    self.print_sched("  No available magic node with used bus nb")
+                    return None
+                magic_nodes.append(node)
         if len(magic_nodes) == 0:
             self.print_sched("  No available magic nodes")
             return None
