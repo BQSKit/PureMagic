@@ -459,6 +459,7 @@ impl TopoGraph {
     }
 
     pub fn trim_dangling_bus_nodes(&mut self) {
+        let mut num_trimmed = 0;
         loop {
             // Find dangling bus nodes
             let mut dangling_labels: Vec<String> = Vec::new();
@@ -472,11 +473,13 @@ impl TopoGraph {
             if dangling_labels.is_empty() {
                 break;
             } else {
+                num_trimmed += 1;
                 for label in dangling_labels {
-                    self.nodes.remove(&label);
+                    self.remove_node(&label);
                 }
             }
         }
+        log::info!("    Trimmed {} dangling nodes", num_trimmed);
     }
 
     pub fn get_node(&self, node_label: &str) -> &Node {
@@ -513,6 +516,24 @@ impl TopoGraph {
         self.num_nodes += 1;
     }
 
+    pub fn remove_node(&mut self, node_label: &str) {
+        // Get edges to remove from neighbors
+        let node = self.get_node(node_label);
+        let edges_to_remove: Vec<(String, String)> =
+            node.edges.iter().map(|neighbor| (neighbor.clone(), node_label.to_string())).collect();
+        // Remove edges from neighbor nodes
+        for (nb_label, edge_to_remove) in edges_to_remove {
+            if let Some(nb) = self.nodes.get_mut(&nb_label) {
+                nb.edges.remove(&edge_to_remove);
+                self.num_edges -= 1;
+            }
+        }
+        // Remove the node itself
+        if self.nodes.remove(node_label).is_some() {
+            self.num_nodes -= 1;
+        }
+    }
+
     pub fn add_edge(&mut self, label1: &str, label2: &str) {
         if let Some(node1) = self.nodes.get_mut(label1) {
             node1.add_edge(label2);
@@ -521,5 +542,9 @@ impl TopoGraph {
             node2.add_edge(label1);
         }
         self.num_edges += 1;
+    }
+
+    pub fn node_list(&self) -> Vec<String> {
+        self.nodes.keys().cloned().collect()
     }
 }
