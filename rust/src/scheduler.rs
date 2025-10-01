@@ -57,7 +57,7 @@ impl Scheduler {
     pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
         let _timer = Timer::new("schedule_circuit");
         self.rng_exp
-            .try_set_params(self.magic_state_lambda)
+            .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         // Initialize magic nodes with busy counts
         // Collect magic node labels first to avoid borrow conflicts
