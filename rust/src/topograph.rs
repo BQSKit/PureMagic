@@ -1,7 +1,7 @@
 use crate::pauliproduct::PauliProduct;
 use crate::utils::Timer;
+use indexmap::{IndexMap, IndexSet};
 use plotters::prelude::*;
-use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -21,12 +21,12 @@ pub struct Node {
     pub label: String,
     pub pos: (f64, f64),
     pub busy_count: Option<i32>,
-    pub edges: HashSet<String>,
+    pub edges: IndexSet<String>,
     pub used: bool,
 }
 
 pub struct TopoGraph {
-    nodes: HashMap<String, Node>,
+    nodes: IndexMap<String, Node>,
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
     num_rows: usize,
@@ -48,7 +48,7 @@ impl Node {
                label,
                pos: (x, y),
                busy_count: if node_type == NodeType::Magic { Some(0) } else { None },
-               edges: HashSet::new(),
+               edges: IndexSet::new(),
                used: false }
     }
 
@@ -59,7 +59,7 @@ impl Node {
 
 impl TopoGraph {
     pub fn new() -> Self {
-        TopoGraph { nodes: HashMap::new(),
+        TopoGraph { nodes: IndexMap::new(),
                     node_grid: Vec::new(),
                     num_cols: 0,
                     num_rows: 0,
@@ -421,12 +421,12 @@ impl TopoGraph {
         // Remove edges from neighbor nodes
         for (nb_label, edge_to_remove) in edges_to_remove {
             if let Some(nb) = self.nodes.get_mut(&nb_label) {
-                nb.edges.remove(&edge_to_remove);
+                nb.edges.swap_remove(&edge_to_remove);
                 self.num_edges -= 1;
             }
         }
         // Remove the node itself
-        if self.nodes.remove(node_label).is_some() {
+        if self.nodes.swap_remove(node_label).is_some() {
             self.num_nodes -= 1;
         }
     }
