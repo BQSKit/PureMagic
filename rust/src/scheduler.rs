@@ -596,12 +596,12 @@ impl Scheduler {
     fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &[String], which_ancilla: &str,
                      exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
+        let mut visited = HashSet::with_capacity(self.topo.num_nodes);
+        let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
         let mut bfs_graph = TopoGraph::new();
 
-        visited.insert(root_node.to_string());
-        queue.push_back(root_node.to_string());
+        visited.insert(root_node);
+        queue.push_back(root_node);
         let num_terminals_reqd = terminal_nodes.len();
         let mut num_found_terminals = 0;
 
@@ -627,11 +627,11 @@ impl Scheduler {
                 if nb.node_type != NodeType::Bus && !terminal_nodes.contains(&nb_label) {
                     continue;
                 }
-                visited.insert(nb_label.clone());
+                visited.insert(nb_label);
                 bfs_graph.add_node(nb.clone());
                 bfs_graph.add_edge(&node_label, &nb_label);
                 if nb.node_type == NodeType::Bus {
-                    queue.push_back(nb_label.to_string());
+                    queue.push_back(nb_label);
                 } else {
                     if nb.node_type != NodeType::Ancilla {
                         num_found_terminals += 1;
@@ -657,7 +657,6 @@ impl Scheduler {
                                      .filter(|node| node.node_type == NodeType::Bus)
                                      .map(|node| node.label.clone())
                                      .collect();
-
         for node_label in bus_nodes {
             // Check neighbors in the topology
             for nb_label in &self.topo.get_node(&node_label).edges {
