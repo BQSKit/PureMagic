@@ -167,11 +167,17 @@ class Scheduler:
         which_ancilla = (
             pauli_product.operators[0].basis.upper() if pauli_product.need_ancilla else ""
         )
-        estabilizer_nodes = [
-            node
-            for node in self.topo_graph.nodes
-            if is_estabilizer_node(node) and not self.topo_graph.nodes[node]["used"]
-        ]
+        estabilizer_nodes = []
+        for node in self.topo_graph.nodes:
+            if is_estabilizer_node(node) and not self.topo_graph.nodes[node]["used"]:
+                num_unused_nbs = 0
+                for nb in self.topo_graph.neighbors(node):
+                    if is_bus_node(nb) and not self.topo_graph.nodes[nb]["used"]:
+                        num_unused_nbs += 1
+                        if num_unused_nbs == 2:
+                            break
+                if num_unused_nbs == 2:
+                    estabilizer_nodes.append(node)
         estabilizer_distances = self.get_nodes_by_dist(estabilizer_nodes, pauli_product)
         magic_path_dists = []
         for magic_node in magic_nodes:
