@@ -590,12 +590,14 @@ impl Scheduler {
         }
         // Try to find a tree using each root node
         let root_nodes_vec: Vec<String> = root_nodes.iter().cloned().collect();
+        // find_tree also finds the ancilla if needed
         let g = self.find_tree(&root_nodes_vec, data_nodes, pauli_product);
         if let Some(ref g) = g {
             log::info!("Scheduled clifford in {:?} nodes",
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
         }
         g
+        // FIXME: find estabilizer if needed
     }
 
     fn find_tree(&self, root_nodes: &[String], data_nodes: &[String],

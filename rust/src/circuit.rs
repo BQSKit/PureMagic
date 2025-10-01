@@ -1,5 +1,6 @@
 use crate::pauliproduct::{Operator, PauliProduct};
 use crate::utils::Timer;
+use std::fs::create_dir_all;
 
 use plotters::prelude::*;
 use std::{
@@ -127,6 +128,9 @@ impl Circuit {
         // Get circuit filename
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
+        let plot_dir = format!("{}.circuit", circuit_stem);
+        create_dir_all(&plot_dir)?;
+
         // Create output files
         let layers = self.get_layers();
         let min_layer = 0;
@@ -136,7 +140,7 @@ impl Circuit {
         for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
-            let png_fname = format!("{}.circuit-{}.png", circuit_stem, chunk_start);
+            let png_fname = format!("{}/{}-{}.png", plot_dir, circuit_stem, chunk_start);
             // Create drawing area
             let root = BitMapBackend::new(
                 &png_fname,
