@@ -89,7 +89,9 @@ impl PauliProduct {
     }
 
     pub fn get_product_str(&self) -> String {
-        self.operators.iter().map(|op| op.to_string()).collect::<String>().trim().to_string()
+        let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
+        let angle = if self.is_clifford { "<M>" } else { "<T>" };
+        format!("{}{}", ops, angle)
     }
 
     pub fn get_qubits(&self) -> Vec<usize> {
@@ -102,15 +104,10 @@ impl fmt::Display for PauliProduct {
         let ancilla_str = if self.num_ys % 2 == 1 { "A" } else { "-" };
         let es_str = if self.need_estabilizer { "E" } else { "-" };
         let clifford_str = if self.is_clifford { "clifford" } else { "non-clifford" };
+        let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
 
         write!(f,
                "{} {} {} {} {} {:?} {:?}",
-               self.id,
-               self.get_product_str(),
-               ancilla_str,
-               es_str,
-               clifford_str,
-               self.children,
-               self.parents)
+               self.id, ops, ancilla_str, es_str, clifford_str, self.children, self.parents)
     }
 }

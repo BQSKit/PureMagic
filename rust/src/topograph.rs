@@ -479,7 +479,7 @@ impl TopoGraph {
     pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, TopoGraph)],
                 title_str: &str)
                 -> Result<(), Box<dyn std::error::Error>> {
-        let _timer = Timer::new("plot");
+        //let _timer = Timer::new("plot");
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
         let png_fname = format!("{}{}.png", topo_stem, fname_added);

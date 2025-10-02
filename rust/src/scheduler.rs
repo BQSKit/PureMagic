@@ -371,18 +371,18 @@ impl Scheduler {
         }
         if !pauli_product.is_clifford {
             self.schedule_non_clifford_timer.start();
-            let g = self.schedule_non_clifford(&data_nodes, pauli_product);
+            let g = self.schedule_non_clifford(&mut data_nodes, pauli_product);
             self.schedule_non_clifford_timer.stop();
             g
         } else {
             self.schedule_clifford_timer.start();
-            let g = self.schedule_clifford(&data_nodes, pauli_product);
+            let g = self.schedule_clifford(&mut data_nodes, pauli_product);
             self.schedule_clifford_timer.stop();
             g
         }
     }
 
-    fn schedule_non_clifford(&self, data_nodes: &[String], pauli_product: &PauliProduct)
+    fn schedule_non_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
                              -> Option<TopoGraph> {
         // Find available magic nodes (busy_count == 0)
         let mut magic_nodes = Vec::new();
@@ -416,11 +416,11 @@ impl Scheduler {
             log::info!("  Magic nodes by distance to {}: {:?}",
                        pauli_product.id,
                        magic_nodes_sorted);
-            self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product)
+            self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product, false)
         }
     }
 
-    fn find_estabilizer_tree(&self, magic_nodes: &[String], data_nodes: &[String],
+    fn find_estabilizer_tree(&self, magic_nodes: &[String], data_nodes: &mut Vec<String>,
                              pauli_product: &PauliProduct)
                              -> Option<TopoGraph> {
         let which_ancilla = if pauli_product.need_ancilla {
@@ -468,8 +468,9 @@ impl Scheduler {
         // Try each magic-estabilizer path
         for (magic_node, estabilizer_node, d) in magic_path_dists {
             // Find path from magic to estabilizer
+            let mut estabilizer_vec = vec![estabilizer_node.clone()];
             let magic_path_g =
-                self.get_bfs_graph(&magic_node, &[estabilizer_node.clone()], "", None);
+                self.get_bfs_graph(&magic_node, &mut estabilizer_vec, "", false, None);
             if magic_path_g.is_none() {
                 //log::info!("  No path from {} to {}", magic_node, estabilizer_node);
                 continue;
@@ -483,6 +484,7 @@ impl Scheduler {
             let estabilizer_g = self.get_bfs_graph(&estabilizer_node,
                                                    data_nodes,
                                                    &which_ancilla,
+                                                   false,
                                                    Some(&magic_path_g));
             if estabilizer_g.is_none() {
                 log::info!("  No path from {} to {}", estabilizer_node, pauli_product);
@@ -539,10 +541,10 @@ impl Scheduler {
         (dx * dx + dy * dy).sqrt()
     }
 
-    fn schedule_clifford(&self, data_nodes: &[String], pauli_product: &PauliProduct)
+    fn schedule_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
                          -> Option<TopoGraph> {
         // Handle single data node case
-        if data_nodes.len() == 1 {
+        if data_nodes.len() == 1 && !pauli_product.need_estabilizer {
             let node_label = &data_nodes[0];
             let node = self.topo.get_node(node_label);
             if node.used {
@@ -574,7 +576,7 @@ impl Scheduler {
         }
         // root node needs to be a bus node next to one of the data nodes
         let mut root_nodes = IndexSet::new();
-        for node_label in data_nodes {
+        for node_label in data_nodes.iter() {
             let node = self.topo.get_node(node_label);
             if node.used {
                 return None;
@@ -592,17 +594,19 @@ impl Scheduler {
         // Try to find a tree using each root node
         let root_nodes_vec: Vec<String> = root_nodes.iter().cloned().collect();
         // find_tree also finds the ancilla if needed
-        let g = self.find_tree(&root_nodes_vec, data_nodes, pauli_product);
+        let g = self.find_tree(&root_nodes_vec,
+                               data_nodes,
+                               pauli_product,
+                               pauli_product.need_estabilizer);
         if let Some(ref g) = g {
             log::info!("Scheduled clifford in {:?} nodes",
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
         }
         g
-        // FIXME: find estabilizer if needed
     }
 
-    fn find_tree(&self, root_nodes: &[String], data_nodes: &[String],
-                 pauli_product: &PauliProduct)
+    fn find_tree(&self, root_nodes: &[String], data_nodes: &mut Vec<String>,
+                 pauli_product: &PauliProduct, estabilizer: bool)
                  -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product.id);
         // Determine which_ancilla based on first operator's basis
@@ -615,7 +619,8 @@ impl Scheduler {
             String::new()
         };
         for root_node_label in root_nodes {
-            let g = self.get_bfs_graph(root_node_label, data_nodes, &which_ancilla, None);
+            let g =
+                self.get_bfs_graph(root_node_label, data_nodes, &which_ancilla, estabilizer, None);
             match g {
                 None => {
                     log::info!("    No tree from root node {} to {:?}, {}",
@@ -636,8 +641,8 @@ impl Scheduler {
         None
     }
 
-    fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &[String], which_ancilla: &str,
-                     exclude: Option<&TopoGraph>)
+    fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &mut Vec<String>,
+                     which_ancilla: &str, with_estabilizer: bool, exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
@@ -645,8 +650,12 @@ impl Scheduler {
 
         visited.insert(root_node);
         queue.push_back(root_node);
-        let num_terminals_reqd = terminal_nodes.len();
+        let mut num_terminals_reqd = terminal_nodes.len();
         let mut num_found_terminals = 0;
+        if with_estabilizer {
+            num_terminals_reqd += 1;
+        }
+        let mut estabilizer_label = String::new();
 
         bfs_graph.add_node(self.topo.get_node(root_node).clone());
 
@@ -665,6 +674,14 @@ impl Scheduler {
                     if ex.contains_node(&nb_label) && !terminal_nodes.contains(&nb_label) {
                         continue;
                     }
+                }
+                // FIXME: need to have estabilizer on path between nodes, not just a leaf
+                if with_estabilizer
+                   && nb.node_type == NodeType::Estabilizer
+                   && estabilizer_label == ""
+                {
+                    estabilizer_label = nb.label.clone();
+                    terminal_nodes.push(estabilizer_label.clone());
                 }
                 // Only add bus nodes or terminal nodes
                 if nb.node_type != NodeType::Bus && !terminal_nodes.contains(&nb_label) {
