@@ -11,10 +11,10 @@ use std::{
 };
 
 pub struct Circuit {
-    pub products: Vec<PauliProduct>,
+    products: Vec<PauliProduct>,
+    layers: RefCell<Option<Vec<Vec<usize>>>>,
     pub circuit_fname: String,
     pub num_qubits: usize,
-    layers: RefCell<Option<Vec<Vec<usize>>>>,
 }
 
 impl Circuit {
@@ -69,6 +69,18 @@ impl Circuit {
         }
 
         Ok(())
+    }
+
+    pub fn initial_products(&self) -> impl Iterator<Item = &PauliProduct> {
+        self.products.iter().filter(|pp| pp.parents.is_empty())
+    }
+
+    pub fn get_product(&self, id: i32) -> &PauliProduct {
+        &self.products[id as usize]
+    }
+
+    pub fn num_products(&self) -> usize {
+        self.products.len()
     }
 
     pub fn split_ys(&mut self) {

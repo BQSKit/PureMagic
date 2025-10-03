@@ -73,9 +73,14 @@ impl Scheduler {
             self.topo.get_node_mut(&label).busy_count = Some(busy_count);
         }
         // Initialize scheduling
-        let mut to_schedule: Vec<_> =
-            self.circuit.products.iter().filter(|pp| pp.parents.is_empty()).cloned().collect();
-        let mut circuit_products = self.circuit.products.to_vec();
+        let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
+        // Track parent relationships
+        let mut remaining_parents: Vec<_> = (0..self.circuit.num_products()).map(|id| {
+                                                let pp = self.circuit.get_product(id as i32);
+                                                pp.parents.len()
+                                            })
+                                            .collect();
+
         let mut scheduled = IndexSet::new();
         let mut num_steps = 0;
         // Setup path plotting
@@ -91,7 +96,7 @@ impl Scheduler {
             plot_steps = 100;
         }
         // Progress tracking
-        let total_to_schedule = circuit_products.len();
+        let total_to_schedule = self.circuit.num_products();
         let mut prev_perc_complete = 0;
         print!("Scheduling {} products:    ", total_to_schedule);
         if plot_steps > 0 {
@@ -147,19 +152,18 @@ impl Scheduler {
                 for (pp, _) in pp_paths {
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
-                        let child = &mut circuit_products[child_id as usize];
-                        child.parents.retain(|&x| x != pp.id);
-                        if child.parents.is_empty() {
+                        remaining_parents[child_id as usize] -= 1;
+                        if remaining_parents[child_id as usize] == 0 {
                             children_to_schedule.insert(child_id);
                         }
                     }
                 }
                 // Extend next_to_schedule with children from IndexSet
-                next_to_schedule.extend(
-                    children_to_schedule
-                        .iter()
-                        .map(|&id| circuit_products[id as usize].clone())
-                );
+                next_to_schedule.extend(children_to_schedule.iter().map(|&id| {
+                                                                       self.circuit
+                                                                           .get_product(id)
+                                                                           .clone()
+                                                                   }));
                 for (pp, _) in pp_paths {
                     self.check_dependencies(pp, &scheduled)?;
                     scheduled.insert(pp.id);
@@ -675,7 +679,6 @@ impl Scheduler {
                         continue;
                     }
                 }
-                // FIXME: need to have estabilizer on path between nodes, not just a leaf
                 if with_estabilizer
                    && nb.node_type == NodeType::Estabilizer
                    && estabilizer_label == ""
