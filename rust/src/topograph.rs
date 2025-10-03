@@ -30,6 +30,8 @@ pub struct TopoGraph {
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
     num_rows: usize,
+    topo_fname: String,
+    circuit_fname: String,
     pub num_data_qubits: usize,
     pub num_bus_qubits: usize,
     pub num_magic_qubits: usize,
@@ -38,8 +40,6 @@ pub struct TopoGraph {
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
-    topo_fname: String,
-    circuit_fname: String,
 }
 
 impl Node {
