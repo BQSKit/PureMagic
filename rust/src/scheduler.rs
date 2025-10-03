@@ -11,20 +11,140 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::path::Path;
 
+struct ScheduleStats {
+    qubits: usize,
+    data_qubits: usize,
+    bus_qubits: usize,
+    magic_qubits: usize,
+    estabilizer_qubits: usize,
+    sum_data_scheduled: usize,
+    sum_bus_scheduled: usize,
+    sum_magic_scheduled: usize,
+    sum_ancilla_scheduled: usize,
+    sum_estabilizer_scheduled: usize,
+    bus_scheduled: usize,
+    data_scheduled: usize,
+    magic_scheduled: usize,
+    ancilla_scheduled: usize,
+    estabilizers_scheduled: usize,
+    log_scheduler: bool,
+}
+
+impl ScheduleStats {
+    pub fn new(qubits: usize, data_qubits: usize, bus_qubits: usize, magic_qubits: usize,
+               estabilizer_qubits: usize, log_scheduler: bool)
+               -> Self {
+        ScheduleStats { qubits,
+                        data_qubits,
+                        bus_qubits,
+                        magic_qubits,
+                        estabilizer_qubits,
+                        sum_data_scheduled: 0,
+                        sum_bus_scheduled: 0,
+                        sum_magic_scheduled: 0,
+                        sum_ancilla_scheduled: 0,
+                        sum_estabilizer_scheduled: 0,
+                        bus_scheduled: 0,
+                        data_scheduled: 0,
+                        magic_scheduled: 0,
+                        ancilla_scheduled: 0,
+                        estabilizers_scheduled: 0,
+                        log_scheduler }
+    }
+
+    pub fn summarize(&self, num_steps: usize) -> f64 {
+        // Calculate statistics
+        let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_steps) as f64;
+        let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_steps) as f64;
+        let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_steps) as f64;
+        let estabilizer_frac =
+            self.sum_estabilizer_scheduled as f64 / (self.estabilizer_qubits * num_steps) as f64;
+
+        let overall_frac = (self.data_qubits * num_steps
+                            + self.sum_bus_scheduled
+                            + self.sum_magic_scheduled
+                            + self.sum_ancilla_scheduled
+                            + self.sum_estabilizer_scheduled) as f64
+                           / (num_steps * self.qubits) as f64;
+
+        // Print final statistics
+        println!("Qubit fractions used:");
+        println!("  data:        {:.3}", data_frac);
+        println!("  bus:         {:.3}", bus_frac);
+        println!("  magic:       {:.3}", magic_frac);
+        println!("  estabilizer: {:.3}", estabilizer_frac);
+
+        overall_frac
+    }
+
+    pub fn update(&mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize) -> String {
+        self.sum_data_scheduled += self.data_scheduled;
+        self.sum_bus_scheduled += self.bus_scheduled;
+        self.sum_magic_scheduled += self.magic_scheduled;
+        self.sum_ancilla_scheduled += self.ancilla_scheduled;
+        self.sum_estabilizer_scheduled += self.estabilizers_scheduled;
+
+        let mut title = String::new();
+        if self.log_scheduler {
+            log::info!("Scheduling results:");
+            let frac_paths = pp_paths_len as f64 / to_schedule_len as f64;
+            let frac_data = self.data_scheduled as f64 / self.data_qubits as f64;
+            let frac_bus = self.bus_scheduled as f64 / self.bus_qubits as f64;
+            let frac_magic = self.magic_scheduled as f64 / self.magic_qubits as f64;
+            let frac_estabilizers =
+                self.estabilizers_scheduled as f64 / self.estabilizer_qubits as f64;
+            log::info!("  products:    {}/{} ({:.2})", pp_paths_len, to_schedule_len, frac_paths);
+            log::info!("  data:        {}/{} ({:.2})",
+                       self.data_scheduled,
+                       self.data_qubits,
+                       frac_data);
+            log::info!("  bus:         {}/{} ({:.2})",
+                       self.bus_scheduled,
+                       self.bus_qubits,
+                       frac_bus);
+            log::info!("  magic:       {}/{} ({:.2})",
+                       self.magic_scheduled,
+                       self.magic_qubits,
+                       frac_magic);
+            log::info!("  estabilizer: {}/{} ({:.2})",
+                       self.estabilizers_scheduled,
+                       self.estabilizer_qubits,
+                       frac_estabilizers);
+            title =
+                format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
+                        bus {:.2}, magic {:.2}, estabilizer {:.2}",
+                        step_i, frac_paths, frac_data, frac_bus, frac_magic, frac_estabilizers);
+        }
+
+        self.data_scheduled = 0;
+        self.bus_scheduled = 0;
+        self.magic_scheduled = 0;
+        self.ancilla_scheduled = 0;
+        self.estabilizers_scheduled = 0;
+        title
+    }
+
+    pub fn inc(&mut self, node_type: NodeType) {
+        match node_type {
+            NodeType::Bus => self.bus_scheduled += 1,
+            NodeType::Magic => self.magic_scheduled += 1,
+            NodeType::Data => self.data_scheduled += 1,
+            NodeType::Ancilla => self.ancilla_scheduled += 1,
+            NodeType::Estabilizer => self.estabilizers_scheduled += 1,
+        }
+    }
+}
+
 pub struct Scheduler {
     circuit: Circuit,
     topo: TopoGraph,
     rng_exp: Exponential,
     magic_state_lambda: f64,
     plot_option: String,
-    sum_data_qubits: usize,
-    sum_bus_qubits: usize,
-    sum_magic_qubits: usize,
-    sum_ancilla_qubits: usize,
-    sum_estabilizer_qubits: usize,
     busy_count_list: Vec<i32>,
     schedule_non_clifford_timer: IntermittentTimer,
     schedule_clifford_timer: IntermittentTimer,
+    stats: ScheduleStats,
 }
 
 impl Scheduler {
@@ -39,20 +159,26 @@ impl Scheduler {
             simple_logging::log_to_file(&sched_fname, log::LevelFilter::Info)
                 .expect("Failed to initialize logging");
         }
+        let num_qubits = topo.num_qubits;
+        let num_data_qubits = topo.num_data_qubits;
+        let num_bus_qubits = topo.num_bus_qubits;
+        let num_magic_qubits = topo.num_magic_qubits;
+        let num_estabilizer_qubits = topo.num_estabilizer_qubits;
+
         Scheduler { circuit,
                     topo,
                     rng_exp: Exponential::new(rseed),
                     magic_state_lambda,
                     plot_option,
-                    sum_data_qubits: 0,
-                    sum_bus_qubits: 0,
-                    sum_magic_qubits: 0,
-                    sum_ancilla_qubits: 0,
-                    sum_estabilizer_qubits: 0,
                     busy_count_list: Vec::new(),
-                    schedule_non_clifford_timer: IntermittentTimer::new("schedule non-clifford",
-                                                                        ""),
-                    schedule_clifford_timer: IntermittentTimer::new("schedule clifford", "") }
+                    schedule_non_clifford_timer: IntermittentTimer::new("sched non-clifford", ""),
+                    schedule_clifford_timer: IntermittentTimer::new("sched clifford", ""),
+                    stats: ScheduleStats::new(num_qubits,
+                                              num_data_qubits,
+                                              num_bus_qubits,
+                                              num_magic_qubits,
+                                              num_estabilizer_qubits,
+                                              log_scheduler) }
     }
 
     pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
@@ -187,31 +313,7 @@ impl Scheduler {
         }
         print!("\x08\x08\x08{:02}%\n", 100.0);
 
-        // Calculate statistics
-        let data_frac =
-            self.sum_data_qubits as f64 / (self.topo.num_data_qubits * num_steps) as f64;
-        let bus_frac = self.sum_bus_qubits as f64 / (self.topo.num_bus_qubits * num_steps) as f64;
-        let magic_frac =
-            self.sum_magic_qubits as f64 / (self.topo.num_magic_qubits * num_steps) as f64;
-        let estabilizer_frac = self.sum_estabilizer_qubits as f64
-                               / (self.topo.num_estabilizer_qubits * num_steps) as f64;
-
-        let overall_frac = (self.topo.num_data_qubits * num_steps
-                            + self.sum_bus_qubits
-                            + self.sum_magic_qubits
-                            + self.sum_ancilla_qubits
-                            + self.sum_estabilizer_qubits) as f64
-                           / (num_steps * self.topo.num_qubits) as f64;
-
-        self.schedule_clifford_timer.done();
-        self.schedule_non_clifford_timer.done();
-        // Print final statistics
-        println!("Qubit fractions used:");
-        println!("  data:        {:.3}", data_frac);
-        println!("  bus:         {:.3}", bus_frac);
-        println!("  magic:       {:.3}", magic_frac);
-        println!("  estabilizer: {:.3}", estabilizer_frac);
-
+        let overall_frac = self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
         let mean =
             self.busy_count_list.iter().sum::<i32>() as f64 / self.busy_count_list.len() as f64;
@@ -221,6 +323,9 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
 
+        self.schedule_clifford_timer.done();
+        self.schedule_non_clifford_timer.done();
+
         Ok((num_steps, scheduled.len(), overall_frac))
     }
 
@@ -228,12 +333,11 @@ impl Scheduler {
         &mut self, step_i: usize, to_schedule: &[PauliProduct])
         -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
-        let mut num_busy = 0;
         for node in self.topo.iter_nodes_mut() {
             if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(0) > 0 {
                 node.busy_count = Some(node.busy_count.unwrap() - 1);
-                if node.busy_count.unwrap() > 0 {
-                    num_busy += 1;
+                if node.busy_count > Some(0) {
+                    self.stats.inc(node.node_type);
                 }
             }
             node.used = false;
@@ -244,17 +348,11 @@ impl Scheduler {
         to_schedule.sort_by_key(|pp| std::cmp::Reverse(pp.operators.len()));
 
         let mut pp_paths = Vec::new();
-        let mut num_bus_scheduled = 0;
-        let mut num_data_scheduled = 0;
-        let mut num_magic_scheduled = num_busy;
-        let mut num_ancilla_scheduled = 0;
-        let mut num_estabilizers_scheduled = 0;
-        let mut num_dependent_nodes = 0;
         let mut next_to_schedule = Vec::new();
+        let mut num_dependent_nodes = 0;
 
         for pp in &to_schedule {
-            let pp_graph = self.schedule_pauli_product(pp);
-            match pp_graph {
+            match self.schedule_pauli_product(pp) {
                 None => {
                     log::info!("  * Could not schedule {} on graph", pp.id);
                     next_to_schedule.push(pp.clone());
@@ -265,78 +363,29 @@ impl Scheduler {
                         num_dependent_nodes += 1;
                     }
                 }
-                Some(graph) => {
+                Some(pp_graph) => {
                     log::info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
                                pp.id,
-                               graph.num_nodes,
-                               graph.num_edges,
-                               graph.node_list());
+                               pp_graph.num_nodes,
+                               pp_graph.num_edges,
+                               pp_graph.node_list());
                     // Update node statistics and mark as used
-                    for node in graph.iter_nodes() {
-                        match node.node_type {
-                            NodeType::Bus => num_bus_scheduled += 1,
-                            NodeType::Magic => {
-                                let busy_count = self.gen_busy_count();
-                                self.topo.get_node_mut(&node.label).busy_count = Some(busy_count);
-                                //log::info!("Set node {} busy count to {}", node.label, busy_count);
-                                num_magic_scheduled += 1;
-                            }
-                            NodeType::Data => num_data_scheduled += 1,
-                            NodeType::Ancilla => num_ancilla_scheduled += 1,
-                            NodeType::Estabilizer => num_estabilizers_scheduled += 1,
+                    for node in pp_graph.iter_nodes() {
+                        self.stats.inc(node.node_type);
+                        if node.node_type == NodeType::Magic {
+                            let busy_count = self.gen_busy_count();
+                            self.topo.get_node_mut(&node.label).busy_count = Some(busy_count);
                         }
                         self.topo.get_node_mut(&node.label).used = true;
                     }
-                    pp_paths.push((pp.clone(), graph));
+                    pp_paths.push((pp.clone(), pp_graph));
                 }
             }
         }
-
-        // Print statistics
-        log::info!("Scheduling results:");
-        let frac_paths = pp_paths.len() as f64 / to_schedule.len() as f64;
-        let frac_data = num_data_scheduled as f64 / self.topo.num_data_qubits as f64;
-        let frac_bus = num_bus_scheduled as f64 / self.topo.num_bus_qubits as f64;
-        let frac_magic = num_magic_scheduled as f64 / self.topo.num_magic_qubits as f64;
-        let frac_estabilizers =
-            num_estabilizers_scheduled as f64 / self.topo.num_estabilizer_qubits as f64;
-        log::info!("  products:    {}/{} ({:.2})", pp_paths.len(), to_schedule.len(), frac_paths);
-        log::info!("  data:        {}/{} ({:.2})",
-                   num_data_scheduled,
-                   self.topo.num_data_qubits,
-                   frac_data);
-        log::info!("  bus:         {}/{} ({:.2})",
-                   num_bus_scheduled,
-                   self.topo.num_bus_qubits,
-                   frac_bus);
-        log::info!("  magic:       {}/{} ({:.2})",
-                   num_magic_scheduled,
-                   self.topo.num_magic_qubits,
-                   frac_magic);
-        log::info!("  estabilizer: {}/{} ({:.2})",
-                   num_estabilizers_scheduled,
-                   self.topo.num_estabilizer_qubits,
-                   frac_estabilizers);
+        let title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
         log::info!("Removed {} dependent nodes", num_dependent_nodes);
 
-        // Update statistics
-        self.sum_data_qubits += num_data_scheduled;
-        self.sum_bus_qubits += num_bus_scheduled;
-        self.sum_magic_qubits += num_magic_scheduled;
-        self.sum_ancilla_qubits += num_ancilla_scheduled;
-        self.sum_estabilizer_qubits += num_estabilizers_scheduled;
-
         if !pp_paths.is_empty() {
-            let frac_paths = pp_paths.len() as f64 / to_schedule.len() as f64;
-            let frac_data = num_data_scheduled as f64 / self.topo.num_data_qubits as f64;
-            let frac_bus = num_bus_scheduled as f64 / self.topo.num_bus_qubits as f64;
-            let frac_magic = num_magic_scheduled as f64 / self.topo.num_magic_qubits as f64;
-            let frac_estabilizers =
-                num_estabilizers_scheduled as f64 / self.topo.num_estabilizer_qubits as f64;
-            let title =
-                format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
-                                bus {:.2}, magic {:.2}, estabilizer {:.2}",
-                        step_i, frac_paths, frac_data, frac_bus, frac_magic, frac_estabilizers);
             (Some(title), Some(pp_paths), next_to_schedule)
         } else {
             (None, None, next_to_schedule)

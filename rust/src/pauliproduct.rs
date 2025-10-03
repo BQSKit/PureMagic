@@ -16,9 +16,9 @@ impl fmt::Display for Operator {
 #[derive(Debug, Clone)]
 pub struct PauliProduct {
     pub operators: Vec<Operator>,
-    pub max_qubit: usize,
     pub parents: Vec<i32>,
     pub children: Vec<i32>,
+    pub max_qubit: usize,
     pub id: i32,
     pub num_ys: usize,
     pub need_estabilizer: bool,
