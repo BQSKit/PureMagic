@@ -414,9 +414,10 @@ impl Scheduler {
                     break;
                 }
             }
-            if unused_nb {
-                data_nodes.push(node_label);
+            if !unused_nb {
+                return None;
             }
+            data_nodes.push(node_label);
         }
         if data_nodes.is_empty() {
             log::info!("  No data nodes found in working graph");
@@ -708,10 +709,9 @@ impl Scheduler {
         if with_estabilizer {
             num_terminals_reqd += 1;
         }
-        let mut estabilizer_label = String::new();
+        let mut ez_label = String::new();
 
         bfs_graph.add_node(self.topo.get_node(root_node).clone());
-
         while let Some(node_label) = queue.pop_front() {
             let node = self.topo.get_node(&node_label);
             for nb_label in node.edges.iter() {
@@ -728,26 +728,54 @@ impl Scheduler {
                         continue;
                     }
                 }
-                if with_estabilizer
-                   && nb.node_type == NodeType::Estabilizer
-                   && estabilizer_label == ""
-                {
-                    estabilizer_label = nb.label.clone();
-                    terminal_nodes.push(estabilizer_label.clone());
+                if with_estabilizer && nb.node_type == NodeType::Estabilizer && ez_label == "" {
+                    ez_label = nb.label.clone();
+                    terminal_nodes.push(ez_label.clone());
                 }
                 // Only add bus nodes or terminal nodes
                 if nb.node_type != NodeType::Bus && !terminal_nodes.contains(&nb_label) {
                     continue;
                 }
-                visited.insert(nb_label);
-                bfs_graph.add_node(nb.clone());
-                bfs_graph.add_edge(&node_label, &nb_label);
                 if nb.node_type == NodeType::Bus {
+                    visited.insert(nb_label);
+                    bfs_graph.add_node(nb.clone());
+                    bfs_graph.add_edge(&node_label, &nb_label);
                     queue.push_back(nb_label);
                 } else {
-                    if nb.node_type != NodeType::Ancilla {
-                        num_found_terminals += 1;
+                    if nb.node_type == NodeType::Data {
+                        let paired_nb = self.topo.get_paired_data_node(nb);
+                        if node.edges.contains(&paired_nb.label) {
+                            // this is a top or bottom connection
+                            log::info!("    Node {} has a top/bottom connection to {}/{}",
+                                       node.label,
+                                       nb.label,
+                                       paired_nb.label);
+                            // only use the top/bottom if both nodes are in the terminals
+                            if !terminal_nodes.contains(&nb.label)
+                               || !terminal_nodes.contains(&paired_nb.label)
+                            {
+                                continue;
+                            }
+                            if !visited.contains(paired_nb.label.as_str()) {
+                                log::info!("    Using top/bottom connection");
+                                // if we haven't used both data nodes yet, then make this
+                                // top/bottom the one used
+                                visited.insert(paired_nb.label.as_str());
+                                bfs_graph.add_node(paired_nb.clone());
+                                bfs_graph.add_edge(&node_label, &paired_nb.label);
+                                num_found_terminals += 1;
+                            } else {
+                                // now replace the paired node's link with this link
+                                //let prev_paired_node = bfs_graph.get_node_mut(&paired_nb.label);
+
+                                continue;
+                            }
+                        }
                     }
+                    visited.insert(nb_label);
+                    bfs_graph.add_node(nb.clone());
+                    bfs_graph.add_edge(&node_label, &nb_label);
+                    num_found_terminals += 1;
                     if num_found_terminals == num_terminals_reqd {
                         bfs_graph.trim_dangling_bus_nodes();
                         if !which_ancilla.is_empty() {
@@ -772,7 +800,7 @@ impl Scheduler {
         for node_label in bus_nodes {
             // Check neighbors in the topology
             for nb_label in &self.topo.get_node(&node_label).edges {
-                let nb = self.topo.get_node(nb_label);
+                let nb = self.topo.get_node(&nb_label);
                 // Check if neighbor is an unused bus node not in graph
                 if nb.node_type == NodeType::Bus && !nb.used && !graph.contains_node(nb_label) {
                     log::info!("    Selected {} as {} ancilla", nb_label, which_ancilla);

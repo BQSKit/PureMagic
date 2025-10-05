@@ -55,6 +55,17 @@ impl Node {
     fn add_edge(&mut self, other: &str) {
         self.edges.insert(other.to_string());
     }
+
+    pub fn get_data_label_number(&self) -> Option<usize> {
+        // Skip first character (node type)
+        let after_type = self.label.get(1..)?;
+        // For data nodes, parse number before operator
+        if self.label.starts_with('d') {
+            let op_pos = after_type.find(|c: char| c == 'X' || c == 'Z')?;
+            return after_type[..op_pos].parse().ok();
+        }
+        None
+    }
 }
 
 impl TopoGraph {
@@ -248,6 +259,7 @@ impl TopoGraph {
 
     fn set_edges(&mut self) {
         let mut edges_to_add = Vec::new();
+        let mut vertical_data_edges_to_add = Vec::new();
 
         for row in 0..self.num_rows {
             for col in 0..self.num_cols {
@@ -265,6 +277,10 @@ impl TopoGraph {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
                             if !label.starts_with('d') && !up_label.starts_with('d') {
                                 edges_to_add.push((label.clone(), up_label.clone()));
+                            } else if label.starts_with('d') && up_label.starts_with('b') {
+                                vertical_data_edges_to_add.push((label.clone(), up_label.clone()));
+                            } else if label.starts_with('b') && up_label.starts_with('d') {
+                                vertical_data_edges_to_add.push((label.clone(), up_label.clone()));
                             }
                         }
                     }
@@ -285,6 +301,23 @@ impl TopoGraph {
                 self.add_edge(&label1, &label2);
             }
         }
+        for (label1, label2) in vertical_data_edges_to_add {
+            let (data_label, bus_label) =
+                if label1.starts_with('d') { (label1, label2) } else { (label2, label1) };
+            let (data_label1, data_label2) = self.get_data_labels(&data_label).unwrap();
+            self.get_node_mut(&bus_label).add_edge(&data_label1);
+            self.get_node_mut(&bus_label).add_edge(&data_label2);
+            self.get_node_mut(&data_label1).add_edge(&bus_label);
+            self.get_node_mut(&data_label2).add_edge(&bus_label);
+        }
+    }
+
+    pub fn get_paired_data_node(&self, node: &Node) -> &Node {
+        let qubit = node.get_data_label_number().unwrap();
+        let term = node.label.chars().last().unwrap();
+        let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
+        let paired_node_label = format!("d{}{}", pair_qubit, term);
+        self.get_node(&paired_node_label)
     }
 
     fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
@@ -301,6 +334,18 @@ impl TopoGraph {
         } else {
             return Some(format!("d{}{}", second_num, operator));
         }
+    }
+
+    pub fn get_data_labels(&self, label: &str) -> Option<(String, String)> {
+        // Find indices of numbers and operator
+        let d_pos = label.find('d')?;
+        let slash_pos = label.find('/')?;
+        let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
+        // Extract the numbers and operator
+        let first_num = &label[d_pos + 1..slash_pos];
+        let second_num = &label[slash_pos + 1..op_pos];
+        let operator = &label[op_pos..=op_pos];
+        Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
     }
 
     fn update_statistics(&mut self) {
@@ -376,11 +421,11 @@ impl TopoGraph {
     }
 
     pub fn get_node(&self, node_label: &str) -> &Node {
-        self.nodes.get(node_label).expect("Node not found")
+        self.nodes.get(node_label).expect(&format!("Node {} not found", node_label))
     }
 
     pub fn get_node_mut(&mut self, node_label: &str) -> &mut Node {
-        self.nodes.get_mut(node_label).expect("Node not found")
+        self.nodes.get_mut(node_label).expect(&format!("Node {} not found", node_label))
     }
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
@@ -432,12 +477,8 @@ impl TopoGraph {
     }
 
     pub fn add_edge(&mut self, label1: &str, label2: &str) {
-        if let Some(node1) = self.nodes.get_mut(label1) {
-            node1.add_edge(label2);
-        }
-        if let Some(node2) = self.nodes.get_mut(label2) {
-            node2.add_edge(label1);
-        }
+        self.get_node_mut(label1).add_edge(label2);
+        self.get_node_mut(label2).add_edge(label1);
         self.num_edges += 1;
     }
 
@@ -454,19 +495,15 @@ impl TopoGraph {
         for row in 0..self.num_rows {
             for col in 0..self.num_cols {
                 if let Some(ref label) = self.node_grid[col][row] {
-                    write!(file, "{:8}  ", label)?;
-                    /*
-                    if is_data_node(label) {
-                        write!(
-                            file,
-                            "{}{} ",
-                            label.chars().nth(0).unwrap_or(' '),
-                            label.chars().last().unwrap_or(' ')
-                        )?;
+                    //write!(file, "{:8}  ", label)?;
+                    if label.starts_with('d') {
+                        write!(file,
+                               "{}{} ",
+                               label.chars().nth(0).unwrap_or(' '),
+                               label.chars().last().unwrap_or(' '))?;
                     } else {
                         write!(file, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
                     }
-                     */
                 }
             }
             writeln!(file)?;
