@@ -756,20 +756,20 @@ impl Scheduler {
                             {
                                 continue;
                             }
-                            if !visited.contains(paired_nb.label.as_str()) {
-                                log::info!("    Using top/bottom connection");
-                                // if we haven't used both data nodes yet, then make this
-                                // top/bottom the one used
-                                visited.insert(paired_nb.label.as_str());
-                                bfs_graph.add_node(paired_nb.clone());
-                                bfs_graph.add_edge(&node_label, &paired_nb.label);
-                                num_found_terminals += 1;
-                            } else {
-                                // now replace the paired node's link with this link
-                                //let prev_paired_node = bfs_graph.get_node_mut(&paired_nb.label);
-
-                                continue;
+                            if visited.contains(paired_nb.label.as_str()) {
+                                // paired node is already in the graph, remove the previous edge
+                                let prev_paired_node = bfs_graph.get_node_mut(&paired_nb.label);
+                                // there should be only one edge to remove
+                                assert!(prev_paired_node.edges.len() == 1);
+                                bfs_graph.remove_all_edges(&paired_nb.label);
                             }
+                            log::info!("    Using top/bottom connection");
+                            // if we haven't used both data nodes yet, then make this
+                            // top/bottom the one used
+                            visited.insert(paired_nb.label.as_str());
+                            bfs_graph.add_node(paired_nb.clone());
+                            bfs_graph.add_edge(&node_label, &paired_nb.label);
+                            num_found_terminals += 1;
                         }
                     }
                     visited.insert(nb_label);
