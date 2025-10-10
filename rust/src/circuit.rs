@@ -235,6 +235,143 @@ impl Circuit {
         Ok(())
     }
 
+    pub fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let _timer = Timer::new("plot_layer_stats");
+        // Get circuit filename
+        let circuit_path = Path::new(&self.circuit_fname);
+        let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
+        let plot_dir = format!("{}.circuit", circuit_stem);
+        create_dir_all(&plot_dir)?;
+        // Get layer statistics
+        let layers = self.get_layers();
+        let png_fname = format!("{}/{}.layer_stats.png", plot_dir, circuit_stem);
+
+        let root = BitMapBackend::new(&png_fname, (1800, 1000)).into_drawing_area();
+        root.fill(&WHITE)?;
+        let mut chart =
+            ChartBuilder::on(&root).margin(10)
+                                   .set_label_area_size(LabelAreaPosition::Left, 60)
+                                   .set_label_area_size(LabelAreaPosition::Bottom, 40)
+                                   .caption(format!("{} Layer Statistics", circuit_stem),
+                                            ("sans-serif", 30))
+                                   .build_cartesian_2d(0..layers.len(),
+                                                       0.0f64..self.num_qubits as f64)?;
+        chart.configure_mesh()
+             .x_labels(20)
+             .x_label_formatter(&|x| format!("{}", x))
+             .y_labels(10)
+             .y_label_formatter(&|y| format!("{}", y))
+             .x_desc("Layer")
+             .y_desc("Statistic")
+             .x_label_style(("sans-serif", 18))
+             .y_label_style(("sans-serif", 18))
+             .axis_desc_style(("sans-serif", 22))
+             .light_line_style(&TRANSPARENT)
+             .draw()?;
+
+        let window_size = 100;
+
+        let layer_sizes: Vec<f64> =
+            layers.iter()
+                  .enumerate()
+                  .map(|(i, _)| {
+                      let window_start = if i >= window_size { i - window_size } else { 0 };
+                      let window_end = i + 1;
+
+                      let sum: usize =
+                          layers[window_start..window_end].iter().map(|layer| layer.len()).sum();
+
+                      sum as f64 / (window_end - window_start) as f64
+                  })
+                  .collect();
+        chart.draw_series(LineSeries::new(layer_sizes.iter().enumerate().map(|(x, &y)| (x, y)),
+                                          BLUE.mix(0.8).stroke_width(2)))?
+             .label("avg products/layer")
+             .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE.mix(0.8)));
+
+        let avg_product_sizes: Vec<f64> = layers.iter()
+                                                .enumerate()
+                                                .map(|(i, _)| {
+                                                    let window_start = if i >= window_size {
+                                                        i - window_size
+                                                    } else {
+                                                        0
+                                                    };
+                                                    let window_end = i + 1;
+                                                    layers[window_start..window_end]
+            .iter().map(|layer| {
+                      let total_ops: usize = layer.iter().map(|pp| pp.operators.len()).sum();
+                      if layer.len() > 0 { total_ops as f64 / layer.len() as f64 } else { 0.0 }
+                  })
+                  .sum::<f64>() / (window_end - window_start) as f64
+                                                })
+                                                .collect();
+        chart.draw_series(LineSeries::new(avg_product_sizes.iter()
+                                                           .enumerate()
+                                                           .map(|(x, &y)| (x, y)),
+                                          RED.mix(0.8).stroke_width(2)))?
+             .label("avg product size")
+             .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED.mix(0.8)));
+
+        /*
+        let max_product_sizes: Vec<f64> = layers.iter()
+                                                .enumerate()
+                                                .map(|(i, _)| {
+                                                    let window_start = if i >= window_size {
+                                                        i - window_size
+                                                    } else {
+                                                        0
+                                                    };
+                                                    let window_end = i + 1;
+                                                    layers[window_start..window_end]
+            .iter()
+            .map(|layer| layer.iter().map(|pp| pp.operators.len()).max().unwrap_or(0))
+            .max()
+            .unwrap_or(0) as f64
+                                                })
+                                                .collect();
+        chart.draw_series(LineSeries::new(max_product_sizes.iter()
+                                                           .enumerate()
+                                                           .map(|(x, &y)| (x, y)),
+                                          RGBColor(0, 160, 0).mix(0.8).stroke_width(2)))?
+             .label("max product size")
+             .legend(|(x, y)| {
+                 PathElement::new(vec![(x, y), (x + 20, y)], &RGBColor(0, 160, 0).mix(0.8))
+             });
+        */
+
+        let max_qubits: Vec<f64> = layers.iter()
+                                         .enumerate()
+                                         .map(|(i, _)| {
+                                             let window_start =
+                                                 if i >= window_size { i - window_size } else { 0 };
+                                             let window_end = i + 1;
+                                             layers[window_start..window_end]
+            .iter()
+            .map(|layer| layer.iter().map(|pp| pp.max_qubit + 1).max().unwrap_or(0))
+            .max()
+            .unwrap_or(0) as f64
+                                         })
+                                         .collect();
+        chart.draw_series(LineSeries::new(max_qubits.iter().enumerate().map(|(x, &y)| (x, y)),
+                                          RGBColor(180, 0, 180).mix(0.8).stroke_width(2)))?
+             .label("Max qubit")
+             .legend(|(x, y)| {
+                 PathElement::new(vec![(x, y), (x + 20, y)], &RGBColor(180, 0, 180).mix(0.8))
+             });
+
+        chart.configure_series_labels()
+             .margin(20)
+             .background_style(&TRANSPARENT)
+             .border_style(&TRANSPARENT)
+             .position(SeriesLabelPosition::UpperLeft)
+             .label_font(("sans-serif", 20))
+             .draw()?;
+
+        println!("Plotted layer statistics to {}", png_fname);
+        Ok(())
+    }
+
     pub fn get_statistics(&self) -> usize {
         let layers = self.get_layers();
         let mut num_noncliffords = vec![0; layers.len()];
