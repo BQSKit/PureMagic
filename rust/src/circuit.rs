@@ -2,6 +2,7 @@ use crate::pauliproduct::{Operator, PauliProduct};
 use crate::utils::Timer;
 use std::fs::create_dir_all;
 
+use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use std::{
     cell::RefCell,
@@ -244,12 +245,13 @@ impl Circuit {
         create_dir_all(&plot_dir)?;
         // Get layer statistics
         let layers = self.get_layers();
-        let png_fname = format!("{}/{}.layer_stats.png", plot_dir, circuit_stem);
+        //let png_fname = format!("{}/{}.layer_stats.png", plot_dir, circuit_stem);
+        let png_fname = format!("{}.layer_stats.png", circuit_stem);
 
         let root = BitMapBackend::new(&png_fname, (1800, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
         let mut chart =
-            ChartBuilder::on(&root).margin(10)
+            ChartBuilder::on(&root).margin(50)
                                    .set_label_area_size(LabelAreaPosition::Left, 60)
                                    .set_label_area_size(LabelAreaPosition::Bottom, 40)
                                    .caption(format!("{} Layer Statistics", circuit_stem),
@@ -271,147 +273,229 @@ impl Circuit {
 
         let window_size = 100;
 
-        let layer_sizes: Vec<f64> =
-            layers.iter()
-                  .enumerate()
-                  .map(|(i, _)| {
-                      let window_start = if i >= window_size { i - window_size } else { 0 };
-                      let window_end = i + 1;
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     let sum: usize = window.iter().map(|layer| layer.len()).sum();
+                                     sum as f64 / window.len() as f64
+                                 },
+                                 RGBColor(0, 0, 255), // Blue
+                                 "avg products/layer")?;
 
-                      let sum: usize =
-                          layers[window_start..window_end].iter().map(|layer| layer.len()).sum();
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     let (total_ops, total_products): (usize, usize) =
+                                         window.iter()
+                                               .map(|layer| {
+                                                   let ops: usize =
+                                                       layer.iter()
+                                                            .map(|pp| pp.operators.len())
+                                                            .sum();
+                                                   (ops, layer.len())
+                                               })
+                                               .fold((0, 0),
+                                                     |(acc_ops, acc_prods), (ops, prods)| {
+                                                         (acc_ops + ops, acc_prods + prods)
+                                                     });
 
-                      sum as f64 / (window_end - window_start) as f64
-                  })
-                  .collect();
-        chart.draw_series(LineSeries::new(layer_sizes.iter().enumerate().map(|(x, &y)| (x, y)),
-                                          BLUE.mix(0.8).stroke_width(2)))?
-             .label("avg products/layer")
-             .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE.mix(0.8)));
+                                     if total_products > 0 {
+                                         total_ops as f64 / total_products as f64
+                                     } else {
+                                         0.0
+                                     }
+                                 },
+                                 RGBColor(255, 0, 0), // Red
+                                 "avg product size")?;
 
-        let avg_product_sizes: Vec<f64> = layers.iter()
-                                                .enumerate()
-                                                .map(|(i, _)| {
-                                                    let window_start = if i >= window_size {
-                                                        i - window_size
-                                                    } else {
-                                                        0
-                                                    };
-                                                    let window_end = i + 1;
-                                                    layers[window_start..window_end]
-            .iter().map(|layer| {
-                      let total_ops: usize = layer.iter().map(|pp| pp.operators.len()).sum();
-                      if layer.len() > 0 { total_ops as f64 / layer.len() as f64 } else { 0.0 }
-                  })
-                  .sum::<f64>() / (window_end - window_start) as f64
-                                                })
-                                                .collect();
-        chart.draw_series(LineSeries::new(avg_product_sizes.iter()
-                                                           .enumerate()
-                                                           .map(|(x, &y)| (x, y)),
-                                          RED.mix(0.8).stroke_width(2)))?
-             .label("avg product size")
-             .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED.mix(0.8)));
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     let sum: usize =
+                                         window.iter()
+                                               .map(|layer| {
+                                                   layer.iter().filter(|pp| pp.need_ancilla).count()
+                                               })
+                                               .sum();
+                                     sum as f64 / window.len() as f64
+                                 },
+                                 RGBColor(255, 165, 0),
+                                 "avg ancilla reqd")?;
 
-        /*
-        let max_product_sizes: Vec<f64> = layers.iter()
-                                                .enumerate()
-                                                .map(|(i, _)| {
-                                                    let window_start = if i >= window_size {
-                                                        i - window_size
-                                                    } else {
-                                                        0
-                                                    };
-                                                    let window_end = i + 1;
-                                                    layers[window_start..window_end]
-            .iter()
-            .map(|layer| layer.iter().map(|pp| pp.operators.len()).max().unwrap_or(0))
-            .max()
-            .unwrap_or(0) as f64
-                                                })
-                                                .collect();
-        chart.draw_series(LineSeries::new(max_product_sizes.iter()
-                                                           .enumerate()
-                                                           .map(|(x, &y)| (x, y)),
-                                          RGBColor(0, 160, 0).mix(0.8).stroke_width(2)))?
-             .label("max product size")
-             .legend(|(x, y)| {
-                 PathElement::new(vec![(x, y), (x + 20, y)], &RGBColor(0, 160, 0).mix(0.8))
-             });
-        */
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     let sum: usize =
+                                         window.iter()
+                                               .map(|layer| {
+                                                   layer.iter()
+                                                        .filter(|pp| pp.need_estabilizer)
+                                                        .count()
+                                               })
+                                               .sum();
+                                     sum as f64 / window.len() as f64
+                                 },
+                                 RGBColor(115, 200, 0),
+                                 "avg e-stabilizers reqd")?;
 
-        let max_qubits: Vec<f64> = layers.iter()
-                                         .enumerate()
-                                         .map(|(i, _)| {
-                                             let window_start =
-                                                 if i >= window_size { i - window_size } else { 0 };
-                                             let window_end = i + 1;
-                                             layers[window_start..window_end]
-            .iter()
-            .map(|layer| layer.iter().map(|pp| pp.max_qubit + 1).max().unwrap_or(0))
-            .max()
-            .unwrap_or(0) as f64
-                                         })
-                                         .collect();
-        chart.draw_series(LineSeries::new(max_qubits.iter().enumerate().map(|(x, &y)| (x, y)),
-                                          RGBColor(180, 0, 180).mix(0.8).stroke_width(2)))?
-             .label("Max qubit")
-             .legend(|(x, y)| {
-                 PathElement::new(vec![(x, y), (x + 20, y)], &RGBColor(180, 0, 180).mix(0.8))
-             });
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     window.iter()
+                                           .map(|layer| {
+                                               layer.iter()
+                                                    .map(|pp| pp.max_qubit + 1)
+                                                    .max()
+                                                    .unwrap_or(0)
+                                           })
+                                           .max()
+                                           .unwrap_or(0) as f64
+                                 },
+                                 RGBColor(180, 0, 180), // Purple
+                                 "Max qubit")?;
 
         chart.configure_series_labels()
              .margin(20)
-             .background_style(&TRANSPARENT)
+             .background_style(&WHITE)
              .border_style(&TRANSPARENT)
              .position(SeriesLabelPosition::UpperLeft)
              .label_font(("sans-serif", 20))
              .draw()?;
 
+        let (num_layers,
+             num_cliffords,
+             avg_products,
+             max_products,
+             avg_ancillas,
+             max_ancillas,
+             avg_estabilizers,
+             max_estabilizers) = self.get_statistics();
+
+        let stats_text = format!("Circuit: {} products; {} Cliffords; {} layers; \
+                                 products/layer {:.2} avg, {} max; \
+                                 ancilla required/layer {:.2} avg, {} max; \
+                                 e-stabilizers required/layer {:.2} avg, {} max \
+                                 ",
+                                 self.products.len(),
+                                 num_cliffords,
+                                 num_layers,
+                                 avg_products,
+                                 max_products,
+                                 avg_ancillas,
+                                 max_ancillas,
+                                 avg_estabilizers,
+                                 max_estabilizers);
+
+        // Draw statistics text below the plot
+        root.draw(&Text::new(stats_text,
+                             (10, 970), // Center horizontally, near bottom
+                             ("sans-serif", 18).into_font()))?;
+
         println!("Plotted layer statistics to {}", png_fname);
         Ok(())
     }
 
-    pub fn get_statistics(&self) -> usize {
+    fn plot_moving_average<F>(&self,
+                              chart: &mut ChartContext<BitMapBackend,
+                                                Cartesian2d<RangedCoordusize,
+                                                            RangedCoordf64>>,
+                              layers: &[Vec<&PauliProduct>], window_size: usize, value_fn: F,
+                              color: RGBColor, label: &str)
+                              -> Result<(), Box<dyn std::error::Error>>
+        where F: Fn(&[Vec<&PauliProduct>]) -> f64
+    {
+        let data = self.compute_moving_average(layers, window_size, value_fn);
+
+        chart.draw_series(LineSeries::new(data.iter().enumerate().map(|(x, &y)| (x, y)),
+                                          color.mix(0.8).stroke_width(2)))?
+             .label(label)
+             .legend(move |(x, y)| {
+                 PathElement::new(vec![(x, y), (x + 20, y)], color.mix(0.8).stroke_width(2))
+             });
+
+        Ok(())
+    }
+
+    fn compute_moving_average<F>(&self, layers: &[Vec<&PauliProduct>], window_size: usize,
+                                 value_fn: F)
+                                 -> Vec<f64>
+        where F: Fn(&[Vec<&PauliProduct>]) -> f64
+    {
+        layers.iter()
+              .enumerate()
+              .map(|(i, _)| {
+                  let window_start = if i >= window_size { i - window_size } else { 0 };
+                  let window_end = i + 1;
+                  let window = &layers[window_start..window_end];
+                  value_fn(window)
+              })
+              .collect()
+    }
+
+    pub fn print_statistics(&self) -> usize {
+        let (num_layers,
+             num_cliffords,
+             avg_products,
+             max_products,
+             avg_ancillas,
+             max_ancillas,
+             avg_estabilizers,
+             max_estabilizers) = self.get_statistics();
+        println!("Circuit statistics:");
+        println!("  Number of products:               {}", self.products.len());
+        println!("  Number of Cliffords:              {}", num_cliffords);
+        println!("  Layers:                           {}", num_layers);
+        println!("  Products per layer:               {:.2} avg, {} max",
+                 avg_products, max_products);
+        println!("  Required ancilla per layer:       {:.2} avg, {} max",
+                 avg_ancillas, max_ancillas);
+        println!("  Required e-stabilizers per layer: {:.2} avg, {} max",
+                 avg_estabilizers, max_estabilizers);
+        num_layers
+    }
+
+    fn get_statistics(&self) -> (usize, i32, f64, i32, f64, i32, f64, i32) {
         let layers = self.get_layers();
-        let mut num_noncliffords = vec![0; layers.len()];
-        let mut num_odd_ys = vec![0; layers.len()];
-        let mut num_ys = vec![0; layers.len()];
-        let mut num_nonclifford_layers = 0;
+        let mut num_cliffords = 0;
+        let mut num_products = vec![0; layers.len()];
+        let mut num_reqd_ancillas = vec![0; layers.len()];
+        let mut num_reqd_estabilizers = vec![0; layers.len()];
 
         for (i, layer) in layers.iter().enumerate() {
-            let mut nonclifford_layer = false;
+            num_products[i] += layer.len();
             for pp in layer {
-                if !pp.is_clifford {
-                    num_noncliffords[i] += 1;
-                    nonclifford_layer = true;
+                if pp.is_clifford {
+                    num_cliffords += 1;
                 }
-                if pp.num_ys > 0 {
-                    num_ys[i] += 1;
-                    if pp.num_ys % 2 == 1 {
-                        num_odd_ys[i] += 1;
-                    }
+                if pp.need_ancilla {
+                    num_reqd_ancillas[i] += 1;
                 }
-            }
-            if nonclifford_layer {
-                num_nonclifford_layers += 1;
+                if pp.need_estabilizer {
+                    num_reqd_estabilizers[i] += 1;
+                }
             }
         }
-
-        println!("Circuit statistics:");
-        println!("  Layers:                  {}", layers.len());
-        println!("  Non-Clifford layers:     {}", num_nonclifford_layers);
-        println!("  Non-Cliffords per layer:  {:.2} avg, {} max",
-                 num_noncliffords.iter().sum::<i32>() as f64 / layers.len() as f64,
-                 *num_noncliffords.iter().max().unwrap_or(&0));
-        println!("  Odd Y products per layer: {:.2} avg, {} max",
-                 num_odd_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
-                 *num_odd_ys.iter().max().unwrap_or(&0));
-        println!("  Y products per layer:     {:.2} avg, {} max",
-                 num_ys.iter().sum::<i32>() as f64 / layers.len() as f64,
-                 *num_ys.iter().max().unwrap_or(&0));
-
-        layers.len()
+        let num_layers = layers.len();
+        let avg_products = self.products.len() as f64 / num_layers as f64;
+        let max_products = *num_products.iter().max().unwrap_or(&0);
+        let avg_reqd_ancillas = num_reqd_ancillas.iter().sum::<i32>() as f64 / layers.len() as f64;
+        let max_reqd_ancillas = *num_reqd_ancillas.iter().max().unwrap_or(&0);
+        let avg_reqd_estabilizers =
+            num_reqd_estabilizers.iter().sum::<i32>() as f64 / layers.len() as f64;
+        let max_reqd_estabilizers = *num_reqd_estabilizers.iter().max().unwrap_or(&0);
+        (layers.len(),
+         num_cliffords,
+         avg_products,
+         max_products as i32,
+         avg_reqd_ancillas,
+         max_reqd_ancillas,
+         avg_reqd_estabilizers,
+         max_reqd_estabilizers)
     }
 
     pub fn print(&self) -> io::Result<()> {
