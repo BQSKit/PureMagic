@@ -94,7 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Plot circuit if requested
     if args.plot.contains(&"circuit".to_string()) {
-        //circuit.plot(args.show_product_ids)?;
+        circuit.plot(args.show_product_ids)?;
+    }
+    if args.plot.contains(&"cstats".to_string()) {
         circuit.plot_layer_stats()?;
         //return Ok(());
     }
@@ -120,17 +122,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Calculate and print statistics
     let speedup = num_scheduled as f64 / tot_num_steps as f64;
-    let qubit_cost = num_qubits * tot_num_steps;
-    println!("Scheduled {} in {} time steps ({:.3} speedup) qubit cost {}",
-             num_scheduled, tot_num_steps, speedup, qubit_cost);
+    let volume = num_qubits * tot_num_steps;
+    println!("Scheduled {} in {} time steps ({:.3} speedup) volume {}",
+             num_scheduled, tot_num_steps, speedup, volume);
 
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
-    let opt_qubit_cost = num_qubits * num_layers;
-    println!("Optimal time steps {} ({:.3} speedup) qubit cost {}",
-             num_layers, optimal_speedup, opt_qubit_cost);
+    let optimal_volume = num_qubits * num_layers;
+    println!("Optimal time steps {} ({:.3} speedup) volume {}",
+             num_layers, optimal_speedup, optimal_volume);
 
-    println!("Scheduling time efficiency {:.3}", opt_qubit_cost as f64 / qubit_cost as f64);
+    println!("Scheduling time efficiency {:.3}", speedup as f64 / optimal_speedup as f64);
     println!("Scheduling space efficiency {:.3}", space_utilization);
+    println!("Scheduling overall efficiency {:.3}", optimal_volume as f64 / volume as f64);
 
     Ok(())
 }
