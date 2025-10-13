@@ -15,25 +15,34 @@ use utils::Timer;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Random seed
-    #[arg(short, long, default_value = "29")]
+    #[arg(short, long, default_value = "29", help = "Random seed for reproducible results.")]
     rseed: u32,
     /// Name of file containing input circuit (required)
-    #[arg(short, long = "circuit", required = true)]
+    #[arg(short,
+          long = "circuit",
+          required = true,
+          help = "Name of file containing input circuit in .qasm format (required).")]
     circuit_fname: String,
     /// Name of file specifying topology (topology will be auto-generated if this is not set)
-    #[arg(short, long = "topo", default_value = "")]
+    #[arg(short,
+          long = "topo",
+          default_value = "",
+          help = "Name of file containing topology. If this is not set, it will be generated.")]
     topo_fname: String,
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
     /// Lambda parameter for exponential distribution of magic state cultivation timesteps
-    #[arg(short, long, default_value = "0.0387396")]
+    #[arg(short,
+          long,
+          default_value = "0.0387396",
+          help = "Lambda parameter for exponential distribution of magic state cultivation time")]
     magic_state_lambda: f64,
     /// Show product IDs instead of Pauli terms when plotting the circuit
-    #[arg(long)]
+    #[arg(long, help = "Show product IDs instead of Pauli terms when plotting the circuit.")]
     show_product_ids: bool,
     /// Log scheduler actions to <circuit_fname>.sched file
-    #[arg(short = 'l', long)]
+    #[arg(short = 'l', long, help = "Log all the scheduling decisions to <CIRCUIT_FNAME>.sched.")]
     log_scheduler: bool,
     /// Plotting options: topo, circuit, paths (specify multiple values in comma separated string)
     #[arg(
@@ -42,14 +51,19 @@ struct Args {
         value_delimiter = ',',
         value_parser = |s: &str| {
             match s.to_lowercase().as_str() {
-                "topo" | "circuit" | "paths" | "" => Ok(s.to_string()),
+                "topo" | "circuit" | "cstats" | "paths" | "" => Ok(s.to_string()),
                 _ => Err(format!(
-                    "invalid plot option '{}'; must be one of: topo, circuit, paths",
+                    "invalid plot option '{}'; must be one of: topo, circuit, cstats, paths",
                     s
                 ))
             }
         },
-        default_value = ""
+        default_value = "",
+        help = format!("Plot options (one or more):\n{}{}{}{}",
+        "  topo:     plot topology in <CIRCUIT_FNAME>.topo.png\n",
+        "  circuit:  plot full circuit in files in subdirectory <CIRCUIT_FNAME>.circuit\n",
+        "  cstats:   plot circuit statistics over time in <CIRCUIT_FNAME>.layer_stats.png\n",
+        "  paths:    plot paths for first 100 timesteps in subdirectory <CIRCUIT_FNAME>.paths")
     )]
     plot: Vec<String>,
 }
@@ -75,12 +89,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize circuit
     let mut circuit = Circuit::new(&args.circuit_fname)?;
     circuit.split_ys();
-    let num_layers = circuit.get_statistics();
+    let num_layers = circuit.print_statistics();
     circuit.print()?;
 
     // Plot circuit if requested
     if args.plot.contains(&"circuit".to_string()) {
-        circuit.plot(args.show_product_ids)?;
+        //circuit.plot(args.show_product_ids)?;
+        circuit.plot_layer_stats()?;
+        //return Ok(());
     }
     // Initialize topology
     let mut topo_graph = TopoGraph::new();

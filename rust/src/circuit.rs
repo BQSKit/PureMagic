@@ -244,8 +244,8 @@ impl Circuit {
         let plot_dir = format!("{}.circuit", circuit_stem);
         create_dir_all(&plot_dir)?;
         // Get layer statistics
+        //let layers = self.get_layers()[252000..255000].to_vec();
         let layers = self.get_layers();
-        //let png_fname = format!("{}/{}.layer_stats.png", plot_dir, circuit_stem);
         let png_fname = format!("{}.layer_stats.png", circuit_stem);
 
         let root = BitMapBackend::new(&png_fname, (1800, 1000)).into_drawing_area();
@@ -271,7 +271,17 @@ impl Circuit {
              .light_line_style(&TRANSPARENT)
              .draw()?;
 
-        let window_size = 100;
+        //let mut window_size = 10;
+        let mut window_size = 200;
+        if layers.len() < 2000 {
+            window_size = 10;
+        } else if layers.len() < 5000 {
+            window_size = 20;
+        } else if layers.len() < 50000 {
+            window_size = 50;
+        } else if layers.len() < 20000 {
+            window_size = 100;
+        }
 
         self.plot_moving_average(&mut chart,
                                  &layers,
@@ -380,7 +390,7 @@ impl Circuit {
                                  products/layer {:.2} avg, {} max; \
                                  ancilla required/layer {:.2} avg, {} max; \
                                  e-stabilizers required/layer {:.2} avg, {} max \
-                                 ",
+                                 (window {})",
                                  self.products.len(),
                                  num_cliffords,
                                  num_layers,
@@ -389,7 +399,8 @@ impl Circuit {
                                  avg_ancillas,
                                  max_ancillas,
                                  avg_estabilizers,
-                                 max_estabilizers);
+                                 max_estabilizers,
+                                 window_size);
 
         // Draw statistics text below the plot
         root.draw(&Text::new(stats_text,
@@ -410,7 +421,15 @@ impl Circuit {
         where F: Fn(&[Vec<&PauliProduct>]) -> f64
     {
         let data = self.compute_moving_average(layers, window_size, value_fn);
-
+        // Assert that no y value exceeds num_qubits
+        for (i, &y_value) in data.iter().enumerate() {
+            assert!(y_value <= self.num_qubits as f64,
+                    "Y value {} at index {} exceeds num_qubits {} for metric '{}'",
+                    y_value,
+                    i,
+                    self.num_qubits,
+                    label);
+        }
         chart.draw_series(LineSeries::new(data.iter().enumerate().map(|(x, &y)| (x, y)),
                                           color.mix(0.8).stroke_width(2)))?
              .label(label)
