@@ -547,7 +547,8 @@ impl TopoGraph {
         .into_drawing_area();
 
         root.fill(&WHITE)?;
-        let mut chart = ChartBuilder::on(&root).build_cartesian_2d(-1f32..self.num_cols as f32,
+        let mut chart =
+            ChartBuilder::on(&root).margin(50).build_cartesian_2d(-1f32..self.num_cols as f32,
                                                                    -1f32..self.num_rows as f32)?;
         // Draw background
         chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
@@ -636,7 +637,16 @@ impl TopoGraph {
                                                               color.stroke_width(3))))?;
             }
             // Draw label
-            chart.draw_series(std::iter::once(Text::new(node.label.clone(),
+            let label_text = if let Some(busy_count) = node.busy_count {
+                if busy_count > 0 && border_color == None {
+                    busy_count.to_string()
+                } else {
+                    node.label.clone()
+                }
+            } else {
+                node.label.clone()
+            };
+            chart.draw_series(std::iter::once(Text::new(label_text,
                                                         (x as f32 - 0.17, y as f32 + 0.09),
                                                         ("sans-serif", 18).into_font())))?;
         }
@@ -664,12 +674,16 @@ impl TopoGraph {
         }
         // Draw title
         if !title_str.is_empty() {
-            chart.draw_series(std::iter::once(Text::new(title_str.to_string(),
-                                                        (-0.5, -0.8),
-                                                        ("sans-serif",
-                                                         (6.0 * (self.num_rows as f64).sqrt())
-                                                         as u32)
-                                                                .into_font())))?;
+            // manually deal with new lines, since the plotting doesn't
+            let lines: Vec<&str> = title_str.split('\n').collect();
+            for (i, line) in lines.iter().enumerate() {
+                chart.draw_series(std::iter::once(Text::new(line.to_string(),
+                                                            (-0.5, -0.8 - (i as f32 * 0.33)),
+                                                            ("sans-serif",
+                                                             (6.0 * (self.num_rows as f64).sqrt())
+                                                             as u32)
+                                                                    .into_font())))?;
+            }
         }
         root.present()?;
         println!("Plotted topology to {}", png_fname);

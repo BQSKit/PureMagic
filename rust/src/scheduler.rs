@@ -27,12 +27,11 @@ struct ScheduleStats {
     magic_scheduled: usize,
     ancilla_scheduled: usize,
     estabilizers_scheduled: usize,
-    log_scheduler: bool,
 }
 
 impl ScheduleStats {
     pub fn new(qubits: usize, data_qubits: usize, bus_qubits: usize, magic_qubits: usize,
-               estabilizer_qubits: usize, log_scheduler: bool)
+               estabilizer_qubits: usize)
                -> Self {
         ScheduleStats { qubits,
                         data_qubits,
@@ -48,8 +47,7 @@ impl ScheduleStats {
                         data_scheduled: 0,
                         magic_scheduled: 0,
                         ancilla_scheduled: 0,
-                        estabilizers_scheduled: 0,
-                        log_scheduler }
+                        estabilizers_scheduled: 0 }
     }
 
     pub fn summarize(&self, num_steps: usize) -> f64 {
@@ -84,37 +82,31 @@ impl ScheduleStats {
         self.sum_ancilla_scheduled += self.ancilla_scheduled;
         self.sum_estabilizer_scheduled += self.estabilizers_scheduled;
 
-        let mut title = String::new();
-        if self.log_scheduler {
-            log::info!("Scheduling results:");
-            let frac_paths = pp_paths_len as f64 / to_schedule_len as f64;
-            let frac_data = self.data_scheduled as f64 / self.data_qubits as f64;
-            let frac_bus = self.bus_scheduled as f64 / self.bus_qubits as f64;
-            let frac_magic = self.magic_scheduled as f64 / self.magic_qubits as f64;
-            let frac_estabilizers =
-                self.estabilizers_scheduled as f64 / self.estabilizer_qubits as f64;
-            log::info!("  products:    {}/{} ({:.2})", pp_paths_len, to_schedule_len, frac_paths);
-            log::info!("  data:        {}/{} ({:.2})",
-                       self.data_scheduled,
-                       self.data_qubits,
-                       frac_data);
-            log::info!("  bus:         {}/{} ({:.2})",
-                       self.bus_scheduled,
-                       self.bus_qubits,
-                       frac_bus);
-            log::info!("  magic:       {}/{} ({:.2})",
-                       self.magic_scheduled,
-                       self.magic_qubits,
-                       frac_magic);
-            log::info!("  estabilizer: {}/{} ({:.2})",
-                       self.estabilizers_scheduled,
-                       self.estabilizer_qubits,
-                       frac_estabilizers);
-            title =
-                format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
+        log::info!("Scheduling results:");
+        let frac_paths = pp_paths_len as f64 / to_schedule_len as f64;
+        let frac_data = self.data_scheduled as f64 / self.data_qubits as f64;
+        let frac_bus = self.bus_scheduled as f64 / self.bus_qubits as f64;
+        let frac_magic = self.magic_scheduled as f64 / self.magic_qubits as f64;
+        let frac_estabilizers = self.estabilizers_scheduled as f64 / self.estabilizer_qubits as f64;
+        log::info!("  products:    {}/{} ({:.2})", pp_paths_len, to_schedule_len, frac_paths);
+        log::info!("  data:        {}/{} ({:.2})",
+                   self.data_scheduled,
+                   self.data_qubits,
+                   frac_data);
+        log::info!("  bus:         {}/{} ({:.2})", self.bus_scheduled, self.bus_qubits, frac_bus);
+        log::info!("  magic:       {}/{} ({:.2})",
+                   self.magic_scheduled,
+                   self.magic_qubits,
+                   frac_magic);
+        log::info!("  estabilizer: {}/{} ({:.2})",
+                   self.estabilizers_scheduled,
+                   self.estabilizer_qubits,
+                   frac_estabilizers);
+
+        let title =
+            format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
                         bus {:.2}, magic {:.2}, estabilizer {:.2}",
-                        step_i, frac_paths, frac_data, frac_bus, frac_magic, frac_estabilizers);
-        }
+                    step_i, frac_paths, frac_data, frac_bus, frac_magic, frac_estabilizers);
 
         self.data_scheduled = 0;
         self.bus_scheduled = 0;
@@ -177,8 +169,7 @@ impl Scheduler {
                                               num_data_qubits,
                                               num_bus_qubits,
                                               num_magic_qubits,
-                                              num_estabilizer_qubits,
-                                              log_scheduler) }
+                                              num_estabilizer_qubits) }
     }
 
     pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
@@ -382,7 +373,13 @@ impl Scheduler {
                 }
             }
         }
-        let title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
+        let mut title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
+        if next_to_schedule.len() > 0 {
+            title += "\nUnscheduled: ";
+        }
+        for pp in &next_to_schedule {
+            title += &format!("{} ", pp.get_product_str());
+        }
         log::info!("Removed {} dependent nodes", num_dependent_nodes);
 
         if !pp_paths.is_empty() {
