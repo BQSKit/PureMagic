@@ -7,13 +7,14 @@ description = "Scheduler for quantum surface codes"
 
 [dependencies]
 anyhow = "1.0"
-num = "0.4"
+#num = "0.4"
 lazy_static = "1.4"
 num-rational = "0.4"  # For Fraction support
 itertools = "0.11"
-petgraph = "0.6"
+#petgraph = "0.6"
 plotters = { version = "0.3.7", features = ["svg_backend"] }
 rand_simple = "0.2"
+rand = "0.8"
 # Standard error handling
 thiserror = "1.0"
 # Command line argument parsing
@@ -24,17 +25,18 @@ simple-logging = "2.0"
 env_logger = "0.10"
 colored = "2.0"
 # Optional performance improvements
-rayon = "1.7"     # For parallel processing
-dashmap = "5.4"   # For concurrent maps
-parking_lot = "0.12" # More efficient mutexes
+#rayon = "1.7"     # For parallel processing
+#dashmap = "5.4"   # For concurrent maps
+#parking_lot = "0.12" # More efficient mutexes
 # Python bindings
-pyo3 = { version = "0.19", features = ["auto-initialize"] }
-numpy = "0.19"
+#pyo3 = { version = "0.19", features = ["auto-initialize"] }
+#numpy = "0.19"
+
 fractions = "0.1.0"
 indexmap = "2.11"
 
-[dependencies.pyo3-built]
-version = "0.4"
+#[dependencies.pyo3-built]
+#version = "0.4"
 
 [dev-dependencies]
 criterion = "0.5"  # For benchmarking

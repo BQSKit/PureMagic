@@ -11,7 +11,6 @@ pub enum NodeType {
     Magic,
     Bus,
     Data,
-    Ancilla,
     Estabilizer,
 }
 
@@ -35,7 +34,6 @@ pub struct TopoGraph {
     pub num_data_qubits: usize,
     pub num_bus_qubits: usize,
     pub num_magic_qubits: usize,
-    pub num_ancilla_qubits: usize,
     pub num_estabilizer_qubits: usize,
     pub num_qubits: usize,
     pub num_edges: usize,
@@ -77,7 +75,6 @@ impl TopoGraph {
                     num_data_qubits: 0,
                     num_bus_qubits: 0,
                     num_magic_qubits: 0,
-                    num_ancilla_qubits: 0,
                     num_estabilizer_qubits: 0,
                     num_qubits: 0,
                     num_edges: 0,
@@ -151,7 +148,6 @@ impl TopoGraph {
                         let node_type = match node.chars().next() {
                             Some('m') => NodeType::Magic,
                             Some('b') => NodeType::Bus,
-                            Some('a') => NodeType::Ancilla,
                             Some('e') => NodeType::Estabilizer,
                             _ => continue,
                         };
@@ -208,7 +204,7 @@ impl TopoGraph {
         self.node_grid[0][row] = Some(self.add_qubit(0, row, NodeType::Bus));
         self.node_grid[self.num_cols - 1][row] =
             Some(self.add_qubit(self.num_cols - 1, row, NodeType::Bus));
-        // Add alternating magic/ancilla nodes
+        // Add alternating magic nodes
         for col in 1..self.num_cols - 1 {
             self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
         }
@@ -243,7 +239,6 @@ impl TopoGraph {
     fn add_qubit(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
         let ch = match node_type {
             NodeType::Magic => "m",
-            NodeType::Ancilla => "a",
             NodeType::Bus => "b",
             NodeType::Data => "d",
             NodeType::Estabilizer => "e",
@@ -352,7 +347,6 @@ impl TopoGraph {
         let mut data_count = 0;
         let mut magic_count = 0;
         let mut bus_count = 0;
-        let mut ancilla_count = 0;
         let mut estabilizer_count = 0;
 
         for node in self.nodes.values() {
@@ -360,7 +354,6 @@ impl TopoGraph {
                 NodeType::Data => data_count += 1,
                 NodeType::Magic => magic_count += 1,
                 NodeType::Bus => bus_count += 1,
-                NodeType::Ancilla => ancilla_count += 1,
                 NodeType::Estabilizer => estabilizer_count += 1,
             }
         }
@@ -368,12 +361,10 @@ impl TopoGraph {
         self.num_data_qubits = data_count / 2;
         self.num_magic_qubits = magic_count;
         self.num_bus_qubits = bus_count;
-        self.num_ancilla_qubits = ancilla_count;
         self.num_estabilizer_qubits = estabilizer_count;
         self.num_qubits = self.num_data_qubits
                           + self.num_bus_qubits
                           + self.num_magic_qubits
-                          + self.num_ancilla_qubits
                           + self.num_estabilizer_qubits;
 
         let total = self.num_qubits as f64;
@@ -387,9 +378,6 @@ impl TopoGraph {
         println!("  magic:        {} ({:.3})",
                  self.num_magic_qubits,
                  self.num_magic_qubits as f64 / total);
-        println!("  ancilla:      {} ({:.3})",
-                 self.num_ancilla_qubits,
-                 self.num_ancilla_qubits as f64 / total);
         println!("  e-stabilizer: {} ({:.3})",
                  self.num_estabilizer_qubits,
                  self.num_estabilizer_qubits as f64 / total);
@@ -622,9 +610,6 @@ impl TopoGraph {
                                                               }
                                                               NodeType::Data => {
                                                                   RGBColor(0x99, 0x99, 0xFF)
-                                                              }
-                                                              NodeType::Ancilla => {
-                                                                  RGBColor(0xFF, 0x88, 0xAA)
                                                               }
                                                               NodeType::Estabilizer => {
                                                                   RGBColor(0x99, 0xCC, 0x99)
