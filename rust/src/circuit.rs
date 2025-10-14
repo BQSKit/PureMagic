@@ -287,6 +287,23 @@ impl Circuit {
                                  &layers,
                                  window_size,
                                  |window| {
+                                     window.iter()
+                                           .map(|layer| {
+                                               layer.iter()
+                                                    .map(|pp| pp.max_qubit + 1)
+                                                    .max()
+                                                    .unwrap_or(0)
+                                           })
+                                           .max()
+                                           .unwrap_or(0) as f64
+                                 },
+                                 RGBColor(180, 0, 180),
+                                 "max qubit")?;
+
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
                                      let sum: usize = window.iter().map(|layer| layer.len()).sum();
                                      sum as f64 / window.len() as f64
                                  },
@@ -297,29 +314,22 @@ impl Circuit {
                                  &layers,
                                  window_size,
                                  |window| {
-                                     let (total_ops, total_products): (usize, usize) =
-                                         window.iter()
-                                               .map(|layer| {
-                                                   let ops: usize =
-                                                       layer.iter()
-                                                            .map(|pp| pp.operators.len())
-                                                            .sum();
-                                                   (ops, layer.len())
-                                               })
-                                               .fold((0, 0),
-                                                     |(acc_ops, acc_prods), (ops, prods)| {
-                                                         (acc_ops + ops, acc_prods + prods)
-                                                     });
-
-                                     if total_products > 0 {
-                                         total_ops as f64 / total_products as f64
-                                     } else {
-                                         0.0
-                                     }
+                                     window.iter().map(|layer| layer.len()).max().unwrap_or(0)
+                                     as f64
                                  },
-                                 RGBColor(255, 0, 0), // Red
-                                 "avg product size")?;
+                                 RGBColor(255, 165, 0),
+                                 "max products/layer")?;
 
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     window.iter().map(|layer| layer.len()).min().unwrap_or(0)
+                                     as f64
+                                 },
+                                 RGBColor(115, 200, 0),
+                                 "min products/layer")?;
+        /*
         self.plot_moving_average(&mut chart,
                                  &layers,
                                  window_size,
@@ -351,6 +361,33 @@ impl Circuit {
                                  },
                                  RGBColor(115, 200, 0),
                                  "avg e-stabilizers reqd")?;
+        */
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     let (total_ops, total_products): (usize, usize) =
+                                         window.iter()
+                                               .map(|layer| {
+                                                   let ops: usize =
+                                                       layer.iter()
+                                                            .map(|pp| pp.operators.len())
+                                                            .sum();
+                                                   (ops, layer.len())
+                                               })
+                                               .fold((0, 0),
+                                                     |(acc_ops, acc_prods), (ops, prods)| {
+                                                         (acc_ops + ops, acc_prods + prods)
+                                                     });
+
+                                     if total_products > 0 {
+                                         total_ops as f64 / total_products as f64
+                                     } else {
+                                         0.0
+                                     }
+                                 },
+                                 RGBColor(255, 0, 0), // Red
+                                 "avg product size")?;
 
         self.plot_moving_average(&mut chart,
                                  &layers,
@@ -359,15 +396,32 @@ impl Circuit {
                                      window.iter()
                                            .map(|layer| {
                                                layer.iter()
-                                                    .map(|pp| pp.max_qubit + 1)
+                                                    .map(|pp| pp.operators.len())
                                                     .max()
                                                     .unwrap_or(0)
                                            })
                                            .max()
                                            .unwrap_or(0) as f64
                                  },
-                                 RGBColor(180, 0, 180), // Purple
-                                 "Max qubit")?;
+                                 RGBColor(0, 200, 200),
+                                 "max product size")?;
+
+        self.plot_moving_average(&mut chart,
+                                 &layers,
+                                 window_size,
+                                 |window| {
+                                     window.iter()
+                                           .map(|layer| {
+                                               layer.iter()
+                                                    .map(|pp| pp.operators.len())
+                                                    .min()
+                                                    .unwrap_or(0)
+                                           })
+                                           .min()
+                                           .unwrap_or(0) as f64
+                                 },
+                                 RGBColor(0, 150, 0),
+                                 "min product size")?;
 
         chart.configure_series_labels()
              .margin(20)

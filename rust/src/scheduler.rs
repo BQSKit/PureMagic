@@ -121,7 +121,6 @@ impl ScheduleStats {
             NodeType::Bus => self.bus_scheduled += 1,
             NodeType::Magic => self.magic_scheduled += 1,
             NodeType::Data => self.data_scheduled += 1,
-            NodeType::Ancilla => self.ancilla_scheduled += 1,
             NodeType::Estabilizer => self.estabilizers_scheduled += 1,
         }
     }
@@ -334,9 +333,11 @@ impl Scheduler {
             node.used = false;
         }
 
-        // Sort products by number of operators (reverse)
+        // Sort products from "largest" to "smallest"
         let mut to_schedule = to_schedule.to_vec();
-        to_schedule.sort_by_key(|pp| std::cmp::Reverse(pp.operators.len()));
+        to_schedule.sort_by_key(|pp| {
+                       self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
+                   });
 
         let mut pp_paths = Vec::new();
         let mut next_to_schedule = Vec::new();
