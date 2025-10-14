@@ -475,14 +475,6 @@ impl Scheduler {
     fn find_estabilizer_tree(&self, magic_nodes: &[String], data_nodes: &mut Vec<String>,
                              pauli_product: &PauliProduct)
                              -> Option<TopoGraph> {
-        let which_ancilla = if pauli_product.need_ancilla {
-            pauli_product.operators
-                         .first()
-                         .map(|op| op.basis.to_ascii_uppercase().to_string())
-                         .unwrap_or_default()
-        } else {
-            String::new()
-        };
         // Find available estabilizer nodes
         let mut estabilizer_nodes = Vec::new();
         for node in self.topo.iter_nodes() {
@@ -522,7 +514,7 @@ impl Scheduler {
             // Find path from magic to estabilizer
             let mut estabilizer_vec = vec![estabilizer_node.clone()];
             let magic_path_g =
-                self.get_bfs_graph(&magic_node, &mut estabilizer_vec, "", false, None);
+                self.get_bfs_graph(&magic_node, &mut estabilizer_vec, false, false, None);
             if magic_path_g.is_none() {
                 //log::info!("  No path from {} to {}", magic_node, estabilizer_node);
                 continue;
@@ -535,7 +527,7 @@ impl Scheduler {
             // Find path from estabilizer to data nodes
             let estabilizer_g = self.get_bfs_graph(&estabilizer_node,
                                                    data_nodes,
-                                                   &which_ancilla,
+                                                   pauli_product.need_ancilla,
                                                    false,
                                                    Some(&magic_path_g));
             if estabilizer_g.is_none() {
@@ -661,24 +653,18 @@ impl Scheduler {
                  pauli_product: &PauliProduct, estabilizer: bool)
                  -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product.id);
-        // Determine which_ancilla based on first operator's basis
-        let which_ancilla = if pauli_product.need_ancilla {
-            pauli_product.operators
-                         .first()
-                         .map(|op| op.basis.to_ascii_uppercase().to_string())
-                         .unwrap_or_default()
-        } else {
-            String::new()
-        };
         for root_node_label in root_nodes {
-            let g =
-                self.get_bfs_graph(root_node_label, data_nodes, &which_ancilla, estabilizer, None);
+            let g = self.get_bfs_graph(root_node_label,
+                                       data_nodes,
+                                       pauli_product.need_ancilla,
+                                       estabilizer,
+                                       None);
             match g {
                 None => {
                     log::info!("    No tree from root node {} to {:?}, {}",
                                root_node_label,
                                data_nodes,
-                               if which_ancilla.is_empty() { "" } else { &which_ancilla });
+                               pauli_product.need_ancilla);
                     continue;
                 }
                 Some(graph) => {
@@ -694,7 +680,7 @@ impl Scheduler {
     }
 
     fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &mut Vec<String>,
-                     which_ancilla: &str, with_estabilizer: bool, exclude: Option<&TopoGraph>)
+                     need_ancilla: bool, with_estabilizer: bool, exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
@@ -726,7 +712,11 @@ impl Scheduler {
                         continue;
                     }
                 }
-                if with_estabilizer && nb.node_type == NodeType::Estabilizer && ez_label == "" {
+                if with_estabilizer
+                   && nb.node_type == NodeType::Estabilizer
+                   && ez_label == ""
+                   && !terminal_nodes.contains(&nb_label)
+                {
                     ez_label = nb.label.clone();
                     terminal_nodes.push(ez_label.clone());
                 }
@@ -776,8 +766,8 @@ impl Scheduler {
                     num_found_terminals += 1;
                     if num_found_terminals == num_terminals_reqd {
                         bfs_graph.trim_dangling_bus_nodes();
-                        if !which_ancilla.is_empty() {
-                            if !self.find_ancilla(&mut bfs_graph, which_ancilla) {
+                        if need_ancilla {
+                            if !self.find_ancilla(&mut bfs_graph) {
                                 return None;
                             }
                         }
@@ -789,7 +779,7 @@ impl Scheduler {
         None
     }
 
-    fn find_ancilla(&self, graph: &mut TopoGraph, which_ancilla: &str) -> bool {
+    fn find_ancilla(&self, graph: &mut TopoGraph) -> bool {
         // Collect bus nodes first to avoid borrowing issues
         let bus_nodes: Vec<_> = graph.iter_nodes()
                                      .filter(|node| node.node_type == NodeType::Bus)
@@ -801,7 +791,7 @@ impl Scheduler {
                 let nb = self.topo.get_node(&nb_label);
                 // Check if neighbor is an unused bus node not in graph
                 if nb.node_type == NodeType::Bus && !nb.used && !graph.contains_node(nb_label) {
-                    log::info!("    Selected {} as {} ancilla", nb_label, which_ancilla);
+                    log::info!("    Selected {} as ancilla", nb_label);
                     // Add the node and edge to the graph
                     graph.add_node(nb.clone());
                     graph.add_edge(&node_label, nb_label);
