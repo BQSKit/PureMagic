@@ -2,9 +2,13 @@ use crate::pauliproduct::PauliProduct;
 use crate::utils::Timer;
 use indexmap::{IndexMap, IndexSet};
 use plotters::prelude::*;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeType {
@@ -83,13 +87,14 @@ impl TopoGraph {
                     topo_fname: String::new() }
     }
 
-    pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String, topo_fname: &String) {
+    pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
+                    topo_fname: &String, rseed: &u32) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
 
         if !self.topo_fname.is_empty() {
-            if let Err(e) = self.read_topo_from_file() {
+            if let Err(e) = self.read_topo_from_file(rseed) {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else {
@@ -113,7 +118,7 @@ impl TopoGraph {
         self.update_statistics();
     }
 
-    pub fn read_topo_from_file(&mut self) -> io::Result<()> {
+    pub fn read_topo_from_file(&mut self, rseed: &u32) -> io::Result<()> {
         let _timer = Timer::new("read_topo_from_file");
         // Read the grid layout
         let mut rows = Vec::new();
@@ -135,6 +140,34 @@ impl TopoGraph {
                 self.node_grid[col_i][row_i] = Some(col.clone());
             }
         }
+        // Count data nodes to create randomized mapping
+        let mut pair_indices = Vec::new();
+        let mut num_data_nodes = 0;
+        for col in 0..self.num_cols {
+            for row in 0..self.num_rows {
+                if let Some(ref node) = self.node_grid[col][row] {
+                    if node.starts_with('d') && node.ends_with('X') {
+                        pair_indices.push(num_data_nodes);
+                        num_data_nodes += 4;
+                    }
+                }
+            }
+        }
+        /*
+        if *rseed != 0 {
+            // Create randomized pairing for data nodes
+            let mut rng = StdRng::seed_from_u64(*rseed as u64);
+            pair_indices.shuffle(&mut rng);
+        }
+         */
+        /*
+        let timer_seed =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+        let mut rng = StdRng::seed_from_u64(timer_seed);
+        pair_indices.shuffle(&mut rng);
+        */
+
+        println!("Data node order {:?}", pair_indices);
         // Add nodes
         let mut di = 0;
         for col in 0..self.num_cols {
@@ -142,8 +175,12 @@ impl TopoGraph {
                 if let Some(ref node) = self.node_grid[col][row] {
                     if node.starts_with('d') {
                         let op = node.chars().nth(1).unwrap_or('X');
-                        self.add_double_data_qubit(di, col, row, op == 'X');
-                        di += 2;
+                        let pair_di =
+                            if op == 'X' { pair_indices[di] } else { pair_indices[di] + 2 };
+                        self.add_double_data_qubit(pair_di, col, row, op == 'X');
+                        if op == 'Z' {
+                            di += 1;
+                        }
                     } else {
                         let node_type = match node.chars().next() {
                             Some('m') => NodeType::Magic,
@@ -232,7 +269,7 @@ impl TopoGraph {
                               NodeType::Data);
         self.nodes.insert(label2.to_string(), node2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
-        self.node_grid[col][row] = Some(combined_label);
+        self.node_grid[col][row] = Some(combined_label.clone());
         self.num_nodes += 2;
     }
 
