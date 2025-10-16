@@ -17,6 +17,8 @@ struct Args {
     /// Random seed
     #[arg(short, long, default_value = "29", help = "Random seed for reproducible results.")]
     rseed: u32,
+    #[arg(short = 'R', long, help = "Randomize data qubit numbering.")]
+    randomize_data_qubits: bool,
     /// Name of file containing input circuit (required)
     #[arg(short,
           long = "circuit",
@@ -75,6 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Arguments:");
     for (key, value) in [("rseed", args.rseed.to_string()),
+                         ("randomize_dat_qubits", args.randomize_data_qubits.to_string()),
                          ("circuit", args.circuit_fname.clone()),
                          ("topo", args.topo_fname.clone()),
                          ("verbose", args.verbose.to_string()),
@@ -102,7 +105,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Initialize topology
     let mut topo_graph = TopoGraph::new();
-    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname, &args.rseed);
+    let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
+    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname, &rseed);
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {

@@ -153,19 +153,15 @@ impl TopoGraph {
                 }
             }
         }
-        /*
         if *rseed != 0 {
             // Create randomized pairing for data nodes
-            let mut rng = StdRng::seed_from_u64(*rseed as u64);
+            //let timer_seed = *rseed;
+            let timer_seed =
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+
+            let mut rng = StdRng::seed_from_u64(timer_seed);
             pair_indices.shuffle(&mut rng);
         }
-         */
-        /*
-        let timer_seed =
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
-        let mut rng = StdRng::seed_from_u64(timer_seed);
-        pair_indices.shuffle(&mut rng);
-        */
 
         println!("Data node order {:?}", pair_indices);
         // Add nodes
