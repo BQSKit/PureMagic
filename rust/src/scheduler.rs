@@ -184,9 +184,7 @@ impl Scheduler {
                                             .map(|node| node.label.clone())
                                             .collect();
         for label in magic_labels {
-            let busy_count = self.gen_busy_count();
-            //log::info!("Set node {} busy count to {}", &label, busy_count);
-            self.topo.get_node_mut(&label).busy_count = Some(busy_count);
+            self.topo.get_node_mut(&label).busy_count = self.gen_busy_count();
         }
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
@@ -247,15 +245,9 @@ impl Scheduler {
             }
 
             if pp_paths.is_none() {
-                // carry on if there are no available magic nodes
-                let mut has_busy_magic = false;
-                for node in self.topo.iter_nodes() {
-                    if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(0) > 0 {
-                        has_busy_magic = true;
-                        break;
-                    }
-                }
-                if !has_busy_magic {
+                // if all magic nodes are available but nothing could be scheduled, this means
+                // we must terminate with an error, since we should be able to schedule something
+                if !self.topo.iter_nodes().any(|node| node.busy_count > 0) {
                     return Err(io::Error::new(io::ErrorKind::Other,
                                               "Cannot schedule on current layout"));
                 }
@@ -324,9 +316,9 @@ impl Scheduler {
         -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
         for node in self.topo.iter_nodes_mut() {
-            if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(0) > 0 {
-                node.busy_count = Some(node.busy_count.unwrap() - 1);
-                if node.busy_count > Some(0) {
+            if node.busy_count > 0 {
+                node.busy_count -= 1;
+                if node.busy_count > 0 {
                     self.stats.inc(node.node_type);
                 }
             }
@@ -365,8 +357,7 @@ impl Scheduler {
                     for node in pp_graph.iter_nodes() {
                         self.stats.inc(node.node_type);
                         if node.node_type == NodeType::Magic {
-                            let busy_count = self.gen_busy_count();
-                            self.topo.get_node_mut(&node.label).busy_count = Some(busy_count);
+                            self.topo.get_node_mut(&node.label).busy_count = self.gen_busy_count();
                         }
                         self.topo.get_node_mut(&node.label).used = true;
                     }
@@ -402,12 +393,17 @@ impl Scheduler {
                 log::info!("  Node {} is already used", node_label);
                 return None;
             }
-            // check for at least one unused bus nb
+            // check for at least one unused magic or bus nb
             let mut unused_nb = false;
             for nb_label in &node.edges {
                 let nb = self.topo.get_node(nb_label);
-                // Check if neighbor is an unused bus node not in graph
-                if nb.node_type == NodeType::Bus && !nb.used {
+                if nb.used {
+                    continue;
+                }
+                // Check if neighbor is a bus node or busy magic node
+                if nb.node_type == NodeType::Bus
+                //|| (nb.node_type == NodeType::Magic && nb.busy_count.unwrap() > 0)
+                {
                     unused_nb = true;
                     break;
                 }
@@ -439,7 +435,7 @@ impl Scheduler {
         // Find available magic nodes (busy_count == 0)
         let mut magic_nodes = Vec::new();
         for node in self.topo.iter_nodes() {
-            if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0 {
+            if node.node_type == NodeType::Magic && node.busy_count == 0 {
                 let mut unused_nb = false;
                 for nb_label in &node.edges {
                     let nb = self.topo.get_node(nb_label);

@@ -23,7 +23,7 @@ pub struct Node {
     pub node_type: NodeType,
     pub label: String,
     pub pos: (f64, f64),
-    pub busy_count: Option<i32>,
+    pub busy_count: i32,
     pub edges: IndexSet<String>,
     pub used: bool,
 }
@@ -46,12 +46,7 @@ pub struct TopoGraph {
 
 impl Node {
     fn new(label: String, x: f64, y: f64, node_type: NodeType) -> Self {
-        Node { node_type,
-               label,
-               pos: (x, y),
-               busy_count: if node_type == NodeType::Magic { Some(0) } else { None },
-               edges: IndexSet::new(),
-               used: false }
+        Node { node_type, label, pos: (x, y), busy_count: 0, edges: IndexSet::new(), used: false }
     }
 
     fn add_edge(&mut self, other: &str) {
@@ -655,15 +650,8 @@ impl TopoGraph {
                                                               color.stroke_width(3))))?;
             }
             // Draw label
-            let label_text = if let Some(busy_count) = node.busy_count {
-                if busy_count > 0 && border_color == None {
-                    busy_count.to_string()
-                } else {
-                    node.label.clone()
-                }
-            } else {
-                node.label.clone()
-            };
+            let label_text =
+                if node.busy_count > 0 { node.busy_count.to_string() } else { node.label.clone() };
             chart.draw_series(std::iter::once(Text::new(label_text,
                                                         (x as f32 - 0.17, y as f32 + 0.09),
                                                         ("sans-serif", 18).into_font())))?;
