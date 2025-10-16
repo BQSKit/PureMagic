@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Initialize topology
     let mut topo_graph = TopoGraph::new();
-    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname);
+    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname, &args.rseed);
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {
