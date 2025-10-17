@@ -45,8 +45,8 @@ pub struct TopoGraph {
 }
 
 impl Node {
-    fn new(label: String, x: f64, y: f64, node_type: NodeType) -> Self {
-        Node { node_type, label, pos: (x, y), busy_count: 0, edges: IndexSet::new(), used: false }
+    fn new(label: String, x: f64, y: f64, node_type: NodeType, busy_count: i32) -> Self {
+        Node { node_type, label, pos: (x, y), busy_count, edges: IndexSet::new(), used: false }
     }
 
     fn add_edge(&mut self, other: &str) {
@@ -62,6 +62,15 @@ impl Node {
             return after_type[..op_pos].parse().ok();
         }
         None
+    }
+    /*
+    pub fn is_bus_or_busy_magic(&self) -> bool {
+        return self.node_type == NodeType::Bus
+               || (self.node_type == NodeType::Magic && self.busy_count > 0);
+    } */
+
+    pub fn is_bus_or_magic(&self) -> bool {
+        return self.node_type == NodeType::Bus || self.node_type == NodeType::Magic;
     }
 }
 
@@ -251,13 +260,15 @@ impl TopoGraph {
         let node1 = Node::new(label1.to_string(),
                               col as f64 - 0.25,
                               (self.num_rows - 1 - row) as f64,
-                              NodeType::Data);
+                              NodeType::Data,
+                              0);
         self.nodes.insert(label1.to_string(), node1);
         let label2 = format!("d{}{}", q + 1, op);
         let node2 = Node::new(label2.to_string(),
                               col as f64 + 0.25,
                               (self.num_rows - 1 - row) as f64,
-                              NodeType::Data);
+                              NodeType::Data,
+                              0);
         self.nodes.insert(label2.to_string(), node2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label.clone());
@@ -273,8 +284,11 @@ impl TopoGraph {
         };
 
         let label = format!("{}{}-{}", ch, col, row);
-        let node =
-            Node::new(label.to_string(), col as f64, (self.num_rows - 1 - row) as f64, node_type);
+        let node = Node::new(label.to_string(),
+                             col as f64,
+                             (self.num_rows - 1 - row) as f64,
+                             node_type,
+                             0);
         self.nodes.insert(label.to_string(), node);
         self.num_nodes += 1;
         label
@@ -290,9 +304,7 @@ impl TopoGraph {
                     // Add horizontal edges
                     if col > 0 {
                         if let Some(ref left_label) = self.node_grid[col - 1][row] {
-                            if !label.starts_with('m') || !left_label.starts_with('m') {
-                                edges_to_add.push((label.clone(), left_label.clone()));
-                            }
+                            edges_to_add.push((label.clone(), left_label.clone()));
                         }
                     }
                     // Add vertical edges
@@ -300,9 +312,13 @@ impl TopoGraph {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
                             if !label.starts_with('d') && !up_label.starts_with('d') {
                                 edges_to_add.push((label.clone(), up_label.clone()));
-                            } else if label.starts_with('d') && up_label.starts_with('b') {
+                            } else if label.starts_with('d')
+                                      && (up_label.starts_with('b') || up_label.starts_with('m'))
+                            {
                                 vertical_data_edges_to_add.push((label.clone(), up_label.clone()));
-                            } else if label.starts_with('b') && up_label.starts_with('d') {
+                            } else if (label.starts_with('b') || label.starts_with('m'))
+                                      && up_label.starts_with('d')
+                            {
                                 vertical_data_edges_to_add.push((label.clone(), up_label.clone()));
                             }
                         }
@@ -412,14 +428,14 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    pub fn trim_dangling_bus_nodes(&mut self) {
+    pub fn trim_dangling_nodes(&mut self, root_node: &str) {
         let mut num_trimmed = 0;
         loop {
             // Find dangling bus nodes
             let mut dangling_labels: Vec<String> = Vec::new();
             for (label, node) in self.nodes.iter() {
-                // there is at most one path going into the bus node
-                if node.node_type == NodeType::Bus && node.edges.len() <= 1 {
+                // there is at most one path going into the bus/magic node
+                if node.is_bus_or_magic() && node.edges.len() <= 1 && node.label != root_node {
                     dangling_labels.push(label.clone());
                 }
             }
@@ -427,9 +443,9 @@ impl TopoGraph {
             if dangling_labels.is_empty() {
                 break;
             } else {
-                num_trimmed += 1;
                 for label in dangling_labels {
                     self.remove_node(&label);
+                    num_trimmed += 1;
                 }
             }
         }
@@ -469,7 +485,11 @@ impl TopoGraph {
     }
 
     pub fn add_node(&mut self, node: Node) {
-        let new_node = Node::new(node.label.to_string(), node.pos.0, node.pos.1, node.node_type);
+        let new_node = Node::new(node.label.to_string(),
+                                 node.pos.0,
+                                 node.pos.1,
+                                 node.node_type,
+                                 node.busy_count);
         self.nodes.insert(node.label.to_string(), new_node);
         self.num_nodes += 1;
     }
