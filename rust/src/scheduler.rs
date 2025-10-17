@@ -316,13 +316,14 @@ impl Scheduler {
         -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
         // First, collect magic nodes that need new busy counts
-        let num_magic_nodes = self.topo
-                                  .iter_nodes()
-                                  .filter(|node| node.used && node.node_type == NodeType::Magic)
-                                  .count();
+        let num_used_magic_nodes =
+            self.topo
+                .iter_nodes()
+                .filter(|node| node.used && node.node_type == NodeType::Magic)
+                .count();
         // Generate new busy counts for magic nodes
         let new_busy_counts: Vec<i32> =
-            (0..num_magic_nodes).map(|_| self.gen_busy_count()).collect();
+            (0..num_used_magic_nodes).map(|_| self.gen_busy_count()).collect();
         // Now update all nodes
         let mut busy_count_index = 0;
         for node in self.topo.iter_nodes_mut() {
