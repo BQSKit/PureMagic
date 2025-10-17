@@ -171,7 +171,7 @@ impl Scheduler {
                                               num_estabilizer_qubits) }
     }
 
-    pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
+    pub fn schedule_circuit(&mut self, first_fit: bool) -> io::Result<(usize, usize, f64)> {
         let _timer = Timer::new("schedule_circuit");
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
@@ -184,9 +184,7 @@ impl Scheduler {
                                             .map(|node| node.label.clone())
                                             .collect();
         for label in magic_labels {
-            let busy_count = self.gen_busy_count();
-            //log::info!("Set node {} busy count to {}", &label, busy_count);
-            self.topo.get_node_mut(&label).busy_count = Some(busy_count);
+            self.topo.get_node_mut(&label).busy_count = self.gen_busy_count();
         }
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
@@ -237,7 +235,7 @@ impl Scheduler {
                                   .collect::<Vec<_>>());
 
             let (title_str, pp_paths, mut next_to_schedule) =
-                self.schedule_timestep(num_steps, &to_schedule);
+                self.schedule_timestep(num_steps, &to_schedule, first_fit);
             for pp in next_to_schedule.clone() {
                 if scheduled.contains(&pp.id) {
                     return Err(io::Error::new(io::ErrorKind::Other,
@@ -247,15 +245,9 @@ impl Scheduler {
             }
 
             if pp_paths.is_none() {
-                // carry on if there are no available magic nodes
-                let mut has_busy_magic = false;
-                for node in self.topo.iter_nodes() {
-                    if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(0) > 0 {
-                        has_busy_magic = true;
-                        break;
-                    }
-                }
-                if !has_busy_magic {
+                // if all magic nodes are available but nothing could be scheduled, this means
+                // we must terminate with an error, since we should be able to schedule something
+                if !self.topo.iter_nodes().any(|node| node.busy_count > 0) {
                     return Err(io::Error::new(io::ErrorKind::Other,
                                               "Cannot schedule on current layout"));
                 }
@@ -320,58 +312,97 @@ impl Scheduler {
     }
 
     fn schedule_timestep(
-        &mut self, step_i: usize, to_schedule: &[PauliProduct])
+        &mut self, step_i: usize, to_schedule: &[PauliProduct], first_fit: bool)
         -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
+        // First, collect magic nodes that need new busy counts
+        let num_used_magic_nodes =
+            self.topo
+                .iter_nodes()
+                .filter(|node| node.used && node.node_type == NodeType::Magic)
+                .count();
+        // Generate new busy counts for magic nodes
+        let new_busy_counts: Vec<i32> =
+            (0..num_used_magic_nodes).map(|_| self.gen_busy_count()).collect();
+        // Now update all nodes
+        let mut busy_count_index = 0;
         for node in self.topo.iter_nodes_mut() {
-            if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(0) > 0 {
-                node.busy_count = Some(node.busy_count.unwrap() - 1);
-                if node.busy_count > Some(0) {
-                    self.stats.inc(node.node_type);
-                }
+            if node.busy_count > 0 && !node.used {
+                node.busy_count -= 1;
+            }
+            if node.used && node.node_type == NodeType::Magic {
+                node.busy_count = new_busy_counts[busy_count_index];
+                busy_count_index += 1;
             }
             node.used = false;
         }
-
-        // Sort products from "largest" to "smallest"
-        let mut to_schedule = to_schedule.to_vec();
-        to_schedule.sort_by_key(|pp| {
-                       self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
-                   });
 
         let mut pp_paths = Vec::new();
         let mut next_to_schedule = Vec::new();
         let mut num_dependent_nodes = 0;
 
-        for pp in &to_schedule {
-            match self.schedule_pauli_product(pp) {
-                None => {
-                    log::info!("  * Could not schedule {} on graph", pp.id);
-                    next_to_schedule.push(pp.clone());
-                    // Mark dependent nodes as used
-                    for op in &pp.operators {
-                        let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                        self.topo.get_node_mut(&node_label).used = true;
-                        num_dependent_nodes += 1;
-                    }
-                }
-                Some(pp_graph) => {
-                    log::info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
-                               pp.id,
-                               pp_graph.num_nodes,
-                               pp_graph.num_edges,
-                               pp_graph.node_list());
-                    // Update node statistics and mark as used
-                    for node in pp_graph.iter_nodes() {
-                        self.stats.inc(node.node_type);
-                        if node.node_type == NodeType::Magic {
-                            let busy_count = self.gen_busy_count();
-                            self.topo.get_node_mut(&node.label).busy_count = Some(busy_count);
+        let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
+        // if we are only selecting the first product, then presort products from those needing the
+        // most resources to those needing the least - this seems to work the best
+        if first_fit {
+            let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
+            remaining_vec.sort_by_key(|&idx| {
+                             let pp = &to_schedule[idx];
+                             self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
+                         });
+            remaining_to_schedule = remaining_vec.into_iter().collect();
+        }
+        while !remaining_to_schedule.is_empty() {
+            let mut to_remove = Vec::new();
+            let mut best_pp: Option<(usize, TopoGraph)> = None;
+            let mut best_pp_size = usize::MAX;
+            for &pp_i in &remaining_to_schedule {
+                let pp = &to_schedule[pp_i];
+                match self.schedule_pauli_product(pp) {
+                    None => {
+                        log::info!("  * Could not schedule {} on graph", pp.id);
+                        next_to_schedule.push(pp.clone());
+                        // Mark dependent nodes as used
+                        for op in &pp.operators {
+                            let node_label =
+                                format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                            self.topo.get_node_mut(&node_label).used = true;
+                            num_dependent_nodes += 1;
                         }
-                        self.topo.get_node_mut(&node.label).used = true;
+                        to_remove.push(pp_i);
                     }
-                    pp_paths.push((pp.clone(), pp_graph));
+                    Some(pp_graph) => {
+                        let pp_size = pp_graph.num_nodes;
+                        if best_pp_size >= pp_size {
+                            best_pp_size = pp_size;
+                            best_pp = Some((pp_i, pp_graph));
+                            log::info!("  New best graph for pp {}, size {}",
+                                       pp.get_product_str(),
+                                       best_pp_size);
+                            if first_fit {
+                                break;
+                            }
+                        }
+                    }
                 }
+            }
+            if let Some((best_pp_idx, best_graph)) = best_pp {
+                let pp = &to_schedule[best_pp_idx];
+                log::info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
+                           pp.id,
+                           best_graph.num_nodes,
+                           best_graph.num_edges,
+                           best_graph.node_list());
+                // Update node statistics and mark as used
+                for node in best_graph.iter_nodes() {
+                    self.stats.inc(node.node_type);
+                    self.topo.get_node_mut(&node.label).used = true;
+                }
+                pp_paths.push((pp.clone(), best_graph));
+                to_remove.push(best_pp_idx);
+            }
+            for pp_i in to_remove {
+                remaining_to_schedule.shift_remove(&pp_i);
             }
         }
         let mut title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
@@ -402,17 +433,13 @@ impl Scheduler {
                 log::info!("  Node {} is already used", node_label);
                 return None;
             }
-            // check for at least one unused bus nb
-            let mut unused_nb = false;
-            for nb_label in &node.edges {
-                let nb = self.topo.get_node(nb_label);
-                // Check if neighbor is an unused bus node not in graph
-                if nb.node_type == NodeType::Bus && !nb.used {
-                    unused_nb = true;
-                    break;
-                }
-            }
-            if !unused_nb {
+            // check for at least one unused magic or bus nb
+            if !node.edges.iter().any(|nb_label| {
+                                     let nb = self.topo.get_node(nb_label);
+                                     !nb.used
+                                 })
+            {
+                log::info!("  No unused neighbors for node {}", node.label);
                 return None;
             }
             data_nodes.push(node_label);
@@ -439,11 +466,11 @@ impl Scheduler {
         // Find available magic nodes (busy_count == 0)
         let mut magic_nodes = Vec::new();
         for node in self.topo.iter_nodes() {
-            if node.node_type == NodeType::Magic && node.busy_count.unwrap_or(1) == 0 {
+            if node.node_type == NodeType::Magic && node.busy_count == 0 && !node.used {
                 let mut unused_nb = false;
                 for nb_label in &node.edges {
                     let nb = self.topo.get_node(nb_label);
-                    if nb.node_type == NodeType::Bus && !nb.used {
+                    if self.topo.is_routing_node(nb) && !nb.used {
                         unused_nb = true;
                         break;
                     }
@@ -457,7 +484,7 @@ impl Scheduler {
             log::info!("  No available magic nodes");
             return None;
         }
-        log::info!("  Found {} available magic nodes", magic_nodes.len());
+        log::info!("  Found {} available magic nodes {:?}", magic_nodes.len(), magic_nodes);
         if pauli_product.need_estabilizer {
             self.find_estabilizer_tree(&magic_nodes, data_nodes, pauli_product)
         } else {
@@ -482,7 +509,7 @@ impl Scheduler {
                 let mut num_unused_nbs = 0;
                 for nb_label in &node.edges {
                     let nb = self.topo.get_node(nb_label);
-                    if nb.node_type == NodeType::Bus && !nb.used {
+                    if self.topo.is_routing_node(nb) && !nb.used {
                         num_unused_nbs += 1;
                         if num_unused_nbs == 2 {
                             break;
@@ -600,10 +627,10 @@ impl Scheduler {
             g.add_node(node.clone());
 
             if pauli_product.need_ancilla {
-                // Try to find an available bus neighbor
+                // Try to find an available bus/magic neighbor
                 for nb_label in node.edges.iter() {
                     let nb = self.topo.get_node(nb_label);
-                    if nb.node_type == NodeType::Bus && !nb.used {
+                    if self.topo.is_routing_node(nb) && !nb.used {
                         g.add_node(nb.clone());
                         g.add_edge(node_label, nb_label);
                         break;
@@ -618,7 +645,7 @@ impl Scheduler {
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
         }
-        // root node needs to be a bus node next to one of the data nodes
+        // root node needs to be a bus/magic node next to one of the data nodes
         let mut root_nodes = IndexSet::new();
         for node_label in data_nodes.iter() {
             let node = self.topo.get_node(node_label);
@@ -627,7 +654,7 @@ impl Scheduler {
             }
             for nb_label in node.edges.iter() {
                 let nb = self.topo.get_node(&nb_label);
-                if !nb.used && nb.node_type == NodeType::Bus {
+                if !nb.used && self.topo.is_routing_node(nb) {
                     root_nodes.insert(nb_label.clone());
                 }
             }
@@ -682,6 +709,7 @@ impl Scheduler {
     fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &mut Vec<String>,
                      need_ancilla: bool, with_estabilizer: bool, exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
+        log::info!("  BFS from node {} to nodes {:?}", root_node, terminal_nodes);
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
         let mut bfs_graph = TopoGraph::new();
@@ -720,16 +748,11 @@ impl Scheduler {
                     ez_label = nb.label.clone();
                     terminal_nodes.push(ez_label.clone());
                 }
-                // Only add bus nodes or terminal nodes
-                if nb.node_type != NodeType::Bus && !terminal_nodes.contains(&nb_label) {
-                    continue;
-                }
-                if nb.node_type == NodeType::Bus {
-                    visited.insert(nb_label);
+                if self.topo.is_routing_node(nb) {
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     queue.push_back(nb_label);
-                } else {
+                } else if terminal_nodes.contains(&nb_label) {
                     if nb.node_type == NodeType::Data {
                         let paired_nb = self.topo.get_paired_data_node(nb);
                         if node.edges.contains(&paired_nb.label) {
@@ -760,20 +783,22 @@ impl Scheduler {
                             num_found_terminals += 1;
                         }
                     }
-                    visited.insert(nb_label);
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     num_found_terminals += 1;
                     if num_found_terminals == num_terminals_reqd {
-                        bfs_graph.trim_dangling_bus_nodes();
+                        log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
+                        bfs_graph.trim_dangling_nodes(root_node);
                         if need_ancilla {
                             if !self.find_ancilla(&mut bfs_graph) {
+                                log::info!("    Couldn't find ancilla for tree");
                                 return None;
                             }
                         }
                         return Some(bfs_graph);
                     }
                 }
+                visited.insert(nb_label);
             }
         }
         None
@@ -782,15 +807,18 @@ impl Scheduler {
     fn find_ancilla(&self, graph: &mut TopoGraph) -> bool {
         // Collect bus nodes first to avoid borrowing issues
         let bus_nodes: Vec<_> = graph.iter_nodes()
-                                     .filter(|node| node.node_type == NodeType::Bus)
+                                     .filter(|node| self.topo.is_routing_node(node))
                                      .map(|node| node.label.clone())
                                      .collect();
         for node_label in bus_nodes {
             // Check neighbors in the topology
             for nb_label in &self.topo.get_node(&node_label).edges {
                 let nb = self.topo.get_node(&nb_label);
-                // Check if neighbor is an unused bus node not in graph
-                if nb.node_type == NodeType::Bus && !nb.used && !graph.contains_node(nb_label) {
+                // Check if neighbor is an unused bus/magic node not in graph
+                if nb.used || graph.contains_node(nb_label) {
+                    continue;
+                }
+                if self.topo.is_routing_node(nb) {
                     log::info!("    Selected {} as ancilla", nb_label);
                     // Add the node and edge to the graph
                     graph.add_node(nb.clone());
