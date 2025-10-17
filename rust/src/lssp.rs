@@ -14,39 +14,33 @@ use utils::Timer;
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Random seed
-    #[arg(short, long, default_value = "29", help = "Random seed for reproducible results.")]
+    /// Random seed for reproducible results.
+    #[arg(short, long, default_value = "29")]
     rseed: u32,
-    #[arg(short = 'R', long, help = "Randomize data qubit numbering.")]
+    /// Randomize data qubit numbering.
+    #[arg(short = 'R', long)]
     randomize_data_qubits: bool,
-    /// Name of file containing input circuit (required)
-    #[arg(short,
-          long = "circuit",
-          required = true,
-          help = "Name of file containing input circuit in .qasm format (required).")]
+    /// Name of file containing input circuit .qasm format (required).
+    #[arg(short, long = "circuit", required = true)]
     circuit_fname: String,
-    /// Name of file specifying topology (topology will be auto-generated if this is not set)
-    #[arg(short,
-          long = "topo",
-          default_value = "",
-          help = "Name of file containing topology. If this is not set, it will be generated.")]
+    /// Name of file containing topology. If this is not set, it will be generated.
+    #[arg(short, long = "topo")]
     topo_fname: String,
-    /// Verbose output
+    /// Verbose output.
     #[arg(short, long)]
     verbose: bool,
-    /// Lambda parameter for exponential distribution of magic state cultivation timesteps
-    #[arg(short,
-          long,
-          default_value = "0.0387396",
-          help = "Lambda parameter for exponential distribution of magic state cultivation time")]
+    /// Lambda parameter for exponential distribution of magic state cultivation timesteps.
+    #[arg(short, long, default_value = "0.0387396")]
     magic_state_lambda: f64,
-    /// Show product IDs instead of Pauli terms when plotting the circuit
-    #[arg(long, help = "Show product IDs instead of Pauli terms when plotting the circuit.")]
+    /// Show product IDs instead of Pauli terms when plotting the circuit.
+    #[arg(long)]
     show_product_ids: bool,
-    /// Log scheduler actions to <circuit_fname>.sched file
-    #[arg(short = 'l', long, help = "Log all the scheduling decisions to <CIRCUIT_FNAME>.sched.")]
+    /// Log scheduler actions to <CIRCUIT_FNAME>.sched file.
+    #[arg(short = 'l', long)]
     log_scheduler: bool,
-    /// Plotting options: topo, circuit, paths (specify multiple values in comma separated string)
+    /// Use first fit to choose the next product to schedule.
+    #[arg(short = 'f', long)]
+    first_fit: bool,
     #[arg(
         short,
         long,
@@ -74,20 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
 
     let args = Args::parse();
-
-    println!("Arguments:");
-    for (key, value) in [("rseed", args.rseed.to_string()),
-                         ("randomize_dat_qubits", args.randomize_data_qubits.to_string()),
-                         ("circuit", args.circuit_fname.clone()),
-                         ("topo", args.topo_fname.clone()),
-                         ("verbose", args.verbose.to_string()),
-                         ("magic_state_lambda", args.magic_state_lambda.to_string()),
-                         ("show_product_ids", args.show_product_ids.to_string()),
-                         ("log_scheduler", args.log_scheduler.to_string()),
-                         ("plot", format!("{:?}", args.plot))]
-    {
-        println!("  {}={}", key, value);
-    }
+    println!("Arguments: {:#?}", args);
 
     // Initialize circuit
     let mut circuit = Circuit::new(&args.circuit_fname)?;
@@ -122,7 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.plot.join(" "),
                                        args.rseed);
 
-    let (tot_num_steps, num_scheduled, space_utilization) = scheduler.schedule_circuit()?;
+    let (tot_num_steps, num_scheduled, space_utilization) =
+        scheduler.schedule_circuit(args.first_fit)?;
 
     // Calculate and print statistics
     let speedup = num_scheduled as f64 / tot_num_steps as f64;
