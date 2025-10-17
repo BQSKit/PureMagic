@@ -171,7 +171,7 @@ impl Scheduler {
                                               num_estabilizer_qubits) }
     }
 
-    pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize, f64)> {
+    pub fn schedule_circuit(&mut self, first_fit: bool) -> io::Result<(usize, usize, f64)> {
         let _timer = Timer::new("schedule_circuit");
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
@@ -235,7 +235,7 @@ impl Scheduler {
                                   .collect::<Vec<_>>());
 
             let (title_str, pp_paths, mut next_to_schedule) =
-                self.schedule_timestep(num_steps, &to_schedule);
+                self.schedule_timestep(num_steps, &to_schedule, first_fit);
             for pp in next_to_schedule.clone() {
                 if scheduled.contains(&pp.id) {
                     return Err(io::Error::new(io::ErrorKind::Other,
@@ -312,7 +312,7 @@ impl Scheduler {
     }
 
     fn schedule_timestep(
-        &mut self, step_i: usize, to_schedule: &[PauliProduct])
+        &mut self, step_i: usize, to_schedule: &[PauliProduct], first_fit: bool)
         -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
         // First, collect magic nodes that need new busy counts
@@ -342,16 +342,16 @@ impl Scheduler {
         let mut num_dependent_nodes = 0;
 
         let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
-        // presort products from those needing the most resources to those needing the least
-        // this seems to work the best
-        /*
-        let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
-        remaining_vec.sort_by_key(|&idx| {
-                         let pp = &to_schedule[idx];
-                         self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
-                     });
-        remaining_to_schedule = remaining_vec.into_iter().collect();
-        */
+        // if we are only selecting the first product, then presort products from those needing the
+        // most resources to those needing the least - this seems to work the best
+        if first_fit {
+            let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
+            remaining_vec.sort_by_key(|&idx| {
+                             let pp = &to_schedule[idx];
+                             self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
+                         });
+            remaining_to_schedule = remaining_vec.into_iter().collect();
+        }
         while !remaining_to_schedule.is_empty() {
             let mut to_remove = Vec::new();
             let mut best_pp: Option<(usize, TopoGraph)> = None;
@@ -379,7 +379,9 @@ impl Scheduler {
                             log::info!("  New best graph for pp {}, size {}",
                                        pp.get_product_str(),
                                        best_pp_size);
-                            //break;
+                            if first_fit {
+                                break;
+                            }
                         }
                     }
                 }
