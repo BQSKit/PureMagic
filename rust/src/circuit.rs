@@ -95,7 +95,8 @@ impl Circuit {
                 new_pp.is_clifford = pp.is_clifford;
                 new_pp.num_ys = pp.num_ys;
                 new_pp.need_ancilla = pp.num_ys % 2 == 1;
-                new_pp.need_estabilizer = true;
+                //new_pp.need_estabilizer = true;
+                new_pp.need_estabilizer = false;
                 // Convert Y operators to X and Z parts
                 let mut pp_operators_updated = Vec::new();
                 for op in &pp.operators {
