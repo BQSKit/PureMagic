@@ -336,41 +336,71 @@ impl Scheduler {
             }
             node.used = false;
         }
-        // Sort products from "largest" to "smallest"
-        let mut to_schedule = to_schedule.to_vec();
-        to_schedule.sort_by_key(|pp| {
-                       self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
-                   });
 
         let mut pp_paths = Vec::new();
         let mut next_to_schedule = Vec::new();
         let mut num_dependent_nodes = 0;
 
-        for pp in &to_schedule {
-            match self.schedule_pauli_product(pp) {
-                None => {
-                    log::info!("  * Could not schedule {} on graph", pp.id);
-                    next_to_schedule.push(pp.clone());
-                    // Mark dependent nodes as used
-                    for op in &pp.operators {
-                        let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                        self.topo.get_node_mut(&node_label).used = true;
-                        num_dependent_nodes += 1;
+        let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
+        // presort products from those needing the most resources to those needing the least
+        // this seems to work the best
+        /*
+        let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
+        remaining_vec.sort_by_key(|&idx| {
+                         let pp = &to_schedule[idx];
+                         self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
+                     });
+        remaining_to_schedule = remaining_vec.into_iter().collect();
+        */
+        while !remaining_to_schedule.is_empty() {
+            let mut to_remove = Vec::new();
+            let mut best_pp: Option<(usize, TopoGraph)> = None;
+            let mut best_pp_size = usize::MAX;
+            for &pp_i in &remaining_to_schedule {
+                let pp = &to_schedule[pp_i];
+                match self.schedule_pauli_product(pp) {
+                    None => {
+                        log::info!("  * Could not schedule {} on graph", pp.id);
+                        next_to_schedule.push(pp.clone());
+                        // Mark dependent nodes as used
+                        for op in &pp.operators {
+                            let node_label =
+                                format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                            self.topo.get_node_mut(&node_label).used = true;
+                            num_dependent_nodes += 1;
+                        }
+                        to_remove.push(pp_i);
+                    }
+                    Some(pp_graph) => {
+                        let pp_size = pp_graph.num_nodes;
+                        if best_pp_size >= pp_size {
+                            best_pp_size = pp_size;
+                            best_pp = Some((pp_i, pp_graph));
+                            log::info!("  New best graph for pp {}, size {}",
+                                       pp.get_product_str(),
+                                       best_pp_size);
+                            //break;
+                        }
                     }
                 }
-                Some(pp_graph) => {
-                    log::info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
-                               pp.id,
-                               pp_graph.num_nodes,
-                               pp_graph.num_edges,
-                               pp_graph.node_list());
-                    // Update node statistics and mark as used
-                    for node in pp_graph.iter_nodes() {
-                        self.stats.inc(node.node_type);
-                        self.topo.get_node_mut(&node.label).used = true;
-                    }
-                    pp_paths.push((pp.clone(), pp_graph));
+            }
+            if let Some((best_pp_idx, best_graph)) = best_pp {
+                let pp = &to_schedule[best_pp_idx];
+                log::info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
+                           pp.id,
+                           best_graph.num_nodes,
+                           best_graph.num_edges,
+                           best_graph.node_list());
+                // Update node statistics and mark as used
+                for node in best_graph.iter_nodes() {
+                    self.stats.inc(node.node_type);
+                    self.topo.get_node_mut(&node.label).used = true;
                 }
+                pp_paths.push((pp.clone(), best_graph));
+                to_remove.push(best_pp_idx);
+            }
+            for pp_i in to_remove {
+                remaining_to_schedule.shift_remove(&pp_i);
             }
         }
         let mut title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
