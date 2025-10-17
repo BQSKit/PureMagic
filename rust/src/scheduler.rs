@@ -470,7 +470,7 @@ impl Scheduler {
                 let mut unused_nb = false;
                 for nb_label in &node.edges {
                     let nb = self.topo.get_node(nb_label);
-                    if nb.is_bus_or_magic() && !nb.used {
+                    if self.topo.is_routing_node(nb) && !nb.used {
                         unused_nb = true;
                         break;
                     }
@@ -509,7 +509,7 @@ impl Scheduler {
                 let mut num_unused_nbs = 0;
                 for nb_label in &node.edges {
                     let nb = self.topo.get_node(nb_label);
-                    if nb.is_bus_or_magic() && !nb.used {
+                    if self.topo.is_routing_node(nb) && !nb.used {
                         num_unused_nbs += 1;
                         if num_unused_nbs == 2 {
                             break;
@@ -630,7 +630,7 @@ impl Scheduler {
                 // Try to find an available bus/magic neighbor
                 for nb_label in node.edges.iter() {
                     let nb = self.topo.get_node(nb_label);
-                    if nb.is_bus_or_magic() && !nb.used {
+                    if self.topo.is_routing_node(nb) && !nb.used {
                         g.add_node(nb.clone());
                         g.add_edge(node_label, nb_label);
                         break;
@@ -654,7 +654,7 @@ impl Scheduler {
             }
             for nb_label in node.edges.iter() {
                 let nb = self.topo.get_node(&nb_label);
-                if !nb.used && nb.is_bus_or_magic() {
+                if !nb.used && self.topo.is_routing_node(nb) {
                     root_nodes.insert(nb_label.clone());
                 }
             }
@@ -748,7 +748,7 @@ impl Scheduler {
                     ez_label = nb.label.clone();
                     terminal_nodes.push(ez_label.clone());
                 }
-                if nb.is_bus_or_magic() {
+                if self.topo.is_routing_node(nb) {
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     queue.push_back(nb_label);
@@ -807,7 +807,7 @@ impl Scheduler {
     fn find_ancilla(&self, graph: &mut TopoGraph) -> bool {
         // Collect bus nodes first to avoid borrowing issues
         let bus_nodes: Vec<_> = graph.iter_nodes()
-                                     .filter(|node| node.is_bus_or_magic())
+                                     .filter(|node| self.topo.is_routing_node(node))
                                      .map(|node| node.label.clone())
                                      .collect();
         for node_label in bus_nodes {
@@ -818,7 +818,7 @@ impl Scheduler {
                 if nb.used || graph.contains_node(nb_label) {
                     continue;
                 }
-                if nb.is_bus_or_magic() {
+                if self.topo.is_routing_node(nb) {
                     log::info!("    Selected {} as ancilla", nb_label);
                     // Add the node and edge to the graph
                     graph.add_node(nb.clone());

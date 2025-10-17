@@ -35,6 +35,7 @@ pub struct TopoGraph {
     num_rows: usize,
     topo_fname: String,
     circuit_fname: String,
+    use_magic_routing: bool,
     pub num_data_qubits: usize,
     pub num_bus_qubits: usize,
     pub num_magic_qubits: usize,
@@ -63,15 +64,6 @@ impl Node {
         }
         None
     }
-    /*
-    pub fn is_bus_or_busy_magic(&self) -> bool {
-        return self.node_type == NodeType::Bus
-               || (self.node_type == NodeType::Magic && self.busy_count > 0);
-    } */
-
-    pub fn is_bus_or_magic(&self) -> bool {
-        return self.node_type == NodeType::Bus || self.node_type == NodeType::Magic;
-    }
 }
 
 impl TopoGraph {
@@ -88,14 +80,16 @@ impl TopoGraph {
                     num_edges: 0,
                     num_nodes: 0,
                     circuit_fname: String::new(),
-                    topo_fname: String::new() }
+                    topo_fname: String::new(),
+                    use_magic_routing: true }
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
-                    topo_fname: &String, rseed: &u32) {
+                    topo_fname: &String, rseed: &u32, use_magic_routing: bool) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
+        self.use_magic_routing = use_magic_routing;
 
         if !self.topo_fname.is_empty() {
             if let Err(e) = self.read_topo_from_file(rseed) {
@@ -435,7 +429,7 @@ impl TopoGraph {
             let mut dangling_labels: Vec<String> = Vec::new();
             for (label, node) in self.nodes.iter() {
                 // there is at most one path going into the bus/magic node
-                if node.is_bus_or_magic() && node.edges.len() <= 1 && node.label != root_node {
+                if self.is_routing_node(node) && node.edges.len() <= 1 && node.label != root_node {
                     dangling_labels.push(label.clone());
                 }
             }
@@ -450,6 +444,14 @@ impl TopoGraph {
             }
         }
         log::info!("    Trimmed {} dangling nodes", num_trimmed);
+    }
+
+    pub fn is_routing_node(&self, node: &Node) -> bool {
+        if self.use_magic_routing {
+            return node.node_type == NodeType::Bus || node.node_type == NodeType::Magic;
+        } else {
+            return node.node_type == NodeType::Bus;
+        }
     }
 
     pub fn get_node(&self, node_label: &str) -> &Node {

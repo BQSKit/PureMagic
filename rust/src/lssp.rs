@@ -41,6 +41,9 @@ struct Args {
     /// Use first fit to choose the next product to schedule.
     #[arg(short = 'f', long)]
     first_fit: bool,
+    /// Use magic qubits for routing in addition to bus qubits
+    #[arg(short = 'u', long)]
+    use_magic_routing: bool,
     #[arg(
         short,
         long,
@@ -68,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
 
     let args = Args::parse();
-    println!("Arguments: {:#?}", args);
+    println!("{:#?}", args);
 
     // Initialize circuit
     let mut circuit = Circuit::new(&args.circuit_fname)?;
@@ -87,7 +90,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize topology
     let mut topo_graph = TopoGraph::new();
     let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
-    topo_graph.set_topo(circuit.num_qubits, &args.circuit_fname, &args.topo_fname, &rseed);
+    topo_graph.set_topo(circuit.num_qubits,
+                        &args.circuit_fname,
+                        &args.topo_fname,
+                        &rseed,
+                        args.use_magic_routing);
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {
