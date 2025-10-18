@@ -24,7 +24,7 @@ struct Args {
     #[arg(short, long = "circuit", required = true)]
     circuit_fname: String,
     /// Name of file containing topology. If this is not set, it will be generated.
-    #[arg(short, long = "topo")]
+    #[arg(short, long = "topo", default_value = "")]
     topo_fname: String,
     /// Verbose output.
     #[arg(short, long)]

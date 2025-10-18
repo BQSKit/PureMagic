@@ -95,7 +95,7 @@ impl TopoGraph {
             if let Err(e) = self.read_topo_from_file(rseed) {
                 eprintln!("Error reading topology file: {}", e);
             }
-        } else {
+        } else if !use_magic_routing {
             let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
             let patch_rows = sq_dim / 2 + sq_dim % 2;
             let bus_rows = patch_rows + 1;
@@ -108,10 +108,52 @@ impl TopoGraph {
 
             self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
 
-            if self.num_cols > 0 && self.num_rows > 0 {
-                println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
-                self.gen_topo();
+            println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
+            self.gen_topo(min_num_qubits);
+        } else {
+            let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
+            let patch_rows = sq_dim / 2 + sq_dim % 2;
+            let patch_cols = ((min_num_qubits as f64) / (2.0 * patch_rows as f64)).ceil() as usize;
+            println!("sq dim {}", sq_dim);
+            println!("patch rows {}", patch_rows);
+            println!("patch cols {}", patch_cols);
+            self.num_cols = patch_cols * 2 + 1;
+            self.num_rows = patch_rows * 3 + 1;
+            self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+            let mut qi = 0;
+            let max_qi =
+                if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
+            for col in 0..self.num_cols {
+                for row in 0..self.num_rows {
+                    if col % 2 == 0 {
+                        // magic column
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
+                    } else {
+                        // data column
+                        if row % 3 == 0 {
+                            if row != 0 && row != self.num_rows - 1 && row % 6 == 3 && col % 4 == 1
+                            {
+                                self.node_grid[col][row] =
+                                    Some(self.add_qubit(col, row, NodeType::Estabilizer));
+                            } else {
+                                self.node_grid[col][row] =
+                                    Some(self.add_qubit(col, row, NodeType::Magic));
+                            }
+                        } else {
+                            if qi < max_qi {
+                                self.add_double_data_qubit(qi, col, row, row % 3 == 1);
+                                qi += 2;
+                            } else {
+                                self.node_grid[col][row] =
+                                    Some(self.add_qubit(col, row, NodeType::Magic));
+                            }
+                        }
+                    }
+                }
             }
+            println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
+            self.set_edges();
+            println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
         }
         self.update_statistics();
     }
@@ -194,10 +236,12 @@ impl TopoGraph {
         Ok(())
     }
 
-    fn gen_topo(&mut self) {
+    fn gen_topo(&mut self, min_num_qubits: usize) {
         self.add_border_row(0);
         self.add_border_column(0);
 
+        let max_qi =
+            if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
         let mut qi = 0;
         for col in 1..self.num_cols - 1 {
             if col % 2 == 0 {
@@ -208,18 +252,29 @@ impl TopoGraph {
                             self.node_grid[col][row] =
                                 Some(self.add_qubit(col, row, NodeType::Estabilizer));
                         } else {
-                            self.node_grid[col][row] =
-                                Some(self.add_qubit(col, row, NodeType::Bus));
+                            let node_type = if self.use_magic_routing {
+                                NodeType::Magic
+                            } else {
+                                NodeType::Bus
+                            };
+                            self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                         }
                     } else {
-                        self.add_double_data_qubit(qi, col, row, row % 3 + 1 == 3);
-                        qi += 2;
+                        if qi < max_qi {
+                            self.add_double_data_qubit(qi, col, row, row % 3 + 1 == 3);
+                            qi += 2;
+                        } else {
+                            self.node_grid[col][row] =
+                                Some(self.add_qubit(col, row, NodeType::Magic));
+                        }
                     }
                 }
             } else {
+                let node_type =
+                    if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
                 // Bus column
                 for row in 1..self.num_rows - 1 {
-                    self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
+                    self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                 }
             }
         }
@@ -231,10 +286,11 @@ impl TopoGraph {
     }
 
     fn add_border_row(&mut self, row: usize) {
+        let node_type = if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
         // Add corner bus nodes
-        self.node_grid[0][row] = Some(self.add_qubit(0, row, NodeType::Bus));
+        self.node_grid[0][row] = Some(self.add_qubit(0, row, node_type));
         self.node_grid[self.num_cols - 1][row] =
-            Some(self.add_qubit(self.num_cols - 1, row, NodeType::Bus));
+            Some(self.add_qubit(self.num_cols - 1, row, node_type));
         // Add alternating magic nodes
         for col in 1..self.num_cols - 1 {
             self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
