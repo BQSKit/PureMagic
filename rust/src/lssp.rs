@@ -39,8 +39,8 @@ struct Args {
     #[arg(short = 'l', long)]
     log_scheduler: bool,
     /// Use first fit to choose the next product to schedule.
-    #[arg(short = 'f', long)]
-    first_fit: bool,
+    #[arg(short = 'b', long)]
+    best_fit: bool,
     /// Use magic qubits for routing in addition to bus qubits
     #[arg(short = 'u', long)]
     use_magic_routing: bool,
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.rseed);
 
     let (tot_num_steps, num_scheduled, space_utilization) =
-        scheduler.schedule_circuit(args.first_fit)?;
+        scheduler.schedule_circuit(args.best_fit)?;
 
     // Calculate and print statistics
     let speedup = num_scheduled as f64 / tot_num_steps as f64;
