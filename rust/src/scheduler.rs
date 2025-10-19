@@ -171,7 +171,7 @@ impl Scheduler {
                                               num_estabilizer_qubits) }
     }
 
-    pub fn schedule_circuit(&mut self, first_fit: bool) -> io::Result<(usize, usize, f64)> {
+    pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize, f64)> {
         let _timer = Timer::new("schedule_circuit");
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
@@ -236,7 +236,7 @@ impl Scheduler {
                                   .collect::<Vec<_>>());
 
             let (title_str, pp_paths, mut next_to_schedule) =
-                self.schedule_timestep(num_steps, &to_schedule, first_fit);
+                self.schedule_timestep(num_steps, &to_schedule, best_fit);
             for pp in next_to_schedule.clone() {
                 if scheduled.contains(&pp.id) {
                     return Err(io::Error::new(io::ErrorKind::Other,
@@ -314,7 +314,7 @@ impl Scheduler {
     }
 
     fn schedule_timestep(
-        &mut self, step_i: usize, to_schedule: &[PauliProduct], first_fit: bool)
+        &mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
         -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
         // Update busy counts and reset used flags
         // First, collect magic nodes that need new busy counts
@@ -352,7 +352,7 @@ impl Scheduler {
         let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
         // if we are only selecting the first product, then presort products from those needing the
         // most resources to those needing the least - this seems to work the best
-        if first_fit {
+        if !best_fit {
             let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
             remaining_vec.sort_by_key(|&idx| {
                              let pp = &to_schedule[idx];
@@ -387,7 +387,7 @@ impl Scheduler {
                             log::info!("  New best graph for pp {}, size {}",
                                        pp.get_product_str(),
                                        best_pp_size);
-                            if first_fit {
+                            if !best_fit {
                                 break;
                             }
                         }
