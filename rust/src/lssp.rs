@@ -44,6 +44,9 @@ struct Args {
     /// Use magic qubits for routing in addition to bus qubits
     #[arg(short = 'u', long)]
     use_magic_routing: bool,
+    /// Number of ancilla between each data patch (all magic routing only)
+    #[arg(short, long, default_value = "1")]
+    ancilla_rows: usize,
     #[arg(
         short,
         long,
@@ -94,7 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &args.circuit_fname,
                         &args.topo_fname,
                         &rseed,
-                        args.use_magic_routing);
+                        args.use_magic_routing,
+                        args.ancilla_rows);
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {

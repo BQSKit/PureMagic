@@ -98,7 +98,8 @@ impl TopoGraph {
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
-                    topo_fname: &String, rseed: &u32, use_magic_routing: bool) {
+                    topo_fname: &String, rseed: &u32, use_magic_routing: bool,
+                    ancilla_rows: usize) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
@@ -126,7 +127,7 @@ impl TopoGraph {
             self.gen_topo(min_num_qubits);
         } else {
             // minimum layout with all magic qubits
-            let spacing = 2;
+            let spacing = ancilla_rows + 1;
             let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
             let patch_rows = sq_dim / 2 + sq_dim % 2;
             let patch_cols = ((min_num_qubits as f64) / ((2 * patch_rows) as f64)).ceil() as usize;
