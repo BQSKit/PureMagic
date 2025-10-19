@@ -96,6 +96,7 @@ impl TopoGraph {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else if !use_magic_routing {
+            // minimum layout with bus qubits
             let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
             let patch_rows = sq_dim / 2 + sq_dim % 2;
             let bus_rows = patch_rows + 1;
@@ -111,43 +112,49 @@ impl TopoGraph {
             println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
             self.gen_topo(min_num_qubits);
         } else {
+            // minimum layout with all magic qubits
+            let spacing = 2;
             let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
             let patch_rows = sq_dim / 2 + sq_dim % 2;
-            let patch_cols = ((min_num_qubits as f64) / (2.0 * patch_rows as f64)).ceil() as usize;
-            println!("sq dim {}", sq_dim);
-            println!("patch rows {}", patch_rows);
-            println!("patch cols {}", patch_cols);
-            self.num_cols = patch_cols * 2 + 1;
-            self.num_rows = patch_rows * 3 + 1;
+            let patch_cols = ((min_num_qubits as f64) / ((2 * patch_rows) as f64)).ceil() as usize;
+            //println!("sq dim {}", sq_dim);
+            //println!("patch rows {}", patch_rows);
+            //println!("patch cols {}", patch_cols);
+            self.num_cols = patch_cols * spacing + spacing - 1;
+            self.num_rows = patch_rows * (1 + spacing) + spacing - 1;
             self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
             let mut qi = 0;
             let max_qi =
                 if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
+            let row_gap = 1 + spacing;
             for col in 0..self.num_cols {
                 for row in 0..self.num_rows {
-                    if col % 2 == 0 {
-                        // magic column
-                        self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
-                    } else {
+                    if col % spacing == spacing - 1 {
                         // data column
-                        if row % 3 == 0 {
-                            if row != 0 && row != self.num_rows - 1 && row % 6 == 3 && col % 4 == 1
-                            {
-                                self.node_grid[col][row] =
-                                    Some(self.add_qubit(col, row, NodeType::Estabilizer));
-                            } else {
-                                self.node_grid[col][row] =
-                                    Some(self.add_qubit(col, row, NodeType::Magic));
-                            }
-                        } else {
+                        if row % row_gap == spacing || row % row_gap == spacing - 1 {
                             if qi < max_qi {
-                                self.add_double_data_qubit(qi, col, row, row % 3 == 1);
+                                let is_x = row % row_gap == spacing - 1;
+                                self.add_double_data_qubit(qi, col, row, is_x);
                                 qi += 2;
                             } else {
                                 self.node_grid[col][row] =
                                     Some(self.add_qubit(col, row, NodeType::Magic));
                             }
+                        } else {
+                            let node_type = if row != 0
+                                               && row != self.num_rows - 1
+                                               && row % (2 * row_gap) == row_gap / 2 - 1
+                                               && col % (spacing * 2) == spacing - 1
+                            {
+                                NodeType::Estabilizer
+                            } else {
+                                NodeType::Magic
+                            };
+                            self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                         }
+                    } else {
+                        // magic column
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
                     }
                 }
             }
