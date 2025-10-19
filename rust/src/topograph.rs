@@ -157,7 +157,8 @@ impl TopoGraph {
                         } else {
                             let node_type = if row != 0
                                                && row != self.num_rows - 1
-                                               && row % (2 * row_gap) == row_gap / 2 - 1
+                                               && row % (2 * row_gap)
+                                                  == row_gap + (ancilla_rows / 2)
                                                && col % (spacing * 2) == spacing - 1
                             {
                                 NodeType::Estabilizer
