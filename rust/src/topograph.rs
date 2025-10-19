@@ -24,8 +24,42 @@ pub struct Node {
     pub label: String,
     pub pos: (f64, f64),
     pub busy_count: i32,
+    pub cultivation_time: i32,
     pub edges: IndexSet<String>,
     pub used: bool,
+}
+
+impl Node {
+    fn new(label: String, x: f64, y: f64, node_type: NodeType, busy_count: i32,
+           cultivation_time: i32)
+           -> Self {
+        Node { node_type,
+               label,
+               pos: (x, y),
+               busy_count,
+               cultivation_time,
+               edges: IndexSet::new(),
+               used: false }
+    }
+
+    fn add_edge(&mut self, other: &str) {
+        self.edges.insert(other.to_string());
+    }
+
+    pub fn get_data_label_number(&self) -> Option<usize> {
+        // Skip first character (node type)
+        let after_type = self.label.get(1..)?;
+        // For data nodes, parse number before operator
+        if self.label.starts_with('d') {
+            let op_pos = after_type.find(|c: char| c == 'X' || c == 'Z')?;
+            return after_type[..op_pos].parse().ok();
+        }
+        None
+    }
+
+    pub fn is_cultivating(&self) -> bool {
+        self.cultivation_time > 0 && self.busy_count < self.cultivation_time
+    }
 }
 
 pub struct TopoGraph {
@@ -43,27 +77,6 @@ pub struct TopoGraph {
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
-}
-
-impl Node {
-    fn new(label: String, x: f64, y: f64, node_type: NodeType, busy_count: i32) -> Self {
-        Node { node_type, label, pos: (x, y), busy_count, edges: IndexSet::new(), used: false }
-    }
-
-    fn add_edge(&mut self, other: &str) {
-        self.edges.insert(other.to_string());
-    }
-
-    pub fn get_data_label_number(&self) -> Option<usize> {
-        // Skip first character (node type)
-        let after_type = self.label.get(1..)?;
-        // For data nodes, parse number before operator
-        if self.label.starts_with('d') {
-            let op_pos = after_type.find(|c: char| c == 'X' || c == 'Z')?;
-            return after_type[..op_pos].parse().ok();
-        }
-        None
-    }
 }
 
 impl TopoGraph {
@@ -318,6 +331,7 @@ impl TopoGraph {
                               col as f64 - 0.25,
                               (self.num_rows - 1 - row) as f64,
                               NodeType::Data,
+                              0,
                               0);
         self.nodes.insert(label1.to_string(), node1);
         let label2 = format!("d{}{}", q + 1, op);
@@ -325,6 +339,7 @@ impl TopoGraph {
                               col as f64 + 0.25,
                               (self.num_rows - 1 - row) as f64,
                               NodeType::Data,
+                              0,
                               0);
         self.nodes.insert(label2.to_string(), node2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
@@ -345,6 +360,7 @@ impl TopoGraph {
                              col as f64,
                              (self.num_rows - 1 - row) as f64,
                              node_type,
+                             0,
                              0);
         self.nodes.insert(label.to_string(), node);
         self.num_nodes += 1;
@@ -554,7 +570,8 @@ impl TopoGraph {
                                  node.pos.0,
                                  node.pos.1,
                                  node.node_type,
-                                 node.busy_count);
+                                 node.busy_count,
+                                 node.cultivation_time);
         self.nodes.insert(node.label.to_string(), new_node);
         self.num_nodes += 1;
     }
@@ -735,8 +752,11 @@ impl TopoGraph {
                                                               color.stroke_width(3))))?;
             }
             // Draw label
-            let label_text =
-                if node.busy_count > 0 { node.busy_count.to_string() } else { node.label.clone() };
+            let label_text = if node.is_cultivating() {
+                node.busy_count.to_string()
+            } else {
+                node.label.clone()
+            };
             chart.draw_series(std::iter::once(Text::new(label_text,
                                                         (x as f32 - 0.17, y as f32 + 0.09),
                                                         ("sans-serif", 18).into_font())))?;

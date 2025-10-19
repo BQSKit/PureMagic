@@ -132,7 +132,7 @@ pub struct Scheduler {
     rng_exp: Exponential,
     magic_state_lambda: f64,
     plot_option: String,
-    busy_count_list: Vec<i32>,
+    cultivation_times: Vec<i32>,
     schedule_non_clifford_timer: IntermittentTimer,
     schedule_clifford_timer: IntermittentTimer,
     stats: ScheduleStats,
@@ -161,7 +161,7 @@ impl Scheduler {
                     rng_exp: Exponential::new(rseed),
                     magic_state_lambda,
                     plot_option,
-                    busy_count_list: Vec::new(),
+                    cultivation_times: Vec::new(),
                     schedule_non_clifford_timer: IntermittentTimer::new("sched non-clifford", ""),
                     schedule_clifford_timer: IntermittentTimer::new("sched clifford", ""),
                     stats: ScheduleStats::new(num_qubits,
@@ -184,7 +184,8 @@ impl Scheduler {
                                             .map(|node| node.label.clone())
                                             .collect();
         for label in magic_labels {
-            self.topo.get_node_mut(&label).busy_count = self.gen_busy_count();
+            self.topo.get_node_mut(&label).cultivation_time = self.gen_cultivation_time();
+            self.topo.get_node_mut(&label).busy_count = 0;
         }
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
@@ -247,7 +248,7 @@ impl Scheduler {
             if pp_paths.is_none() {
                 // if all magic nodes are available but nothing could be scheduled, this means
                 // we must terminate with an error, since we should be able to schedule something
-                if !self.topo.iter_nodes().any(|node| node.busy_count > 0) {
+                if !self.topo.iter_nodes().any(|node| node.is_cultivating()) {
                     return Err(io::Error::new(io::ErrorKind::Other,
                                               "Cannot schedule on current layout"));
                 }
@@ -298,9 +299,10 @@ impl Scheduler {
         let overall_frac = self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
         let mean =
-            self.busy_count_list.iter().sum::<i32>() as f64 / self.busy_count_list.len() as f64;
-        let min = self.busy_count_list.iter().min().copied().unwrap_or(0);
-        let max = self.busy_count_list.iter().max().copied().unwrap_or(0);
+            self.cultivation_times.iter().sum::<i32>() as f64 / self.cultivation_times.len() as f64;
+        let min = self.cultivation_times.iter().min().copied().unwrap_or(0);
+        let max = self.cultivation_times.iter().max().copied().unwrap_or(0);
+        println!("  number:  {}", self.cultivation_times.len());
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
@@ -321,18 +323,24 @@ impl Scheduler {
                 .iter_nodes()
                 .filter(|node| node.used && node.node_type == NodeType::Magic)
                 .count();
-        // Generate new busy counts for magic nodes
-        let new_busy_counts: Vec<i32> =
-            (0..num_used_magic_nodes).map(|_| self.gen_busy_count()).collect();
+        // Generate new cultivation times for magic nodes
+        let new_cultivation_times: Vec<i32> =
+            (0..num_used_magic_nodes).map(|_| self.gen_cultivation_time()).collect();
         // Now update all nodes
-        let mut busy_count_index = 0;
+        let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
-            if node.busy_count > 0 && !node.used {
-                node.busy_count -= 1;
+            if !node.used && node.is_cultivating() {
+                node.busy_count += 1;
+                if node.busy_count == node.cultivation_time {
+                    self.cultivation_times.push(node.cultivation_time);
+                    node.cultivation_time = 0;
+                    node.busy_count = 0;
+                }
             }
             if node.used && node.node_type == NodeType::Magic {
-                node.busy_count = new_busy_counts[busy_count_index];
-                busy_count_index += 1;
+                node.cultivation_time = new_cultivation_times[cultivation_time_index];
+                node.busy_count = 0;
+                cultivation_time_index += 1;
             }
             node.used = false;
         }
@@ -463,10 +471,10 @@ impl Scheduler {
 
     fn schedule_non_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
                              -> Option<TopoGraph> {
-        // Find available magic nodes (busy_count == 0)
+        // Find available magic nodes
         let mut magic_nodes = Vec::new();
         for node in self.topo.iter_nodes() {
-            if node.node_type == NodeType::Magic && node.busy_count == 0 && !node.used {
+            if node.node_type == NodeType::Magic && !node.is_cultivating() && !node.used {
                 let mut unused_nb = false;
                 for nb_label in &node.edges {
                     let nb = self.topo.get_node(nb_label);
@@ -830,10 +838,9 @@ impl Scheduler {
         false
     }
 
-    fn gen_busy_count(&mut self) -> i32 {
-        let count = self.rng_exp.sample().round() as i32 + 1;
-        self.busy_count_list.push(count);
-        count
+    fn gen_cultivation_time(&mut self) -> i32 {
+        let cultivation_time = self.rng_exp.sample().round() as i32 + 1;
+        cultivation_time
     }
 
     fn check_dependencies(&self, pp: &PauliProduct, scheduled: &IndexSet<i32>) -> io::Result<()> {
