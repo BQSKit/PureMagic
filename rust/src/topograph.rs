@@ -110,72 +110,9 @@ impl TopoGraph {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else if !use_magic_routing {
-            // minimum layout with bus qubits
-            let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
-            let patch_rows = sq_dim / 2 + sq_dim % 2;
-            let bus_rows = patch_rows + 1;
-
-            let qubits_per_col = 2 * patch_rows;
-            let num_data_cols = ((min_num_qubits as f64) / (qubits_per_col as f64)).ceil() as usize;
-
-            self.num_cols = 2 * num_data_cols + 3;
-            self.num_rows = 2 + 2 * patch_rows + bus_rows;
-
-            self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
-
-            println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
-            self.gen_topo(min_num_qubits);
+            self.gen_topo_with_bus(min_num_qubits);
         } else {
-            // minimum layout with all magic qubits
-            let spacing = ancilla_rows + 1;
-            let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
-            let patch_rows = sq_dim / 2 + sq_dim % 2;
-            let patch_cols = ((min_num_qubits as f64) / ((2 * patch_rows) as f64)).ceil() as usize;
-            //println!("sq dim {}", sq_dim);
-            //println!("patch rows {}", patch_rows);
-            //println!("patch cols {}", patch_cols);
-            self.num_cols = patch_cols * spacing + spacing - 1;
-            self.num_rows = patch_rows * (1 + spacing) + spacing - 1;
-            self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
-            let mut qi = 0;
-            let max_qi =
-                if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
-            let row_gap = 1 + spacing;
-            for col in 0..self.num_cols {
-                for row in 0..self.num_rows {
-                    if col % spacing == spacing - 1 {
-                        // data column
-                        if row % row_gap == spacing || row % row_gap == spacing - 1 {
-                            if qi < max_qi {
-                                let is_x = row % row_gap == spacing - 1;
-                                self.add_double_data_qubit(qi, col, row, is_x);
-                                qi += 2;
-                            } else {
-                                self.node_grid[col][row] =
-                                    Some(self.add_qubit(col, row, NodeType::Magic));
-                            }
-                        } else {
-                            let node_type = if row != 0
-                                               && row != self.num_rows - 1
-                                               && row % (2 * row_gap)
-                                                  == row_gap + (ancilla_rows / 2)
-                                               && col % (spacing * 2) == spacing - 1
-                            {
-                                NodeType::Estabilizer
-                            } else {
-                                NodeType::Magic
-                            };
-                            self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
-                        }
-                    } else {
-                        // magic column
-                        self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
-                    }
-                }
-            }
-            println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
-            self.set_edges();
-            println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
+            self.gen_topo_with_ancillae(min_num_qubits, ancilla_rows);
         }
         self.update_statistics();
     }
@@ -224,7 +161,19 @@ impl TopoGraph {
             let mut rng = StdRng::seed_from_u64(timer_seed);
             pair_indices.shuffle(&mut rng);
         }
-
+        /*
+        let mut spread_indices = Vec::new();
+        let l = pair_indices.len();
+        for i in 0..l / 2 {
+            spread_indices.push(pair_indices[i]);
+            spread_indices.push(pair_indices[l / 2 + i]);
+        }
+        if spread_indices.len() < pair_indices.len() {
+            spread_indices.push(pair_indices[l - 1]);
+        }
+        println!("Spread indices {:?}", spread_indices);
+        pair_indices = spread_indices;
+         */
         println!("Data node order {:?}", pair_indices);
         // Add nodes
         let mut di = 0;
@@ -258,7 +207,20 @@ impl TopoGraph {
         Ok(())
     }
 
-    fn gen_topo(&mut self, min_num_qubits: usize) {
+    fn gen_topo_with_bus(&mut self, min_num_qubits: usize) {
+        // minimum layout with bus qubits
+        let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
+        let patch_rows = sq_dim / 2 + sq_dim % 2;
+        let bus_rows = patch_rows + 1;
+
+        let qubits_per_col = 2 * patch_rows;
+        let num_data_cols = ((min_num_qubits as f64) / (qubits_per_col as f64)).ceil() as usize;
+
+        self.num_cols = 2 * num_data_cols + 3;
+        self.num_rows = 2 + 2 * patch_rows + bus_rows;
+
+        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+
         self.add_border_row(0);
         self.add_border_column(0);
 
@@ -323,6 +285,58 @@ impl TopoGraph {
         for row in 1..self.num_rows - 1 {
             self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
         }
+    }
+
+    fn gen_topo_with_ancillae(&mut self, min_num_qubits: usize, ancilla_rows: usize) {
+        // minimum layout with all magic qubits
+        let spacing = ancilla_rows + 1;
+        let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
+        let patch_rows = sq_dim / 2 + sq_dim % 2;
+        let patch_cols = ((min_num_qubits as f64) / ((2 * patch_rows) as f64)).ceil() as usize;
+        //println!("sq dim {}", sq_dim);
+        //println!("patch rows {}", patch_rows);
+        //println!("patch cols {}", patch_cols);
+        self.num_cols = patch_cols * spacing + spacing - 1;
+        self.num_rows = patch_rows * (1 + spacing) + spacing - 1;
+        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+        let mut qi = 0;
+        let max_qi =
+            if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
+        let row_gap = 1 + spacing;
+        for col in 0..self.num_cols {
+            for row in 0..self.num_rows {
+                if col % spacing == spacing - 1 {
+                    // data column
+                    if row % row_gap == spacing || row % row_gap == spacing - 1 {
+                        if qi < max_qi {
+                            let is_x = row % row_gap == spacing - 1;
+                            self.add_double_data_qubit(qi, col, row, is_x);
+                            qi += 2;
+                        } else {
+                            self.node_grid[col][row] =
+                                Some(self.add_qubit(col, row, NodeType::Magic));
+                        }
+                    } else {
+                        let node_type = if row != 0
+                                           && row != self.num_rows - 1
+                                           && row % (2 * row_gap) == row_gap + (ancilla_rows / 2)
+                                           && col % (spacing * 2) == spacing - 1
+                        {
+                            NodeType::Estabilizer
+                        } else {
+                            NodeType::Magic
+                        };
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
+                    }
+                } else {
+                    // magic column
+                    self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
+                }
+            }
+        }
+        println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
+        self.set_edges();
+        println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
