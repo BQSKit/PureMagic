@@ -250,14 +250,13 @@ impl Circuit {
 
         let root = BitMapBackend::new(&png_fname, (1800, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
-        let mut chart =
-            ChartBuilder::on(&root).margin(50)
-                                   .set_label_area_size(LabelAreaPosition::Left, 60)
-                                   .set_label_area_size(LabelAreaPosition::Bottom, 40)
-                                   .caption(format!("{} Layer Statistics", circuit_stem),
-                                            ("sans-serif", 30))
-                                   .build_cartesian_2d(0..layers.len(),
-                                                       0.0f64..self.num_qubits as f64)?;
+        let mut chart = ChartBuilder::on(&root).margin(60)
+                                               .set_label_area_size(LabelAreaPosition::Left, 60)
+                                               .set_label_area_size(LabelAreaPosition::Bottom, 70)
+                                               //.caption(format!("{} Layer Statistics", circuit_stem),
+                                               //        ("sans-serif", 36))
+                                               .build_cartesian_2d(0..layers.len(),
+                                                                   0.0f64..self.num_qubits as f64)?;
         chart.configure_mesh()
              .x_labels(20)
              .x_label_formatter(&|x| format!("{}", x))
@@ -265,9 +264,9 @@ impl Circuit {
              .y_label_formatter(&|y| format!("{}", y))
              .x_desc("Layer")
              .y_desc("Statistic")
-             .x_label_style(("sans-serif", 18))
-             .y_label_style(("sans-serif", 18))
-             .axis_desc_style(("sans-serif", 22))
+             .x_label_style(("sans-serif", 30))
+             .y_label_style(("sans-serif", 30))
+             .axis_desc_style(("sans-serif", 36))
              .light_line_style(&TRANSPARENT)
              .draw()?;
 
@@ -283,6 +282,7 @@ impl Circuit {
             window_size = 100;
         }
 
+        /*
         self.plot_moving_average(&mut chart,
                                  &layers,
                                  window_size,
@@ -299,7 +299,7 @@ impl Circuit {
                                  },
                                  RGBColor(180, 0, 180),
                                  "max qubit")?;
-
+         */
         self.plot_moving_average(&mut chart,
                                  &layers,
                                  window_size,
@@ -320,6 +320,7 @@ impl Circuit {
                                  RGBColor(255, 165, 0),
                                  "max products/layer")?;
 
+        /*
         self.plot_moving_average(&mut chart,
                                  &layers,
                                  window_size,
@@ -329,8 +330,8 @@ impl Circuit {
                                  },
                                  RGBColor(115, 200, 0),
                                  "min products/layer")?;
-        /*
-        self.plot_moving_average(&mut chart,
+
+                                 self.plot_moving_average(&mut chart,
                                  &layers,
                                  window_size,
                                  |window| {
@@ -405,7 +406,7 @@ impl Circuit {
                                  },
                                  RGBColor(0, 200, 200),
                                  "max product size")?;
-
+        /*
         self.plot_moving_average(&mut chart,
                                  &layers,
                                  window_size,
@@ -422,15 +423,16 @@ impl Circuit {
                                  },
                                  RGBColor(0, 150, 0),
                                  "min product size")?;
-
+         */
         chart.configure_series_labels()
              .margin(20)
              .background_style(&WHITE)
              .border_style(&TRANSPARENT)
              .position(SeriesLabelPosition::UpperLeft)
-             .label_font(("sans-serif", 20))
+             .label_font(("sans-serif", 30))
              .draw()?;
 
+        /*
         let (num_layers,
              num_cliffords,
              avg_products,
@@ -459,8 +461,8 @@ impl Circuit {
         // Draw statistics text below the plot
         root.draw(&Text::new(stats_text,
                              (10, 970), // Center horizontally, near bottom
-                             ("sans-serif", 18).into_font()))?;
-
+                             ("sans-serif", 24).into_font()))?;
+         */
         println!("Plotted layer statistics to {}", png_fname);
         Ok(())
     }

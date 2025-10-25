@@ -77,6 +77,8 @@ pub struct TopoGraph {
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
+    pub root_node: Option<String>,
+    pub ancilla_node: Option<String>,
 }
 
 impl TopoGraph {
@@ -94,7 +96,9 @@ impl TopoGraph {
                     num_nodes: 0,
                     circuit_fname: String::new(),
                     topo_fname: String::new(),
-                    use_magic_routing: true }
+                    use_magic_routing: true,
+                    root_node: None,
+                    ancilla_node: None }
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
@@ -681,8 +685,9 @@ impl TopoGraph {
         .into_drawing_area();
 
         root.fill(&WHITE)?;
-        let mut chart =
-            ChartBuilder::on(&root).margin(50).build_cartesian_2d(-1f32..self.num_cols as f32,
+        let mut chart = ChartBuilder::on(&root).margin(10)
+                                               .set_label_area_size(LabelAreaPosition::Bottom, 50)
+                                               .build_cartesian_2d(-1f32..self.num_cols as f32,
                                                                    -1f32..self.num_rows as f32)?;
         // Draw background
         chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
@@ -737,30 +742,43 @@ impl TopoGraph {
         for node in self.nodes.values() {
             let (x, y) = node.pos;
             let mut border_color = None;
+            let mut ancilla_node = None;
+            let mut root_node = None;
             // Check if node is part of any path
             for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
                 if path_graph.contains_node(&node.label) {
                     border_color = Some(&path_colors[i]);
+                    //let path_node = path_graph.get_node(&node.label);
+                    ancilla_node = path_graph.ancilla_node.clone();
+                    root_node = path_graph.root_node.clone();
                     break;
                 }
             }
             // Draw node circle
-            chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
-                                                          22,
-                                                          match node.node_type {
-                                                              NodeType::Magic => {
-                                                                  RGBColor(0xFF, 0xBB, 0x99)
-                                                              }
-                                                              NodeType::Bus => {
-                                                                  RGBColor(0xAA, 0xAA, 0xAA)
-                                                              }
-                                                              NodeType::Data => {
-                                                                  RGBColor(0x99, 0x99, 0xFF)
-                                                              }
-                                                              NodeType::Estabilizer => {
-                                                                  RGBColor(0x99, 0xCC, 0x99)
-                                                              }
-                                                          }.filled())))?;
+            let node_color =
+                match node.node_type {
+                    NodeType::Magic => {
+                        if border_color == None || Some(node.label.clone()) == root_node {
+                            RGBColor(0xFF, 0xBB, 0x99)
+                        } else {
+                            if Some(node.label.clone()) == ancilla_node {
+                                RGBColor(0x77, 0xCC, 0xCC)
+                            } else {
+                                RGBColor(0xAA, 0xAA, 0xAA)
+                            }
+                        }
+                    }
+                    NodeType::Bus => {
+                        if border_color != None && Some(node.label.clone()) == ancilla_node {
+                            RGBColor(0x77, 0xCC, 0xCC)
+                        } else {
+                            RGBColor(0xAA, 0xAA, 0xAA)
+                        }
+                    }
+                    NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
+                    NodeType::Estabilizer => RGBColor(0x99, 0xCC, 0x99),
+                }.filled();
+            chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32), 22, node_color)))?;
             // Draw border if part of a path
             if let Some(color) = border_color {
                 chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
@@ -768,10 +786,39 @@ impl TopoGraph {
                                                               color.stroke_width(3))))?;
             }
             // Draw label
-            let label_text = if node.is_cultivating() {
-                node.busy_count.to_string()
-            } else {
-                node.label.clone()
+            let label_text = match node.node_type {
+                NodeType::Data => node.label.clone(),
+                NodeType::Magic => {
+                    if border_color == None {
+                        if node.is_cultivating() {
+                            (node.cultivation_time - node.busy_count).to_string()
+                        } else if pauli_product_paths.is_empty() {
+                            node.label.clone()
+                        } else {
+                            "  R".to_string()
+                        }
+                    } else {
+                        if Some(node.label.clone()) == root_node {
+                            node.label.clone()
+                        } else if Some(node.label.clone()) == ancilla_node {
+                            "  A".to_string()
+                        } else {
+                            "  B".to_string()
+                        }
+                    }
+                }
+                NodeType::Bus => {
+                    if border_color == None {
+                        node.label.clone()
+                    } else {
+                        if Some(node.label.clone()) == ancilla_node {
+                            "  A".to_string()
+                        } else {
+                            "  B".to_string()
+                        }
+                    }
+                }
+                NodeType::Estabilizer => node.label.clone(),
             };
             chart.draw_series(std::iter::once(Text::new(label_text,
                                                         (x as f32 - 0.17, y as f32 + 0.09),
