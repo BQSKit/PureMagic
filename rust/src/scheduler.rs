@@ -583,6 +583,7 @@ impl Scheduler {
             for (from, to) in magic_path_g.iter_edges() {
                 estabilizer_g.add_edge(from, to);
             }
+            estabilizer_g.root_node = magic_path_g.root_node.clone();
             log::info!("  Final graph has {} edges (estimated distance {:.0})",
                        estabilizer_g.num_edges,
                        d);
@@ -641,6 +642,7 @@ impl Scheduler {
                     if self.topo.is_routing_node(nb) && !nb.used {
                         g.add_node(nb.clone());
                         g.add_edge(node_label, nb_label);
+                        g.ancilla_node = Some(nb_label.clone());
                         break;
                     }
                 }
@@ -798,11 +800,14 @@ impl Scheduler {
                         log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
                         bfs_graph.trim_dangling_nodes(root_node);
                         if need_ancilla {
-                            if !self.find_ancilla(&mut bfs_graph) {
+                            if let Some(ancilla) = self.find_ancilla(&mut bfs_graph) {
+                                bfs_graph.ancilla_node = Some(ancilla);
+                            } else {
                                 log::info!("    Couldn't find ancilla for tree");
                                 return None;
                             }
                         }
+                        bfs_graph.root_node = Some(root_node.to_string());
                         return Some(bfs_graph);
                     }
                 }
@@ -812,7 +817,7 @@ impl Scheduler {
         None
     }
 
-    fn find_ancilla(&self, graph: &mut TopoGraph) -> bool {
+    fn find_ancilla(&self, graph: &mut TopoGraph) -> Option<String> {
         // Collect bus nodes first to avoid borrowing issues
         let bus_nodes: Vec<_> = graph.iter_nodes()
                                      .filter(|node| self.topo.is_routing_node(node))
@@ -831,11 +836,11 @@ impl Scheduler {
                     // Add the node and edge to the graph
                     graph.add_node(nb.clone());
                     graph.add_edge(&node_label, nb_label);
-                    return true;
+                    return Some(nb_label.clone());
                 }
             }
         }
-        false
+        None
     }
 
     fn gen_cultivation_time(&mut self) -> i32 {
