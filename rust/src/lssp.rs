@@ -44,6 +44,9 @@ struct Args {
     /// Use magic qubits for routing in addition to bus qubits
     #[arg(short = 'u', long)]
     use_magic_routing: bool,
+    /// Split Y products into X and Z over two timesteps
+    #[arg(short = 's', long = "split")]
+    split_ys: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
@@ -78,7 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize circuit
     let mut circuit = Circuit::new(&args.circuit_fname)?;
-    circuit.split_ys();
+    if args.split_ys {
+        circuit.split_ys();
+    }
     let num_layers = circuit.print_statistics();
     circuit.print()?;
 
@@ -98,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &args.topo_fname,
                         &rseed,
                         args.use_magic_routing,
+                        args.split_ys,
                         args.ancilla_rows);
     topo_graph.print()?;
 

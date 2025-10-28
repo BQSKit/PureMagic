@@ -213,22 +213,12 @@ impl Scheduler {
         // Progress tracking
         let total_to_schedule = self.circuit.num_products();
         let mut prev_perc_complete = 0;
-        print!("Scheduling {} products:    ", total_to_schedule);
-        if plot_steps > 0 {
-            println!();
+        if plot_steps == 0 {
+            print!("Scheduling {} products:    ", total_to_schedule);
         }
         // Main scheduling loop
         while !to_schedule.is_empty() {
             num_steps += 1;
-            // Update progress
-            if plot_steps == 0 {
-                let perc_complete = (scheduled.len() * 100) / total_to_schedule;
-                if perc_complete > prev_perc_complete {
-                    print!("\x08\x08\x08{:02}%", perc_complete);
-                    std::io::stdout().flush()?;
-                    prev_perc_complete = perc_complete;
-                }
-            }
             log::info!("Step {}: {:?}",
                        num_steps,
                        to_schedule.iter()
@@ -278,23 +268,34 @@ impl Scheduler {
                     scheduled.insert(pp.id);
                 }
             }
-            // Plot if requested
-            if let Some(ref path_dir) = path_dir {
-                if title_str.is_some() && num_steps > 0 && plot_steps > 0 {
+            // Update progress
+            if num_steps >= plot_steps && (total_to_schedule - scheduled.len() >= plot_steps) {
+                if num_steps == plot_steps {
+                    print!("Scheduling {} products:    ", total_to_schedule);
+                }
+                let perc_complete = (scheduled.len() * 100) / total_to_schedule;
+                if perc_complete > prev_perc_complete {
+                    print!("\x08\x08\x08{:02}%", perc_complete);
+                    std::io::stdout().flush()?;
+                    prev_perc_complete = perc_complete;
+                }
+                if total_to_schedule - scheduled.len() == plot_steps {
+                    print!("\n");
+                }
+            } else {
+                // Plot if requested
+                if title_str.is_some() {
                     let fname_added = format!(".{}", num_steps);
                     let curr_dir = std::env::current_dir()?;
-                    std::env::set_current_dir(path_dir)?;
+                    std::env::set_current_dir(path_dir.as_ref().unwrap())?;
                     self.topo
                         .plot(&fname_added, pp_paths.as_ref().unwrap(), &title_str.unwrap())
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                     std::env::set_current_dir(curr_dir)?;
-                    plot_steps -= 1;
                 }
             }
-
             to_schedule = next_to_schedule;
         }
-        print!("\x08\x08\x08{:02}%\n", 100.0);
 
         let overall_frac = self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
@@ -372,10 +373,18 @@ impl Scheduler {
                         next_to_schedule.push(pp.clone());
                         // Mark dependent nodes as used
                         for op in &pp.operators {
-                            let node_label =
-                                format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                            self.topo.get_node_mut(&node_label).used = true;
-                            num_dependent_nodes += 1;
+                            if op.basis == 'Y' {
+                                let node_label_x = format!("d{}{}", op.qubit, 'X');
+                                self.topo.get_node_mut(&node_label_x).used = true;
+                                let node_label_z = format!("d{}{}", op.qubit, 'Z');
+                                self.topo.get_node_mut(&node_label_z).used = true;
+                                num_dependent_nodes += 2;
+                            } else {
+                                let node_label =
+                                    format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                                self.topo.get_node_mut(&node_label).used = true;
+                                num_dependent_nodes += 1;
+                            }
                         }
                         to_remove.push(pp_i);
                     }
@@ -434,23 +443,45 @@ impl Scheduler {
         // Initially terminal nodes contain only the data qubits
         let mut data_nodes = Vec::new();
         for op in &pauli_product.operators {
-            let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-            let node = self.topo.get_node(&node_label);
-            // Check if node is already used
-            if node.used {
-                log::info!("  Node {} is already used", node_label);
-                return None;
+            if op.basis == 'Y' {
+                for term in ['X', 'Z'] {
+                    let node_label = format!("d{}{}", op.qubit, term);
+                    let node = self.topo.get_node(&node_label);
+                    // Check if node is already used
+                    if node.used {
+                        log::info!("  Node {} is already used", node_label);
+                        return None;
+                    }
+                    // check for at least one unused magic or bus nb
+                    if !node.edges.iter().any(|nb_label| {
+                                             let nb = self.topo.get_node(nb_label);
+                                             !nb.used
+                                         })
+                    {
+                        log::info!("  No unused neighbors for node {}", node.label);
+                        return None;
+                    }
+                    data_nodes.push(node_label);
+                }
+            } else {
+                let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                let node = self.topo.get_node(&node_label);
+                // Check if node is already used
+                if node.used {
+                    log::info!("  Node {} is already used", node_label);
+                    return None;
+                }
+                // check for at least one unused magic or bus nb
+                if !node.edges.iter().any(|nb_label| {
+                                         let nb = self.topo.get_node(nb_label);
+                                         !nb.used
+                                     })
+                {
+                    log::info!("  No unused neighbors for node {}", node.label);
+                    return None;
+                }
+                data_nodes.push(node_label);
             }
-            // check for at least one unused magic or bus nb
-            if !node.edges.iter().any(|nb_label| {
-                                     let nb = self.topo.get_node(nb_label);
-                                     !nb.used
-                                 })
-            {
-                log::info!("  No unused neighbors for node {}", node.label);
-                return None;
-            }
-            data_nodes.push(node_label);
         }
         if data_nodes.is_empty() {
             log::info!("  No data nodes found in working graph");
@@ -601,10 +632,23 @@ impl Scheduler {
         for node_label in node_labels {
             let mut min_d = f64::MAX;
             for op in &pauli_product.operators {
-                let data_node_label = format!("d{}", op.to_string().to_ascii_uppercase());
-                let d = self.get_node_dist(node_label, &data_node_label);
-                if d < min_d {
-                    min_d = d;
+                if op.basis == 'Y' {
+                    let data_node_label_x = format!("d{}{}", op.qubit, 'X');
+                    let d_x = self.get_node_dist(node_label, &data_node_label_x);
+                    if d_x < min_d {
+                        min_d = d_x;
+                    }
+                    let data_node_label_z = format!("d{}{}", op.qubit, 'Z');
+                    let d_z = self.get_node_dist(node_label, &data_node_label_z);
+                    if d_z < min_d {
+                        min_d = d_z;
+                    }
+                } else {
+                    let data_node_label = format!("d{}", op.to_string().to_ascii_uppercase());
+                    let d = self.get_node_dist(node_label, &data_node_label);
+                    if d < min_d {
+                        min_d = d;
+                    }
                 }
             }
             node_distances.push((node_label.clone(), min_d));
