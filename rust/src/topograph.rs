@@ -70,6 +70,7 @@ pub struct TopoGraph {
     topo_fname: String,
     circuit_fname: String,
     use_magic_routing: bool,
+    split_ys: bool,
     pub num_data_qubits: usize,
     pub num_bus_qubits: usize,
     pub num_magic_qubits: usize,
@@ -97,17 +98,19 @@ impl TopoGraph {
                     circuit_fname: String::new(),
                     topo_fname: String::new(),
                     use_magic_routing: true,
+                    split_ys: false,
                     root_node: None,
                     ancilla_node: None }
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
-                    topo_fname: &String, rseed: &u32, use_magic_routing: bool,
+                    topo_fname: &String, rseed: &u32, use_magic_routing: bool, split_ys: bool,
                     ancilla_rows: usize) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
         self.use_magic_routing = use_magic_routing;
+        self.split_ys = split_ys;
 
         if !self.topo_fname.is_empty() {
             if let Err(e) = self.read_topo_from_file(rseed) {
@@ -236,7 +239,7 @@ impl TopoGraph {
                 // Data column
                 for row in 1..self.num_rows - 1 {
                     if row % 3 + 1 == 2 {
-                        if row != 1 && row != self.num_rows - 2 && col % 4 == 0 {
+                        if self.split_ys && row != 1 && row != self.num_rows - 2 && col % 4 == 0 {
                             self.node_grid[col][row] =
                                 Some(self.add_qubit(col, row, NodeType::Estabilizer));
                         } else {
@@ -297,9 +300,6 @@ impl TopoGraph {
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
         let patch_cols = ((min_num_qubits as f64) / ((2 * patch_rows) as f64)).ceil() as usize;
-        //println!("sq dim {}", sq_dim);
-        //println!("patch rows {}", patch_rows);
-        //println!("patch cols {}", patch_cols);
         self.num_cols = patch_cols * spacing + spacing - 1;
         self.num_rows = patch_rows * (1 + spacing) + spacing - 1;
         self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
@@ -321,7 +321,8 @@ impl TopoGraph {
                                 Some(self.add_qubit(col, row, NodeType::Magic));
                         }
                     } else {
-                        let node_type = if row != 0
+                        let node_type = if self.split_ys
+                                           && row != 0
                                            && row != self.num_rows - 1
                                            && row % (2 * row_gap) == row_gap + (ancilla_rows / 2)
                                            && col % (spacing * 2) == spacing - 1
@@ -831,7 +832,7 @@ impl TopoGraph {
             {
                 let (x, y) = first_data_node.pos;
                 let product_str = pp.get_product_str();
-                let text_width = product_str.len() as f32 * 0.15;
+                let text_width = product_str.len() as f32 * 0.125;
                 // Draw text background
                 chart.draw_series(std::iter::once(Rectangle::new([(x as f32 - 0.3,
                                                                    y as f32 + 0.3),
