@@ -47,6 +47,8 @@ struct Args {
     /// Split Y products into X and Z over two timesteps
     #[arg(short = 's', long = "split")]
     split_ys: bool,
+    #[arg(short = 'T', long = "top_bottom")]
+    top_bottom: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
@@ -104,7 +106,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &rseed,
                         args.use_magic_routing,
                         args.split_ys,
-                        args.ancilla_rows);
+                        args.ancilla_rows,
+                        args.top_bottom);
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {

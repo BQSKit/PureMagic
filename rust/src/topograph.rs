@@ -105,7 +105,7 @@ impl TopoGraph {
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
                     topo_fname: &String, rseed: &u32, use_magic_routing: bool, split_ys: bool,
-                    ancilla_rows: usize) {
+                    ancilla_rows: usize, top_bottom: bool) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
@@ -113,18 +113,18 @@ impl TopoGraph {
         self.split_ys = split_ys;
 
         if !self.topo_fname.is_empty() {
-            if let Err(e) = self.read_topo_from_file(rseed) {
+            if let Err(e) = self.read_topo_from_file(rseed, top_bottom) {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else if !use_magic_routing {
-            self.gen_topo_with_bus(min_num_qubits);
+            self.gen_topo_with_bus(min_num_qubits, top_bottom);
         } else {
-            self.gen_topo_with_ancillae(min_num_qubits, ancilla_rows);
+            self.gen_topo_with_ancillae(min_num_qubits, ancilla_rows, top_bottom);
         }
         self.update_statistics();
     }
 
-    pub fn read_topo_from_file(&mut self, rseed: &u32) -> io::Result<()> {
+    pub fn read_topo_from_file(&mut self, rseed: &u32, top_bottom: bool) -> io::Result<()> {
         let _timer = Timer::new("read_topo_from_file");
         // Read the grid layout
         let mut rows = Vec::new();
@@ -208,13 +208,13 @@ impl TopoGraph {
             }
         }
         // Add edges
-        self.set_edges();
+        self.set_edges(top_bottom);
         println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
 
         Ok(())
     }
 
-    fn gen_topo_with_bus(&mut self, min_num_qubits: usize) {
+    fn gen_topo_with_bus(&mut self, min_num_qubits: usize, top_bottom: bool) {
         // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
@@ -272,7 +272,7 @@ impl TopoGraph {
 
         self.add_border_column(self.num_cols - 1);
         self.add_border_row(self.num_rows - 1);
-        self.set_edges();
+        self.set_edges(top_bottom);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
@@ -294,7 +294,8 @@ impl TopoGraph {
         }
     }
 
-    fn gen_topo_with_ancillae(&mut self, min_num_qubits: usize, ancilla_rows: usize) {
+    fn gen_topo_with_ancillae(&mut self, min_num_qubits: usize, ancilla_rows: usize,
+                              top_bottom: bool) {
         // minimum layout with all magic qubits
         let spacing = ancilla_rows + 1;
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -340,7 +341,7 @@ impl TopoGraph {
             }
         }
         println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
-        self.set_edges();
+        self.set_edges(top_bottom);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
@@ -388,7 +389,7 @@ impl TopoGraph {
         label
     }
 
-    fn set_edges(&mut self) {
+    fn set_edges(&mut self, top_bottom: bool) {
         let mut edges_to_add = Vec::new();
         let mut vertical_data_edges_to_add = Vec::new();
 
@@ -404,9 +405,10 @@ impl TopoGraph {
                     // Add vertical edges
                     if row > 0 {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
-                            //if label.starts_with('d') || up_label.starts_with('d') {
-                            //    continue;
-                            //}
+                            if !top_bottom && (label.starts_with('d') || up_label.starts_with('d'))
+                            {
+                                continue;
+                            }
                             if !label.starts_with('d') && !up_label.starts_with('d') {
                                 edges_to_add.push((label.clone(), up_label.clone()));
                             } else if label.starts_with('d')
