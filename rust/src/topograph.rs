@@ -105,7 +105,7 @@ impl TopoGraph {
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
                     topo_fname: &String, rseed: &u32, use_magic_routing: bool, split_ys: bool,
-                    ancilla_rows: usize, top_bottom: bool) {
+                    ancilla_rows: usize, sides_only: bool) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
@@ -113,18 +113,18 @@ impl TopoGraph {
         self.split_ys = split_ys;
 
         if !self.topo_fname.is_empty() {
-            if let Err(e) = self.read_topo_from_file(rseed, top_bottom) {
+            if let Err(e) = self.read_topo_from_file(rseed, sides_only) {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else if !use_magic_routing {
-            self.gen_topo_with_bus(min_num_qubits, top_bottom);
+            self.gen_topo_with_bus(min_num_qubits, sides_only);
         } else {
-            self.gen_topo_with_ancillae(min_num_qubits, ancilla_rows, top_bottom);
+            self.gen_topo_with_ancillae(min_num_qubits, ancilla_rows, sides_only);
         }
         self.update_statistics();
     }
 
-    pub fn read_topo_from_file(&mut self, rseed: &u32, top_bottom: bool) -> io::Result<()> {
+    pub fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
         let _timer = Timer::new("read_topo_from_file");
         // Read the grid layout
         let mut rows = Vec::new();
@@ -208,13 +208,13 @@ impl TopoGraph {
             }
         }
         // Add edges
-        self.set_edges(top_bottom);
+        self.set_edges(sides_only);
         println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
 
         Ok(())
     }
 
-    fn gen_topo_with_bus(&mut self, min_num_qubits: usize, top_bottom: bool) {
+    fn gen_topo_with_bus(&mut self, min_num_qubits: usize, sides_only: bool) {
         // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
@@ -272,7 +272,7 @@ impl TopoGraph {
 
         self.add_border_column(self.num_cols - 1);
         self.add_border_row(self.num_rows - 1);
-        self.set_edges(top_bottom);
+        self.set_edges(sides_only);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
@@ -295,7 +295,7 @@ impl TopoGraph {
     }
 
     fn gen_topo_with_ancillae(&mut self, min_num_qubits: usize, ancilla_rows: usize,
-                              top_bottom: bool) {
+                              sides_only: bool) {
         // minimum layout with all magic qubits
         let spacing = ancilla_rows + 1;
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -341,7 +341,7 @@ impl TopoGraph {
             }
         }
         println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
-        self.set_edges(top_bottom);
+        self.set_edges(sides_only);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
@@ -389,9 +389,9 @@ impl TopoGraph {
         label
     }
 
-    fn set_edges(&mut self, top_bottom: bool) {
+    fn set_edges(&mut self, sides_only: bool) {
         let mut edges_to_add = Vec::new();
-        let mut vertical_data_edges_to_add = Vec::new();
+        let mut vert_data_edges_to_add = Vec::new();
 
         for row in 0..self.num_rows {
             for col in 0..self.num_cols {
@@ -402,23 +402,36 @@ impl TopoGraph {
                             edges_to_add.push((label.clone(), left_label.clone()));
                         }
                     }
-                    // Add vertical edges
+                    if !sides_only {
+                        // Add vertical data edges
+                        if row > 1 {
+                            // connecting up from Z
+                            if label.starts_with('d') && label.ends_with('Z') {
+                                if let Some(ref up_label) = self.node_grid[col][row - 2] {
+                                    if up_label.starts_with('b') || up_label.starts_with('m') {
+                                        vert_data_edges_to_add.push((label.clone(),
+                                                                     up_label.clone()));
+                                    }
+                                }
+                            }
+                        }
+                        if row < self.num_rows - 2 {
+                            // connecting down from X
+                            if label.starts_with('d') && label.ends_with('X') {
+                                if let Some(ref up_label) = self.node_grid[col][row + 2] {
+                                    if up_label.starts_with('b') || up_label.starts_with('m') {
+                                        vert_data_edges_to_add.push((label.clone(),
+                                                                     up_label.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // add vertical non-data edges
                     if row > 0 {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
-                            if !top_bottom && (label.starts_with('d') || up_label.starts_with('d'))
-                            {
-                                continue;
-                            }
                             if !label.starts_with('d') && !up_label.starts_with('d') {
                                 edges_to_add.push((label.clone(), up_label.clone()));
-                            } else if label.starts_with('d')
-                                      && (up_label.starts_with('b') || up_label.starts_with('m'))
-                            {
-                                vertical_data_edges_to_add.push((label.clone(), up_label.clone()));
-                            } else if (label.starts_with('b') || label.starts_with('m'))
-                                      && up_label.starts_with('d')
-                            {
-                                vertical_data_edges_to_add.push((label.clone(), up_label.clone()));
                             }
                         }
                     }
@@ -439,7 +452,7 @@ impl TopoGraph {
                 self.add_edge(&label1, &label2);
             }
         }
-        for (label1, label2) in vertical_data_edges_to_add {
+        for (label1, label2) in vert_data_edges_to_add {
             let (data_label, bus_label) =
                 if label1.starts_with('d') { (label1, label2) } else { (label2, label1) };
             let (data_label1, data_label2) = self.get_data_labels(&data_label).unwrap();
