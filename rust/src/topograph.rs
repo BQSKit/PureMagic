@@ -404,6 +404,9 @@ impl TopoGraph {
                     // Add vertical edges
                     if row > 0 {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
+                            //if label.starts_with('d') || up_label.starts_with('d') {
+                            //    continue;
+                            //}
                             if !label.starts_with('d') && !up_label.starts_with('d') {
                                 edges_to_add.push((label.clone(), up_label.clone()));
                             } else if label.starts_with('d')
@@ -677,10 +680,17 @@ impl TopoGraph {
         //let _timer = Timer::new("plot");
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
-        let png_fname = format!("{}{}.png", topo_stem, fname_added);
-        // Create output file
-        let root = BitMapBackend::new(
-            &png_fname,
+        /*
+        let plot_fname = format!("{}{}.png", topo_stem, fname_added);
+            let root = BitMapBackend::new(
+            &plot_fname,
+            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
+        )
+        .into_drawing_area();
+        */
+        let plot_fname = format!("{}{}.svg", topo_stem, fname_added);
+        let root = SVGBackend::new(
+            &plot_fname,
             (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
         )
         .into_drawing_area();
@@ -694,7 +704,7 @@ impl TopoGraph {
         chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
                                                           (self.num_cols as f32 - 0.5,
                                                            self.num_rows as f32 - 0.5)],
-                                                         RGBColor(230, 230, 230).filled())))?;
+                                                         RGBColor(220, 220, 220).filled())))?;
         // Draw grid lines
         for row in 0..=self.num_rows {
             chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
@@ -861,7 +871,7 @@ impl TopoGraph {
             }
         }
         root.present()?;
-        println!("Plotted topology to {}", png_fname);
+        println!("Plotted topology to {}", plot_fname);
         Ok(())
     }
 }

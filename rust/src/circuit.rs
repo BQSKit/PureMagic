@@ -246,13 +246,14 @@ impl Circuit {
         // Get layer statistics
         //let layers = self.get_layers()[252000..255000].to_vec();
         let layers = self.get_layers();
-        let png_fname = format!("{}.layer_stats.png", circuit_stem);
-
-        let root = BitMapBackend::new(&png_fname, (1800, 1000)).into_drawing_area();
+        //let plot_fname = format!("{}.layer_stats.png", circuit_stem);
+        //let root = BitMapBackend::new(&plot_fname, (1800, 1000)).into_drawing_area();
+        let plot_fname = format!("{}.layer_stats.svg", circuit_stem);
+        let root = SVGBackend::new(&plot_fname, (1800, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&root).margin(60)
-                                               .set_label_area_size(LabelAreaPosition::Left, 60)
-                                               .set_label_area_size(LabelAreaPosition::Bottom, 70)
+                                               .set_label_area_size(LabelAreaPosition::Left, 100)
+                                               .set_label_area_size(LabelAreaPosition::Bottom, 100)
                                                //.caption(format!("{} Layer Statistics", circuit_stem),
                                                //        ("sans-serif", 36))
                                                .build_cartesian_2d(0..layers.len(),
@@ -264,9 +265,9 @@ impl Circuit {
              .y_label_formatter(&|y| format!("{}", y))
              .x_desc("Layer")
              .y_desc("Statistic")
-             .x_label_style(("sans-serif", 30))
-             .y_label_style(("sans-serif", 30))
-             .axis_desc_style(("sans-serif", 36))
+             .x_label_style(("sans-serif", 40))
+             .y_label_style(("sans-serif", 40))
+             .axis_desc_style(("sans-serif", 48))
              .light_line_style(&TRANSPARENT)
              .draw()?;
 
@@ -277,9 +278,9 @@ impl Circuit {
         } else if layers.len() < 5000 {
             window_size = 20;
         } else if layers.len() < 50000 {
-            window_size = 50;
-        } else if layers.len() < 20000 {
             window_size = 100;
+        } else if layers.len() < 20000 {
+            window_size = 150;
         }
 
         /*
@@ -428,8 +429,8 @@ impl Circuit {
              .margin(20)
              .background_style(&WHITE)
              .border_style(&TRANSPARENT)
-             .position(SeriesLabelPosition::UpperLeft)
-             .label_font(("sans-serif", 30))
+             .position(SeriesLabelPosition::UpperRight)
+             .label_font(("sans-serif", 40))
              .draw()?;
 
         /*
@@ -463,16 +464,20 @@ impl Circuit {
                              (10, 970), // Center horizontally, near bottom
                              ("sans-serif", 24).into_font()))?;
          */
-        println!("Plotted layer statistics to {}", png_fname);
+        println!("Plotted layer statistics to {}", plot_fname);
         Ok(())
     }
 
     fn plot_moving_average<F>(&self,
-                              chart: &mut ChartContext<BitMapBackend,
+                              //chart: &mut ChartContext<BitMapBackend,
+                              chart: &mut ChartContext<SVGBackend,
                                                 Cartesian2d<RangedCoordusize,
                                                             RangedCoordf64>>,
-                              layers: &[Vec<&PauliProduct>], window_size: usize, value_fn: F,
-                              color: RGBColor, label: &str)
+                              layers: &[Vec<&PauliProduct>],
+                              window_size: usize,
+                              value_fn: F,
+                              color: RGBColor,
+                              label: &str)
                               -> Result<(), Box<dyn std::error::Error>>
         where F: Fn(&[Vec<&PauliProduct>]) -> f64
     {
