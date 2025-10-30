@@ -33,7 +33,7 @@ struct Args {
     #[arg(short, long, default_value = "0.0387396")]
     magic_state_lambda: f64,
     /// Show product IDs instead of Pauli terms when plotting the circuit.
-    #[arg(long)]
+    #[arg(short = 'I', long)]
     show_product_ids: bool,
     /// Log scheduler actions to <CIRCUIT_FNAME>.sched file.
     #[arg(short = 'l', long)]
