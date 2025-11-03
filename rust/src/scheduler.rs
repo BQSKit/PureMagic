@@ -579,8 +579,7 @@ impl Scheduler {
         for (magic_node, estabilizer_node, d) in magic_path_dists {
             // Find path from magic to estabilizer
             let mut estabilizer_vec = vec![estabilizer_node.clone()];
-            let magic_path_g =
-                self.get_bfs_graph(&magic_node, &mut estabilizer_vec, false, false, None);
+            let magic_path_g = self.get_bfs_graph(&magic_node, &mut estabilizer_vec, false, None);
             if magic_path_g.is_none() {
                 //log::info!("  No path from {} to {}", magic_node, estabilizer_node);
                 continue;
@@ -591,11 +590,8 @@ impl Scheduler {
                        estabilizer_node,
                        magic_path_g.num_edges);
             // Find path from estabilizer to data nodes
-            let estabilizer_g = self.get_bfs_graph(&estabilizer_node,
-                                                   data_nodes,
-                                                   pauli_product.need_ancilla,
-                                                   false,
-                                                   Some(&magic_path_g));
+            let estabilizer_g =
+                self.get_bfs_graph(&estabilizer_node, data_nodes, false, Some(&magic_path_g));
             if estabilizer_g.is_none() {
                 log::info!("  No path from {} to {}", estabilizer_node, pauli_product);
                 continue;
@@ -605,6 +601,14 @@ impl Scheduler {
                        estabilizer_node,
                        magic_node,
                        estabilizer_g.num_edges);
+            if pauli_product.need_ancilla {
+                if let Some(ancilla) = self.find_ancilla(&mut estabilizer_g) {
+                    estabilizer_g.ancilla_node = Some(ancilla);
+                } else {
+                    log::info!("    Couldn't find ancilla for tree");
+                    return None;
+                }
+            }
             // Merge the two graphs
             for node in magic_path_g.iter_nodes() {
                 if node.node_type != NodeType::Estabilizer {
@@ -735,11 +739,7 @@ impl Scheduler {
                  -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product.id);
         for root_node_label in root_nodes {
-            let g = self.get_bfs_graph(root_node_label,
-                                       data_nodes,
-                                       pauli_product.need_ancilla,
-                                       estabilizer,
-                                       None);
+            let g = self.get_bfs_graph(root_node_label, data_nodes, estabilizer, None);
             match g {
                 None => {
                     log::info!("    No tree from root node {} to {:?}, {}",
@@ -748,11 +748,19 @@ impl Scheduler {
                                pauli_product.need_ancilla);
                     continue;
                 }
-                Some(graph) => {
+                Some(mut graph) => {
                     log::info!("    Found tree from {} to {:?} of size {}",
                                root_node_label,
                                data_nodes,
                                graph.num_edges,);
+                    if pauli_product.need_ancilla {
+                        if let Some(ancilla) = self.find_ancilla(&mut graph) {
+                            graph.ancilla_node = Some(ancilla);
+                        } else {
+                            log::info!("    Couldn't find ancilla for tree");
+                            return None;
+                        }
+                    }
                     return Some(graph);
                 }
             }
@@ -761,7 +769,7 @@ impl Scheduler {
     }
 
     fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &mut Vec<String>,
-                     need_ancilla: bool, with_estabilizer: bool, exclude: Option<&TopoGraph>)
+                     with_estabilizer: bool, exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
         log::info!("  BFS from node {} to nodes {:?}", root_node, terminal_nodes);
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
@@ -843,14 +851,6 @@ impl Scheduler {
                     if num_found_terminals == num_terminals_reqd {
                         log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
                         bfs_graph.trim_dangling_nodes(root_node);
-                        if need_ancilla {
-                            if let Some(ancilla) = self.find_ancilla(&mut bfs_graph) {
-                                bfs_graph.ancilla_node = Some(ancilla);
-                            } else {
-                                log::info!("    Couldn't find ancilla for tree");
-                                return None;
-                            }
-                        }
                         bfs_graph.root_node = Some(root_node.to_string());
                         return Some(bfs_graph);
                     }
