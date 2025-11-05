@@ -78,13 +78,10 @@ impl PauliProduct {
                 }
             }
         }
-
-        if self.num_ys % 2 == 1 {
-            self.need_ancilla = true;
-        }
-
+        //if self.num_ys % 2 == 1 {
+        //    self.need_ancilla = true;
+        //}
         self.max_qubit = self.operators.iter().map(|op| op.qubit).max().unwrap_or(0);
-
         Ok(())
     }
 
