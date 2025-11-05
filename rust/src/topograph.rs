@@ -117,9 +117,9 @@ impl TopoGraph {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else if !use_magic_routing {
-            self.gen_topo_with_bus(min_num_qubits, sides_only);
+            self.gen_bus_routing_topo(min_num_qubits, sides_only);
         } else {
-            self.gen_topo_with_ancillae(min_num_qubits, ancilla_rows, sides_only);
+            self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
         self.update_statistics();
     }
@@ -214,7 +214,7 @@ impl TopoGraph {
         Ok(())
     }
 
-    fn gen_topo_with_bus(&mut self, min_num_qubits: usize, sides_only: bool) {
+    fn gen_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
         // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
@@ -294,8 +294,8 @@ impl TopoGraph {
         }
     }
 
-    fn gen_topo_with_ancillae(&mut self, min_num_qubits: usize, ancilla_rows: usize,
-                              sides_only: bool) {
+    fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
+                           sides_only: bool) {
         // minimum layout with all magic qubits
         let spacing = ancilla_rows + 1;
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
