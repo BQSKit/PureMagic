@@ -117,7 +117,11 @@ impl TopoGraph {
                 eprintln!("Error reading topology file: {}", e);
             }
         } else if !use_magic_routing {
-            self.gen_bus_routing_topo(min_num_qubits, sides_only);
+            if ancilla_rows == 0 {
+                self.gen_compact_bus_routing_topo(min_num_qubits, sides_only);
+            } else {
+                self.gen_bus_routing_topo(min_num_qubits, sides_only);
+            }
         } else {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
@@ -219,13 +223,10 @@ impl TopoGraph {
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
         let bus_rows = patch_rows + 1;
-
         let qubits_per_col = 2 * patch_rows;
         let num_data_cols = ((min_num_qubits as f64) / (qubits_per_col as f64)).ceil() as usize;
-
         self.num_cols = 2 * num_data_cols + 3;
         self.num_rows = 2 + 2 * patch_rows + bus_rows;
-
         self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
 
         self.add_border_row(0);
@@ -269,9 +270,49 @@ impl TopoGraph {
                 }
             }
         }
-
         self.add_border_column(self.num_cols - 1);
         self.add_border_row(self.num_rows - 1);
+        self.set_edges(sides_only);
+        println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
+    }
+
+    fn gen_compact_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
+        // minimum layout with bus qubits
+        let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
+        let patch_rows = sq_dim / 2 + sq_dim % 2;
+        let qubits_per_col = 2 * patch_rows;
+        let num_data_cols = ((min_num_qubits as f64) / (qubits_per_col as f64)).ceil() as usize;
+        self.num_cols = 2 * num_data_cols + 1;
+        self.num_rows = 3 + 2 * patch_rows;
+        self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+
+        self.add_border_row_compact(0);
+        let max_qi =
+            if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
+        let mut qi = 0;
+        for col in 0..self.num_cols {
+            if col % 2 == 1 {
+                // Data column
+                for row in 1..self.num_rows - 1 {
+                    if qi < max_qi && row < self.num_rows - 2 {
+                        self.add_double_data_qubit(qi, col, row, row % 2 == 1);
+                        qi += 2;
+                    } else {
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
+                    }
+                }
+                let row = self.num_rows - 1;
+                self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
+            } else {
+                let node_type =
+                    if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
+                // Bus column
+                for row in 1..self.num_rows - 1 {
+                    self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
+                }
+            }
+        }
+        self.add_border_row_compact(self.num_rows - 1);
         self.set_edges(sides_only);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
@@ -282,9 +323,18 @@ impl TopoGraph {
         self.node_grid[0][row] = Some(self.add_qubit(0, row, node_type));
         self.node_grid[self.num_cols - 1][row] =
             Some(self.add_qubit(self.num_cols - 1, row, node_type));
-        // Add alternating magic nodes
         for col in 1..self.num_cols - 1 {
             self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
+        }
+    }
+
+    fn add_border_row_compact(&mut self, row: usize) {
+        for col in 0..self.num_cols {
+            if col % 2 == 0 {
+                self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
+            } else {
+                self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
+            }
         }
     }
 
