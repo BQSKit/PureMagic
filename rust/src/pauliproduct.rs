@@ -1,3 +1,4 @@
+use rand::Rng;
 use std::error::Error;
 use std::fmt;
 
@@ -93,6 +94,73 @@ impl PauliProduct {
 
     pub fn get_qubits(&self) -> Vec<usize> {
         self.operators.iter().map(|op| op.qubit).collect()
+    }
+
+    pub fn generate_random(product_id: i32, num_qubits: usize, spread_probability: f64,
+                           decay_factor: f64)
+                           -> Self {
+        let mut rng = rand::thread_rng();
+        let mut operators = Vec::new();
+        // Choose initial random location
+        let center_qubit = rng.gen_range(0..num_qubits);
+        // Set operator at center location with random basis
+        let center_basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
+        operators.push(Operator { qubit: center_qubit, basis: center_basis });
+        // Spread left from center
+        let mut current_prob = spread_probability;
+        for distance in 1..=center_qubit {
+            if rng.gen_range(0.0..1.0) < current_prob {
+                let qubit = center_qubit - distance;
+                let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
+                operators.push(Operator { qubit, basis });
+            }
+            current_prob *= decay_factor;
+            if current_prob < 0.001 {
+                break;
+            } // Stop if probability becomes negligible
+        }
+        // Spread right from center
+        current_prob = spread_probability;
+        for distance in 1..(num_qubits - center_qubit) {
+            if rng.gen_range(0.0..1.0) < current_prob {
+                let qubit = center_qubit + distance;
+                let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
+                operators.push(Operator { qubit, basis });
+            }
+            current_prob *= decay_factor;
+            if current_prob < 0.001 {
+                break;
+            } // Stop if probability becomes negligible
+        }
+        // Sort operators by qubit index for consistency
+        operators.sort_by_key(|op| op.qubit);
+        // Count Y operators
+        let num_ys = operators.iter().filter(|op| op.basis == 'Y').count();
+        // Determine max qubit
+        let max_qubit = operators.iter().map(|op| op.qubit).max().unwrap_or(0);
+
+        PauliProduct { operators,
+                       parents: Vec::new(),
+                       children: Vec::new(),
+                       max_qubit,
+                       id: product_id,
+                       num_ys,
+                       need_estabilizer: false,
+                       need_ancilla: false,
+                       is_clifford: false }
+    }
+
+    pub fn to_circuit_format(&self, num_qubits: usize) -> String {
+        let mut rng = rand::thread_rng();
+        let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
+        let mut pauli_string = vec!['_'; num_qubits];
+
+        for op in &self.operators {
+            pauli_string[op.qubit] = op.basis;
+        }
+
+        let angle = if self.is_clifford { "<M>" } else { "<pi/8>" };
+        format!("{}{}{}", sign, pauli_string.iter().collect::<String>(), angle)
     }
 }
 

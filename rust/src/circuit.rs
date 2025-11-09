@@ -19,21 +19,19 @@ pub struct Circuit {
 }
 
 impl Circuit {
-    pub fn new(fname: &String) -> io::Result<Self> {
-        let mut circuit = Circuit { products: Vec::new(),
-                                    circuit_fname: fname.to_string(),
-                                    num_qubits: 0,
-                                    layers: RefCell::new(None) };
-        circuit.load_circuit()?;
-        Ok(circuit)
+    pub fn new(fname: &String) -> Self {
+        let circuit = Circuit { products: Vec::new(),
+                                circuit_fname: fname.to_string(),
+                                num_qubits: 0,
+                                layers: RefCell::new(None) };
+        circuit
     }
 
-    fn load_circuit(&mut self) -> io::Result<()> {
+    pub fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = Timer::new("load_circuit");
 
         let file = File::open(&self.circuit_fname)?;
         let reader = BufReader::new(file);
-
         // Read and parse products
         for (i, line) in reader.lines().enumerate() {
             let product_string = line?.trim().to_string();
@@ -42,7 +40,6 @@ impl Circuit {
                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
             self.products.push(product);
         }
-
         // Find maximum qubit
         self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
 
@@ -50,6 +47,11 @@ impl Circuit {
                  self.products.len(),
                  self.num_qubits);
 
+        self.generate_dependencies();
+        Ok(())
+    }
+
+    fn generate_dependencies(&mut self) {
         // Collect parent/child relationships
         let mut relationships = Vec::new();
         let mut current_pps = vec![-1; self.num_qubits];
@@ -68,7 +70,35 @@ impl Circuit {
             self.products[child_id as usize].parents.push(parent_id);
             self.products[parent_id as usize].children.push(child_id);
         }
+    }
 
+    pub fn generate_random(&mut self, num_products: usize, num_qubits: usize,
+                           spread_probability: f64, decay_factor: f64) {
+        for product_id in 0..num_products {
+            let product = PauliProduct::generate_random(product_id as i32,
+                                                        num_qubits,
+                                                        spread_probability,
+                                                        decay_factor);
+            self.products.push(product);
+        }
+        // Find maximum qubit
+        self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
+
+        println!("Generated random circuit with {} products and {} qubits",
+                 self.products.len(),
+                 self.num_qubits);
+        self.generate_dependencies();
+    }
+
+    pub fn save_circuit_to_file(&self, circuit_fname: String) -> io::Result<()> {
+        let mut file = File::create(&circuit_fname)?;
+
+        for product in &self.products {
+            let circuit_line = product.to_circuit_format(self.num_qubits);
+            writeln!(file, "{}", circuit_line)?;
+        }
+
+        println!("Saved random circuit to {}", self.circuit_fname);
         Ok(())
     }
 
@@ -153,10 +183,21 @@ impl Circuit {
         for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
+            /*
             let png_fname = format!("{}/{}-{}.png", plot_dir, circuit_stem, chunk_start);
             // Create drawing area
             let root = BitMapBackend::new(
                 &png_fname,
+                (
+                    (chunk_layers as f32 * 0.17 * 100.0) as u32,
+                    (self.num_qubits as f32 * 0.22 * 100.0) as u32,
+                ),
+            )
+            .into_drawing_area();
+             */
+            let plot_fname = format!("{}/{}-{}.svg", plot_dir, circuit_stem, chunk_start);
+            let root = SVGBackend::new(
+                &plot_fname,
                 (
                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
                     (self.num_qubits as f32 * 0.22 * 100.0) as u32,
@@ -170,11 +211,12 @@ impl Circuit {
                 ChartBuilder::on(&root).margin(50)
                                        .set_label_area_size(LabelAreaPosition::Left, 60)
                                        .set_label_area_size(LabelAreaPosition::Bottom, 40)
+                                       /*
                                        .caption(format!("{} (Layers {}-{})",
                                                         circuit_stem,
                                                         chunk_start,
                                                         chunk_end - 1),
-                                                ("sans-serif", 20))
+                                                ("sans-serif", 20))*/
                                        .build_cartesian_2d(chunk_start as f32..chunk_end as f32,
                                                            //-0.5f32..self.num_qubits as f32 + 0.5,
                                                            ((self.num_qubits - 1) as f32 + 0.5)
@@ -231,7 +273,7 @@ impl Circuit {
                     }
                 }
             }
-            println!("Plotted circuit layers {}-{} to {}", chunk_start, chunk_end - 1, png_fname);
+            println!("Plotted circuit layers {}-{} to {}", chunk_start, chunk_end - 1, plot_fname);
         }
         Ok(())
     }

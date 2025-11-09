@@ -172,19 +172,6 @@ impl TopoGraph {
             let mut rng = StdRng::seed_from_u64(timer_seed);
             pair_indices.shuffle(&mut rng);
         }
-        /*
-        let mut spread_indices = Vec::new();
-        let l = pair_indices.len();
-        for i in 0..l / 2 {
-            spread_indices.push(pair_indices[i]);
-            spread_indices.push(pair_indices[l / 2 + i]);
-        }
-        if spread_indices.len() < pair_indices.len() {
-            spread_indices.push(pair_indices[l - 1]);
-        }
-        println!("Spread indices {:?}", spread_indices);
-        pair_indices = spread_indices;
-         */
         println!("Data node order {:?}", pair_indices);
         // Add nodes
         let mut di = 0;
@@ -347,24 +334,31 @@ impl TopoGraph {
     fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
                            sides_only: bool) {
         // minimum layout with all magic qubits
-        let spacing = ancilla_rows + 1;
+        let row_spacing = ancilla_rows + 1;
+        let col_spacing = if ancilla_rows == 0 { 2 } else { ancilla_rows + 1 };
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
         let patch_cols = ((min_num_qubits as f64) / ((2 * patch_rows) as f64)).ceil() as usize;
-        self.num_cols = patch_cols * spacing + spacing - 1;
-        self.num_rows = patch_rows * (1 + spacing) + spacing - 1;
+        self.num_rows = patch_rows * (1 + row_spacing) + row_spacing - 1;
+        if ancilla_rows == 0 {
+            self.num_rows += 1;
+        }
+        self.num_cols = patch_cols * col_spacing + col_spacing - 1;
         self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
         let mut qi = 0;
         let max_qi =
             if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
-        let row_gap = 1 + spacing;
+        let row_gap = 1 + row_spacing;
+        print!("num rows {} num cols {} row gap {}\n", self.num_rows, self.num_cols, row_gap);
         for col in 0..self.num_cols {
             for row in 0..self.num_rows {
-                if col % spacing == spacing - 1 {
+                if col % col_spacing == col_spacing - 1 {
                     // data column
-                    if row % row_gap == spacing || row % row_gap == spacing - 1 {
+                    if (row % row_gap == row_spacing || row % row_gap == row_spacing - 1)
+                       && !(ancilla_rows == 0 && row == self.num_rows - 1)
+                    {
                         if qi < max_qi {
-                            let is_x = row % row_gap == spacing - 1;
+                            let is_x = row % row_gap == row_spacing - 1;
                             self.add_double_data_qubit(qi, col, row, is_x);
                             qi += 2;
                         } else {
@@ -376,7 +370,7 @@ impl TopoGraph {
                                            && row != 0
                                            && row != self.num_rows - 1
                                            && row % (2 * row_gap) == row_gap + (ancilla_rows / 2)
-                                           && col % (spacing * 2) == spacing - 1
+                                           && col % (col_spacing * 2) == col_spacing - 1
                         {
                             NodeType::Estabilizer
                         } else {
