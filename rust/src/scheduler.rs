@@ -5,9 +5,6 @@ use crate::utils::{IntermittentTimer, Timer};
 
 use indexmap::IndexSet;
 use log;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
 use rand_simple::Exponential;
 use simple_logging;
 use std::collections::VecDeque;
@@ -362,8 +359,6 @@ impl Scheduler {
                              let pp = &to_schedule[idx];
                              self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
                          });
-            //let mut rng = StdRng::from_entropy();
-            //remaining_vec.shuffle(&mut rng);
             remaining_to_schedule = remaining_vec.into_iter().collect();
         }
         while !remaining_to_schedule.is_empty() {
