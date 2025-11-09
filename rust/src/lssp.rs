@@ -21,8 +21,28 @@ struct Args {
     #[arg(short = 'R', long)]
     randomize_data_qubits: bool,
     /// Name of file containing input circuit .qasm format (required).
-    #[arg(short, long = "circuit", required = true)]
-    circuit_fname: String,
+    #[arg(short, long = "circuit")]
+    circuit_fname: Option<String>,
+    /// Generate a random circuit instead of loading from file
+    #[arg(long, help = "Generate a random circuit instead of loading from file")]
+    generate_random: bool,
+    /// Number of qubits for random circuit generation
+    #[arg(long, default_value = "64", help = "Number of qubits for random circuit generation")]
+    random_qubits: usize,
+    /// Number of products for random circuit generation
+    #[arg(long, default_value = "1000", help = "Number of products for random circuit generation")]
+    random_products: usize,
+    /// Spread probability for random circuit generation (probability of adding operators to adjacent qubits)
+    #[arg(long,
+          default_value = "0.4",
+          help = "Spread probability for random circuit generation (0.0-1.0)")]
+    spread_probability: f64,
+    /// Decay factor for random circuit generation (how much probability decreases with distance)
+    #[arg(long,
+          default_value = "0.7",
+          help = "Decay factor for random circuit generation (0.0-1.0)")]
+    decay_factor: f64,
+
     /// Name of file containing topology. If this is not set, it will be generated.
     #[arg(short, long = "topo", default_value = "")]
     topo_fname: String,
@@ -81,8 +101,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     println!("{:#?}", args);
 
+    // Validate arguments
+    if !args.generate_random && args.circuit_fname.is_none() {
+        eprintln!("Error: Either --circuit <filename> or --generate-random must be specified");
+        std::process::exit(1);
+    }
+
+    if args.generate_random && (args.spread_probability < 0.0 || args.spread_probability > 1.0) {
+        eprintln!("Error: spread_probability must be between 0.0 and 1.0");
+        std::process::exit(1);
+    }
+
+    if args.generate_random && (args.decay_factor < 0.0 || args.decay_factor > 1.0) {
+        eprintln!("Error: decay_factor must be between 0.0 and 1.0");
+        std::process::exit(1);
+    }
+
     // Initialize circuit
-    let mut circuit = Circuit::new(&args.circuit_fname)?;
+    let (mut circuit, circuit_fname) = if args.generate_random {
+        println!("Generating random circuit with {} products on {} qubits",
+                 args.random_products, args.random_qubits);
+        println!("  spread_probability: {}", args.spread_probability);
+        println!("  decay_factor: {}", args.decay_factor);
+
+        let spread_str = args.spread_probability.to_string().replace(".", "_");
+        let decay_str = args.decay_factor.to_string().replace(".", "_");
+        let fname = format!("random_circuit-{}-{}_n{}", spread_str, decay_str, args.random_qubits);
+        let mut circuit = Circuit::new(&fname);
+        circuit.generate_random(args.random_products,
+                                args.random_qubits,
+                                args.spread_probability,
+                                args.decay_factor);
+        let save_fname = format!("{}.generated.txt", fname);
+        circuit.save_circuit_to_file(save_fname)?;
+        (circuit, fname)
+    } else {
+        let fname = args.circuit_fname.unwrap();
+        let mut circuit = Circuit::new(&fname.to_string());
+        circuit.load_circuit()?;
+        (circuit, fname)
+    };
     if args.split_ys {
         circuit.split_ys();
     }
@@ -95,13 +153,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.plot.contains(&"cstats".to_string()) {
         circuit.plot_layer_stats()?;
-        //return Ok(());
     }
     // Initialize topology
     let mut topo_graph = TopoGraph::new();
     let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
     topo_graph.set_topo(circuit.num_qubits,
-                        &args.circuit_fname,
+                        &circuit_fname.to_string(),
                         &args.topo_fname,
                         &rseed,
                         args.use_magic_routing,
@@ -139,7 +196,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Scheduling time efficiency {:.3}", speedup as f64 / optimal_speedup as f64);
     println!("Scheduling space efficiency {:.3}", space_utilization);
-    println!("Scheduling overall efficiency {:.3}", optimal_volume as f64 / volume as f64);
 
     Ok(())
 }
