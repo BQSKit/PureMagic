@@ -364,7 +364,8 @@ impl Scheduler {
         while !remaining_to_schedule.is_empty() {
             let mut to_remove = Vec::new();
             let mut best_pp: Option<(usize, TopoGraph)> = None;
-            let mut best_pp_size = usize::MAX;
+            let mut best_pp_graph_size = usize::MAX;
+            let mut best_pp_num_terms = 0;
             for &pp_i in &remaining_to_schedule {
                 let pp = &to_schedule[pp_i];
                 match self.schedule_pauli_product(pp) {
@@ -389,15 +390,20 @@ impl Scheduler {
                         to_remove.push(pp_i);
                     }
                     Some(pp_graph) => {
-                        let pp_size = pp_graph.num_nodes;
-                        if best_pp_size >= pp_size {
-                            best_pp_size = pp_size;
-                            best_pp = Some((pp_i, pp_graph));
-                            log::info!("  New best graph for pp {}, size {}",
-                                       pp.get_product_str(),
-                                       best_pp_size);
-                            if !best_fit {
-                                break;
+                        let pp_num_terms = pp.operators.len();
+                        if pp_num_terms >= best_pp_num_terms {
+                            let pp_graph_size = pp_graph.num_nodes;
+                            if pp_graph_size < best_pp_graph_size {
+                                best_pp_num_terms = pp_num_terms;
+                                best_pp_graph_size = pp_graph_size;
+                                best_pp = Some((pp_i, pp_graph));
+                                log::info!("  New best graph for pp {}, terms {}, size {}",
+                                           pp.get_product_str(),
+                                           best_pp_num_terms,
+                                           best_pp_graph_size);
+                                if !best_fit {
+                                    break;
+                                }
                             }
                         }
                     }
