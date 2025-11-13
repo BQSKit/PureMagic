@@ -16,38 +16,26 @@ struct ScheduleStats {
     data_qubits: usize,
     bus_qubits: usize,
     magic_qubits: usize,
-    estabilizer_qubits: usize,
     sum_data_scheduled: usize,
     sum_bus_scheduled: usize,
     sum_magic_scheduled: usize,
-    sum_ancilla_scheduled: usize,
-    sum_estabilizer_scheduled: usize,
     bus_scheduled: usize,
     data_scheduled: usize,
     magic_scheduled: usize,
-    ancilla_scheduled: usize,
-    estabilizers_scheduled: usize,
 }
 
 impl ScheduleStats {
-    pub fn new(qubits: usize, data_qubits: usize, bus_qubits: usize, magic_qubits: usize,
-               estabilizer_qubits: usize)
-               -> Self {
+    pub fn new(qubits: usize, data_qubits: usize, bus_qubits: usize, magic_qubits: usize) -> Self {
         ScheduleStats { qubits,
                         data_qubits,
                         bus_qubits,
                         magic_qubits,
-                        estabilizer_qubits,
                         sum_data_scheduled: 0,
                         sum_bus_scheduled: 0,
                         sum_magic_scheduled: 0,
-                        sum_ancilla_scheduled: 0,
-                        sum_estabilizer_scheduled: 0,
                         bus_scheduled: 0,
                         data_scheduled: 0,
-                        magic_scheduled: 0,
-                        ancilla_scheduled: 0,
-                        estabilizers_scheduled: 0 }
+                        magic_scheduled: 0 }
     }
 
     pub fn summarize(&self, num_steps: usize) -> f64 {
@@ -55,14 +43,10 @@ impl ScheduleStats {
         let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_steps) as f64;
         let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_steps) as f64;
         let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_steps) as f64;
-        let estabilizer_frac =
-            self.sum_estabilizer_scheduled as f64 / (self.estabilizer_qubits * num_steps) as f64;
 
         let overall_frac = (self.data_qubits * num_steps
                             + self.sum_bus_scheduled
-                            + self.sum_magic_scheduled
-                            + self.sum_ancilla_scheduled
-                            + self.sum_estabilizer_scheduled) as f64
+                            + self.sum_magic_scheduled) as f64
                            / (num_steps * self.qubits) as f64;
 
         // Print final statistics
@@ -70,7 +54,6 @@ impl ScheduleStats {
         println!("  data:        {:.3}", data_frac);
         println!("  bus:         {:.3}", bus_frac);
         println!("  magic:       {:.3}", magic_frac);
-        println!("  estabilizer: {:.3}", estabilizer_frac);
 
         overall_frac
     }
@@ -79,15 +62,12 @@ impl ScheduleStats {
         self.sum_data_scheduled += self.data_scheduled;
         self.sum_bus_scheduled += self.bus_scheduled;
         self.sum_magic_scheduled += self.magic_scheduled;
-        self.sum_ancilla_scheduled += self.ancilla_scheduled;
-        self.sum_estabilizer_scheduled += self.estabilizers_scheduled;
 
         log::info!("Scheduling results:");
         let frac_paths = pp_paths_len as f64 / to_schedule_len as f64;
         let frac_data = self.data_scheduled as f64 / self.data_qubits as f64;
         let frac_bus = self.bus_scheduled as f64 / self.bus_qubits as f64;
         let frac_magic = self.magic_scheduled as f64 / self.magic_qubits as f64;
-        let frac_estabilizers = self.estabilizers_scheduled as f64 / self.estabilizer_qubits as f64;
         log::info!("  products:    {}/{} ({:.2})", pp_paths_len, to_schedule_len, frac_paths);
         log::info!("  data:        {}/{} ({:.2})",
                    self.data_scheduled,
@@ -98,21 +78,15 @@ impl ScheduleStats {
                    self.magic_scheduled,
                    self.magic_qubits,
                    frac_magic);
-        log::info!("  estabilizer: {}/{} ({:.2})",
-                   self.estabilizers_scheduled,
-                   self.estabilizer_qubits,
-                   frac_estabilizers);
 
         let title =
             format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
-                        bus {:.2}, magic {:.2}, estabilizer {:.2}",
-                    step_i, frac_paths, frac_data, frac_bus, frac_magic, frac_estabilizers);
+                        bus {:.2}, magic {:.2}",
+                    step_i, frac_paths, frac_data, frac_bus, frac_magic);
 
         self.data_scheduled = 0;
         self.bus_scheduled = 0;
         self.magic_scheduled = 0;
-        self.ancilla_scheduled = 0;
-        self.estabilizers_scheduled = 0;
         title
     }
 
@@ -121,7 +95,6 @@ impl ScheduleStats {
             NodeType::Bus => self.bus_scheduled += 1,
             NodeType::Magic => self.magic_scheduled += 1,
             NodeType::Data => self.data_scheduled += 1,
-            NodeType::Estabilizer => self.estabilizers_scheduled += 1,
         }
     }
 }
@@ -154,7 +127,6 @@ impl Scheduler {
         let num_data_qubits = topo.num_data_qubits;
         let num_bus_qubits = topo.num_bus_qubits;
         let num_magic_qubits = topo.num_magic_qubits;
-        let num_estabilizer_qubits = topo.num_estabilizer_qubits;
 
         Scheduler { circuit,
                     topo,
@@ -167,8 +139,7 @@ impl Scheduler {
                     stats: ScheduleStats::new(num_qubits,
                                               num_data_qubits,
                                               num_bus_qubits,
-                                              num_magic_qubits,
-                                              num_estabilizer_qubits) }
+                                              num_magic_qubits) }
     }
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize, f64)> {
@@ -357,7 +328,7 @@ impl Scheduler {
             let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
             remaining_vec.sort_by_key(|&idx| {
                              let pp = &to_schedule[idx];
-                             self.circuit.num_qubits - pp.operators.len() + (pp.num_ys + 1) % 2
+                             self.circuit.num_qubits - pp.operators.len()
                          });
             remaining_to_schedule = remaining_vec.into_iter().collect();
         }
@@ -530,108 +501,12 @@ impl Scheduler {
             return None;
         }
         log::info!("  Found {} available magic nodes {:?}", magic_nodes.len(), magic_nodes);
-        if pauli_product.need_estabilizer {
-            self.find_estabilizer_tree(&magic_nodes, data_nodes, pauli_product)
-        } else {
-            let magic_nodes_sorted = self.get_nodes_by_dist(&magic_nodes, pauli_product)
-                                         .into_iter()
-                                         .map(|(node, _)| node)
-                                         .collect::<Vec<_>>();
-            log::info!("  Magic nodes by distance to {}: {:?}",
-                       pauli_product.id,
-                       magic_nodes_sorted);
-            self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product, false)
-        }
-    }
-
-    fn find_estabilizer_tree(&self, magic_nodes: &[String], data_nodes: &mut Vec<String>,
-                             pauli_product: &PauliProduct)
-                             -> Option<TopoGraph> {
-        // Find available estabilizer nodes
-        let mut estabilizer_nodes = Vec::new();
-        for node in self.topo.iter_nodes() {
-            if node.node_type == NodeType::Estabilizer {
-                let mut num_unused_nbs = 0;
-                for nb_label in &node.edges {
-                    let nb = self.topo.get_node(nb_label);
-                    if self.topo.is_routing_node(nb) && !nb.used {
-                        num_unused_nbs += 1;
-                        if num_unused_nbs == 2 {
-                            break;
-                        }
-                    }
-                }
-                if num_unused_nbs == 2 {
-                    estabilizer_nodes.push(node.label.clone());
-                }
-            }
-        }
-        if estabilizer_nodes.is_empty() {
-            log::info!("  No available estabilizer nodes");
-            return None;
-        }
-        // Get distances from estabilizer nodes to data nodes
-        let estabilizer_distances = self.get_nodes_by_dist(&estabilizer_nodes, pauli_product);
-        // Calculate distances from magic nodes through estabilizer nodes
-        let mut magic_path_dists = Vec::new();
-        for magic_node in magic_nodes {
-            for (estabilizer_node, estabilizer_d) in &estabilizer_distances {
-                let d = self.get_node_dist(magic_node, estabilizer_node) + estabilizer_d;
-                magic_path_dists.push((magic_node.clone(), estabilizer_node.clone(), d));
-            }
-        }
-        magic_path_dists.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
-        // Try each magic-estabilizer path
-        for (magic_node, estabilizer_node, d) in magic_path_dists {
-            // Find path from magic to estabilizer
-            let mut estabilizer_vec = vec![estabilizer_node.clone()];
-            let magic_path_g = self.get_bfs_graph(&magic_node, &mut estabilizer_vec, false, None);
-            if magic_path_g.is_none() {
-                //log::info!("  No path from {} to {}", magic_node, estabilizer_node);
-                continue;
-            }
-            let magic_path_g = magic_path_g.unwrap();
-            log::info!("  Found graph from {} to {} of size {}",
-                       magic_node,
-                       estabilizer_node,
-                       magic_path_g.num_edges);
-            // Find path from estabilizer to data nodes
-            let estabilizer_g =
-                self.get_bfs_graph(&estabilizer_node, data_nodes, false, Some(&magic_path_g));
-            if estabilizer_g.is_none() {
-                log::info!("  No path from {} to {}", estabilizer_node, pauli_product);
-                continue;
-            }
-            let mut estabilizer_g = estabilizer_g.unwrap();
-            log::info!("  Found graph from {} ({}) of size {}",
-                       estabilizer_node,
-                       magic_node,
-                       estabilizer_g.num_edges);
-            if pauli_product.need_ancilla {
-                if let Some(ancilla) = self.find_ancilla(&mut estabilizer_g) {
-                    estabilizer_g.ancilla_node = Some(ancilla);
-                } else {
-                    log::info!("    Couldn't find ancilla for tree");
-                    return None;
-                }
-            }
-            // Merge the two graphs
-            for node in magic_path_g.iter_nodes() {
-                if node.node_type != NodeType::Estabilizer {
-                    estabilizer_g.add_node(node.clone());
-                }
-            }
-            for (from, to) in magic_path_g.iter_edges() {
-                estabilizer_g.add_edge(from, to);
-            }
-            estabilizer_g.root_node = magic_path_g.root_node.clone();
-            log::info!("  Final graph has {} edges (estimated distance {:.0})",
-                       estabilizer_g.num_edges,
-                       d);
-            return Some(estabilizer_g);
-        }
-        log::info!("  No path from estabilizer nodes {:?} to {:?}", estabilizer_nodes, data_nodes);
-        None
+        let magic_nodes_sorted = self.get_nodes_by_dist(&magic_nodes, pauli_product)
+                                     .into_iter()
+                                     .map(|(node, _)| node)
+                                     .collect::<Vec<_>>();
+        log::info!("  Magic nodes by distance to {}: {:?}", pauli_product.id, magic_nodes_sorted);
+        self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product)
     }
 
     fn get_nodes_by_dist(&self, node_labels: &[String], pauli_product: &PauliProduct)
@@ -678,7 +553,7 @@ impl Scheduler {
     fn schedule_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
                          -> Option<TopoGraph> {
         // Handle single data node case
-        if data_nodes.len() == 1 && !pauli_product.need_estabilizer {
+        if data_nodes.len() == 1 {
             let node_label = &data_nodes[0];
             let node = self.topo.get_node(node_label);
             if node.used {
@@ -689,22 +564,6 @@ impl Scheduler {
             let mut g = TopoGraph::new();
             g.add_node(node.clone());
 
-            if pauli_product.need_ancilla {
-                // Try to find an available bus/magic neighbor
-                for nb_label in node.edges.iter() {
-                    let nb = self.topo.get_node(nb_label);
-                    if self.topo.is_routing_node(nb) && !nb.used {
-                        g.add_node(nb.clone());
-                        g.add_edge(node_label, nb_label);
-                        g.ancilla_node = Some(nb_label.clone());
-                        break;
-                    }
-                }
-                if g.num_nodes == 0 {
-                    log::info!("  Could not find ancilla for node {}", node_label);
-                    return None;
-                }
-            }
             log::info!("Scheduled clifford on {:?} nodes",
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
@@ -729,10 +588,7 @@ impl Scheduler {
         // Try to find a tree using each root node
         let root_nodes_vec: Vec<String> = root_nodes.iter().cloned().collect();
         // find_tree also finds the ancilla if needed
-        let g = self.find_tree(&root_nodes_vec,
-                               data_nodes,
-                               pauli_product,
-                               pauli_product.need_estabilizer);
+        let g = self.find_tree(&root_nodes_vec, data_nodes, pauli_product);
         if let Some(ref g) = g {
             log::info!("Scheduled clifford in {:?} nodes",
                        g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
@@ -741,32 +597,23 @@ impl Scheduler {
     }
 
     fn find_tree(&self, root_nodes: &[String], data_nodes: &mut Vec<String>,
-                 pauli_product: &PauliProduct, estabilizer: bool)
+                 pauli_product: &PauliProduct)
                  -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product.id);
         for root_node_label in root_nodes {
-            let g = self.get_bfs_graph(root_node_label, data_nodes, estabilizer, None);
+            let g = self.get_bfs_graph(root_node_label, data_nodes, None);
             match g {
                 None => {
-                    log::info!("    No tree from root node {} to {:?}, {}",
+                    log::info!("    No tree from root node {} to {:?}",
                                root_node_label,
-                               data_nodes,
-                               pauli_product.need_ancilla);
+                               data_nodes);
                     continue;
                 }
-                Some(mut graph) => {
+                Some(graph) => {
                     log::info!("    Found tree from {} to {:?} of size {}",
                                root_node_label,
                                data_nodes,
                                graph.num_edges,);
-                    if pauli_product.need_ancilla {
-                        if let Some(ancilla) = self.find_ancilla(&mut graph) {
-                            graph.ancilla_node = Some(ancilla);
-                        } else {
-                            log::info!("    Couldn't find ancilla for tree");
-                            return None;
-                        }
-                    }
                     return Some(graph);
                 }
             }
@@ -775,7 +622,7 @@ impl Scheduler {
     }
 
     fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &mut Vec<String>,
-                     with_estabilizer: bool, exclude: Option<&TopoGraph>)
+                     exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
         log::info!("  BFS from node {} to nodes {:?}", root_node, terminal_nodes);
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
@@ -784,12 +631,8 @@ impl Scheduler {
 
         visited.insert(root_node);
         queue.push_back(root_node);
-        let mut num_terminals_reqd = terminal_nodes.len();
+        let num_terminals_reqd = terminal_nodes.len();
         let mut num_found_terminals = 0;
-        if with_estabilizer {
-            num_terminals_reqd += 1;
-        }
-        let mut ez_label = String::new();
 
         bfs_graph.add_node(self.topo.get_node(root_node).clone());
         while let Some(node_label) = queue.pop_front() {
@@ -807,14 +650,6 @@ impl Scheduler {
                     if ex.contains_node(&nb_label) && !terminal_nodes.contains(&nb_label) {
                         continue;
                     }
-                }
-                if with_estabilizer
-                   && nb.node_type == NodeType::Estabilizer
-                   && ez_label == ""
-                   && !terminal_nodes.contains(&nb_label)
-                {
-                    ez_label = nb.label.clone();
-                    terminal_nodes.push(ez_label.clone());
                 }
                 if self.topo.is_routing_node(nb) {
                     bfs_graph.add_node(nb.clone());
@@ -862,32 +697,6 @@ impl Scheduler {
                     }
                 }
                 visited.insert(nb_label);
-            }
-        }
-        None
-    }
-
-    fn find_ancilla(&self, graph: &mut TopoGraph) -> Option<String> {
-        // Collect bus nodes first to avoid borrowing issues
-        let bus_nodes: Vec<_> = graph.iter_nodes()
-                                     .filter(|node| self.topo.is_routing_node(node))
-                                     .map(|node| node.label.clone())
-                                     .collect();
-        for node_label in bus_nodes {
-            // Check neighbors in the topology
-            for nb_label in &self.topo.get_node(&node_label).edges {
-                let nb = self.topo.get_node(&nb_label);
-                // Check if neighbor is an unused bus/magic node not in graph
-                if nb.used || graph.contains_node(nb_label) {
-                    continue;
-                }
-                if self.topo.is_routing_node(nb) {
-                    log::info!("    Selected {} as ancilla", nb_label);
-                    // Add the node and edge to the graph
-                    graph.add_node(nb.clone());
-                    graph.add_edge(&node_label, nb_label);
-                    return Some(nb_label.clone());
-                }
             }
         }
         None

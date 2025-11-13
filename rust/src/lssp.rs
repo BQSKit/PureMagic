@@ -64,9 +64,7 @@ struct Args {
     /// Use magic qubits for routing in addition to bus qubits
     #[arg(short = 'u', long)]
     use_magic_routing: bool,
-    /// Split Y products into X and Z over two timesteps
-    #[arg(short = 's', long = "split")]
-    split_ys: bool,
+    /// Use only the sides of data qubits for edges, not the top and bottom
     #[arg(short = 'S', long = "sides_only")]
     sides_only: bool,
     /// Number of ancilla between each data patch (all magic routing only)
@@ -118,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Initialize circuit
-    let (mut circuit, circuit_fname) = if args.generate_random {
+    let (circuit, circuit_fname) = if args.generate_random {
         println!("Generating random circuit with {} products on {} qubits",
                  args.random_products, args.random_qubits);
         println!("  spread_probability: {}", args.spread_probability);
@@ -141,9 +139,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circuit.load_circuit()?;
         (circuit, fname)
     };
-    if args.split_ys {
-        circuit.split_ys();
-    }
     let num_layers = circuit.print_statistics();
     circuit.print()?;
 
@@ -162,7 +157,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &args.topo_fname,
                         &rseed,
                         args.use_magic_routing,
-                        args.split_ys,
                         args.ancilla_rows,
                         args.sides_only);
     topo_graph.print()?;
