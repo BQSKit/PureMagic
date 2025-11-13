@@ -894,7 +894,7 @@ impl Scheduler {
     }
 
     fn gen_cultivation_time(&mut self) -> i32 {
-        let cultivation_time = self.rng_exp.sample().round() as i32 + 1;
+        let cultivation_time = self.rng_exp.sample().round() as i32; // + 1;
         cultivation_time
     }
 
