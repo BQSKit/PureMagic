@@ -15,7 +15,6 @@ pub enum NodeType {
     Magic,
     Bus,
     Data,
-    Estabilizer,
 }
 
 #[derive(Debug, Clone)]
@@ -70,16 +69,13 @@ pub struct TopoGraph {
     topo_fname: String,
     circuit_fname: String,
     use_magic_routing: bool,
-    split_ys: bool,
     pub num_data_qubits: usize,
     pub num_bus_qubits: usize,
     pub num_magic_qubits: usize,
-    pub num_estabilizer_qubits: usize,
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
     pub root_node: Option<String>,
-    pub ancilla_node: Option<String>,
 }
 
 impl TopoGraph {
@@ -91,26 +87,22 @@ impl TopoGraph {
                     num_data_qubits: 0,
                     num_bus_qubits: 0,
                     num_magic_qubits: 0,
-                    num_estabilizer_qubits: 0,
                     num_qubits: 0,
                     num_edges: 0,
                     num_nodes: 0,
                     circuit_fname: String::new(),
                     topo_fname: String::new(),
                     use_magic_routing: true,
-                    split_ys: false,
-                    root_node: None,
-                    ancilla_node: None }
+                    root_node: None }
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
-                    topo_fname: &String, rseed: &u32, use_magic_routing: bool, split_ys: bool,
+                    topo_fname: &String, rseed: &u32, use_magic_routing: bool,
                     ancilla_rows: usize, sides_only: bool) {
         let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
         self.use_magic_routing = use_magic_routing;
-        self.split_ys = split_ys;
 
         if !self.topo_fname.is_empty() {
             if let Err(e) = self.read_topo_from_file(rseed, sides_only) {
@@ -190,7 +182,6 @@ impl TopoGraph {
                         let node_type = match node.chars().next() {
                             Some('m') => NodeType::Magic,
                             Some('b') => NodeType::Bus,
-                            Some('e') => NodeType::Estabilizer,
                             _ => continue,
                         };
                         self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
@@ -227,17 +218,9 @@ impl TopoGraph {
                 // Data column
                 for row in 1..self.num_rows - 1 {
                     if row % 3 + 1 == 2 {
-                        if self.split_ys && row != 1 && row != self.num_rows - 2 && col % 4 == 0 {
-                            self.node_grid[col][row] =
-                                Some(self.add_qubit(col, row, NodeType::Estabilizer));
-                        } else {
-                            let node_type = if self.use_magic_routing {
-                                NodeType::Magic
-                            } else {
-                                NodeType::Bus
-                            };
-                            self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
-                        }
+                        let node_type =
+                            if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                     } else {
                         if qi < max_qi {
                             self.add_double_data_qubit(qi, col, row, row % 3 + 1 == 3);
@@ -366,17 +349,7 @@ impl TopoGraph {
                                 Some(self.add_qubit(col, row, NodeType::Magic));
                         }
                     } else {
-                        let node_type = if self.split_ys
-                                           && row != 0
-                                           && row != self.num_rows - 1
-                                           && row % (2 * row_gap) == row_gap + (ancilla_rows / 2)
-                                           && col % (col_spacing * 2) == col_spacing - 1
-                        {
-                            NodeType::Estabilizer
-                        } else {
-                            NodeType::Magic
-                        };
-                        self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
+                        self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
                     }
                 } else {
                     // magic column
@@ -418,7 +391,6 @@ impl TopoGraph {
             NodeType::Magic => "m",
             NodeType::Bus => "b",
             NodeType::Data => "d",
-            NodeType::Estabilizer => "e",
         };
 
         let label = format!("{}{}-{}", ch, col, row);
@@ -547,25 +519,19 @@ impl TopoGraph {
         let mut data_count = 0;
         let mut magic_count = 0;
         let mut bus_count = 0;
-        let mut estabilizer_count = 0;
 
         for node in self.nodes.values() {
             match node.node_type {
                 NodeType::Data => data_count += 1,
                 NodeType::Magic => magic_count += 1,
                 NodeType::Bus => bus_count += 1,
-                NodeType::Estabilizer => estabilizer_count += 1,
             }
         }
 
         self.num_data_qubits = data_count / 2;
         self.num_magic_qubits = magic_count;
         self.num_bus_qubits = bus_count;
-        self.num_estabilizer_qubits = estabilizer_count;
-        self.num_qubits = self.num_data_qubits
-                          + self.num_bus_qubits
-                          + self.num_magic_qubits
-                          + self.num_estabilizer_qubits;
+        self.num_qubits = self.num_data_qubits + self.num_bus_qubits + self.num_magic_qubits;
 
         let total = self.num_qubits as f64;
         println!("Number of qubits:");
@@ -578,9 +544,6 @@ impl TopoGraph {
         println!("  magic:        {} ({:.3})",
                  self.num_magic_qubits,
                  self.num_magic_qubits as f64 / total);
-        println!("  e-stabilizer: {} ({:.3})",
-                 self.num_estabilizer_qubits,
-                 self.num_estabilizer_qubits as f64 / total);
         println!("  total:        {}", self.num_qubits);
     }
 
@@ -628,7 +591,7 @@ impl TopoGraph {
         self.nodes.values()
     }
 
-    pub fn iter_edges(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+    pub fn _iter_edges(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.nodes.iter().flat_map(|(node_label, node)| {
                              node.edges
                                  .iter()
@@ -812,14 +775,11 @@ impl TopoGraph {
         for node in self.nodes.values() {
             let (x, y) = node.pos;
             let mut border_color = None;
-            let mut ancilla_node = None;
             let mut root_node = None;
             // Check if node is part of any path
             for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
                 if path_graph.contains_node(&node.label) {
                     border_color = Some(&path_colors[i]);
-                    //let path_node = path_graph.get_node(&node.label);
-                    ancilla_node = path_graph.ancilla_node.clone();
                     root_node = path_graph.root_node.clone();
                     break;
                 }
@@ -831,22 +791,11 @@ impl TopoGraph {
                         if border_color == None || Some(node.label.clone()) == root_node {
                             RGBColor(0xFF, 0xBB, 0x99)
                         } else {
-                            if Some(node.label.clone()) == ancilla_node {
-                                RGBColor(0x77, 0xCC, 0xCC)
-                            } else {
-                                RGBColor(0xAA, 0xAA, 0xAA)
-                            }
-                        }
-                    }
-                    NodeType::Bus => {
-                        if border_color != None && Some(node.label.clone()) == ancilla_node {
-                            RGBColor(0x77, 0xCC, 0xCC)
-                        } else {
                             RGBColor(0xAA, 0xAA, 0xAA)
                         }
                     }
+                    NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
                     NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
-                    NodeType::Estabilizer => RGBColor(0x99, 0xCC, 0x99),
                 }.filled();
             chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32), 22, node_color)))?;
             // Draw border if part of a path
@@ -870,8 +819,6 @@ impl TopoGraph {
                     } else {
                         if Some(node.label.clone()) == root_node {
                             node.label.clone()
-                        } else if Some(node.label.clone()) == ancilla_node {
-                            "  A".to_string()
                         } else {
                             "  B".to_string()
                         }
@@ -881,14 +828,9 @@ impl TopoGraph {
                     if border_color == None {
                         node.label.clone()
                     } else {
-                        if Some(node.label.clone()) == ancilla_node {
-                            "  A".to_string()
-                        } else {
-                            "  B".to_string()
-                        }
+                        "  B".to_string()
                     }
                 }
-                NodeType::Estabilizer => node.label.clone(),
             };
             chart.draw_series(std::iter::once(Text::new(label_text,
                                                         (x as f32 - 0.17, y as f32 + 0.09),

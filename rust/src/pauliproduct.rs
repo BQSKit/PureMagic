@@ -21,9 +21,6 @@ pub struct PauliProduct {
     pub children: Vec<i32>,
     pub max_qubit: usize,
     pub id: i32,
-    pub num_ys: usize,
-    pub need_estabilizer: bool,
-    pub need_ancilla: bool,
     pub is_clifford: bool,
 }
 
@@ -34,9 +31,6 @@ impl Default for PauliProduct {
                        parents: Vec::new(),
                        children: Vec::new(),
                        id: -1,
-                       num_ys: 0,
-                       need_estabilizer: false,
-                       need_ancilla: false,
                        is_clifford: false }
     }
 }
@@ -58,9 +52,6 @@ impl PauliProduct {
                 '_' => continue,
                 'X' | 'Z' | 'Y' => {
                     self.operators.push(Operator { qubit: i - 1, basis: c });
-                    if c == 'Y' {
-                        self.num_ys += 1;
-                    }
                 }
                 '<' => {
                     let angle = &s[i..];
@@ -134,8 +125,6 @@ impl PauliProduct {
         }
         // Sort operators by qubit index for consistency
         operators.sort_by_key(|op| op.qubit);
-        // Count Y operators
-        let num_ys = operators.iter().filter(|op| op.basis == 'Y').count();
         // Determine max qubit
         let max_qubit = operators.iter().map(|op| op.qubit).max().unwrap_or(0);
 
@@ -144,9 +133,6 @@ impl PauliProduct {
                        children: Vec::new(),
                        max_qubit,
                        id: product_id,
-                       num_ys,
-                       need_estabilizer: false,
-                       need_ancilla: false,
                        is_clifford: false }
     }
 
@@ -166,13 +152,9 @@ impl PauliProduct {
 
 impl fmt::Display for PauliProduct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ancilla_str = if self.num_ys % 2 == 1 { "A" } else { "-" };
-        let es_str = if self.need_estabilizer { "E" } else { "-" };
         let clifford_str = if self.is_clifford { "clifford" } else { "non-clifford" };
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
 
-        write!(f,
-               "{} {} {} {} {} {:?} {:?}",
-               self.id, ops, ancilla_str, es_str, clifford_str, self.children, self.parents)
+        write!(f, "{} {} {} {:?} {:?}", self.id, ops, clifford_str, self.children, self.parents)
     }
 }

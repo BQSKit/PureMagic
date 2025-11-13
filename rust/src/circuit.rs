@@ -1,4 +1,4 @@
-use crate::pauliproduct::{Operator, PauliProduct};
+use crate::pauliproduct::PauliProduct;
 use crate::utils::Timer;
 use std::fs::create_dir_all;
 
@@ -112,58 +112,6 @@ impl Circuit {
 
     pub fn num_products(&self) -> usize {
         self.products.len()
-    }
-
-    pub fn split_ys(&mut self) {
-        let mut modifications = Vec::new();
-        let start_id = self.products.len() as i32;
-        // split Ys and gather changes for original PPs in modifications vector
-        for pp in self.products.iter() {
-            if pp.num_ys > 0 {
-                let mut new_pp = PauliProduct::new();
-                new_pp.id = start_id + modifications.len() as i32;
-                new_pp.is_clifford = pp.is_clifford;
-                new_pp.num_ys = pp.num_ys;
-                new_pp.need_ancilla = pp.num_ys % 2 == 1;
-                new_pp.need_estabilizer = true;
-                // Convert Y operators to X and Z parts
-                let mut pp_operators_updated = Vec::new();
-                for op in &pp.operators {
-                    match op.basis {
-                        'X' => pp_operators_updated.push(op.clone()),
-                        'Y' => {
-                            pp_operators_updated.push(Operator { qubit: op.qubit, basis: 'x' });
-                            new_pp.operators.push(Operator { qubit: op.qubit, basis: 'z' });
-                        }
-                        'Z' => new_pp.operators.push(op.clone()),
-                        _ => {}
-                    }
-                }
-                new_pp.children = pp.children.clone();
-                new_pp.parents.push(pp.id);
-                modifications.push((pp.id, pp_operators_updated, new_pp));
-            }
-        }
-        let modifications_len = modifications.len();
-        // update original products from modification vector information, and add new products
-        for (pp_id, pp_operators_updated, new_pp) in modifications {
-            // Update original product
-            let pp = &mut self.products[pp_id as usize];
-            pp.operators = pp_operators_updated;
-            pp.children = vec![new_pp.id];
-            for child_id in new_pp.children.iter() {
-                let pp_child = &mut self.products[*child_id as usize];
-                if let Some(pos) = pp_child.parents.iter().position(|&x| x == pp_id) {
-                    pp_child.parents[pos] = new_pp.id;
-                }
-            }
-            // Add the new product
-            self.products.push(new_pp);
-        }
-
-        println!("After splitting {} Y products there are {} products in the circuit",
-                 modifications_len,
-                 self.products.len());
     }
 
     pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -560,33 +508,20 @@ impl Circuit {
     }
 
     pub fn print_statistics(&self) -> usize {
-        let (num_layers,
-             num_cliffords,
-             avg_products,
-             max_products,
-             avg_ancillas,
-             max_ancillas,
-             avg_estabilizers,
-             max_estabilizers) = self.get_statistics();
+        let (num_layers, num_cliffords, avg_products, max_products) = self.get_statistics();
         println!("Circuit statistics:");
         println!("  Number of products:               {}", self.products.len());
         println!("  Number of Cliffords:              {}", num_cliffords);
         println!("  Layers:                           {}", num_layers);
         println!("  Products per layer:               {:.2} avg, {} max",
                  avg_products, max_products);
-        println!("  Required ancilla per layer:       {:.2} avg, {} max",
-                 avg_ancillas, max_ancillas);
-        println!("  Required e-stabilizers per layer: {:.2} avg, {} max",
-                 avg_estabilizers, max_estabilizers);
         num_layers
     }
 
-    fn get_statistics(&self) -> (usize, i32, f64, i32, f64, i32, f64, i32) {
+    fn get_statistics(&self) -> (usize, i32, f64, i32) {
         let layers = self.get_layers();
         let mut num_cliffords = 0;
         let mut num_products = vec![0; layers.len()];
-        let mut num_reqd_ancillas = vec![0; layers.len()];
-        let mut num_reqd_estabilizers = vec![0; layers.len()];
 
         for (i, layer) in layers.iter().enumerate() {
             num_products[i] += layer.len();
@@ -594,30 +529,12 @@ impl Circuit {
                 if pp.is_clifford {
                     num_cliffords += 1;
                 }
-                if pp.need_ancilla {
-                    num_reqd_ancillas[i] += 1;
-                }
-                if pp.need_estabilizer {
-                    num_reqd_estabilizers[i] += 1;
-                }
             }
         }
         let num_layers = layers.len();
         let avg_products = self.products.len() as f64 / num_layers as f64;
         let max_products = *num_products.iter().max().unwrap_or(&0);
-        let avg_reqd_ancillas = num_reqd_ancillas.iter().sum::<i32>() as f64 / layers.len() as f64;
-        let max_reqd_ancillas = *num_reqd_ancillas.iter().max().unwrap_or(&0);
-        let avg_reqd_estabilizers =
-            num_reqd_estabilizers.iter().sum::<i32>() as f64 / layers.len() as f64;
-        let max_reqd_estabilizers = *num_reqd_estabilizers.iter().max().unwrap_or(&0);
-        (layers.len(),
-         num_cliffords,
-         avg_products,
-         max_products as i32,
-         avg_reqd_ancillas,
-         max_reqd_ancillas,
-         avg_reqd_estabilizers,
-         max_reqd_estabilizers)
+        (layers.len(), num_cliffords, avg_products, max_products as i32)
     }
 
     pub fn print(&self) -> io::Result<()> {
