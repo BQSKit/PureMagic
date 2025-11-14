@@ -106,8 +106,7 @@ pub struct Scheduler {
     magic_state_lambda: f64,
     plot_option: String,
     cultivation_times: Vec<i32>,
-    schedule_tgate_timer: IntermittentTimer,
-    schedule_clifford_timer: IntermittentTimer,
+    schedule_product_timer: IntermittentTimer,
     stats: ScheduleStats,
 }
 
@@ -134,8 +133,7 @@ impl Scheduler {
                     magic_state_lambda,
                     plot_option,
                     cultivation_times: Vec::new(),
-                    schedule_tgate_timer: IntermittentTimer::new("sched non-clifford", ""),
-                    schedule_clifford_timer: IntermittentTimer::new("sched clifford", ""),
+                    schedule_product_timer: IntermittentTimer::new("sched non-clifford", ""),
                     stats: ScheduleStats::new(num_qubits,
                                               num_data_qubits,
                                               num_bus_qubits,
@@ -278,9 +276,7 @@ impl Scheduler {
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
-
-        self.schedule_clifford_timer.done();
-        self.schedule_tgate_timer.done();
+        self.schedule_product_timer.done();
 
         Ok((num_steps, scheduled.len(), overall_frac))
     }
@@ -423,7 +419,52 @@ impl Scheduler {
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
         log::info!("Trying to schedule product {}", pauli_product);
         // Initially terminal nodes contain only the data qubits
-        let mut data_nodes = Vec::new();
+        let terminals = self.get_terminal_nodes(pauli_product);
+        if terminals.is_none() {
+            log::info!("  No data nodes found in working graph");
+            return None;
+        }
+        let terminals = terminals.unwrap();
+        // Handle single data node case
+        if terminals.len() == 1 && !pauli_product.is_tgate {
+            let node_label = &terminals[0];
+            let node = self.topo.get_node(node_label);
+            if node.used {
+                log::info!("  Single node {} is used", node_label);
+                return None;
+            }
+
+            let mut g = TopoGraph::new();
+            g.add_node(node.clone());
+
+            log::info!("Scheduled clifford on {:?} nodes",
+                       g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
+            return Some(g);
+        }
+        // root node needs to be a bus/magic node next to one of the data nodes
+        for node_label in terminals.iter() {
+            let node = self.topo.get_node(node_label);
+            if node.used {
+                return None;
+            }
+            for nb_label in node.edges.iter() {
+                let nb = self.topo.get_node(&nb_label);
+                if !nb.used && self.topo.is_routing_node(nb) && nb.pos.1 == node.pos.1 {
+                    let g = self.get_bfs_graph(nb_label, &terminals, pauli_product.is_tgate);
+                    if let Some(g) = g {
+                        log::info!("Scheduled clifford in {:?} nodes",
+                                   g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
+                        return Some(g);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn get_terminal_nodes(&self, pauli_product: &PauliProduct) -> Option<Vec<String>> {
+        // Initially terminal nodes contain only the data qubits
+        let mut terminals = Vec::new();
         for op in &pauli_product.operators {
             if op.basis == 'Y' {
                 for term in ['X', 'Z'] {
@@ -443,7 +484,7 @@ impl Scheduler {
                         log::info!("  No unused neighbors for node {}", node.label);
                         return None;
                     }
-                    data_nodes.push(node_label);
+                    terminals.push(node_label);
                 }
             } else {
                 let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
@@ -462,174 +503,13 @@ impl Scheduler {
                     log::info!("  No unused neighbors for node {}", node.label);
                     return None;
                 }
-                data_nodes.push(node_label);
+                terminals.push(node_label);
             }
         }
-        if data_nodes.is_empty() {
-            log::info!("  No data nodes found in working graph");
-            return None;
-        }
-        if pauli_product.is_tgate {
-            self.schedule_tgate_timer.start();
-            let g = self.schedule_clifford(&mut data_nodes, pauli_product);
-            //let g = self.schedule_tgate(&mut data_nodes, pauli_product);
-            self.schedule_tgate_timer.stop();
-            g
-        } else {
-            self.schedule_clifford_timer.start();
-            let g = self.schedule_clifford(&mut data_nodes, pauli_product);
-            self.schedule_clifford_timer.stop();
-            g
-        }
+        Some(terminals)
     }
 
-    fn schedule_tgate(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
-                      -> Option<TopoGraph> {
-        // Find available magic nodes
-        let mut magic_nodes = Vec::new();
-        for node in self.topo.iter_nodes() {
-            if node.node_type == NodeType::Magic && !node.is_cultivating() && !node.used {
-                let mut unused_nb = false;
-                for nb_label in &node.edges {
-                    let nb = self.topo.get_node(nb_label);
-                    if self.topo.is_routing_node(nb) && !nb.used {
-                        unused_nb = true;
-                        break;
-                    }
-                }
-                if unused_nb {
-                    magic_nodes.push(node.label.clone());
-                }
-            }
-        }
-        if magic_nodes.is_empty() {
-            log::info!("  No available magic nodes");
-            return None;
-        }
-        log::info!("  Found {} available magic nodes {:?}", magic_nodes.len(), magic_nodes);
-        let magic_nodes_sorted = self.get_nodes_by_dist(&magic_nodes, pauli_product)
-                                     .into_iter()
-                                     .map(|(node, _)| node)
-                                     .collect::<Vec<_>>();
-        log::info!("  Magic nodes by distance to {}: {:?}", pauli_product.id, magic_nodes_sorted);
-        self.find_tree(&magic_nodes_sorted, data_nodes, pauli_product)
-    }
-
-    fn get_nodes_by_dist(&self, node_labels: &[String], pauli_product: &PauliProduct)
-                         -> Vec<(String, f64)> {
-        // Sort nodes by distance to pp data nodes
-        let mut node_distances = Vec::new();
-
-        for node_label in node_labels {
-            let mut min_d = f64::MAX;
-            for op in &pauli_product.operators {
-                if op.basis == 'Y' {
-                    let data_node_label_x = format!("d{}{}", op.qubit, 'X');
-                    let d_x = self.get_node_dist(node_label, &data_node_label_x);
-                    if d_x < min_d {
-                        min_d = d_x;
-                    }
-                    let data_node_label_z = format!("d{}{}", op.qubit, 'Z');
-                    let d_z = self.get_node_dist(node_label, &data_node_label_z);
-                    if d_z < min_d {
-                        min_d = d_z;
-                    }
-                } else {
-                    let data_node_label = format!("d{}", op.to_string().to_ascii_uppercase());
-                    let d = self.get_node_dist(node_label, &data_node_label);
-                    if d < min_d {
-                        min_d = d;
-                    }
-                }
-            }
-            node_distances.push((node_label.clone(), min_d));
-        }
-        node_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        node_distances
-    }
-
-    fn get_node_dist(&self, node1: &str, node2: &str) -> f64 {
-        let pos1 = self.topo.get_node(node1).pos;
-        let pos2 = self.topo.get_node(node2).pos;
-        let dx = pos1.0 as f64 - pos2.0 as f64;
-        let dy = pos1.1 as f64 - pos2.1 as f64;
-        (dx * dx + dy * dy).sqrt()
-    }
-
-    fn schedule_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
-                         -> Option<TopoGraph> {
-        // Handle single data node case
-        if data_nodes.len() == 1 && !pauli_product.is_tgate {
-            let node_label = &data_nodes[0];
-            let node = self.topo.get_node(node_label);
-            if node.used {
-                log::info!("  Single node {} is used", node_label);
-                return None;
-            }
-
-            let mut g = TopoGraph::new();
-            g.add_node(node.clone());
-
-            log::info!("Scheduled clifford on {:?} nodes",
-                       g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
-            return Some(g);
-        }
-        // root node needs to be a bus/magic node next to one of the data nodes
-        let mut root_nodes = IndexSet::new();
-        for node_label in data_nodes.iter() {
-            let node = self.topo.get_node(node_label);
-            if node.used {
-                return None;
-            }
-            for nb_label in node.edges.iter() {
-                let nb = self.topo.get_node(&nb_label);
-                if !nb.used && self.topo.is_routing_node(nb) && nb.pos.1 == node.pos.1 {
-                    root_nodes.insert(nb_label.clone());
-                }
-            }
-        }
-        if root_nodes.is_empty() {
-            return None;
-        }
-        // Try to find a tree using each root node
-        let root_nodes_vec: Vec<String> = root_nodes.iter().cloned().collect();
-        // find_tree also finds the ancilla if needed
-        let g = self.find_tree(&root_nodes_vec, data_nodes, pauli_product);
-        if let Some(ref g) = g {
-            log::info!("Scheduled clifford in {:?} nodes",
-                       g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
-        }
-        g
-    }
-
-    fn find_tree(&self, root_nodes: &[String], data_nodes: &mut Vec<String>,
-                 pauli_product: &PauliProduct)
-                 -> Option<TopoGraph> {
-        log::info!("  Find tree for {}:", pauli_product.id);
-        for root_node_label in root_nodes {
-            let g = self.get_bfs_graph(root_node_label, data_nodes, pauli_product.is_tgate, None);
-            //let g = self.get_bfs_graph(root_node_label, data_nodes, false, None);
-            match g {
-                None => {
-                    log::info!("    No tree from root node {} to {:?}",
-                               root_node_label,
-                               data_nodes);
-                    continue;
-                }
-                Some(graph) => {
-                    log::info!("    Found tree from {} to {:?} of size {}",
-                               root_node_label,
-                               data_nodes,
-                               graph.num_edges,);
-                    return Some(graph);
-                }
-            }
-        }
-        None
-    }
-
-    fn get_bfs_graph(&self, root_label: &str, terminal_nodes: &mut Vec<String>, is_tgate: bool,
-                     exclude: Option<&TopoGraph>)
+    fn get_bfs_graph(&self, root_label: &str, terminal_nodes: &Vec<String>, is_tgate: bool)
                      -> Option<TopoGraph> {
         log::info!("  BFS from node {} to nodes {:?}", root_label, terminal_nodes);
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
@@ -656,12 +536,6 @@ impl Scheduler {
                 }
                 if visited.contains(nb_label.as_str()) {
                     continue;
-                }
-                // Skip excluded nodes unless they are terminal nodes
-                if let Some(ex) = exclude {
-                    if ex.contains_node(&nb_label) && !terminal_nodes.contains(&nb_label) {
-                        continue;
-                    }
                 }
                 let nb_is_cultivator = is_tgate
                                        && cultivator == None
