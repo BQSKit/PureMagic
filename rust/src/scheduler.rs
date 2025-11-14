@@ -295,7 +295,7 @@ impl Scheduler {
         let new_cultivation_times: Vec<i32> =
             (0..num_used_magic_nodes).map(|_| self.gen_cultivation_time()).collect();
         // Now update all nodes
-        let mut _num_avail_magic = 0;
+        let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
             if !node.used && node.is_cultivating() {
@@ -304,7 +304,6 @@ impl Scheduler {
                     self.cultivation_times.push(node.cultivation_time);
                     node.cultivation_time = 0;
                     node.busy_count = 0;
-                    _num_avail_magic += 1;
                 }
             }
             if node.used && node.node_type == NodeType::Magic {
@@ -313,6 +312,9 @@ impl Scheduler {
                 cultivation_time_index += 1;
             }
             node.used = false;
+            if node.node_type == NodeType::Magic && node.cultivation_time == 0 {
+                num_avail_magic += 1;
+            }
         }
 
         let mut pp_paths = Vec::new();
@@ -337,42 +339,45 @@ impl Scheduler {
             let mut best_pp_num_terms = 0;
             for &pp_i in &remaining_to_schedule {
                 let pp = &to_schedule[pp_i];
-                match self.schedule_pauli_product(pp) {
-                    None => {
-                        log::info!("  * Could not schedule {} on graph", pp.id);
-                        next_to_schedule.push(pp.clone());
-                        // Mark dependent nodes as used
-                        for op in &pp.operators {
-                            if op.basis == 'Y' {
-                                let node_label_x = format!("d{}{}", op.qubit, 'X');
-                                self.topo.get_node_mut(&node_label_x).used = true;
-                                let node_label_z = format!("d{}{}", op.qubit, 'Z');
-                                self.topo.get_node_mut(&node_label_z).used = true;
-                                num_dependent_nodes += 2;
-                            } else {
-                                let node_label =
-                                    format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                                self.topo.get_node_mut(&node_label).used = true;
-                                num_dependent_nodes += 1;
-                            }
+                let pp_graph = if num_avail_magic == 0 && pp.is_tgate {
+                    None
+                } else {
+                    self.schedule_pauli_product(pp)
+                };
+                if pp_graph.is_none() {
+                    log::info!("  * Could not schedule {} on graph", pp.id);
+                    next_to_schedule.push(pp.clone());
+                    // Mark dependent nodes as used
+                    for op in &pp.operators {
+                        if op.basis == 'Y' {
+                            let node_label_x = format!("d{}{}", op.qubit, 'X');
+                            self.topo.get_node_mut(&node_label_x).used = true;
+                            let node_label_z = format!("d{}{}", op.qubit, 'Z');
+                            self.topo.get_node_mut(&node_label_z).used = true;
+                            num_dependent_nodes += 2;
+                        } else {
+                            let node_label =
+                                format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                            self.topo.get_node_mut(&node_label).used = true;
+                            num_dependent_nodes += 1;
                         }
-                        to_remove.push(pp_i);
                     }
-                    Some(pp_graph) => {
-                        let pp_num_terms = pp.operators.len();
-                        if pp_num_terms >= best_pp_num_terms {
-                            let pp_graph_size = pp_graph.num_nodes;
-                            if pp_graph_size < best_pp_graph_size {
-                                best_pp_num_terms = pp_num_terms;
-                                best_pp_graph_size = pp_graph_size;
-                                best_pp = Some((pp_i, pp_graph));
-                                log::info!("  New best graph for pp {}, terms {}, size {}",
-                                           pp.get_product_str(),
-                                           best_pp_num_terms,
-                                           best_pp_graph_size);
-                                if !best_fit {
-                                    break;
-                                }
+                    to_remove.push(pp_i);
+                } else {
+                    let pp_graph = pp_graph.unwrap();
+                    let pp_num_terms = pp.operators.len();
+                    if pp_num_terms >= best_pp_num_terms {
+                        let pp_graph_size = pp_graph.num_nodes;
+                        if pp_graph_size < best_pp_graph_size {
+                            best_pp_num_terms = pp_num_terms;
+                            best_pp_graph_size = pp_graph_size;
+                            best_pp = Some((pp_i, pp_graph));
+                            log::info!("  New best graph for pp {}, terms {}, size {}",
+                                       pp.get_product_str(),
+                                       best_pp_num_terms,
+                                       best_pp_graph_size);
+                            if !best_fit {
+                                break;
                             }
                         }
                     }
@@ -392,9 +397,7 @@ impl Scheduler {
                 }
                 pp_paths.push((pp.clone(), best_graph));
                 to_remove.push(best_pp_idx);
-                if pp.is_tgate {
-                    _num_avail_magic -= 1;
-                }
+                num_avail_magic -= 1;
             }
             for pp_i in to_remove {
                 remaining_to_schedule.shift_remove(&pp_i);
