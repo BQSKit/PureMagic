@@ -21,7 +21,7 @@ pub struct PauliProduct {
     pub children: Vec<i32>,
     pub max_qubit: usize,
     pub id: i32,
-    pub is_clifford: bool,
+    pub is_tgate: bool,
 }
 
 impl Default for PauliProduct {
@@ -31,7 +31,7 @@ impl Default for PauliProduct {
                        parents: Vec::new(),
                        children: Vec::new(),
                        id: -1,
-                       is_clifford: false }
+                       is_tgate: true }
     }
 }
 
@@ -56,8 +56,8 @@ impl PauliProduct {
                 '<' => {
                     let angle = &s[i..];
                     match angle {
-                        "<M>" => self.is_clifford = true,
-                        "<pi/8>" => self.is_clifford = false,
+                        "<M>" => self.is_tgate = false,
+                        "<pi/8>" => self.is_tgate = true,
                         _ => {
                             return Err(format!("Unknown angle {} in product {}", angle, s).into());
                         }
@@ -79,7 +79,7 @@ impl PauliProduct {
 
     pub fn get_product_str(&self) -> String {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
-        let angle = if self.is_clifford { "<M>" } else { "<T>" };
+        let angle = if self.is_tgate { "<T>" } else { "<M>" };
         format!("{}{}", ops, angle)
     }
 
@@ -133,7 +133,7 @@ impl PauliProduct {
                        children: Vec::new(),
                        max_qubit,
                        id: product_id,
-                       is_clifford: false }
+                       is_tgate: true }
     }
 
     pub fn to_circuit_format(&self, num_qubits: usize) -> String {
@@ -145,14 +145,14 @@ impl PauliProduct {
             pauli_string[op.qubit] = op.basis;
         }
 
-        let angle = if self.is_clifford { "<M>" } else { "<pi/8>" };
+        let angle = if self.is_tgate { "<pi/8>" } else { "<M>" };
         format!("{}{}{}", sign, pauli_string.iter().collect::<String>(), angle)
     }
 }
 
 impl fmt::Display for PauliProduct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let clifford_str = if self.is_clifford { "clifford" } else { "non-clifford" };
+        let clifford_str = if self.is_tgate { "T-gate" } else { "clifford" };
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
 
         write!(f, "{} {} {} {:?} {:?}", self.id, ops, clifford_str, self.children, self.parents)

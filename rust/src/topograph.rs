@@ -818,9 +818,23 @@ impl TopoGraph {
                         }
                     } else {
                         if Some(node.label.clone()) == root_node {
-                            node.label.clone()
+                            format!("R{}", (node.cultivation_time - node.busy_count))
+                            /*if node.node_type == NodeType::Magic && node.is_cultivating() {
+                                (node.cultivation_time - node.busy_count).to_string()
+                            } else {
+                                //node.label.clone()
+                                "  R".to_string()
+                            }*/
                         } else {
-                            "  B".to_string()
+                            if node.node_type == NodeType::Magic {
+                                if node.is_cultivating() {
+                                    (node.cultivation_time - node.busy_count).to_string()
+                                } else {
+                                    "  R".to_string()
+                                }
+                            } else {
+                                "  B".to_string()
+                            }
                         }
                     }
                 }
@@ -832,9 +846,15 @@ impl TopoGraph {
                     }
                 }
             };
+            // Determine font style based on label content
+            let font_style = if label_text.contains('R') {
+                ("sans-serif", 18, FontStyle::Bold).into_font()
+            } else {
+                ("sans-serif", 18).into_font()
+            };
             chart.draw_series(std::iter::once(Text::new(label_text,
                                                         (x as f32 - 0.17, y as f32 + 0.09),
-                                                        ("sans-serif", 18).into_font())))?;
+                                                        font_style)))?;
         }
         // Draw Pauli product labels
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {

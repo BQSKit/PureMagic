@@ -106,7 +106,7 @@ pub struct Scheduler {
     magic_state_lambda: f64,
     plot_option: String,
     cultivation_times: Vec<i32>,
-    schedule_non_clifford_timer: IntermittentTimer,
+    schedule_tgate_timer: IntermittentTimer,
     schedule_clifford_timer: IntermittentTimer,
     stats: ScheduleStats,
 }
@@ -134,7 +134,7 @@ impl Scheduler {
                     magic_state_lambda,
                     plot_option,
                     cultivation_times: Vec::new(),
-                    schedule_non_clifford_timer: IntermittentTimer::new("sched non-clifford", ""),
+                    schedule_tgate_timer: IntermittentTimer::new("sched non-clifford", ""),
                     schedule_clifford_timer: IntermittentTimer::new("sched clifford", ""),
                     stats: ScheduleStats::new(num_qubits,
                                               num_data_qubits,
@@ -280,7 +280,7 @@ impl Scheduler {
         println!("  max:     {}", max);
 
         self.schedule_clifford_timer.done();
-        self.schedule_non_clifford_timer.done();
+        self.schedule_tgate_timer.done();
 
         Ok((num_steps, scheduled.len(), overall_frac))
     }
@@ -299,6 +299,7 @@ impl Scheduler {
         let new_cultivation_times: Vec<i32> =
             (0..num_used_magic_nodes).map(|_| self.gen_cultivation_time()).collect();
         // Now update all nodes
+        let mut _num_avail_magic = 0;
         let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
             if !node.used && node.is_cultivating() {
@@ -307,6 +308,7 @@ impl Scheduler {
                     self.cultivation_times.push(node.cultivation_time);
                     node.cultivation_time = 0;
                     node.busy_count = 0;
+                    _num_avail_magic += 1;
                 }
             }
             if node.used && node.node_type == NodeType::Magic {
@@ -394,6 +396,9 @@ impl Scheduler {
                 }
                 pp_paths.push((pp.clone(), best_graph));
                 to_remove.push(best_pp_idx);
+                if pp.is_tgate {
+                    _num_avail_magic -= 1;
+                }
             }
             for pp_i in to_remove {
                 remaining_to_schedule.shift_remove(&pp_i);
@@ -464,10 +469,11 @@ impl Scheduler {
             log::info!("  No data nodes found in working graph");
             return None;
         }
-        if !pauli_product.is_clifford {
-            self.schedule_non_clifford_timer.start();
-            let g = self.schedule_non_clifford(&mut data_nodes, pauli_product);
-            self.schedule_non_clifford_timer.stop();
+        if pauli_product.is_tgate {
+            self.schedule_tgate_timer.start();
+            let g = self.schedule_clifford(&mut data_nodes, pauli_product);
+            //let g = self.schedule_tgate(&mut data_nodes, pauli_product);
+            self.schedule_tgate_timer.stop();
             g
         } else {
             self.schedule_clifford_timer.start();
@@ -477,8 +483,8 @@ impl Scheduler {
         }
     }
 
-    fn schedule_non_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
-                             -> Option<TopoGraph> {
+    fn schedule_tgate(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
+                      -> Option<TopoGraph> {
         // Find available magic nodes
         let mut magic_nodes = Vec::new();
         for node in self.topo.iter_nodes() {
@@ -553,7 +559,7 @@ impl Scheduler {
     fn schedule_clifford(&self, data_nodes: &mut Vec<String>, pauli_product: &PauliProduct)
                          -> Option<TopoGraph> {
         // Handle single data node case
-        if data_nodes.len() == 1 {
+        if data_nodes.len() == 1 && !pauli_product.is_tgate {
             let node_label = &data_nodes[0];
             let node = self.topo.get_node(node_label);
             if node.used {
@@ -577,7 +583,7 @@ impl Scheduler {
             }
             for nb_label in node.edges.iter() {
                 let nb = self.topo.get_node(&nb_label);
-                if !nb.used && self.topo.is_routing_node(nb) {
+                if !nb.used && self.topo.is_routing_node(nb) && nb.pos.1 == node.pos.1 {
                     root_nodes.insert(nb_label.clone());
                 }
             }
@@ -601,7 +607,8 @@ impl Scheduler {
                  -> Option<TopoGraph> {
         log::info!("  Find tree for {}:", pauli_product.id);
         for root_node_label in root_nodes {
-            let g = self.get_bfs_graph(root_node_label, data_nodes, None);
+            let g = self.get_bfs_graph(root_node_label, data_nodes, pauli_product.is_tgate, None);
+            //let g = self.get_bfs_graph(root_node_label, data_nodes, false, None);
             match g {
                 None => {
                     log::info!("    No tree from root node {} to {:?}",
@@ -621,20 +628,25 @@ impl Scheduler {
         None
     }
 
-    fn get_bfs_graph(&self, root_node: &str, terminal_nodes: &mut Vec<String>,
+    fn get_bfs_graph(&self, root_label: &str, terminal_nodes: &mut Vec<String>, is_tgate: bool,
                      exclude: Option<&TopoGraph>)
                      -> Option<TopoGraph> {
-        log::info!("  BFS from node {} to nodes {:?}", root_node, terminal_nodes);
+        log::info!("  BFS from node {} to nodes {:?}", root_label, terminal_nodes);
         let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
         let mut bfs_graph = TopoGraph::new();
 
-        visited.insert(root_node);
-        queue.push_back(root_node);
+        visited.insert(root_label);
+        queue.push_back(root_label);
         let num_terminals_reqd = terminal_nodes.len();
         let mut num_found_terminals = 0;
-
-        bfs_graph.add_node(self.topo.get_node(root_node).clone());
+        let mut cultivator = None;
+        let root_node = self.topo.get_node(root_label);
+        bfs_graph.add_node(root_node.clone());
+        if root_node.node_type == NodeType::Magic && root_node.cultivation_time == 0 {
+            cultivator = Some(root_label);
+            log::info!("    root node is cultivator");
+        }
         while let Some(node_label) = queue.pop_front() {
             let node = self.topo.get_node(&node_label);
             for nb_label in node.edges.iter() {
@@ -651,10 +663,25 @@ impl Scheduler {
                         continue;
                     }
                 }
-                if self.topo.is_routing_node(nb) {
+                let nb_is_cultivator = is_tgate
+                                       && cultivator == None
+                                       && nb.node_type == NodeType::Magic
+                                       && nb.cultivation_time == 0;
+                if self.topo.is_routing_node(nb) || nb_is_cultivator {
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     queue.push_back(nb_label);
+                    if nb_is_cultivator {
+                        cultivator = Some(nb_label);
+                        log::info!("    found cultivator: node {}", nb_label);
+                        if num_found_terminals == num_terminals_reqd {
+                            log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
+                            bfs_graph.trim_dangling_nodes(cultivator.unwrap());
+                            bfs_graph.root_node = Some(cultivator.unwrap().to_string());
+                            return Some(bfs_graph);
+                        }
+                    }
+                    //log::info!("    add node {} with edge {}->{}", nb_label, node_label, nb_label);
                 } else if terminal_nodes.contains(&nb_label) {
                     assert!(nb.node_type == NodeType::Data);
                     let paired_nb = self.topo.get_paired_data_node(nb);
@@ -678,7 +705,7 @@ impl Scheduler {
                             bfs_graph.remove_all_edges(&paired_nb.label);
                             num_found_terminals -= 1;
                         }
-                        log::info!("    Using top/bottom connection");
+                        log::info!("    Using top/bottom connection {}", paired_nb.label);
                         // if we haven't used both data nodes yet, then make this
                         // top/bottom the one used
                         visited.insert(paired_nb.label.as_str());
@@ -689,16 +716,23 @@ impl Scheduler {
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     num_found_terminals += 1;
-                    if num_found_terminals > num_terminals_reqd {
-                        println!("num_found_terminals {} num_terminals_reqd {}",
-                                 num_found_terminals, num_terminals_reqd);
-                        //assert!(num_found_terminals <= num_terminals_reqd);
-                    }
+                    //log::info!("    add terminal {} edge {}->{}", nb_label, node_label, nb_label);
+                    assert!(num_found_terminals <= num_terminals_reqd);
                     if num_found_terminals == num_terminals_reqd {
-                        log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
-                        bfs_graph.trim_dangling_nodes(root_node);
-                        bfs_graph.root_node = Some(root_node.to_string());
-                        return Some(bfs_graph);
+                        if is_tgate {
+                            if cultivator != None {
+                                log::info!("    Found tree of {} nodes",
+                                           bfs_graph.node_list().len());
+                                bfs_graph.trim_dangling_nodes(cultivator.unwrap());
+                                bfs_graph.root_node = Some(cultivator.unwrap().to_string());
+                                return Some(bfs_graph);
+                            }
+                        } else {
+                            log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
+                            bfs_graph.trim_dangling_nodes(root_label);
+                            bfs_graph.root_node = Some(root_label.to_string());
+                            return Some(bfs_graph);
+                        }
                     }
                 }
                 visited.insert(nb_label);
