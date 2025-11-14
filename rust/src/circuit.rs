@@ -196,10 +196,10 @@ impl Circuit {
                             (col as f32 - 0.1, start_pos as f32 - 0.4),
                             (col as f32 + 0.7, start_pos as f32 + rect_height - 0.4),
                         ],
-                        if pp.is_clifford {
-                            RGBColor(0xCC, 0xCC, 0x22).filled()
-                        } else {
+                        if pp.is_tgate {
                             RGBColor(0x22, 0xFF, 0x22).filled()
+                        } else {
+                            RGBColor(0xCC, 0xCC, 0x22).filled()
                         },
                     )))?;
                     if show_product_ids {
@@ -526,7 +526,7 @@ impl Circuit {
         for (i, layer) in layers.iter().enumerate() {
             num_products[i] += layer.len();
             for pp in layer {
-                if pp.is_clifford {
+                if !pp.is_tgate {
                     num_cliffords += 1;
                 }
             }
