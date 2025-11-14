@@ -133,7 +133,7 @@ impl Scheduler {
                     magic_state_lambda,
                     plot_option,
                     cultivation_times: Vec::new(),
-                    schedule_product_timer: IntermittentTimer::new("sched non-clifford", ""),
+                    schedule_product_timer: IntermittentTimer::new("sched product", ""),
                     stats: ScheduleStats::new(num_qubits,
                                               num_data_qubits,
                                               num_bus_qubits,
@@ -339,11 +339,13 @@ impl Scheduler {
             let mut best_pp_num_terms = 0;
             for &pp_i in &remaining_to_schedule {
                 let pp = &to_schedule[pp_i];
+                self.schedule_product_timer.start();
                 let pp_graph = if num_avail_magic == 0 && pp.is_tgate {
                     None
                 } else {
                     self.schedule_pauli_product(pp)
                 };
+                self.schedule_product_timer.stop();
                 if pp_graph.is_none() {
                     log::info!("  * Could not schedule {} on graph", pp.id);
                     next_to_schedule.push(pp.clone());
