@@ -656,39 +656,44 @@ impl Scheduler {
                     bfs_graph.add_edge(&node_label, &nb_label);
                     queue.push_back(nb_label);
                 } else if terminal_nodes.contains(&nb_label) {
-                    if nb.node_type == NodeType::Data {
-                        let paired_nb = self.topo.get_paired_data_node(nb);
-                        if node.edges.contains(&paired_nb.label) {
-                            // this is a top or bottom connection
-                            log::info!("    Node {} has a top/bottom connection to {}/{}",
-                                       node.label,
-                                       nb.label,
-                                       paired_nb.label);
-                            // only use the top/bottom if both nodes are in the terminals
-                            if !terminal_nodes.contains(&nb.label)
-                               || !terminal_nodes.contains(&paired_nb.label)
-                            {
-                                continue;
-                            }
-                            if visited.contains(paired_nb.label.as_str()) {
-                                // paired node is already in the graph, remove the previous edge
-                                let prev_paired_node = bfs_graph.get_node_mut(&paired_nb.label);
-                                // there should be only one edge to remove
-                                assert!(prev_paired_node.edges.len() == 1);
-                                bfs_graph.remove_all_edges(&paired_nb.label);
-                            }
-                            log::info!("    Using top/bottom connection");
-                            // if we haven't used both data nodes yet, then make this
-                            // top/bottom the one used
-                            visited.insert(paired_nb.label.as_str());
-                            bfs_graph.add_node(paired_nb.clone());
-                            bfs_graph.add_edge(&node_label, &paired_nb.label);
-                            num_found_terminals += 1;
+                    assert!(nb.node_type == NodeType::Data);
+                    let paired_nb = self.topo.get_paired_data_node(nb);
+                    if node.edges.contains(&paired_nb.label) {
+                        // this is a top or bottom connection
+                        log::info!("    Node {} has a top/bottom connection to {}/{}",
+                                   node.label,
+                                   nb.label,
+                                   paired_nb.label);
+                        // only use the top/bottom if both nodes are in the terminals
+                        if !terminal_nodes.contains(&nb.label)
+                           || !terminal_nodes.contains(&paired_nb.label)
+                        {
+                            continue;
                         }
+                        if visited.contains(paired_nb.label.as_str()) {
+                            // paired node is already in the graph, remove the previous edge
+                            let prev_paired_node = bfs_graph.get_node_mut(&paired_nb.label);
+                            // there should be only one edge to remove
+                            assert!(prev_paired_node.edges.len() == 1);
+                            bfs_graph.remove_all_edges(&paired_nb.label);
+                            num_found_terminals -= 1;
+                        }
+                        log::info!("    Using top/bottom connection");
+                        // if we haven't used both data nodes yet, then make this
+                        // top/bottom the one used
+                        visited.insert(paired_nb.label.as_str());
+                        bfs_graph.add_node(paired_nb.clone());
+                        bfs_graph.add_edge(&node_label, &paired_nb.label);
+                        num_found_terminals += 1;
                     }
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     num_found_terminals += 1;
+                    if num_found_terminals > num_terminals_reqd {
+                        println!("num_found_terminals {} num_terminals_reqd {}",
+                                 num_found_terminals, num_terminals_reqd);
+                        //assert!(num_found_terminals <= num_terminals_reqd);
+                    }
                     if num_found_terminals == num_terminals_reqd {
                         log::info!("    Found tree of {} nodes", bfs_graph.node_list().len());
                         bfs_graph.trim_dangling_nodes(root_node);
