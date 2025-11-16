@@ -152,7 +152,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize topology
     let mut topo_graph = TopoGraph::new();
     let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
-    topo_graph.set_topo(circuit.num_qubits,
+    let num_data_qubits = circuit.num_qubits;
+    topo_graph.set_topo(num_data_qubits,
                         &circuit_fname.to_string(),
                         &args.topo_fname,
                         &rseed,
@@ -165,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         topo_graph.plot(".topo", &[], "")?;
     }
 
-    let num_qubits = topo_graph.num_qubits;
+    let mut num_qubits = topo_graph.num_qubits;
 
     let mut scheduler = Scheduler::new(circuit,
                                        topo_graph,
@@ -174,8 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.plot.join(" "),
                                        args.rseed);
 
-    let (tot_num_steps, num_scheduled, space_utilization) =
-        scheduler.schedule_circuit(args.best_fit)?;
+    let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit(args.best_fit)?;
 
     // Calculate and print statistics
     let speedup = num_scheduled as f64 / tot_num_steps as f64;
@@ -183,13 +183,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Scheduled {} in {} time steps ({:.3} speedup) volume {}",
              num_scheduled, tot_num_steps, speedup, volume);
 
+    let mut best_magic_topo_graph = TopoGraph::new();
+    best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
+    best_magic_topo_graph.update_statistics();
+    num_qubits = best_magic_topo_graph.num_qubits;
+
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
     let optimal_volume = num_qubits * num_layers;
     println!("Optimal time steps {} ({:.3} speedup) volume {}",
              num_layers, optimal_speedup, optimal_volume);
 
-    println!("Scheduling time efficiency {:.3}", speedup as f64 / optimal_speedup as f64);
-    println!("Scheduling space efficiency {:.3}", space_utilization);
+    println!("Parallel efficiency {:.3}", speedup as f64 / optimal_speedup as f64);
+    println!("Scheduling efficiency {:.3}", optimal_volume as f64 / volume as f64);
 
     Ok(())
 }
