@@ -12,7 +12,6 @@ use std::io::{self, Write};
 use std::path::Path;
 
 struct ScheduleStats {
-    qubits: usize,
     data_qubits: usize,
     bus_qubits: usize,
     magic_qubits: usize,
@@ -25,9 +24,8 @@ struct ScheduleStats {
 }
 
 impl ScheduleStats {
-    pub fn new(qubits: usize, data_qubits: usize, bus_qubits: usize, magic_qubits: usize) -> Self {
-        ScheduleStats { qubits,
-                        data_qubits,
+    pub fn new(data_qubits: usize, bus_qubits: usize, magic_qubits: usize) -> Self {
+        ScheduleStats { data_qubits,
                         bus_qubits,
                         magic_qubits,
                         sum_data_scheduled: 0,
@@ -38,24 +36,16 @@ impl ScheduleStats {
                         magic_scheduled: 0 }
     }
 
-    pub fn summarize(&self, num_steps: usize) -> f64 {
+    pub fn summarize(&self, num_steps: usize) {
         // Calculate statistics
         let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_steps) as f64;
         let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_steps) as f64;
         let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_steps) as f64;
-
-        let overall_frac = (self.data_qubits * num_steps
-                            + self.sum_bus_scheduled
-                            + self.sum_magic_scheduled) as f64
-                           / (num_steps * self.qubits) as f64;
-
         // Print final statistics
         println!("Qubit fractions used:");
         println!("  data:        {:.3}", data_frac);
         println!("  bus:         {:.3}", bus_frac);
         println!("  magic:       {:.3}", magic_frac);
-
-        overall_frac
     }
 
     pub fn update(&mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize) -> String {
@@ -122,7 +112,6 @@ impl Scheduler {
             simple_logging::log_to_file(&sched_fname, log::LevelFilter::Info)
                 .expect("Failed to initialize logging");
         }
-        let num_qubits = topo.num_qubits;
         let num_data_qubits = topo.num_data_qubits;
         let num_bus_qubits = topo.num_bus_qubits;
         let num_magic_qubits = topo.num_magic_qubits;
@@ -134,13 +123,10 @@ impl Scheduler {
                     plot_option,
                     cultivation_times: Vec::new(),
                     schedule_product_timer: IntermittentTimer::new("sched product", ""),
-                    stats: ScheduleStats::new(num_qubits,
-                                              num_data_qubits,
-                                              num_bus_qubits,
-                                              num_magic_qubits) }
+                    stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits) }
     }
 
-    pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize, f64)> {
+    pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
         let _timer = Timer::new("schedule_circuit");
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
@@ -266,7 +252,7 @@ impl Scheduler {
             to_schedule = next_to_schedule;
         }
 
-        let overall_frac = self.stats.summarize(num_steps);
+        self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
         let mean =
             self.cultivation_times.iter().sum::<i32>() as f64 / self.cultivation_times.len() as f64;
@@ -278,7 +264,7 @@ impl Scheduler {
         println!("  max:     {}", max);
         self.schedule_product_timer.done();
 
-        Ok((num_steps, scheduled.len(), overall_frac))
+        Ok((num_steps, scheduled.len()))
     }
 
     fn schedule_timestep(
@@ -339,6 +325,9 @@ impl Scheduler {
             let mut best_pp_num_terms = 0;
             for &pp_i in &remaining_to_schedule {
                 let pp = &to_schedule[pp_i];
+                if pp.operators.len() < best_pp_num_terms {
+                    continue;
+                }
                 self.schedule_product_timer.start();
                 let pp_graph = if num_avail_magic == 0 && pp.is_tgate {
                     None
@@ -369,6 +358,8 @@ impl Scheduler {
                     let pp_graph = pp_graph.unwrap();
                     let pp_num_terms = pp.operators.len();
                     if pp_num_terms >= best_pp_num_terms {
+                        // regard the best graph as the one with the most terms and the smallest
+                        // tree with those number of terms
                         let pp_graph_size = pp_graph.num_nodes;
                         if pp_graph_size < best_pp_graph_size {
                             best_pp_num_terms = pp_num_terms;

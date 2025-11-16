@@ -118,6 +118,7 @@ impl TopoGraph {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
         self.update_statistics();
+        self.print_statistics();
     }
 
     pub fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
@@ -314,8 +315,8 @@ impl TopoGraph {
         }
     }
 
-    fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
-                           sides_only: bool) {
+    pub fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
+                               sides_only: bool) {
         // minimum layout with all magic qubits
         let row_spacing = ancilla_rows + 1;
         let col_spacing = if ancilla_rows == 0 { 2 } else { ancilla_rows + 1 };
@@ -515,7 +516,7 @@ impl TopoGraph {
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
     }
 
-    fn update_statistics(&mut self) {
+    pub fn update_statistics(&mut self) {
         let mut data_count = 0;
         let mut magic_count = 0;
         let mut bus_count = 0;
@@ -532,7 +533,9 @@ impl TopoGraph {
         self.num_magic_qubits = magic_count;
         self.num_bus_qubits = bus_count;
         self.num_qubits = self.num_data_qubits + self.num_bus_qubits + self.num_magic_qubits;
+    }
 
+    fn print_statistics(&mut self) {
         let total = self.num_qubits as f64;
         println!("Number of qubits:");
         println!("  data:         {} ({:.3})",

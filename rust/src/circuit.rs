@@ -124,25 +124,26 @@ impl Circuit {
 
         // Create output files
         let layers = self.get_layers();
-        let min_layer = 0;
-        let max_layer = layers.len();
+        let min_layer = 4900; // 0;
+        let max_layer = 4930; //layers.len();
         // Split into chunks of 1000 layers
         const LAYERS_PER_FILE: usize = 1000;
         for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
             /*
-            let png_fname = format!("{}/{}-{}.png", plot_dir, circuit_stem, chunk_start);
+            let plot_fname = format!("{}/{}-{}.png", plot_dir, circuit_stem, chunk_start);
             // Create drawing area
             let root = BitMapBackend::new(
-                &png_fname,
+                &plot_fname,
                 (
                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
                     (self.num_qubits as f32 * 0.22 * 100.0) as u32,
                 ),
             )
             .into_drawing_area();
-             */
+            */
+
             let plot_fname = format!("{}/{}-{}.svg", plot_dir, circuit_stem, chunk_start);
             let root = SVGBackend::new(
                 &plot_fname,
@@ -175,8 +176,8 @@ impl Circuit {
                  .x_label_formatter(&|x| format!("{}", x))
                  .y_labels((self.num_qubits + 1) as usize)
                  .y_label_formatter(&|y| format!("{}", y))
-                 .x_desc("Time Steps")
-                 .y_desc("Qubits")
+                 .x_desc("Layers")
+                 .y_desc("Qubit Number")
                  .x_label_style(("sans-serif", 14))
                  .y_label_style(("sans-serif", 14))
                  .axis_desc_style(("sans-serif", 16))
@@ -184,23 +185,37 @@ impl Circuit {
                  .draw()?;
             // Draw products
             for (col, layer) in layers[chunk_start..chunk_end].iter().enumerate() {
-                for pp in layer {
+                // Sort products by their lowest qubit id
+                let mut sorted_layer: Vec<&PauliProduct> = layer.clone();
+                sorted_layer.sort_by_key(|pp| pp.get_qubits()[0]);
+                for (i, pp) in sorted_layer.iter().enumerate() {
                     let col = col + chunk_start;
                     // Draw background rectangle
                     let start_pos = pp.get_qubits()[0];
                     let end_pos = *pp.get_qubits().last().unwrap();
                     let rect_height = (end_pos - start_pos) as f32 + 0.8;
+                    let product_color = self.get_layer_product_color(i);
 
                     chart.draw_series(std::iter::once(Rectangle::new(
                         [
-                            (col as f32 - 0.1, start_pos as f32 - 0.4),
+                            (col as f32 - 0.1, start_pos as f32 - 0.5),
                             (col as f32 + 0.7, start_pos as f32 + rect_height - 0.4),
                         ],
                         if pp.is_tgate {
-                            RGBColor(0x22, 0xFF, 0x22).filled()
+                            //RGBColor(0x22, 0xFF, 0x22).mix(0.2).filled()
+                            product_color.mix(0.2).filled()
                         } else {
-                            RGBColor(0xCC, 0xCC, 0x22).filled()
+                            RGBColor(0xCC, 0xCC, 0x22).mix(0.2).filled()
                         },
+                    )))?;
+                    // Add dark green outline
+                    chart.draw_series(std::iter::once(Rectangle::new(
+                        [
+                            (col as f32 - 0.1, start_pos as f32 - 0.5),
+                            (col as f32 + 0.7, start_pos as f32 + rect_height - 0.4),
+                        ],
+                        //RGBColor(0x00, 0x80, 0x00).stroke_width(1), // Dark green outline
+                        product_color.stroke_width(1),
                     )))?;
                     if show_product_ids {
                         chart.draw_series(std::iter::once(Text::new(
@@ -224,6 +239,33 @@ impl Circuit {
             println!("Plotted circuit layers {}-{} to {}", chunk_start, chunk_end - 1, plot_fname);
         }
         Ok(())
+    }
+
+    fn get_layer_product_color(&self, product_index: usize) -> RGBColor {
+        // Predefined color palette for products within a layer
+        let colors = [
+            RGBColor(255, 100, 100), // Light red
+            RGBColor(100, 255, 100), // Light green
+            RGBColor(100, 100, 255), // Light blue
+            RGBColor(255, 255, 100), // Light yellow
+            RGBColor(255, 100, 255), // Light magenta
+            RGBColor(100, 255, 255), // Light cyan
+            RGBColor(255, 150, 100), // Light orange
+            RGBColor(150, 100, 255), // Light purple
+            RGBColor(100, 255, 150), // Light mint
+            RGBColor(255, 100, 150), // Light pink
+            RGBColor(150, 255, 100), // Light lime
+            RGBColor(100, 150, 255), // Light sky blue
+            RGBColor(200, 200, 100), // Light olive
+            RGBColor(200, 100, 200), // Light violet
+            RGBColor(100, 200, 200), // Light teal
+            RGBColor(255, 200, 100), // Light peach
+            RGBColor(200, 255, 100), // Light chartreuse
+            RGBColor(100, 200, 255), // Light cornflower
+            RGBColor(255, 150, 150), // Light coral
+            RGBColor(150, 255, 150), // Light seafoam
+        ];
+        colors[product_index % colors.len()]
     }
 
     pub fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
