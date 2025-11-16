@@ -310,14 +310,13 @@ impl Scheduler {
         let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
         // if we are only selecting the first product, then presort products from those needing the
         // most resources to those needing the least - this seems to work the best
-        if !best_fit {
-            let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
-            remaining_vec.sort_by_key(|&idx| {
-                             let pp = &to_schedule[idx];
-                             self.circuit.num_qubits - pp.operators.len()
-                         });
-            remaining_to_schedule = remaining_vec.into_iter().collect();
-        }
+        let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
+        remaining_vec.sort_by_key(|&idx| {
+                         let pp = &to_schedule[idx];
+                         self.circuit.num_qubits - pp.operators.len()
+                     });
+        remaining_to_schedule = remaining_vec.into_iter().collect();
+
         while !remaining_to_schedule.is_empty() {
             let mut to_remove = Vec::new();
             let mut best_pp: Option<(usize, TopoGraph)> = None;
