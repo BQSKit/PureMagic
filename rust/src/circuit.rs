@@ -727,7 +727,7 @@ impl Circuit {
         matrix
     }
 
-    fn build_pair_coupling_matrix(&self) -> Vec<Vec<usize>> {
+    fn _build_pair_coupling_matrix(&self) -> Vec<Vec<usize>> {
         let num_pairs = (self.num_qubits + 1) / 2;
         let mut matrix = vec![vec![0; num_pairs]; num_pairs];
 
