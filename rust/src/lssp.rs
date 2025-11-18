@@ -141,11 +141,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let num_layers = circuit.print_statistics();
     circuit.print()?;
-    circuit.plot_qubit_coupling()?;
 
     // Plot circuit if requested
     if args.plot.contains(&"circuit".to_string()) {
         circuit.plot(args.show_product_ids)?;
+        circuit.plot_qubit_coupling()?;
     }
     if args.plot.contains(&"cstats".to_string()) {
         circuit.plot_layer_stats()?;

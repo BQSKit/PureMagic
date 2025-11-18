@@ -1,9 +1,8 @@
 use crate::pauliproduct::PauliProduct;
 use crate::utils::Timer;
-use std::fs::create_dir_all;
-
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
+use std::fs::create_dir_all;
 use std::{
     cell::RefCell,
     fs::File,
@@ -655,6 +654,8 @@ impl Circuit {
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
         // Build coupling matrix
         let coupling_matrix = self.build_coupling_matrix();
+        //let coupling_matrix = self.build_pair_coupling_matrix();
+        let dim = coupling_matrix.len();
         // Create surface plot
         let plot_fname = format!("{}.qubit_coupling.svg", circuit_stem);
         let root = SVGBackend::new(&plot_fname, (1200, 1000)).into_drawing_area();
@@ -668,7 +669,7 @@ impl Circuit {
                                    .set_label_area_size(LabelAreaPosition::Right, 150)
                                    .caption(format!("{} - Qubit Coupling Matrix", circuit_stem),
                                             ("sans-serif", 24))
-                                   .build_cartesian_2d(0..self.num_qubits, 0..self.num_qubits)?;
+                                   .build_cartesian_2d(0..dim, 0..dim)?;
         chart.configure_mesh()
              .x_labels(10)
              .y_labels(10)
@@ -679,8 +680,8 @@ impl Circuit {
              .axis_desc_style(("sans-serif", 18))
              .draw()?;
         // Draw heatmap squares
-        for i in 0..self.num_qubits {
-            for j in 0..self.num_qubits {
+        for i in 0..dim {
+            for j in 0..dim {
                 let count = coupling_matrix[i][j];
                 if count > 0 {
                     // Color intensity based on count (log scale for better visualization)
@@ -720,6 +721,35 @@ impl Circuit {
                     assert!(qubit_i < self.num_qubits && qubit_j < self.num_qubits);
                     matrix[qubit_i][qubit_j] += 1;
                     matrix[qubit_j][qubit_i] += 1; // Make matrix symmetric
+                }
+            }
+        }
+        matrix
+    }
+
+    fn build_pair_coupling_matrix(&self) -> Vec<Vec<usize>> {
+        let num_pairs = (self.num_qubits + 1) / 2;
+        let mut matrix = vec![vec![0; num_pairs]; num_pairs];
+
+        for product in &self.products {
+            let qubits: Vec<usize> = product.get_qubits();
+
+            // Convert qubits to their pair indices (0,1 -> 0; 2,3 -> 1; etc.)
+            let mut qubit_pairs: Vec<usize> = qubits.iter().map(|&qubit| qubit / 2).collect();
+
+            // Remove duplicates and sort
+            qubit_pairs.sort();
+            qubit_pairs.dedup();
+
+            // Count coupling for all pairs of qubit pairs in this product
+            for i in 0..(qubit_pairs.len() - 1) {
+                for j in (i + 1)..qubit_pairs.len() {
+                    let pair_i = qubit_pairs[i];
+                    let pair_j = qubit_pairs[j];
+
+                    assert!(pair_i < num_pairs && pair_j < num_pairs);
+                    matrix[pair_i][pair_j] += 1;
+                    matrix[pair_j][pair_i] += 1; // Make matrix symmetric
                 }
             }
         }
