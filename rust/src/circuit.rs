@@ -124,14 +124,13 @@ impl Circuit {
 
         // Create output files
         let layers = self.get_layers();
-        let min_layer = 4900; // 0;
-        let max_layer = 4930; //layers.len();
+        let min_layer = 0;
+        let max_layer = layers.len();
         // Split into chunks of 1000 layers
         const LAYERS_PER_FILE: usize = 1000;
         for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
             let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
-            /*
             let plot_fname = format!("{}/{}-{}.png", plot_dir, circuit_stem, chunk_start);
             // Create drawing area
             let root = BitMapBackend::new(
@@ -142,18 +141,17 @@ impl Circuit {
                 ),
             )
             .into_drawing_area();
+            /*
+             let plot_fname = format!("{}/{}-{}.svg", plot_dir, circuit_stem, chunk_start);
+             let root = SVGBackend::new(
+                 &plot_fname,
+                 (
+                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
+                     (self.num_qubits as f32 * 0.22 * 100.0) as u32,
+                 ),
+             )
+             .into_drawing_area();
             */
-
-            let plot_fname = format!("{}/{}-{}.svg", plot_dir, circuit_stem, chunk_start);
-            let root = SVGBackend::new(
-                &plot_fname,
-                (
-                    (chunk_layers as f32 * 0.17 * 100.0) as u32,
-                    (self.num_qubits as f32 * 0.22 * 100.0) as u32,
-                ),
-            )
-            .into_drawing_area();
-
             root.fill(&WHITE)?;
 
             let mut chart =
@@ -648,5 +646,83 @@ impl Circuit {
         index_layers.iter()
                     .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
                     .collect()
+    }
+
+    pub fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let _timer = Timer::new("plot_qubit_coupling");
+        // Get circuit filename
+        let circuit_path = Path::new(&self.circuit_fname);
+        let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
+        // Build coupling matrix
+        let coupling_matrix = self.build_coupling_matrix();
+        // Create surface plot
+        let plot_fname = format!("{}.qubit_coupling.svg", circuit_stem);
+        let root = SVGBackend::new(&plot_fname, (1200, 1000)).into_drawing_area();
+        root.fill(&WHITE)?;
+        // Find max value for color scaling
+        let max_count = coupling_matrix.iter().flat_map(|row| row.iter()).max().unwrap_or(&0);
+        let mut chart =
+            ChartBuilder::on(&root).margin(60)
+                                   .set_label_area_size(LabelAreaPosition::Left, 60)
+                                   .set_label_area_size(LabelAreaPosition::Bottom, 60)
+                                   .set_label_area_size(LabelAreaPosition::Right, 150)
+                                   .caption(format!("{} - Qubit Coupling Matrix", circuit_stem),
+                                            ("sans-serif", 24))
+                                   .build_cartesian_2d(0..self.num_qubits, 0..self.num_qubits)?;
+        chart.configure_mesh()
+             .x_labels(10)
+             .y_labels(10)
+             .x_desc("Qubit Index")
+             .y_desc("Qubit Index")
+             .x_label_style(("sans-serif", 16))
+             .y_label_style(("sans-serif", 16))
+             .axis_desc_style(("sans-serif", 18))
+             .draw()?;
+        // Draw heatmap squares
+        for i in 0..self.num_qubits {
+            for j in 0..self.num_qubits {
+                let count = coupling_matrix[i][j];
+                if count > 0 {
+                    // Color intensity based on count (log scale for better visualization)
+                    let intensity = if *max_count > 0 {
+                        (count as f64).ln() / (*max_count as f64).ln()
+                    } else {
+                        0.0
+                    };
+                    // Use a color gradient from blue (low) to red (high)
+                    let color = if intensity < 0.5 {
+                        let blue_intensity = (255.0 * (1.0 - 2.0 * intensity)) as u8;
+                        let green_intensity = (255.0 * 2.0 * intensity) as u8;
+                        RGBColor(0, green_intensity, blue_intensity)
+                    } else {
+                        let red_intensity = (255.0 * (2.0 * intensity - 1.0)) as u8;
+                        let green_intensity = (255.0 * (2.0 - 2.0 * intensity)) as u8;
+                        RGBColor(red_intensity, green_intensity, 0)
+                    };
+                    chart.draw_series(std::iter::once(Rectangle::new([(i, j), (i + 1, j + 1)],
+                                                                     color.filled())))?;
+                }
+            }
+        }
+        println!("Plotted qubit coupling matrix to {}", plot_fname);
+        Ok(())
+    }
+
+    fn build_coupling_matrix(&self) -> Vec<Vec<usize>> {
+        let mut matrix = vec![vec![0; self.num_qubits]; self.num_qubits];
+        for product in &self.products {
+            let qubits: Vec<usize> = product.get_qubits();
+            // Count coupling for all pairs of qubits in this product
+            for i in 0..(qubits.len() - 1) {
+                for j in (i + 1)..qubits.len() {
+                    let qubit_i = qubits[i];
+                    let qubit_j = qubits[j];
+                    assert!(qubit_i < self.num_qubits && qubit_j < self.num_qubits);
+                    matrix[qubit_i][qubit_j] += 1;
+                    matrix[qubit_j][qubit_i] += 1; // Make matrix symmetric
+                }
+            }
+        }
+        matrix
     }
 }
