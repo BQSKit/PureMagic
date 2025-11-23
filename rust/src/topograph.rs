@@ -548,7 +548,7 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    pub fn trim_dangling_nodes(&mut self, root_node: &str) {
+    pub fn trim_dangling_nodes(&mut self, root_node: &str) -> usize {
         let mut num_trimmed = 0;
         loop {
             // Find dangling bus nodes
@@ -569,7 +569,7 @@ impl TopoGraph {
                 }
             }
         }
-        log::info!("    Trimmed {} dangling nodes", num_trimmed);
+        num_trimmed
     }
 
     pub fn is_routing_node(&self, node: &Node) -> bool {

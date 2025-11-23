@@ -148,6 +148,10 @@ impl PauliProduct {
         let angle = if self.is_tgate { "<pi/8>" } else { "<M>" };
         format!("{}{}{}", sign, pauli_string.iter().collect::<String>(), angle)
     }
+
+    pub fn count_weighted_terms(&self) -> usize {
+        self.operators.iter().map(|op| if op.basis == 'Y' { 2 } else { 1 }).sum()
+    }
 }
 
 impl fmt::Display for PauliProduct {
