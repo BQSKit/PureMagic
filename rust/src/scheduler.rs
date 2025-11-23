@@ -304,30 +304,29 @@ impl Scheduler {
                 num_avail_magic += 1;
             }
         }
-        info!("Available magic {}", num_avail_magic);
+        info!("  Available magic {}", num_avail_magic);
 
         let mut pp_paths = Vec::new();
         let mut next_to_schedule = Vec::new();
         let mut num_dependent_nodes = 0;
 
         let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
-        // if we are only selecting the first product, then presort products from those needing the
-        // most resources to those needing the least - this seems to work the best
-        let mut remaining_vec: Vec<usize> = remaining_to_schedule.into_iter().collect();
-        remaining_vec.sort_by_key(|&idx| {
-                         let pp = &to_schedule[idx];
-                         self.circuit.num_qubits - pp.operators.len()
-                     });
-        remaining_to_schedule = remaining_vec.into_iter().collect();
-
+        // Presort products from most to least resource-intensive
+        remaining_to_schedule.sort_by_key(|&idx| {
+                                 std::cmp::Reverse(to_schedule[idx].count_weighted_terms())
+                             });
+        info!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
             let mut to_remove = Vec::new();
             let mut best_pp: Option<(usize, TopoGraph)> = None;
             let mut best_pp_graph_size = usize::MAX;
-            let mut best_pp_num_terms = 0;
+            let mut best_pp_term_weight = 0;
+
             for &pp_i in &remaining_to_schedule {
                 let pp = &to_schedule[pp_i];
-                if pp.operators.len() < best_pp_num_terms {
+                let pp_term_weight = pp.count_weighted_terms();
+                if pp_term_weight < best_pp_term_weight {
+                    info!("  Skip lower weight product {}", pp);
                     continue;
                 }
                 self.schedule_product_timer.start();
@@ -338,7 +337,7 @@ impl Scheduler {
                 };
                 self.schedule_product_timer.stop();
                 if pp_graph.is_none() {
-                    info!("  * Could not schedule {} on graph", pp.id);
+                    info!("  Could not schedule {} on graph", pp.id);
                     next_to_schedule.push(pp.clone());
                     // Mark dependent nodes as used
                     for op in &pp.operators {
@@ -358,18 +357,17 @@ impl Scheduler {
                     to_remove.push(pp_i);
                 } else {
                     let pp_graph = pp_graph.unwrap();
-                    let pp_num_terms = pp.operators.len();
-                    if pp_num_terms >= best_pp_num_terms {
+                    if pp_term_weight >= best_pp_term_weight {
                         // regard the best graph as the one with the most terms and the smallest
                         // tree with those number of terms
                         let pp_graph_size = pp_graph.num_nodes;
                         if pp_graph_size < best_pp_graph_size {
-                            best_pp_num_terms = pp_num_terms;
+                            best_pp_term_weight = pp_term_weight;
                             best_pp_graph_size = pp_graph_size;
                             best_pp = Some((pp_i, pp_graph));
-                            info!("  New best graph for pp {}, terms {}, size {}",
+                            info!("  New best graph for pp {}, term weight {}, size {}",
                                   pp.get_product_str(),
-                                  pp.operators.len(),
+                                  pp_term_weight,
                                   best_pp_graph_size);
                             if !best_fit {
                                 break;
@@ -378,10 +376,11 @@ impl Scheduler {
                     }
                 }
             }
+
             if let Some((best_pp_idx, best_graph)) = best_pp {
                 let pp = &to_schedule[best_pp_idx];
-                info!("* Scheduled product {} with {} nodes and {} edges: {:?}",
-                      pp.id,
+                info!("  * Scheduled product {} with {} nodes and {} edges: {:?}",
+                      pp,
                       best_graph.num_nodes,
                       best_graph.num_edges,
                       best_graph.node_list());
@@ -394,18 +393,20 @@ impl Scheduler {
                 to_remove.push(best_pp_idx);
                 num_avail_magic -= 1;
             }
+
             for pp_i in to_remove {
                 remaining_to_schedule.shift_remove(&pp_i);
             }
         }
         let mut title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
+
         if next_to_schedule.len() > 0 {
             title += "\nUnscheduled: ";
         }
         for pp in &next_to_schedule {
             title += &format!("{} ", pp.get_product_str());
         }
-        info!("Removed {} dependent nodes", num_dependent_nodes);
+        info!("  Removed {} dependent nodes", num_dependent_nodes);
 
         if !pp_paths.is_empty() {
             (Some(title), Some(pp_paths), next_to_schedule)
@@ -428,7 +429,7 @@ impl Scheduler {
     }
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
-        info!("Trying to schedule product {}", pauli_product);
+        info!("  Trying to schedule product {}", pauli_product);
         // Initially terminal nodes contain only the data qubits
         let terminals = self.get_terminal_nodes(pauli_product);
         if terminals.is_none() {
@@ -448,8 +449,9 @@ impl Scheduler {
             let mut g = TopoGraph::new();
             g.add_node(node.clone());
 
-            info!("Scheduled clifford on {:?} nodes",
-                  g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
+            info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
+            //info!("  Scheduled T on {:?} nodes",
+            // g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
         }
         // first check that all terminals are accessible
@@ -468,7 +470,7 @@ impl Scheduler {
             if !nb.used && self.topo.is_routing_node(nb) && nb.pos.1 == central_node.pos.1 {
                 let g = self.get_bfs_graph(nb_label, &terminals, pauli_product.is_tgate);
                 if let Some(g) = g {
-                    info!("Scheduled clifford in {:?} nodes",
+                    info!("Scheduled T on {:?} nodes",
                           g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
                     return Some(g);
                 }
@@ -489,8 +491,8 @@ impl Scheduler {
         let root_labels: Vec<String> = root_labels.into_iter().collect();
         let g = self.get_multi_bfs_graph(&root_labels, &terminals, pauli_product.is_tgate);
         if let Some(g) = g {
-            info!("Scheduled clifford in {:?} nodes",
-                  g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
+            info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
+            //g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
         }
         None
@@ -682,7 +684,7 @@ impl Scheduler {
     fn get_multi_bfs_graph(&self, root_labels: &Vec<String>, terminal_nodes: &Vec<String>,
                            is_tgate: bool)
                            -> Option<TopoGraph> {
-        info!("  BFS from nodes {:?} to nodes {:?}", root_labels, terminal_nodes);
+        debug!("    BFS from nodes {:?} to nodes {:?}", root_labels, terminal_nodes);
         let mut visited: IndexMap<String, String> = IndexMap::with_capacity(self.topo.num_nodes);
         let mut paths: IndexSet<(String, String)> = IndexSet::with_capacity(self.topo.num_nodes);
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
@@ -691,9 +693,11 @@ impl Scheduler {
         //let mut num_found_terminals = 0;
         let mut cultivator = None;
         let num_paths_reqd = root_labels.len() - 1;
+        let mut terms_found = 0;
+        let reqd_terms = terminal_nodes.len();
 
         for root_label in root_labels {
-            debug!("    {}root node {}{}", GREEN, root_label, RESET);
+            debug!("      {}root node {}{}", GREEN, root_label, RESET);
             visited.insert(root_label.clone(), root_label.clone());
             //paths.insert((root_label.clone(), root_label.clone()));
             queue.push_back(root_label);
@@ -704,7 +708,7 @@ impl Scheduler {
                && root.cultivation_time == 0
             {
                 cultivator = Some(root_label);
-                debug!("    {}found root cultivator {}{}", GREEN, cultivator.unwrap(), RESET);
+                debug!("      {}found root cultivator {}{}", GREEN, cultivator.unwrap(), RESET);
             }
         }
         while let Some(node_label) = queue.pop_front() {
@@ -734,7 +738,7 @@ impl Scheduler {
                        && !paths.contains(&(root1.clone(), root2.clone()))
                     {
                         paths.insert((root1.clone(), root2.clone()));
-                        debug!("    {}path from {} to {} paths {:?} path lens {} paths reqd {}{}",
+                        debug!("      {}path from {} to {} paths {:?} path lens {} paths reqd {}{}",
                                GREEN,
                                root1,
                                root2,
@@ -743,7 +747,8 @@ impl Scheduler {
                                num_paths_reqd,
                                RESET);
                         bfs_graph.add_edge(&node_label, &nb_label);
-                        if paths.len() == num_paths_reqd {
+                        debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
+                        if paths.len() == num_paths_reqd && terms_found == reqd_terms {
                             if is_tgate && cultivator.is_none() {
                                 continue;
                             }
@@ -759,22 +764,32 @@ impl Scheduler {
                 if self.topo.is_routing_node(nb) || nb_is_cultivator {
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
-                    queue.push_back(nb_label);
-                    if cultivator.is_none() && nb_is_cultivator {
-                        cultivator = Some(nb_label);
-                        debug!("    {}found cultivator {}{}", GREEN, cultivator.unwrap(), RESET);
-                        if paths.len() == num_paths_reqd {
-                            break;
+                    debug!("      {}add node {}{}", GREEN, nb_label, RESET);
+                    debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
+                    if self.topo.is_routing_node(nb) || nb_is_cultivator {
+                        queue.push_back(nb_label);
+                        if cultivator.is_none() && nb_is_cultivator {
+                            cultivator = Some(nb_label);
+                            debug!("      {}found cultivator {}{}",
+                                   GREEN,
+                                   cultivator.unwrap(),
+                                   RESET);
+                            if paths.len() == num_paths_reqd && terms_found == reqd_terms {
+                                break;
+                            }
                         }
                     }
-                } else if terminal_nodes.contains(&nb_label) {
-                    assert!(nb.node_type == NodeType::Data);
+                }
+                if terminal_nodes.contains(&nb_label) {
+                    terms_found += 1;
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
+                    debug!("      {}add node {}{}", GREEN, nb_label, RESET);
+                    debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
                 }
                 visited.insert(nb_label.clone(), visiting_root.clone());
             }
-            if paths.len() == num_paths_reqd {
+            if paths.len() == num_paths_reqd && terms_found == reqd_terms {
                 if is_tgate && cultivator.is_none() {
                     continue;
                 }
@@ -783,12 +798,13 @@ impl Scheduler {
                 } else {
                     Some(root_labels[0].to_string())
                 };
-                debug!("    {}tree complete, cultivator {}{}",
+                debug!("      {}tree complete, cultivator {}{}",
                        GREEN,
                        cultivator.map_or("none", |v| v),
                        RESET);
                 let root = bfs_graph.root_node.as_ref().unwrap().clone();
-                bfs_graph.trim_dangling_nodes(&root);
+                let num_trimmed = bfs_graph.trim_dangling_nodes(&root);
+                debug!("    Trimmed {} dangling nodes", num_trimmed);
                 // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
                 // makes the path shorter
                 return Some(bfs_graph);
