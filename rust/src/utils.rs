@@ -1,5 +1,14 @@
 use std::time::{Duration, Instant};
 
+// Add these near the top of scheduler.rs, before the struct definitions
+pub const GREEN: &str = "\x1b[32m";
+pub const RED: &str = "\x1b[31m";
+pub const _YELLOW: &str = "\x1b[33m";
+pub const _BLUE: &str = "\x1b[34m";
+pub const _MAGENTA: &str = "\x1b[35m";
+pub const CYAN: &str = "\x1b[36m";
+pub const RESET: &str = "\x1b[0m";
+
 pub struct Timer {
     name: String,
     start: Instant,
@@ -13,9 +22,11 @@ impl Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        println!("\x1b[36mTiming: {} took {:.2} s\x1b[0m",
+        println!("{}Timing: {} took {:.2} s{}",
+                 CYAN,
                  self.name,
-                 self.start.elapsed().as_secs_f64());
+                 self.start.elapsed().as_secs_f64(),
+                 RESET);
     }
 }
 
@@ -37,9 +48,11 @@ impl IntermittentTimer {
     }
 
     pub fn done(&self) {
-        println!("\x1b[36mTiming: {} took {:.2} s\x1b[0m",
+        println!("{}Timing: {} took {:.2} s{}",
+                 CYAN,
                  self.name,
-                 self.total_elapsed.as_secs_f64());
+                 self.total_elapsed.as_secs_f64(),
+                 RESET);
     }
 
     #[allow(dead_code)]
@@ -60,7 +73,7 @@ impl IntermittentTimer {
             self.total_elapsed += self.last_interval;
 
             if !self.interval_label.is_empty() {
-                println!("\x1b[34m{:.2} s\x1b[0m", self.last_interval.as_secs_f64());
+                println!("{}{:.2} s{}", CYAN, self.last_interval.as_secs_f64(), RESET);
             }
         }
     }

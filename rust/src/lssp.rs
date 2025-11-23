@@ -56,8 +56,22 @@ struct Args {
     #[arg(short = 'I', long)]
     show_product_ids: bool,
     /// Log scheduler actions to <CIRCUIT_FNAME>.sched file.
-    #[arg(short = 'l', long)]
-    log_scheduler: bool,
+    #[arg(
+        short = 'l',
+        long = "log-scheduler",
+        default_value = "none",
+        value_parser = |s: &str| {
+            match s.to_lowercase().as_str() {
+                "none" | "info" | "debug" => Ok(s.to_string()),
+                _ => Err(format!(
+                    "invalid log level '{}'; must be one of: none, info, debug",
+                    s
+                ))
+            }
+        },
+        help = "Log level for scheduler (none, info, or debug)"
+    )]
+    log_scheduler: String,
     /// Use first fit to choose the next product to schedule.
     #[arg(short = 'b', long)]
     best_fit: bool,
@@ -172,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scheduler = Scheduler::new(circuit,
                                        topo_graph,
                                        args.magic_state_lambda,
-                                       args.log_scheduler,
+                                       &args.log_scheduler,
                                        args.plot.join(" "),
                                        args.rseed);
 
@@ -184,6 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Scheduled {} in {} time steps ({:.3} speedup) volume {}",
              num_scheduled, tot_num_steps, speedup, volume);
 
+    print!("Generating Pure Magic layout for comparison:\n  ");
     let mut best_magic_topo_graph = TopoGraph::new();
     best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
     best_magic_topo_graph.update_statistics();

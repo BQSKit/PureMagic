@@ -333,7 +333,6 @@ impl TopoGraph {
         let max_qi =
             if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
         let row_gap = 1 + row_spacing;
-        print!("num rows {} num cols {} row gap {}\n", self.num_rows, self.num_cols, row_gap);
         for col in 0..self.num_cols {
             for row in 0..self.num_rows {
                 if col % col_spacing == col_spacing - 1 {
@@ -358,7 +357,6 @@ impl TopoGraph {
                 }
             }
         }
-        println!("Layout dimensions: {} {}", self.num_cols, self.num_rows);
         self.set_edges(sides_only);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
@@ -820,14 +818,10 @@ impl TopoGraph {
                             "  R".to_string()
                         }
                     } else {
+                        node.label.clone()
+                        /*
                         if Some(node.label.clone()) == root_node {
                             format!("R{}", (node.cultivation_time - node.busy_count))
-                            /*if node.node_type == NodeType::Magic && node.is_cultivating() {
-                                (node.cultivation_time - node.busy_count).to_string()
-                            } else {
-                                //node.label.clone()
-                                "  R".to_string()
-                            }*/
                         } else {
                             if node.node_type == NodeType::Magic {
                                 if node.is_cultivating() {
@@ -838,7 +832,7 @@ impl TopoGraph {
                             } else {
                                 "  B".to_string()
                             }
-                        }
+                        } */
                     }
                 }
                 NodeType::Bus => {
