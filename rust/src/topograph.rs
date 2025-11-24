@@ -703,21 +703,21 @@ impl TopoGraph {
         //let _timer = Timer::new("plot");
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
-        /*
+
         let plot_fname = format!("{}{}.png", topo_stem, fname_added);
-            let root = BitMapBackend::new(
+        let root = BitMapBackend::new(
             &plot_fname,
             (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
         )
         .into_drawing_area();
-        */
+        /*
         let plot_fname = format!("{}{}.svg", topo_stem, fname_added);
         let root = SVGBackend::new(
             &plot_fname,
             (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
         )
         .into_drawing_area();
-
+         */
         root.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&root).margin(10)
                                                .set_label_area_size(LabelAreaPosition::Bottom, 50)
