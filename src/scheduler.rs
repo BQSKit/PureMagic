@@ -430,7 +430,7 @@ impl Scheduler {
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
         info!("  Trying to schedule product {}", pauli_product);
-        // Initially terminal nodes contain only the data qubits
+        // Terminal nodes contain only the data qubits
         let terminals = self.get_terminal_nodes(pauli_product);
         if terminals.is_none() {
             info!("  No data nodes found in working graph");
@@ -445,10 +445,8 @@ impl Scheduler {
                 info!("  Single node {} is used", node_label);
                 return None;
             }
-
             let mut g = TopoGraph::new();
             g.add_node(node.clone());
-
             info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
         }
@@ -459,19 +457,8 @@ impl Scheduler {
                 return None;
             }
         }
-
-        let mut root_labels = IndexSet::new();
-        for node_label in terminals.iter() {
-            let node = self.topo.get_node(&node_label);
-            for nb_label in node.edges.iter() {
-                let nb = self.topo.get_node(&nb_label);
-                if nb.used || !self.topo.is_routing_node(nb) || nb.pos.1 != node.pos.1 {
-                    continue;
-                }
-                root_labels.insert(nb_label.clone());
-            }
-        }
-        let root_labels: Vec<String> = root_labels.into_iter().collect();
+        // Get root nodes next to terminals
+        let root_labels = self.get_root_nodes(&terminals);
         let g = self.get_steiner_tree(&root_labels, &terminals, pauli_product.is_tgate);
         if let Some(g) = g {
             info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
@@ -525,6 +512,24 @@ impl Scheduler {
             }
         }
         Some(terminals)
+    }
+
+    fn get_root_nodes(&self, terminals: &[String]) -> Vec<String> {
+        let mut root_labels = IndexSet::new();
+        for node_label in terminals.iter() {
+            let node = self.topo.get_node(node_label);
+            for nb_label in node.edges.iter() {
+                let nb = self.topo.get_node(nb_label);
+                if nb.used || !self.topo.is_routing_node(nb) {
+                    continue;
+                }
+                // Only include neighbors on the side (same row, different column)
+                if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                    root_labels.insert(nb_label.clone());
+                }
+            }
+        }
+        root_labels.into_iter().collect()
     }
 
     fn get_steiner_tree(&self, root_labels: &Vec<String>, terminal_nodes: &Vec<String>,
