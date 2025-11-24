@@ -537,12 +537,10 @@ impl Scheduler {
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
         let mut tree = TopoGraph::new();
         let mut cultivator = None;
-        let mut terms_found = 0;
-        let reqd_terms = terminal_nodes.len();
         let mut total_paths = 0;
         // every root must have a path to every other root
         let reqd_paths = root_labels.len() * (root_labels.len() - 1);
-        debug!("    Require {} paths and {} terminals", reqd_paths, reqd_terms);
+        debug!("    Require {} paths", reqd_paths);
 
         for root_label in root_labels {
             debug!("      {}root node {}{}", GREEN, root_label, RESET);
@@ -557,6 +555,17 @@ impl Scheduler {
             {
                 cultivator = Some(root_label);
                 debug!("      {}found root cultivator {}{}", GREEN, cultivator.unwrap(), RESET);
+            }
+            // add terminals
+            let root_node = self.topo.get_node(&root_label);
+            for nb_label in root_node.edges.iter() {
+                let nb = self.topo.get_node(&nb_label);
+                if terminal_nodes.contains(&nb_label) {
+                    tree.add_node(nb.clone());
+                    tree.add_edge(&root_label, &nb_label);
+                    debug!("      {}add node {}{}", GREEN, nb_label, RESET);
+                    debug!("      {}add edge {}->{}{}", GREEN, root_label, nb_label, RESET);
+                }
             }
         }
         while let Some(node_label) = queue.pop_front() {
@@ -602,7 +611,7 @@ impl Scheduler {
                         debug!("      {}paths:{:?}{}", GREEN, paths, RESET);
                         tree.add_edge(&node_label, &nb_label);
                         debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
-                        if total_paths == reqd_paths && terms_found == reqd_terms {
+                        if total_paths == reqd_paths {
                             if is_tgate && cultivator.is_none() {
                                 continue;
                             }
@@ -627,24 +636,16 @@ impl Scheduler {
                     if cultivator.is_none() && nb_is_cultivator {
                         cultivator = Some(nb_label);
                         debug!("      {}found clutivator {}{}", GREEN, cultivator.unwrap(), RESET);
-                        if total_paths == reqd_paths && terms_found == reqd_terms {
+                        if total_paths == reqd_paths {
                             // we break here because we previously found all the paths, and now have
                             // found a cultivator
                             break;
                         }
                     }
                 }
-                // found terminal
-                if terminal_nodes.contains(&nb_label) {
-                    terms_found += 1;
-                    tree.add_node(nb.clone());
-                    tree.add_edge(&node_label, &nb_label);
-                    debug!("      {}add node {}{}", GREEN, nb_label, RESET);
-                    debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
-                }
                 visited.insert(nb_label.clone(), curr_root_label.clone());
             }
-            if total_paths == reqd_paths && terms_found == reqd_terms {
+            if total_paths == reqd_paths {
                 if is_tgate && cultivator.is_none() {
                     continue;
                 }

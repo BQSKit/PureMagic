@@ -647,25 +647,6 @@ impl TopoGraph {
         self.num_edges += 1;
     }
 
-    pub fn remove_all_edges(&mut self, label: &str) {
-        // Get all edges to remove
-        let edges_to_remove: Vec<String> = if let Some(node) = self.nodes.get(label) {
-            node.edges.iter().cloned().collect()
-        } else {
-            return;
-        };
-        // Remove edges from both ends
-        for edge in edges_to_remove {
-            if let Some(neighbor) = self.nodes.get_mut(&edge) {
-                neighbor.edges.swap_remove(label);
-            }
-            if let Some(node) = self.nodes.get_mut(label) {
-                node.edges.swap_remove(&edge);
-            }
-            self.num_edges -= 1;
-        }
-    }
-
     pub fn node_list(&self) -> Vec<String> {
         self.nodes.keys().cloned().collect()
     }
