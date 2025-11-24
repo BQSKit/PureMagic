@@ -686,20 +686,22 @@ impl Scheduler {
                            -> Option<TopoGraph> {
         debug!("    BFS from nodes {:?} to nodes {:?}", root_labels, terminal_nodes);
         let mut visited: IndexMap<String, String> = IndexMap::with_capacity(self.topo.num_nodes);
-        let mut paths: IndexSet<(String, String)> = IndexSet::with_capacity(self.topo.num_nodes);
+        let mut paths: IndexMap<String, IndexSet<String>> =
+            IndexMap::with_capacity(root_labels.len());
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
         let mut bfs_graph = TopoGraph::new();
-        //let num_terminals_reqd = terminal_nodes.len();
-        //let mut num_found_terminals = 0;
         let mut cultivator = None;
-        let num_paths_reqd = root_labels.len() - 1;
         let mut terms_found = 0;
         let reqd_terms = terminal_nodes.len();
+        let mut total_paths = 0;
+        // every root must have a path to every other root
+        let reqd_paths = root_labels.len() * (root_labels.len() - 1);
+        debug!("    Require {} paths and {} terminals", reqd_paths, reqd_terms);
 
         for root_label in root_labels {
             debug!("      {}root node {}{}", GREEN, root_label, RESET);
+            paths.insert(root_label.clone(), IndexSet::new());
             visited.insert(root_label.clone(), root_label.clone());
-            //paths.insert((root_label.clone(), root_label.clone()));
             queue.push_back(root_label);
             let root = self.topo.get_node(root_label);
             bfs_graph.add_node(root.clone());
@@ -713,45 +715,53 @@ impl Scheduler {
         }
         while let Some(node_label) = queue.pop_front() {
             let node = self.topo.get_node(&node_label);
-            let visiting_root = visited.get(node_label).unwrap().clone();
+            let curr_root_label = visited.get(node_label).unwrap().clone();
             for nb_label in node.edges.iter() {
                 let nb = self.topo.get_node(&nb_label);
                 if nb.used {
                     continue;
                 }
-                if visited.contains_key(nb_label)
-                   && self.topo.is_routing_node(nb)
-                   && self.topo.is_routing_node(node)
-                {
-                    let other_root = visited.get(nb_label).unwrap().clone();
-                    // Ensure consistent ordering: smaller root label comes first
-                    if visiting_root == other_root {
+                // check for path links between roots via routing nodes
+                let routing_edge = self.topo.is_routing_node(nb) && self.topo.is_routing_node(node);
+                if routing_edge && visited.contains_key(nb_label) {
+                    let nb_root_label = visited.get(nb_label).unwrap().clone();
+                    if curr_root_label == nb_root_label {
                         continue;
                     }
-                    let (root1, root2) = if visiting_root < other_root {
-                        (visiting_root.clone(), other_root.clone())
-                    } else {
-                        (other_root.clone(), visiting_root.clone())
-                    };
-                    // Check if we've already recorded this path
-                    if paths.len() < num_paths_reqd
-                       && !paths.contains(&(root1.clone(), root2.clone()))
-                    {
-                        paths.insert((root1.clone(), root2.clone()));
-                        debug!("      {}path from {} to {} paths {:?} path lens {} paths reqd {}{}",
+                    let curr_root_paths = paths.get(&curr_root_label).unwrap().clone();
+                    if !curr_root_paths.contains(&nb_root_label) {
+                        // update the nb root IndexSet to contain paths to all the roots in
+                        // the curr_root IndexSet
+                        let nb_root_paths = paths.get(&nb_root_label).unwrap().clone();
+                        // Create merged set containing all roots from both groups
+                        let mut merged_set = curr_root_paths;
+                        merged_set.insert(nb_root_label.clone());
+                        merged_set.extend(nb_root_paths.iter().cloned());
+                        merged_set.insert(curr_root_label.clone());
+                        // Update all roots in the merged set to have the complete merged set
+                        for root_label in merged_set.iter() {
+                            let mut full_set = merged_set.clone();
+                            full_set.swap_remove(root_label); // Don't include self
+                            paths.insert(root_label.clone(), full_set);
+                        }
+                        // Recalculate total_paths
+                        total_paths = paths.values().map(|set| set.len()).sum::<usize>();
+                        debug!("      {}path from {} to {} (total paths {}/{}){}",
                                GREEN,
-                               root1,
-                               root2,
-                               paths,
-                               paths.len(),
-                               num_paths_reqd,
+                               curr_root_label,
+                               nb_root_label,
+                               total_paths,
+                               reqd_paths,
                                RESET);
+                        debug!("      {}paths:{:?}{}", GREEN, paths, RESET);
                         bfs_graph.add_edge(&node_label, &nb_label);
                         debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
-                        if paths.len() == num_paths_reqd && terms_found == reqd_terms {
+                        if total_paths == reqd_paths && terms_found == reqd_terms {
                             if is_tgate && cultivator.is_none() {
                                 continue;
                             }
+                            // we break here because we previously found a cultivator, and now have
+                            // found all the paths
                             break;
                         }
                     }
@@ -761,25 +771,24 @@ impl Scheduler {
                                        && cultivator == None
                                        && nb.node_type == NodeType::Magic
                                        && nb.cultivation_time == 0;
+                // add routing node/cultivator
                 if self.topo.is_routing_node(nb) || nb_is_cultivator {
                     bfs_graph.add_node(nb.clone());
                     bfs_graph.add_edge(&node_label, &nb_label);
                     debug!("      {}add node {}{}", GREEN, nb_label, RESET);
                     debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
-                    if self.topo.is_routing_node(nb) || nb_is_cultivator {
-                        queue.push_back(nb_label);
-                        if cultivator.is_none() && nb_is_cultivator {
-                            cultivator = Some(nb_label);
-                            debug!("      {}found cultivator {}{}",
-                                   GREEN,
-                                   cultivator.unwrap(),
-                                   RESET);
-                            if paths.len() == num_paths_reqd && terms_found == reqd_terms {
-                                break;
-                            }
+                    queue.push_back(nb_label);
+                    if cultivator.is_none() && nb_is_cultivator {
+                        cultivator = Some(nb_label);
+                        debug!("      {}found clutivator {}{}", GREEN, cultivator.unwrap(), RESET);
+                        if total_paths == reqd_paths && terms_found == reqd_terms {
+                            // we break here because we previously found all the paths, and now have
+                            // found a cultivator
+                            break;
                         }
                     }
                 }
+                // found terminal
                 if terminal_nodes.contains(&nb_label) {
                     terms_found += 1;
                     bfs_graph.add_node(nb.clone());
@@ -787,12 +796,14 @@ impl Scheduler {
                     debug!("      {}add node {}{}", GREEN, nb_label, RESET);
                     debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
                 }
-                visited.insert(nb_label.clone(), visiting_root.clone());
+                visited.insert(nb_label.clone(), curr_root_label.clone());
             }
-            if paths.len() == num_paths_reqd && terms_found == reqd_terms {
+            if total_paths == reqd_paths && terms_found == reqd_terms {
                 if is_tgate && cultivator.is_none() {
                     continue;
                 }
+                // we have all the paths and terms and a cultivator (if needed), so we can now
+                // return the tree (bfs_graph)
                 bfs_graph.root_node = if is_tgate {
                     Some(cultivator.unwrap().to_string())
                 } else {
