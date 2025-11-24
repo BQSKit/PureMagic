@@ -450,8 +450,6 @@ impl Scheduler {
             g.add_node(node.clone());
 
             info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
-            //info!("  Scheduled T on {:?} nodes",
-            // g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
         }
         // first check that all terminals are accessible
@@ -461,21 +459,6 @@ impl Scheduler {
                 return None;
             }
         }
-        /*
-        let central_terminal = self.find_central_terminal(&terminals);
-        // root node needs to be a bus/magic node next to one of the data nodes
-        let central_node = self.topo.get_node(&central_terminal);
-        for nb_label in central_node.edges.iter() {
-            let nb = self.topo.get_node(&nb_label);
-            if !nb.used && self.topo.is_routing_node(nb) && nb.pos.1 == central_node.pos.1 {
-                let g = self.get_bfs_graph(nb_label, &terminals, pauli_product.is_tgate);
-                if let Some(g) = g {
-                    info!("Scheduled T on {:?} nodes",
-                          g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
-                    return Some(g);
-                }
-            }
-        } */
 
         let mut root_labels = IndexSet::new();
         for node_label in terminals.iter() {
@@ -489,46 +472,12 @@ impl Scheduler {
             }
         }
         let root_labels: Vec<String> = root_labels.into_iter().collect();
-        let g = self.get_multi_bfs_graph(&root_labels, &terminals, pauli_product.is_tgate);
+        let g = self.get_steiner_tree(&root_labels, &terminals, pauli_product.is_tgate);
         if let Some(g) = g {
             info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
-            //g.iter_nodes().map(|n| &n.label).collect::<Vec<_>>());
             return Some(g);
         }
         None
-    }
-
-    fn find_central_terminal(&self, terminals: &[String]) -> String {
-        // calculate the centroid
-        let mut sum_x = 0.0;
-        let mut sum_y = 0.0;
-
-        for terminal_label in terminals {
-            let node = self.topo.get_node(terminal_label);
-            sum_x += node.pos.0 as f64;
-            sum_y += node.pos.1 as f64;
-        }
-
-        let count = terminals.len() as f64;
-        let centroid_x = sum_x / count;
-        let centroid_y = sum_y / count;
-
-        let mut min_distance = f64::MAX;
-        let mut closest_terminal = terminals[0].clone();
-
-        for terminal_label in terminals {
-            let node = self.topo.get_node(terminal_label);
-            let dx = (node.pos.0 as f64 - centroid_x).abs();
-            let dy = (node.pos.1 as f64 - centroid_y).abs();
-            let distance = dx + dy; // Manhattan distance
-            if distance < min_distance {
-                min_distance = distance;
-                closest_terminal = terminal_label.clone();
-            }
-        }
-        info!("  Closest terminal {} at Manhattan distance {:.2} from centroid",
-              closest_terminal, min_distance);
-        closest_terminal
     }
 
     fn get_terminal_nodes(&self, pauli_product: &PauliProduct) -> Option<Vec<String>> {
@@ -578,118 +527,15 @@ impl Scheduler {
         Some(terminals)
     }
 
-    fn get_bfs_graph(&self, root_label: &str, terminal_nodes: &Vec<String>, is_tgate: bool)
-                     -> Option<TopoGraph> {
-        info!("  BFS from node {} to nodes {:?}", root_label, terminal_nodes);
-        let mut visited = IndexSet::with_capacity(self.topo.num_nodes);
-        let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
-        let mut bfs_graph = TopoGraph::new();
-
-        visited.insert(root_label);
-        queue.push_back(root_label);
-        let num_terminals_reqd = terminal_nodes.len();
-        let mut num_found_terminals = 0;
-        let mut cultivator = None;
-        let root_node = self.topo.get_node(root_label);
-        bfs_graph.add_node(root_node.clone());
-        if root_node.node_type == NodeType::Magic && root_node.cultivation_time == 0 {
-            cultivator = Some(root_label);
-            info!("    root node is cultivator");
-        }
-        while let Some(node_label) = queue.pop_front() {
-            let node = self.topo.get_node(&node_label);
-            for nb_label in node.edges.iter() {
-                let nb = self.topo.get_node(&nb_label);
-                if nb.used {
-                    continue;
-                }
-                if visited.contains(nb_label.as_str()) {
-                    continue;
-                }
-                let nb_is_cultivator = is_tgate
-                                       && cultivator == None
-                                       && nb.node_type == NodeType::Magic
-                                       && nb.cultivation_time == 0;
-                if self.topo.is_routing_node(nb) || nb_is_cultivator {
-                    bfs_graph.add_node(nb.clone());
-                    bfs_graph.add_edge(&node_label, &nb_label);
-                    queue.push_back(nb_label);
-                    if nb_is_cultivator {
-                        cultivator = Some(nb_label);
-                        info!("    found cultivator: node {}", nb_label);
-                        if num_found_terminals == num_terminals_reqd {
-                            info!("    Found tree of {} nodes", bfs_graph.node_list().len());
-                            bfs_graph.trim_dangling_nodes(cultivator.unwrap());
-                            bfs_graph.root_node = Some(cultivator.unwrap().to_string());
-                            return Some(bfs_graph);
-                        }
-                    }
-                    //info!("    add node {} with edge {}->{}", nb_label, node_label, nb_label);
-                } else if terminal_nodes.contains(&nb_label) {
-                    assert!(nb.node_type == NodeType::Data);
-                    let paired_nb = self.topo.get_paired_data_node(nb);
-                    if node.edges.contains(&paired_nb.label) {
-                        // this is a top or bottom connection
-                        info!("    Node {} has a top/bottom connection to {}/{}",
-                              node.label, nb.label, paired_nb.label);
-                        // only use the top/bottom if both nodes are in the terminals
-                        if !terminal_nodes.contains(&nb.label)
-                           || !terminal_nodes.contains(&paired_nb.label)
-                        {
-                            continue;
-                        }
-                        if visited.contains(paired_nb.label.as_str()) {
-                            // paired node is already in the graph, remove the previous edge
-                            let prev_paired_node = bfs_graph.get_node_mut(&paired_nb.label);
-                            // there should be only one edge to remove
-                            assert!(prev_paired_node.edges.len() == 1);
-                            bfs_graph.remove_all_edges(&paired_nb.label);
-                            num_found_terminals -= 1;
-                        }
-                        info!("    Using top/bottom connection {}", paired_nb.label);
-                        // if we haven't used both data nodes yet, then make this
-                        // top/bottom the one used
-                        visited.insert(paired_nb.label.as_str());
-                        bfs_graph.add_node(paired_nb.clone());
-                        bfs_graph.add_edge(&node_label, &paired_nb.label);
-                        num_found_terminals += 1;
-                    }
-                    bfs_graph.add_node(nb.clone());
-                    bfs_graph.add_edge(&node_label, &nb_label);
-                    num_found_terminals += 1;
-                    //info!("    add terminal {} edge {}->{}", nb_label, node_label, nb_label);
-                    assert!(num_found_terminals <= num_terminals_reqd);
-                    if num_found_terminals == num_terminals_reqd {
-                        if is_tgate {
-                            if cultivator != None {
-                                info!("    Found tree of {} nodes", bfs_graph.node_list().len());
-                                bfs_graph.trim_dangling_nodes(cultivator.unwrap());
-                                bfs_graph.root_node = Some(cultivator.unwrap().to_string());
-                                return Some(bfs_graph);
-                            }
-                        } else {
-                            info!("    Found tree of {} nodes", bfs_graph.node_list().len());
-                            bfs_graph.trim_dangling_nodes(root_label);
-                            bfs_graph.root_node = Some(root_label.to_string());
-                            return Some(bfs_graph);
-                        }
-                    }
-                }
-                visited.insert(nb_label);
-            }
-        }
-        None
-    }
-
-    fn get_multi_bfs_graph(&self, root_labels: &Vec<String>, terminal_nodes: &Vec<String>,
-                           is_tgate: bool)
-                           -> Option<TopoGraph> {
+    fn get_steiner_tree(&self, root_labels: &Vec<String>, terminal_nodes: &Vec<String>,
+                        is_tgate: bool)
+                        -> Option<TopoGraph> {
         debug!("    BFS from nodes {:?} to nodes {:?}", root_labels, terminal_nodes);
         let mut visited: IndexMap<String, String> = IndexMap::with_capacity(self.topo.num_nodes);
         let mut paths: IndexMap<String, IndexSet<String>> =
             IndexMap::with_capacity(root_labels.len());
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
-        let mut bfs_graph = TopoGraph::new();
+        let mut tree = TopoGraph::new();
         let mut cultivator = None;
         let mut terms_found = 0;
         let reqd_terms = terminal_nodes.len();
@@ -704,7 +550,7 @@ impl Scheduler {
             visited.insert(root_label.clone(), root_label.clone());
             queue.push_back(root_label);
             let root = self.topo.get_node(root_label);
-            bfs_graph.add_node(root.clone());
+            tree.add_node(root.clone());
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
                && root.cultivation_time == 0
@@ -754,7 +600,7 @@ impl Scheduler {
                                reqd_paths,
                                RESET);
                         debug!("      {}paths:{:?}{}", GREEN, paths, RESET);
-                        bfs_graph.add_edge(&node_label, &nb_label);
+                        tree.add_edge(&node_label, &nb_label);
                         debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
                         if total_paths == reqd_paths && terms_found == reqd_terms {
                             if is_tgate && cultivator.is_none() {
@@ -773,8 +619,8 @@ impl Scheduler {
                                        && nb.cultivation_time == 0;
                 // add routing node/cultivator
                 if self.topo.is_routing_node(nb) || nb_is_cultivator {
-                    bfs_graph.add_node(nb.clone());
-                    bfs_graph.add_edge(&node_label, &nb_label);
+                    tree.add_node(nb.clone());
+                    tree.add_edge(&node_label, &nb_label);
                     debug!("      {}add node {}{}", GREEN, nb_label, RESET);
                     debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
                     queue.push_back(nb_label);
@@ -791,8 +637,8 @@ impl Scheduler {
                 // found terminal
                 if terminal_nodes.contains(&nb_label) {
                     terms_found += 1;
-                    bfs_graph.add_node(nb.clone());
-                    bfs_graph.add_edge(&node_label, &nb_label);
+                    tree.add_node(nb.clone());
+                    tree.add_edge(&node_label, &nb_label);
                     debug!("      {}add node {}{}", GREEN, nb_label, RESET);
                     debug!("      {}add edge {}->{}{}", GREEN, node_label, nb_label, RESET);
                 }
@@ -804,7 +650,7 @@ impl Scheduler {
                 }
                 // we have all the paths and terms and a cultivator (if needed), so we can now
                 // return the tree (bfs_graph)
-                bfs_graph.root_node = if is_tgate {
+                tree.root_node = if is_tgate {
                     Some(cultivator.unwrap().to_string())
                 } else {
                     Some(root_labels[0].to_string())
@@ -813,12 +659,12 @@ impl Scheduler {
                        GREEN,
                        cultivator.map_or("none", |v| v),
                        RESET);
-                let root = bfs_graph.root_node.as_ref().unwrap().clone();
-                let num_trimmed = bfs_graph.trim_dangling_nodes(&root);
+                let root = tree.root_node.as_ref().unwrap().clone();
+                let num_trimmed = tree.trim_dangling_nodes(&root);
                 debug!("    Trimmed {} dangling nodes", num_trimmed);
                 // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
                 // makes the path shorter
-                return Some(bfs_graph);
+                return Some(tree);
             }
         }
         None
