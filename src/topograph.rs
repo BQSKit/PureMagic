@@ -333,30 +333,16 @@ impl TopoGraph {
 
         let max_qi = if min_num_qubits % 2 == 0 { min_num_qubits } else { min_num_qubits + 1 };
         //let qi_list: Vec<usize> = (0..max_qi + 1).collect();
-        // Generate qi_list with alternating column ordering
-        let mut qi_list = vec![0; max_qi];
-        let col_height = patch_rows * 2;
-        let mut rev_offset = 0;
-        for qi in (0..max_qi).step_by(2) {
-            if qi % col_height == 0 {
-                rev_offset = if rev_offset == 0 { 2 * qi } else { 0 };
-            }
-            if rev_offset > 0 {
-                qi_list[qi] = col_height - 2 + rev_offset - qi;
-            } else {
-                qi_list[qi] = qi;
-            }
-            qi_list[qi + 1] = qi_list[qi] + 1;
-        }
+        let qi_list = self.gen_alternating_qubit_order(max_qi, patch_rows);
+
         print!("Data qubit order:");
         for (i, q) in qi_list.iter().enumerate().step_by(2) {
-            if i % col_height == 0 {
+            if i % patch_rows * 2 == 0 {
                 print!("\n  ");
             }
             print!("{:4}/{:<4}", q, qi_list[i + 1]);
         }
         println!();
-
         let mut qi = 0;
         for col in 0..self.num_cols {
             for row in 0..self.num_rows {
@@ -385,6 +371,24 @@ impl TopoGraph {
         }
         self.set_edges(sides_only);
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
+    }
+
+    fn gen_alternating_qubit_order(&self, max_qi: usize, patch_rows: usize) -> Vec<usize> {
+        let mut qi_list = vec![0; max_qi];
+        let col_height = patch_rows * 2;
+        let mut rev_offset = 0;
+        for qi in (0..max_qi).step_by(2) {
+            if qi % col_height == 0 {
+                rev_offset = if rev_offset == 0 { 2 * qi } else { 0 };
+            }
+            if rev_offset > 0 {
+                qi_list[qi] = col_height - 2 + rev_offset - qi;
+            } else {
+                qi_list[qi] = qi;
+            }
+            qi_list[qi + 1] = qi_list[qi] + 1;
+        }
+        qi_list
     }
 
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
