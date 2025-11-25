@@ -459,6 +459,9 @@ impl Scheduler {
         }
         // Get root nodes next to terminals
         let root_labels = self.get_root_nodes(&terminals);
+        if root_labels.is_empty() {
+            return None;
+        }
         let g = self.get_steiner_tree(&root_labels, &terminals, pauli_product.is_tgate);
         if let Some(g) = g {
             info!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
@@ -518,20 +521,49 @@ impl Scheduler {
         let mut root_labels = IndexSet::new();
         for node_label in terminals.iter() {
             let node = self.topo.get_node(node_label);
-            for nb_label in node.edges.iter() {
-                let nb = self.topo.get_node(nb_label);
-                if nb.used || !self.topo.is_routing_node(nb) {
-                    continue;
+            let paired_node = self.topo.get_paired_data_node(node);
+            let mut pair_found = false;
+            // first look for paired nodes (top/bottom)
+            if terminals.contains(&paired_node.label) {
+                let pair = if node.label.contains("X") { Some("XX") } else { Some("ZZ") };
+                debug!("    Found {} pair {}{} in terminals",
+                       pair.unwrap(),
+                       node.label,
+                       paired_node.label);
+                for nb_label in node.edges.iter() {
+                    let nb = self.topo.get_node(nb_label);
+                    if nb.used || !self.topo.is_routing_node(nb) {
+                        continue;
+                    }
+                    // If we are using top/bottom
+                    if (pair == Some("XX") && nb.pos.1 < node.pos.1)
+                       || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
+                    {
+                        //debug!("    {}Found XX pair {} -> {}{}", BLUE, node_label, nb_label, RESET);
+                        root_labels.insert(nb_label.clone());
+                        pair_found = true;
+                        break;
+                    }
                 }
-                // Only include neighbors on the side (same row, different column)
-                if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
-                    root_labels.insert(nb_label.clone());
+            };
+            if !pair_found {
+                for nb_label in node.edges.iter() {
+                    let nb = self.topo.get_node(nb_label);
+                    if nb.used || !self.topo.is_routing_node(nb) {
+                        continue;
+                    }
+                    // Only include neighbors on the side (same row, different column)
+                    if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                        root_labels.insert(nb_label.clone());
+                        break;
+                    }
                 }
             }
         }
         root_labels.into_iter().collect()
     }
 
+    // this can be viewed as a greedy multi-source shortest path algorithm
     fn get_steiner_tree(&self, root_labels: &Vec<String>, terminal_nodes: &Vec<String>,
                         is_tgate: bool)
                         -> Option<TopoGraph> {
@@ -543,6 +575,7 @@ impl Scheduler {
         let mut tree = TopoGraph::new();
         let mut cultivator = None;
         let mut total_paths = 0;
+        debug!("    Number of root labels {}", root_labels.len());
         // every root must have a path to every other root
         let reqd_paths = root_labels.len() * (root_labels.len() - 1);
         debug!("    Require {} paths", reqd_paths);
@@ -579,6 +612,10 @@ impl Scheduler {
             for nb_label in node.edges.iter() {
                 let nb = self.topo.get_node(&nb_label);
                 if nb.used {
+                    continue;
+                }
+                if nb.node_type == NodeType::Data {
+                    // all data nodes are already linked in
                     continue;
                 }
                 // check for path links between roots via routing nodes
