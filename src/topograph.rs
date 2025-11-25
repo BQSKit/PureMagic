@@ -327,12 +327,37 @@ impl TopoGraph {
         if ancilla_rows == 0 {
             self.num_rows += 1;
         }
+        let row_gap = 1 + row_spacing;
         self.num_cols = patch_cols * col_spacing + col_spacing - 1;
         self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
+
+        let max_qi = if min_num_qubits % 2 == 0 { min_num_qubits } else { min_num_qubits + 1 };
+        //let qi_list: Vec<usize> = (0..max_qi + 1).collect();
+        // Generate qi_list with alternating column ordering
+        let mut qi_list = vec![0; max_qi];
+        let col_height = patch_rows * 2;
+        let mut rev_offset = 0;
+        for qi in (0..max_qi).step_by(2) {
+            if qi % col_height == 0 {
+                rev_offset = if rev_offset == 0 { 2 * qi } else { 0 };
+            }
+            if rev_offset > 0 {
+                qi_list[qi] = col_height - 2 + rev_offset - qi;
+            } else {
+                qi_list[qi] = qi;
+            }
+            qi_list[qi + 1] = qi_list[qi] + 1;
+        }
+        print!("Data qubit order:");
+        for (i, q) in qi_list.iter().enumerate().step_by(2) {
+            if i % col_height == 0 {
+                print!("\n  ");
+            }
+            print!("{:4}/{:<4}", q, qi_list[i + 1]);
+        }
+        println!();
+
         let mut qi = 0;
-        let max_qi =
-            if min_num_qubits % 2 == 0 { 2 * min_num_qubits } else { 2 * min_num_qubits + 1 };
-        let row_gap = 1 + row_spacing;
         for col in 0..self.num_cols {
             for row in 0..self.num_rows {
                 if col % col_spacing == col_spacing - 1 {
@@ -341,9 +366,10 @@ impl TopoGraph {
                        && !(ancilla_rows == 0 && row == self.num_rows - 1)
                     {
                         if qi < max_qi {
+                            let q = qi_list[qi];
                             let is_x = row % row_gap == row_spacing - 1;
-                            self.add_double_data_qubit(qi, col, row, is_x);
-                            qi += 2;
+                            self.add_double_data_qubit(q, col, row, is_x);
+                            qi += 1;
                         } else {
                             self.node_grid[col][row] =
                                 Some(self.add_qubit(col, row, NodeType::Magic));
@@ -362,7 +388,7 @@ impl TopoGraph {
     }
 
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
-        let q = if is_x { qi / 2 } else { qi / 2 - 1 };
+        let q = if is_x { qi } else { qi - 1 };
         let op = if is_x { 'X' } else { 'Z' };
         let label1 = format!("d{}{}", q, op);
         let node1 = Node::new(label1.to_string(),
