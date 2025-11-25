@@ -332,11 +332,14 @@ impl TopoGraph {
         self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
 
         let max_qi = if min_num_qubits % 2 == 0 { min_num_qubits } else { min_num_qubits + 1 };
-        //let qi_list: Vec<usize> = (0..max_qi + 1).collect();
-        let qi_list = self.gen_alternating_qubit_order(max_qi, patch_rows);
+        let qi_list: Vec<usize> = (0..max_qi + 1).collect();
+        //let qi_list = self.gen_alternating_qubit_order(max_qi, patch_rows);
 
         print!("Data qubit order:");
         for (i, q) in qi_list.iter().enumerate().step_by(2) {
+            if i + 1 == qi_list.len() {
+                break;
+            }
             if i % patch_rows * 2 == 0 {
                 print!("\n  ");
             }
@@ -374,6 +377,9 @@ impl TopoGraph {
     }
 
     fn gen_alternating_qubit_order(&self, max_qi: usize, patch_rows: usize) -> Vec<usize> {
+        // FIXME: this breaks for ising_n98 but works for all the other test circuits
+        // Also, it gives a 5% improvement with ising_n66, but is the same or worse for every other
+        // circuit
         let mut qi_list = vec![0; max_qi];
         let col_height = patch_rows * 2;
         let mut rev_offset = 0;
