@@ -110,6 +110,11 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
 
+    println!("LSSP - Git branch: {} | Commit: {} | Built: {}",
+             env!("VERGEN_GIT_BRANCH"),
+             env!("VERGEN_GIT_SHA"),
+             env!("VERGEN_BUILD_TIMESTAMP"));
+
     let args = Args::parse();
     println!("{:#?}", args);
 
