@@ -32,7 +32,8 @@ struct Args {
     /// Number of products for random circuit generation
     #[arg(long, default_value = "1000", help = "Number of products for random circuit generation")]
     random_products: usize,
-    /// Spread probability for random circuit generation (probability of adding operators to adjacent qubits)
+    /// Spread probability for random circuit generation (probability of adding operators to
+    /// adjacent qubits)
     #[arg(long,
           default_value = "0.4",
           help = "Spread probability for random circuit generation (0.0-1.0)")]
@@ -110,7 +111,7 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
 
-    println!("LSSP - Git branch: {} | Commit: {} | Built: {}",
+    println!("PureMagic - Git branch: {} | Commit: {} | Built: {}",
              env!("VERGEN_GIT_BRANCH"),
              env!("VERGEN_GIT_SHA"),
              env!("VERGEN_BUILD_TIMESTAMP"));

@@ -1,5 +1,5 @@
 [package]
-name = "lssp"
+name = "puremagic"
 version = "0.1.0"
 edition = "2024"
 authors = ["shofmeyr@lbl.gov"]
@@ -49,8 +49,8 @@ vergen = { version = "8", features = ["build", "git", "gitcl"] }
 [[bin]]
 #name = "transpile"
 #path = "src/transpile.rs"
-name = "lssp"
-path = "src/lssp.rs"
+name = "puremagic"
+path = "src/puremagic.rs"
 
 [profile.release]
 opt-level = 3
