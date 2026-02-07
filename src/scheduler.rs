@@ -170,8 +170,11 @@ impl Scheduler {
         if plot_steps == 0 {
             print!("Scheduling {} products:    ", total_to_schedule);
         }
+        let mut sum_iteration_time = 0;
+        let mut max_iteration_time = 0;
         // Main scheduling loop
         while !to_schedule.is_empty() {
+            let iteration_start_time = std::time::Instant::now();
             num_steps += 1;
             info!("{}Step {}: {:?}{}",
                   CYAN,
@@ -252,8 +255,12 @@ impl Scheduler {
                 }
             }
             to_schedule = next_to_schedule;
+            let iteration_time = iteration_start_time.elapsed().as_micros();
+            sum_iteration_time += iteration_time;
+            if iteration_time > max_iteration_time {
+                max_iteration_time = iteration_time;
+            }
         }
-
         self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
         let mean =
@@ -264,6 +271,9 @@ impl Scheduler {
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
+        println!("Scheduling iteration time per step {:} μs avg, {:} μs max",
+                 sum_iteration_time / num_steps as u128,
+                 max_iteration_time);
         self.schedule_product_timer.done();
 
         Ok((num_steps, scheduled.len()))
