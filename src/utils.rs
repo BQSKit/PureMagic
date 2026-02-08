@@ -1,12 +1,20 @@
 use std::time::{Duration, Instant};
 
 // Add these near the top of scheduler.rs, before the struct definitions
-pub const GREEN: &str = "\x1b[32m";
 pub const RED: &str = "\x1b[31m";
-pub const _YELLOW: &str = "\x1b[33m";
-pub const _BLUE: &str = "\x1b[34m";
-pub const _MAGENTA: &str = "\x1b[35m";
+pub const GREEN: &str = "\x1b[32m";
+pub const YELLOW: &str = "\x1b[33m";
+pub const BLUE: &str = "\x1b[34m";
+pub const MAGENTA: &str = "\x1b[35m";
 pub const CYAN: &str = "\x1b[36m";
+pub const WHITE: &str = "\x1b[37m";
+pub const LRED: &str = "\x1b[91m";
+pub const LGREEN: &str = "\x1b[92m";
+pub const LYELLOW: &str = "\x1b[93m";
+pub const LBLUE: &str = "\x1b[94m";
+pub const LMAGENTA: &str = "\x1b[95m";
+pub const LCYAN: &str = "\x1b[96m";
+pub const LWHITE: &str = "\x1b[97m";
 pub const RESET: &str = "\x1b[0m";
 
 pub struct Timer {

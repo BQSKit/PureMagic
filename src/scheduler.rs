@@ -1,7 +1,11 @@
 use crate::circuit::Circuit;
 use crate::pauliproduct::PauliProduct;
 use crate::topograph::{NodeType, TopoGraph};
-use crate::utils::{CYAN, GREEN, IntermittentTimer, RED, RESET, Timer};
+use crate::utils::{
+    BLUE, CYAN, GREEN, LBLUE, LCYAN, LGREEN, LMAGENTA, LRED, LWHITE, LYELLOW, MAGENTA, RED, RESET,
+    WHITE, YELLOW,
+};
+use crate::utils::{IntermittentTimer, Timer};
 
 use indexmap::{IndexMap, IndexSet};
 use log::{debug, info};
@@ -92,6 +96,7 @@ pub struct Scheduler {
     cultivation_times: Vec<i32>,
     schedule_product_timer: IntermittentTimer,
     stats: ScheduleStats,
+    scheduled_products: Vec<Vec<PauliProduct>>,
 }
 
 impl Scheduler {
@@ -102,7 +107,7 @@ impl Scheduler {
             let circuit_stem = Path::new(&circuit.circuit_fname).file_stem()
                                                                 .and_then(|s| s.to_str())
                                                                 .unwrap_or("circuit");
-            let sched_fname = format!("{}.sched", circuit_stem);
+            let sched_fname = format!("{}.sched_trace", circuit_stem);
             let level_filter = match log_level.to_lowercase().as_str() {
                 "debug" => log::LevelFilter::Debug,
                 "info" => log::LevelFilter::Info,
@@ -121,8 +126,9 @@ impl Scheduler {
                     magic_state_lambda,
                     plot_option,
                     cultivation_times: Vec::new(),
-                    schedule_product_timer: IntermittentTimer::new("sched product", ""),
-                    stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits) }
+                    schedule_product_timer: IntermittentTimer::new("schedule_pauli_product", ""),
+                    stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
+                    scheduled_products: Vec::new() }
     }
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
@@ -207,8 +213,10 @@ impl Scheduler {
             }
             // Process scheduled products
             if let Some(ref pp_paths) = pp_paths {
+                let mut products_in_step = Vec::new();
                 let mut children_to_schedule = IndexSet::new();
                 for (pp, _) in pp_paths {
+                    products_in_step.push(pp.clone());
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
                         remaining_parents[child_id as usize] -= 1;
@@ -217,6 +225,7 @@ impl Scheduler {
                         }
                     }
                 }
+                self.scheduled_products.push(products_in_step);
                 // Extend next_to_schedule with children from IndexSet
                 next_to_schedule.extend(children_to_schedule.iter().map(|&id| {
                                                                        self.circuit
@@ -275,7 +284,7 @@ impl Scheduler {
                  sum_iteration_time / num_steps as u128,
                  max_iteration_time);
         self.schedule_product_timer.done();
-
+        self.print_schedule()?;
         Ok((num_steps, scheduled.len()))
     }
 
@@ -744,158 +753,53 @@ impl Scheduler {
 
         Ok(())
     }
-}
 
-/*
-/// Information about a node's nearest terminal in the Voronoi diagram
-#[derive(Debug, Clone)]
-pub struct VoronoiCell {
-    /// The nearest terminal node label
-    pub nearest_terminal: String,
-    /// Distance (number of hops) to the nearest terminal
-    pub distance: usize,
-    /// Parent node in the shortest path to the nearest terminal
-    /// None if this is a terminal node itself
-    pub parent: Option<String>,
-}
+    fn print_schedule(&self) -> io::Result<()> {
+        let circuit_stem = Path::new(&self.circuit.circuit_fname).file_stem()
+                                                                 .and_then(|s| s.to_str())
+                                                                 .unwrap_or("circuit");
+        let output_fname = format!("{}.schedule", circuit_stem);
 
-impl Scheduler {
-    /// Build a Voronoi diagram using multi-source BFS from all terminals
-    /// Returns a map from each node label to its nearest terminal and distance
-    pub fn build_voronoi_diagram(&self, terminals: &[String]) -> IndexMap<String, VoronoiCell> {
-        let mut voronoi: IndexMap<String, VoronoiCell> = IndexMap::new();
-        let mut queue: VecDeque<(String, String, usize)> = VecDeque::new();
-        let mut visited: IndexSet<String> = IndexSet::new();
+        let mut file = std::fs::File::create(&output_fname)?;
 
-        info!("Building Voronoi diagram for {} terminals", terminals.len());
+        writeln!(file, "# Scheduled Products by Timestep")?;
+        writeln!(file, "# Circuit: {}", self.circuit.circuit_fname)?;
+        writeln!(file, "# Total steps: {}", self.scheduled_products.len())?;
+        writeln!(file,
+                 "# Total products: {}",
+                 self.scheduled_products.iter().map(|v| v.len()).sum::<usize>())?;
+        writeln!(file)?;
 
-        // Initialize BFS from all terminals simultaneously
-        for terminal in terminals {
-            let node = self.topo.get_node(terminal);
-            assert!(!node.used);
-            // Each terminal starts with distance 0 to itself and no parent
-            queue.push_back((terminal.clone(), terminal.clone(), 0));
-            visited.insert(terminal.clone());
-            voronoi.insert(terminal.clone(), VoronoiCell {
-                nearest_terminal: terminal.clone(),
-                distance: 0,
-                parent: None, // Terminals have no parent
-            });
-        }
-        info!("  Starting multi-source BFS from {} valid terminals", voronoi.len());
+        let colors = [GREEN, RED, YELLOW, BLUE, MAGENTA, CYAN, WHITE, LGREEN, LRED, LYELLOW,
+                      LBLUE, LMAGENTA, LCYAN, LWHITE];
 
-        // Multi-source BFS to compute Voronoi regions
-        let mut total_nodes_visited = 0;
-        while let Some((node_label, terminal_label, dist)) = queue.pop_front() {
-            let node = self.topo.get_node(&node_label);
-
-            for neighbor_label in &node.edges {
-                let neighbor = self.topo.get_node(neighbor_label);
-
-                // Skip used nodes
-                if neighbor.used {
-                    continue;
-                }
-
-                // Only process unvisited nodes
-                if !visited.contains(neighbor_label) {
-                    visited.insert(neighbor_label.clone());
-                    total_nodes_visited += 1;
-
-                    // Assign this node to the same terminal with distance + 1
-                    // and record the parent for path reconstruction
-                    voronoi.insert(neighbor_label.clone(), VoronoiCell {
-                        nearest_terminal: terminal_label.clone(),
-                        distance: dist + 1,
-                        parent: Some(node_label.clone()), // Parent is the node we came from
-                    });
-
-                    // Continue BFS from this neighbor
-                    queue.push_back((neighbor_label.clone(), terminal_label.clone(), dist + 1));
+        for step_products in &self.scheduled_products {
+            let mut sorted_products = step_products.clone();
+            sorted_products.sort_by_key(|pp| {
+                               pp.operators.iter().map(|op| op.qubit).min().unwrap_or(usize::MAX)
+                           });
+            let mut combined_chars = vec!['_'; self.circuit.num_qubits];
+            let mut combined_colors = vec![RESET; self.circuit.num_qubits];
+            for (idx, pp) in sorted_products.iter().enumerate() {
+                let color = colors[idx % colors.len()];
+                for op in &pp.operators {
+                    if op.qubit < self.circuit.num_qubits {
+                        combined_chars[op.qubit] = op.basis;
+                        combined_colors[op.qubit] = color;
+                    }
                 }
             }
-        }
-
-        info!("  Voronoi diagram complete: {} nodes assigned to {} regions",
-                   total_nodes_visited,
-                   terminals.len());
-
-        // Log statistics about the Voronoi regions
-        let mut region_sizes: IndexMap<String, usize> = IndexMap::new();
-        let mut max_distance = 0;
-
-        for cell in voronoi.values() {
-            *region_sizes.entry(cell.nearest_terminal.clone()).or_insert(0) += 1;
-            max_distance = max_distance.max(cell.distance);
-        }
-
-        info!("  Region statistics:");
-        for (terminal, size) in &region_sizes {
-            info!("    Terminal {}: {} nodes", terminal, size);
-        }
-        info!("  Max distance to any terminal: {}", max_distance);
-
-        voronoi
-    }
-
-    /// Reconstruct the path from a node to its nearest terminal
-    pub fn reconstruct_path_to_terminal(&self, voronoi: &IndexMap<String, VoronoiCell>,
-                                        node_label: &str)
-                                        -> Vec<String> {
-        let mut path = Vec::new();
-        let mut current = node_label.to_string();
-
-        while let Some(cell) = voronoi.get(&current) {
-            path.push(current.clone());
-
-            if let Some(parent) = &cell.parent {
-                current = parent.clone();
-            } else {
-                // Reached a terminal (no parent)
-                break;
+            for i in 0..self.circuit.num_qubits {
+                write!(file, "{}{}", combined_colors[i], combined_chars[i])?;
             }
+            for (idx, pp) in sorted_products.iter().enumerate() {
+                let color = colors[idx % colors.len()];
+                write!(file, " {}{}", color, pp.id)?;
+            }
+            writeln!(file, "{}", RESET)?;
         }
 
-        path.reverse(); // Reverse to get path from terminal to node
-        path
-    }
-
-    /// Find the path between two nodes using their Voronoi cells
-    /// Returns the path if both nodes are in the same region, or through boundary if different regions
-    pub fn find_path_through_voronoi(&self, voronoi: &IndexMap<String, VoronoiCell>, from: &str,
-                                     to: &str)
-                                     -> Option<Vec<String>> {
-        let from_cell = voronoi.get(from)?;
-        let to_cell = voronoi.get(to)?;
-
-        if from_cell.nearest_terminal == to_cell.nearest_terminal {
-            // Same region: find common ancestor
-            let path_from = self.reconstruct_path_to_terminal(voronoi, from);
-            let path_to = self.reconstruct_path_to_terminal(voronoi, to);
-
-            // Find lowest common ancestor
-            let mut common_prefix_len = 0;
-            for i in 0..path_from.len().min(path_to.len()) {
-                if path_from[i] == path_to[i] {
-                    common_prefix_len = i + 1;
-                } else {
-                    break;
-                }
-            }
-
-            if common_prefix_len > 0 {
-                // Build path: from -> LCA -> to
-                let mut path = path_from[common_prefix_len..].to_vec();
-                path.reverse();
-                path.extend_from_slice(&path_from[..common_prefix_len]);
-                path.extend_from_slice(&path_to[common_prefix_len..]);
-                return Some(path);
-            }
-        }
-
-        // Different regions: would need boundary crossing
-        // This is a more complex case that could be handled separately
-        None
+        println!("Scheduled products written to {}", output_fname);
+        Ok(())
     }
 }
- */
