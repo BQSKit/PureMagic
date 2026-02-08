@@ -4,3 +4,4 @@ fn_params_layout = "Compressed"
 indent_style = "Visual"
 overflow_delimited_expr = true
 #single_line_if_else = true
+#tab_spaces = 2
