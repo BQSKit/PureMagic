@@ -20,20 +20,24 @@ pub enum NodeType {
 #[derive(Debug, Clone)]
 pub struct Node {
     pub node_type: NodeType,
+    pub id: usize,
     pub label: String,
+    pub paired_data_id: Option<usize>,
     pub pos: (f64, f64),
     pub busy_count: i32,
     pub cultivation_time: i32,
-    pub edges: IndexSet<String>,
+    pub edges: IndexSet<usize>,
     pub used: bool,
 }
 
 impl Node {
-    fn new(label: String, x: f64, y: f64, node_type: NodeType, busy_count: i32,
-           cultivation_time: i32)
+    fn new(id: usize, paired_data_id: Option<usize>, label: String, x: f64, y: f64,
+           node_type: NodeType, busy_count: i32, cultivation_time: i32)
            -> Self {
         Node { node_type,
-               label,
+               id: id,
+               label: label,
+               paired_data_id: paired_data_id,
                pos: (x, y),
                busy_count,
                cultivation_time,
@@ -41,19 +45,8 @@ impl Node {
                used: false }
     }
 
-    fn add_edge(&mut self, other: &str) {
-        self.edges.insert(other.to_string());
-    }
-
-    pub fn get_data_label_number(&self) -> Option<usize> {
-        // Skip first character (node type)
-        let after_type = self.label.get(1..)?;
-        // For data nodes, parse number before operator
-        if self.label.starts_with('d') {
-            let op_pos = after_type.find(|c: char| c == 'X' || c == 'Z')?;
-            return after_type[..op_pos].parse().ok();
-        }
-        None
+    fn add_edge(&mut self, other: usize) {
+        self.edges.insert(other);
     }
 
     pub fn is_cultivating(&self) -> bool {
@@ -62,7 +55,8 @@ impl Node {
 }
 
 pub struct TopoGraph {
-    nodes: IndexMap<String, Node>,
+    nodes: IndexMap<usize, Node>,
+    node_ids_from_labels: IndexMap<String, usize>,
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
     num_rows: usize,
@@ -75,12 +69,13 @@ pub struct TopoGraph {
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
-    pub root_node: Option<String>,
+    pub root_node: Option<usize>,
 }
 
 impl TopoGraph {
     pub fn new() -> Self {
         TopoGraph { nodes: IndexMap::new(),
+                    node_ids_from_labels: IndexMap::new(),
                     node_grid: Vec::new(),
                     num_cols: 0,
                     num_rows: 0,
@@ -117,6 +112,27 @@ impl TopoGraph {
         } else {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
+        // now make sure all data qubit pairs are set
+        let node_ids: Vec<usize> = self.nodes.keys().cloned().collect();
+        for node_id in node_ids {
+            let node = self.get_node(node_id);
+            if node.node_type == NodeType::Data {
+                let qubit = node.label
+                                .chars()
+                                .skip(1)
+                                .take_while(|c| c.is_numeric())
+                                .collect::<String>()
+                                .parse::<usize>()
+                                .ok()
+                                .unwrap();
+                let term = node.label.chars().last().map(|c| c.to_string()).unwrap();
+                let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
+                let paired_node_label = format!("d{}{}", pair_qubit, term);
+                self.get_node_mut(node_id).paired_data_id =
+                    self.node_ids_from_labels.get(&paired_node_label).copied();
+            }
+        }
+
         self.update_statistics();
         self.print_statistics();
     }
@@ -161,7 +177,6 @@ impl TopoGraph {
             //let timer_seed = *rseed;
             let timer_seed =
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
-
             let mut rng = StdRng::seed_from_u64(timer_seed);
             pair_indices.shuffle(&mut rng);
         }
@@ -365,24 +380,33 @@ impl TopoGraph {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
         let label1 = format!("d{}{}", q, op);
-        let node1 = Node::new(label1.to_string(),
+        let id1 = self.num_nodes;
+        let node1 = Node::new(id1,
+                              None,
+                              label1.to_string(),
                               col as f64 - 0.25,
                               (self.num_rows - 1 - row) as f64,
                               NodeType::Data,
                               0,
                               0);
-        self.nodes.insert(label1.to_string(), node1);
+        self.nodes.insert(id1, node1);
+        self.node_ids_from_labels.insert(label1, id1);
+        self.num_nodes += 1;
+        let id2 = self.num_nodes;
         let label2 = format!("d{}{}", q + 1, op);
-        let node2 = Node::new(label2.to_string(),
+        let node2 = Node::new(id2,
+                              None,
+                              label2.to_string(),
                               col as f64 + 0.25,
                               (self.num_rows - 1 - row) as f64,
                               NodeType::Data,
                               0,
                               0);
-        self.nodes.insert(label2.to_string(), node2);
+        self.nodes.insert(id2, node2);
+        self.node_ids_from_labels.insert(label2, id2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label.clone());
-        self.num_nodes += 2;
+        self.num_nodes += 1;
     }
 
     fn add_qubit(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
@@ -393,13 +417,16 @@ impl TopoGraph {
         };
 
         let label = format!("{}{}-{}", ch, col, row);
-        let node = Node::new(label.to_string(),
+        let node = Node::new(self.num_nodes,
+                             None,
+                             label.to_string(),
                              col as f64,
                              (self.num_rows - 1 - row) as f64,
                              node_type,
                              0,
                              0);
-        self.nodes.insert(label.to_string(), node);
+        self.nodes.insert(self.num_nodes, node);
+        self.node_ids_from_labels.insert(label.clone(), self.num_nodes);
         self.num_nodes += 1;
         label
     }
@@ -457,33 +484,34 @@ impl TopoGraph {
         for (label1, label2) in edges_to_add {
             if label1.starts_with('d') {
                 if let Some(ref d) = self.get_data_label_side(&label1, true) {
-                    self.add_edge(d, &label2);
+                    let n1 = self.node_ids_from_labels.get(d).unwrap();
+                    let n2 = self.node_ids_from_labels.get(&label2).unwrap();
+                    self.add_edge(*n1, *n2);
                 }
             } else if label2.starts_with('d') {
                 if let Some(ref d) = self.get_data_label_side(&label2, false) {
-                    self.add_edge(&label1, &d);
+                    let n1 = self.node_ids_from_labels.get(d).unwrap();
+                    let n2 = self.node_ids_from_labels.get(&label1).unwrap();
+                    self.add_edge(*n2, *n1);
                 }
             } else {
-                self.add_edge(&label1, &label2);
+                let n1 = self.node_ids_from_labels.get(&label1).unwrap();
+                let n2 = self.node_ids_from_labels.get(&label2).unwrap();
+                self.add_edge(*n1, *n2);
             }
         }
         for (label1, label2) in vert_data_edges_to_add {
             let (data_label, bus_label) =
                 if label1.starts_with('d') { (label1, label2) } else { (label2, label1) };
             let (data_label1, data_label2) = self.get_data_labels(&data_label).unwrap();
-            self.get_node_mut(&bus_label).add_edge(&data_label1);
-            self.get_node_mut(&bus_label).add_edge(&data_label2);
-            self.get_node_mut(&data_label1).add_edge(&bus_label);
-            self.get_node_mut(&data_label2).add_edge(&bus_label);
+            let data_node_id1 = self.node_ids_from_labels.get(&data_label1).unwrap().clone();
+            let data_node_id2 = self.node_ids_from_labels.get(&data_label2).unwrap().clone();
+            let bus_node_id = self.node_ids_from_labels.get(&bus_label).unwrap().clone();
+            self.get_node_mut(bus_node_id).add_edge(data_node_id1);
+            self.get_node_mut(bus_node_id).add_edge(data_node_id2);
+            self.get_node_mut(data_node_id1).add_edge(bus_node_id);
+            self.get_node_mut(data_node_id2).add_edge(bus_node_id);
         }
-    }
-
-    pub fn get_paired_data_node(&self, node: &Node) -> &Node {
-        let qubit = node.get_data_label_number().unwrap();
-        let term = node.label.chars().last().unwrap();
-        let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
-        let paired_node_label = format!("d{}{}", pair_qubit, term);
-        self.get_node(&paired_node_label)
     }
 
     fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
@@ -502,7 +530,7 @@ impl TopoGraph {
         }
     }
 
-    pub fn get_data_labels(&self, label: &str) -> Option<(String, String)> {
+    fn get_data_labels(&self, label: &str) -> Option<(String, String)> {
         // Find indices of numbers and operator
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
@@ -548,23 +576,23 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    pub fn trim_dangling_nodes(&mut self, root_node: &str) -> usize {
+    pub fn trim_dangling_nodes(&mut self, root_node: usize) -> usize {
         let mut num_trimmed = 0;
         loop {
             // Find dangling bus nodes
-            let mut dangling_labels: Vec<String> = Vec::new();
-            for (label, node) in self.nodes.iter() {
+            let mut dangling_ids: Vec<usize> = Vec::new();
+            for (id, node) in self.nodes.iter() {
                 // there is at most one path going into the bus/magic node
-                if self.is_routing_node(node) && node.edges.len() <= 1 && node.label != root_node {
-                    dangling_labels.push(label.clone());
+                if self.is_routing_node(node) && node.edges.len() <= 1 && node.id != root_node {
+                    dangling_ids.push(id.clone());
                 }
             }
             // Remove dangling nodes if any found
-            if dangling_labels.is_empty() {
+            if dangling_ids.is_empty() {
                 break;
             } else {
-                for label in dangling_labels {
-                    self.remove_node(&label);
+                for id in dangling_ids {
+                    self.remove_node(id);
                     num_trimmed += 1;
                 }
             }
@@ -580,75 +608,91 @@ impl TopoGraph {
         }
     }
 
-    pub fn get_node(&self, node_label: &str) -> &Node {
-        self.nodes.get(node_label).expect(&format!("Node {} not found", node_label))
+    pub fn get_node(&self, id: usize) -> &Node {
+        self.nodes.get(&id).expect(&format!("Node {} not found", id))
     }
 
-    pub fn get_node_mut(&mut self, node_label: &str) -> &mut Node {
-        self.nodes.get_mut(node_label).expect(&format!("Node {} not found", node_label))
+    pub fn get_node_mut(&mut self, id: usize) -> &mut Node {
+        self.nodes.get_mut(&id).expect(&format!("Node {} not found", id))
     }
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
     }
 
-    pub fn _iter_edges(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
-        self.nodes.iter().flat_map(|(node_label, node)| {
-                             node.edges
-                                 .iter()
-                                 .map(move |edge_label| (node_label.as_str(), edge_label.as_str()))
-                         })
+    pub fn _iter_edges(&self) -> impl Iterator<Item = (&usize, &usize)> + '_ {
+        self.nodes
+            .iter()
+            .flat_map(|(node_id, node)| node.edges.iter().map(move |edge_id| (node_id, edge_id)))
     }
 
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.nodes.values_mut()
     }
 
-    pub fn contains_node(&self, node_label: &str) -> bool {
-        self.nodes.contains_key(node_label)
+    pub fn contains_node(&self, node_id: &usize) -> bool {
+        self.nodes.contains_key(node_id)
     }
 
-    pub fn contains_edge(&self, label1: &str, label2: &str) -> bool {
-        if let Some(node) = self.nodes.get(label1) { node.edges.contains(label2) } else { false }
+    pub fn contains_edge(&self, node_id1: &usize, node_id2: &usize) -> bool {
+        if let Some(node) = self.nodes.get(node_id1) {
+            node.edges.contains(node_id2)
+        } else {
+            false
+        }
     }
 
     pub fn add_node(&mut self, node: Node) {
-        let new_node = Node::new(node.label.to_string(),
+        let new_node = Node::new(node.id,
+                                 node.paired_data_id,
+                                 node.label.to_string(),
                                  node.pos.0,
                                  node.pos.1,
                                  node.node_type,
                                  node.busy_count,
                                  node.cultivation_time);
-        self.nodes.insert(node.label.to_string(), new_node);
+        self.nodes.insert(new_node.id, new_node);
         self.num_nodes += 1;
     }
 
-    pub fn remove_node(&mut self, node_label: &str) {
+    pub fn remove_node(&mut self, node_id: usize) {
         // Get edges to remove from neighbors
-        let node = self.get_node(node_label);
-        let edges_to_remove: Vec<(String, String)> =
-            node.edges.iter().map(|neighbor| (neighbor.clone(), node_label.to_string())).collect();
+        let node = self.get_node(node_id);
+        let node_label = node.label.clone();
+        let edges_to_remove: Vec<(usize, usize)> =
+            node.edges.iter().map(|neighbor| (neighbor.clone(), node_id)).collect();
         // Remove edges from neighbor nodes
-        for (nb_label, edge_to_remove) in edges_to_remove {
-            if let Some(nb) = self.nodes.get_mut(&nb_label) {
+        for (nb_id, edge_to_remove) in edges_to_remove {
+            if let Some(nb) = self.nodes.get_mut(&nb_id) {
                 nb.edges.swap_remove(&edge_to_remove);
                 self.num_edges -= 1;
             }
         }
         // Remove the node itself
-        if self.nodes.swap_remove(node_label).is_some() {
+        if self.nodes.swap_remove(&node_id).is_some() {
             self.num_nodes -= 1;
         }
+        self.node_ids_from_labels.swap_remove(&node_label);
     }
 
-    pub fn add_edge(&mut self, label1: &str, label2: &str) {
-        self.get_node_mut(label1).add_edge(label2);
-        self.get_node_mut(label2).add_edge(label1);
+    pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
+        self.get_node_mut(node_id1).add_edge(node_id2);
+        self.get_node_mut(node_id2).add_edge(node_id1);
         self.num_edges += 1;
     }
 
-    pub fn node_list(&self) -> Vec<String> {
+    pub fn node_list(&self) -> Vec<usize> {
         self.nodes.keys().cloned().collect()
+    }
+
+    pub fn set_node_used(&mut self, node_label: &String) {
+        let node_id = self.node_ids_from_labels.get(node_label).unwrap();
+        self.nodes.get_mut(node_id).unwrap().used = true;
+    }
+
+    pub fn get_node_from_label(&self, node_label: &String) -> &Node {
+        let node_id = self.node_ids_from_labels.get(node_label).unwrap();
+        self.nodes.get(node_id).unwrap()
     }
 
     pub fn print(&self) -> io::Result<()> {
@@ -739,7 +783,7 @@ impl TopoGraph {
                     let mut stroke_width = 1;
                     // Check if edge is part of any path
                     for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                        if path_graph.contains_edge(&node.label, edge) {
+                        if path_graph.contains_edge(&node.id, edge) {
                             edge_color = &path_colors[i];
                             stroke_width = 6;
                             break;
@@ -760,25 +804,24 @@ impl TopoGraph {
             let mut root_node = None;
             // Check if node is part of any path
             for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                if path_graph.contains_node(&node.label) {
+                if path_graph.contains_node(&node.id) {
                     border_color = Some(&path_colors[i]);
                     root_node = path_graph.root_node.clone();
                     break;
                 }
             }
             // Draw node circle
-            let node_color =
-                match node.node_type {
-                    NodeType::Magic => {
-                        if border_color == None || Some(node.label.clone()) == root_node {
-                            RGBColor(0xFF, 0xBB, 0x99)
-                        } else {
-                            RGBColor(0xAA, 0xAA, 0xAA)
-                        }
-                    }
-                    NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
-                    NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
-                }.filled();
+            let node_color = match node.node_type {
+                                 NodeType::Magic => {
+                                     if border_color == None || Some(node.id.clone()) == root_node {
+                                         RGBColor(0xFF, 0xBB, 0x99)
+                                     } else {
+                                         RGBColor(0xAA, 0xAA, 0xAA)
+                                     }
+                                 }
+                                 NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
+                                 NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
+                             }.filled();
             chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32), 22, node_color)))?;
             // Draw border if part of a path
             if let Some(color) = border_color {
