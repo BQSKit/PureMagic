@@ -2,6 +2,7 @@ use crate::circuit::Circuit;
 use crate::node::NodeType;
 use crate::pauliproduct::PauliProduct;
 use crate::topograph::TopoGraph;
+use crate::treegraph::TreeGraph;
 use crate::utils::{
     BLUE, CYAN, GREEN, LBLUE, LCYAN, LGREEN, LMAGENTA, LRED, LWHITE, LYELLOW, MAGENTA, RED, RESET,
     WHITE, YELLOW,
@@ -355,7 +356,7 @@ impl Scheduler {
 
     fn schedule_timestep(
         &mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
-        -> (Option<String>, Option<Vec<(PauliProduct, TopoGraph)>>, Vec<PauliProduct>) {
+        -> (Option<String>, Option<Vec<(PauliProduct, TreeGraph)>>, Vec<PauliProduct>) {
         let mut num_avail_magic = self.setup_timestep();
         let mut pp_paths = Vec::with_capacity(to_schedule.len().min(10));
         let mut next_to_schedule = Vec::with_capacity(to_schedule.len().min(10));
@@ -370,7 +371,7 @@ impl Scheduler {
         self.func_calls = 0;
         while !remaining_to_schedule.is_empty() {
             let mut to_remove = Vec::new();
-            let mut best_pp: Option<(usize, TopoGraph)> = None;
+            let mut best_pp: Option<(usize, TreeGraph)> = None;
             let mut best_pp_graph_size = usize::MAX;
             let mut best_pp_term_weight = 0;
 
@@ -480,7 +481,7 @@ impl Scheduler {
         }
     }
 
-    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TopoGraph> {
+    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TreeGraph> {
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
         let terminals = self.get_terminal_nodes(pauli_product);
@@ -497,7 +498,7 @@ impl Scheduler {
                 info_sched!("  Single node {} is used", node.label);
                 return None;
             }
-            let mut g = TopoGraph::new();
+            let mut g = TreeGraph::new();
             g.add_node(node.clone());
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
@@ -618,12 +619,12 @@ impl Scheduler {
     // this can be viewed as a greedy multi-source shortest path algorithm
     fn get_steiner_tree(&mut self, root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>,
                         is_tgate: bool)
-                        -> Option<TopoGraph> {
+                        -> Option<TreeGraph> {
         debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
         let mut visited: IndexMap<usize, usize> = IndexMap::with_capacity(self.topo.num_nodes);
         let mut paths: IndexMap<usize, IndexSet<usize>> = IndexMap::with_capacity(root_ids.len());
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
-        let mut tree = TopoGraph::new();
+        let mut tree = TreeGraph::new();
         let mut cultivator = None;
         let mut total_paths = 0;
         debug_sched!("    Number of root labels {}", root_ids.len());
@@ -760,8 +761,7 @@ impl Scheduler {
                     debug_sched!("      {}tree complete{}", GREEN, RESET);
                     Some(root_ids[0])
                 };
-                let root = tree.root_node.as_ref().unwrap().clone();
-                let _num_trimmed = tree.trim_dangling_nodes(root);
+                let _num_trimmed = tree.trim_dangling_nodes();
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
                 // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
                 // makes the path shorter

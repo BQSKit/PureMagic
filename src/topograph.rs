@@ -1,5 +1,6 @@
 use crate::node::{Node, NodeType};
 use crate::pauliproduct::PauliProduct;
+use crate::treegraph::TreeGraph;
 use crate::utils::Timer;
 use indexmap::IndexMap;
 use plotters::prelude::*;
@@ -26,7 +27,6 @@ pub struct TopoGraph {
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
-    pub root_node: Option<usize>,
 }
 
 impl TopoGraph {
@@ -44,8 +44,7 @@ impl TopoGraph {
                     num_nodes: 0,
                     circuit_fname: String::new(),
                     topo_fname: String::new(),
-                    use_magic_routing: true,
-                    root_node: None }
+                    use_magic_routing: true }
     }
 
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
@@ -534,30 +533,6 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    pub fn trim_dangling_nodes(&mut self, root_node: usize) -> usize {
-        let mut num_trimmed = 0;
-        loop {
-            // Find dangling bus nodes
-            let mut dangling_ids: Vec<usize> = Vec::new();
-            for (id, node) in self.nodes.iter() {
-                // there is at most one path going into the bus/magic node
-                if node.is_routing() && node.edges.len() <= 1 && node.id != root_node {
-                    dangling_ids.push(id.clone());
-                }
-            }
-            // Remove dangling nodes if any found
-            if dangling_ids.is_empty() {
-                break;
-            } else {
-                for id in dangling_ids {
-                    self.remove_node(id);
-                    num_trimmed += 1;
-                }
-            }
-        }
-        num_trimmed
-    }
-
     pub fn get_node(&self, id: usize) -> &Node {
         self.nodes.get(&id).expect(&format!("Node {} not found", id))
     }
@@ -580,59 +555,10 @@ impl TopoGraph {
         self.nodes.values_mut()
     }
 
-    pub fn contains_node(&self, node_id: &usize) -> bool {
-        self.nodes.contains_key(node_id)
-    }
-
-    pub fn contains_edge(&self, node_id1: &usize, node_id2: &usize) -> bool {
-        if let Some(node) = self.nodes.get(node_id1) {
-            node.edges.contains(node_id2)
-        } else {
-            false
-        }
-    }
-
-    pub fn add_node(&mut self, node: Node) {
-        let new_node = Node::new(node.id,
-                                 node.paired_data_id,
-                                 node.label.to_string(),
-                                 node.pos.0,
-                                 node.pos.1,
-                                 node.node_type,
-                                 node.busy_count,
-                                 node.cultivation_time);
-        self.nodes.insert(new_node.id, new_node);
-        self.num_nodes += 1;
-    }
-
-    pub fn remove_node(&mut self, node_id: usize) {
-        // Get edges to remove from neighbors
-        let node = self.get_node(node_id);
-        let node_label = node.label.clone();
-        let edges_to_remove: Vec<(usize, usize)> =
-            node.edges.iter().map(|neighbor| (neighbor.clone(), node_id)).collect();
-        // Remove edges from neighbor nodes
-        for (nb_id, edge_to_remove) in edges_to_remove {
-            if let Some(nb) = self.nodes.get_mut(&nb_id) {
-                nb.edges.swap_remove(&edge_to_remove);
-                self.num_edges -= 1;
-            }
-        }
-        // Remove the node itself
-        if self.nodes.swap_remove(&node_id).is_some() {
-            self.num_nodes -= 1;
-        }
-        self.node_ids_from_labels.swap_remove(&node_label);
-    }
-
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
         self.get_node_mut(node_id1).add_edge(node_id2);
         self.get_node_mut(node_id2).add_edge(node_id1);
         self.num_edges += 1;
-    }
-
-    pub fn node_list(&self) -> Vec<usize> {
-        self.nodes.keys().cloned().collect()
     }
 
     pub fn set_node_used(&mut self, node_label: &String) {
@@ -672,7 +598,7 @@ impl TopoGraph {
         Ok(())
     }
 
-    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, TopoGraph)],
+    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, TreeGraph)],
                 title_str: &str)
                 -> Result<(), Box<dyn std::error::Error>> {
         //let _timer = Timer::new("plot");

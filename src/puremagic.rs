@@ -5,6 +5,7 @@ mod node;
 mod pauliproduct;
 mod scheduler;
 mod topograph;
+mod treegraph;
 mod utils;
 
 use circuit::Circuit;
