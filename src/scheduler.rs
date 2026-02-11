@@ -1,6 +1,7 @@
 use crate::circuit::Circuit;
+use crate::node::NodeType;
 use crate::pauliproduct::PauliProduct;
-use crate::topograph::{NodeType, TopoGraph};
+use crate::topograph::TopoGraph;
 use crate::utils::{
     BLUE, CYAN, GREEN, LBLUE, LCYAN, LGREEN, LMAGENTA, LRED, LWHITE, LYELLOW, MAGENTA, RED, RESET,
     WHITE, YELLOW,
@@ -583,7 +584,7 @@ impl Scheduler {
                              paired_node.id);
                 for nb_id in node.edges.iter() {
                     let nb = self.topo.get_node(*nb_id);
-                    if nb.used || !self.topo.is_routing_node(nb) {
+                    if nb.used || !nb.is_routing() {
                         continue;
                     }
                     // If we are using top/bottom
@@ -600,7 +601,7 @@ impl Scheduler {
             if !pair_found {
                 for nb_id in node.edges.iter() {
                     let nb = self.topo.get_node(*nb_id);
-                    if nb.used || !self.topo.is_routing_node(nb) {
+                    if nb.used || !nb.is_routing() {
                         continue;
                     }
                     // Only include neighbors on the side (same row, different column)
@@ -672,7 +673,7 @@ impl Scheduler {
                     continue;
                 }
                 // check for path links between roots via routing nodes
-                let routing_edge = self.topo.is_routing_node(nb) && self.topo.is_routing_node(node);
+                let routing_edge = nb.is_routing() && node.is_routing();
                 if routing_edge && visited.contains_key(nb_id) {
                     let nb_root_id = visited.get(nb_id).unwrap().clone();
                     if curr_root_id == nb_root_id {
@@ -722,7 +723,7 @@ impl Scheduler {
                                        && nb.node_type == NodeType::Magic
                                        && nb.cultivation_time == 0;
                 // add routing node/cultivator
-                if self.topo.is_routing_node(nb) || nb_is_cultivator {
+                if nb.is_routing() || nb_is_cultivator {
                     tree.add_node(nb.clone());
                     tree.add_edge(*node_id, *nb_id);
                     debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);

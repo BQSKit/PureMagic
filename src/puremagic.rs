@@ -1,6 +1,7 @@
 use clap::Parser;
 
 mod circuit;
+mod node;
 mod pauliproduct;
 mod scheduler;
 mod topograph;
