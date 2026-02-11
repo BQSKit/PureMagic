@@ -18,7 +18,6 @@ pub struct Node {
     pub busy_count: i32,
     pub cultivation_time: i32,
     pub nbors: IndexSet<usize>,
-    pub used: bool,
 }
 
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
@@ -34,8 +33,7 @@ impl Node {
                pos: (x, y),
                busy_count,
                cultivation_time,
-               nbors: IndexSet::new(),
-               used: false }
+               nbors: IndexSet::new() }
     }
 
     pub fn set_magic_routing(enabled: bool) {

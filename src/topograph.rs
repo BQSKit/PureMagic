@@ -559,9 +559,8 @@ impl TopoGraph {
         self.num_edges += 1;
     }
 
-    pub fn set_node_used(&mut self, node_label: &String) {
-        let node_id = self.node_ids_from_labels.get(node_label).unwrap();
-        self.nodes[*node_id].used = true;
+    pub fn get_node_id_from_label(&mut self, node_label: &String) -> usize {
+        *self.node_ids_from_labels.get(node_label).unwrap()
     }
 
     pub fn get_node_from_label(&self, node_label: &String) -> &Node {
