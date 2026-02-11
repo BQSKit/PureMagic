@@ -17,7 +17,7 @@ pub struct Node {
     pub pos: (f64, f64),
     pub busy_count: i32,
     pub cultivation_time: i32,
-    pub edges: IndexSet<usize>,
+    pub nbors: IndexSet<usize>,
     pub used: bool,
 }
 
@@ -34,7 +34,7 @@ impl Node {
                pos: (x, y),
                busy_count,
                cultivation_time,
-               edges: IndexSet::new(),
+               nbors: IndexSet::new(),
                used: false }
     }
 
@@ -42,8 +42,8 @@ impl Node {
         USE_MAGIC_ROUTING.store(enabled, Ordering::Relaxed);
     }
 
-    pub fn add_edge(&mut self, other: usize) {
-        self.edges.insert(other);
+    pub fn add_neighbor(&mut self, other: usize) {
+        self.nbors.insert(other);
     }
 
     pub fn is_cultivating(&self) -> bool {
