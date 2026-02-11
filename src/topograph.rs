@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct TopoGraph {
-    nodes: IndexMap<usize, Node>,
+    nodes: Vec<Node>,
     node_ids_from_labels: IndexMap<String, usize>,
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
@@ -31,7 +31,7 @@ pub struct TopoGraph {
 
 impl TopoGraph {
     pub fn new() -> Self {
-        TopoGraph { nodes: IndexMap::new(),
+        TopoGraph { nodes: Vec::new(),
                     node_ids_from_labels: IndexMap::new(),
                     node_grid: Vec::new(),
                     num_cols: 0,
@@ -70,7 +70,7 @@ impl TopoGraph {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
         // now make sure all data qubit pairs are set
-        let node_ids: Vec<usize> = self.nodes.keys().cloned().collect();
+        let node_ids: Vec<usize> = self.nodes.iter().map(|node| node.id).collect();
         for node_id in node_ids {
             let node = self.get_node(node_id);
             if node.node_type == NodeType::Data {
@@ -504,7 +504,7 @@ impl TopoGraph {
         let mut magic_count = 0;
         let mut bus_count = 0;
 
-        for node in self.nodes.values() {
+        for node in &self.nodes {
             match node.node_type {
                 NodeType::Data => data_count += 1,
                 NodeType::Magic => magic_count += 1,
@@ -534,25 +534,23 @@ impl TopoGraph {
     }
 
     pub fn get_node(&self, id: usize) -> &Node {
-        self.nodes.get(&id).expect(&format!("Node {} not found", id))
+        &self.nodes[id]
     }
 
     pub fn get_node_mut(&mut self, id: usize) -> &mut Node {
-        self.nodes.get_mut(&id).expect(&format!("Node {} not found", id))
+        &mut self.nodes[id]
     }
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.values()
+        self.nodes.iter()
     }
 
     pub fn _iter_edges(&self) -> impl Iterator<Item = (&usize, &usize)> + '_ {
-        self.nodes
-            .iter()
-            .flat_map(|(node_id, node)| node.edges.iter().map(move |edge_id| (node_id, edge_id)))
+        self.nodes.iter().flat_map(|node| node.edges.iter().map(move |edge_id| (&node.id, edge_id)))
     }
 
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
-        self.nodes.values_mut()
+        self.nodes.iter_mut()
     }
 
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
@@ -563,12 +561,12 @@ impl TopoGraph {
 
     pub fn set_node_used(&mut self, node_label: &String) {
         let node_id = self.node_ids_from_labels.get(node_label).unwrap();
-        self.nodes.get_mut(node_id).unwrap().used = true;
+        self.nodes[*node_id].used = true;
     }
 
     pub fn get_node_from_label(&self, node_label: &String) -> &Node {
         let node_id = self.node_ids_from_labels.get(node_label).unwrap();
-        self.nodes.get(node_id).unwrap()
+        &self.nodes[*node_id]
     }
 
     pub fn print(&self) -> io::Result<()> {
@@ -652,29 +650,26 @@ impl TopoGraph {
                            })
                            .collect();
         // Draw edges with path coloring
-        for node in self.nodes.values() {
+        for node in &self.nodes {
             for edge in &node.edges {
-                if let Some(other) = self.nodes.get(edge) {
-                    let mut edge_color = &BLACK.mix(0.5).to_rgba();
-                    let mut stroke_width = 1;
-                    // Check if edge is part of any path
-                    for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                        if path_graph.contains_edge(&node.id, edge) {
-                            edge_color = &path_colors[i];
-                            stroke_width = 6;
-                            break;
-                        }
+                let other = &self.nodes[*edge];
+                let mut edge_color = &BLACK.mix(0.5).to_rgba();
+                let mut stroke_width = 1;
+                // Check if edge is part of any path
+                for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
+                    if path_graph.contains_edge(&node.id, edge) {
+                        edge_color = &path_colors[i];
+                        stroke_width = 6;
+                        break;
                     }
-                    chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32,
-                                                            node.pos.1 as f32),
-                                                           (other.pos.0 as f32,
-                                                            other.pos.1 as f32),],
-                                                      edge_color.stroke_width(stroke_width)))?;
                 }
+                chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32, node.pos.1 as f32),
+                                                       (other.pos.0 as f32, other.pos.1 as f32),],
+                                                  edge_color.stroke_width(stroke_width)))?;
             }
         }
         // Draw nodes with path highlighting
-        for node in self.nodes.values() {
+        for node in &self.nodes {
             let (x, y) = node.pos;
             let mut border_color = None;
             let mut root_node = None;
