@@ -30,7 +30,7 @@ impl TreeGraph {
                 self.nodes
                     .iter()
                     .filter(|(_, node)| {
-                        node.is_routing() && node.edges.len() <= 1 && node.id != root_node
+                        node.is_routing() && node.nbors.len() <= 1 && node.id != root_node
                     })
                     .map(|(id, _)| *id)
                     .collect();
@@ -62,7 +62,7 @@ impl TreeGraph {
     pub fn _iter_edges(&self) -> impl Iterator<Item = (&usize, &usize)> + '_ {
         self.nodes
             .iter()
-            .flat_map(|(node_id, node)| node.edges.iter().map(move |edge_id| (node_id, edge_id)))
+            .flat_map(|(node_id, node)| node.nbors.iter().map(move |edge_id| (node_id, edge_id)))
     }
 
     pub fn contains_node(&self, node_id: &usize) -> bool {
@@ -71,7 +71,7 @@ impl TreeGraph {
 
     pub fn contains_edge(&self, node_id1: &usize, node_id2: &usize) -> bool {
         if let Some(node) = self.nodes.get(node_id1) {
-            node.edges.contains(node_id2)
+            node.nbors.contains(node_id2)
         } else {
             false
         }
@@ -94,11 +94,11 @@ impl TreeGraph {
         // Get edges to remove from neighbors
         let node = self.get_node(node_id);
         let edges_to_remove: Vec<(usize, usize)> =
-            node.edges.iter().map(|neighbor| (neighbor.clone(), node_id)).collect();
+            node.nbors.iter().map(|neighbor| (neighbor.clone(), node_id)).collect();
         // Remove edges from neighbor nodes
         for (nb_id, edge_to_remove) in edges_to_remove {
             if let Some(nb) = self.nodes.get_mut(&nb_id) {
-                nb.edges.swap_remove(&edge_to_remove);
+                nb.nbors.swap_remove(&edge_to_remove);
                 self.num_edges -= 1;
             }
         }
@@ -109,8 +109,8 @@ impl TreeGraph {
     }
 
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
-        self.get_node_mut(node_id1).add_edge(node_id2);
-        self.get_node_mut(node_id2).add_edge(node_id1);
+        self.get_node_mut(node_id1).add_neighbor(node_id2);
+        self.get_node_mut(node_id2).add_neighbor(node_id1);
         self.num_edges += 1;
     }
 

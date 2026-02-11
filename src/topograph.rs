@@ -464,10 +464,10 @@ impl TopoGraph {
             let data_node_id1 = self.node_ids_from_labels.get(&data_label1).unwrap().clone();
             let data_node_id2 = self.node_ids_from_labels.get(&data_label2).unwrap().clone();
             let bus_node_id = self.node_ids_from_labels.get(&bus_label).unwrap().clone();
-            self.get_node_mut(bus_node_id).add_edge(data_node_id1);
-            self.get_node_mut(bus_node_id).add_edge(data_node_id2);
-            self.get_node_mut(data_node_id1).add_edge(bus_node_id);
-            self.get_node_mut(data_node_id2).add_edge(bus_node_id);
+            self.get_node_mut(bus_node_id).add_neighbor(data_node_id1);
+            self.get_node_mut(bus_node_id).add_neighbor(data_node_id2);
+            self.get_node_mut(data_node_id1).add_neighbor(bus_node_id);
+            self.get_node_mut(data_node_id2).add_neighbor(bus_node_id);
         }
     }
 
@@ -546,7 +546,7 @@ impl TopoGraph {
     }
 
     pub fn _iter_edges(&self) -> impl Iterator<Item = (&usize, &usize)> + '_ {
-        self.nodes.iter().flat_map(|node| node.edges.iter().map(move |edge_id| (&node.id, edge_id)))
+        self.nodes.iter().flat_map(|node| node.nbors.iter().map(move |edge_id| (&node.id, edge_id)))
     }
 
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
@@ -554,8 +554,8 @@ impl TopoGraph {
     }
 
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
-        self.get_node_mut(node_id1).add_edge(node_id2);
-        self.get_node_mut(node_id2).add_edge(node_id1);
+        self.get_node_mut(node_id1).add_neighbor(node_id2);
+        self.get_node_mut(node_id2).add_neighbor(node_id1);
         self.num_edges += 1;
     }
 
@@ -651,20 +651,20 @@ impl TopoGraph {
                            .collect();
         // Draw edges with path coloring
         for node in &self.nodes {
-            for edge in &node.edges {
-                let other = &self.nodes[*edge];
+            for nb_id in &node.nbors {
+                let nb = &self.nodes[*nb_id];
                 let mut edge_color = &BLACK.mix(0.5).to_rgba();
                 let mut stroke_width = 1;
                 // Check if edge is part of any path
                 for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                    if path_graph.contains_edge(&node.id, edge) {
+                    if path_graph.contains_edge(&node.id, nb_id) {
                         edge_color = &path_colors[i];
                         stroke_width = 6;
                         break;
                     }
                 }
                 chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32, node.pos.1 as f32),
-                                                       (other.pos.0 as f32, other.pos.1 as f32),],
+                                                       (nb.pos.0 as f32, nb.pos.1 as f32),],
                                                   edge_color.stroke_width(stroke_width)))?;
             }
         }

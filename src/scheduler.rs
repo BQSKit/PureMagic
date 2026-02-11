@@ -537,7 +537,7 @@ impl Scheduler {
                         return None;
                     }
                     // check for at least one unused magic or bus nb
-                    if !node.edges.iter().any(|nb_id| {
+                    if !node.nbors.iter().any(|nb_id| {
                                              let nb = self.topo.get_node(*nb_id);
                                              !nb.used
                                          })
@@ -556,7 +556,7 @@ impl Scheduler {
                     return None;
                 }
                 // check for at least one unused magic or bus nb
-                if !node.edges.iter().any(|nb_id| {
+                if !node.nbors.iter().any(|nb_id| {
                                          let nb = self.topo.get_node(*nb_id);
                                          !nb.used
                                      })
@@ -583,7 +583,7 @@ impl Scheduler {
                              pair.unwrap(),
                              node.id,
                              paired_node.id);
-                for nb_id in node.edges.iter() {
+                for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
                     if nb.used || !nb.is_routing() {
                         continue;
@@ -600,7 +600,7 @@ impl Scheduler {
                 }
             };
             if !pair_found {
-                for nb_id in node.edges.iter() {
+                for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
                     if nb.used || !nb.is_routing() {
                         continue;
@@ -651,7 +651,7 @@ impl Scheduler {
             }
             // add terminals
             let root_node = self.topo.get_node(*root_id);
-            for nb_id in root_node.edges.iter() {
+            for nb_id in root_node.nbors.iter() {
                 let nb = self.topo.get_node(*nb_id);
                 if terminal_nodes.contains(&nb_id) {
                     tree.add_node(nb.clone());
@@ -664,7 +664,7 @@ impl Scheduler {
         while let Some(node_id) = queue.pop_front() {
             let node = self.topo.get_node(*node_id);
             let curr_root_id = visited.get(node_id).unwrap().clone();
-            for nb_id in node.edges.iter() {
+            for nb_id in node.nbors.iter() {
                 let nb = self.topo.get_node(*nb_id);
                 if nb.used {
                     continue;
@@ -674,8 +674,7 @@ impl Scheduler {
                     continue;
                 }
                 // check for path links between roots via routing nodes
-                let routing_edge = nb.is_routing() && node.is_routing();
-                if routing_edge && visited.contains_key(nb_id) {
+                if nb.is_routing() && node.is_routing() && visited.contains_key(nb_id) {
                     let nb_root_id = visited.get(nb_id).unwrap().clone();
                     if curr_root_id == nb_root_id {
                         continue;
