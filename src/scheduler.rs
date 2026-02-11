@@ -123,6 +123,7 @@ pub struct Scheduler {
     iteration_times: Vec<u128>,
     some_count: Vec<usize>,
     func_calls: usize,
+    used: Vec<bool>,
 }
 
 impl Scheduler {
@@ -145,6 +146,7 @@ impl Scheduler {
         let num_data_qubits = topo.num_data_qubits;
         let num_bus_qubits = topo.num_bus_qubits;
         let num_magic_qubits = topo.num_magic_qubits;
+        let num_nodes = topo.num_nodes;
 
         Scheduler { circuit,
                     topo,
@@ -157,7 +159,8 @@ impl Scheduler {
                     scheduled_products: Vec::new(),
                     iteration_times: Vec::new(),
                     some_count: Vec::new(),
-                    func_calls: 0 }
+                    func_calls: 0,
+                    used: vec![false; num_nodes] }
     }
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
@@ -323,7 +326,7 @@ impl Scheduler {
         let num_used_magic_nodes =
             self.topo
                 .iter_nodes()
-                .filter(|node| node.used && node.node_type == NodeType::Magic)
+                .filter(|node| self.used[node.id] && node.node_type == NodeType::Magic)
                 .count();
         // Generate new cultivation times for magic nodes
         let new_cultivation_times: Vec<i32> =
@@ -332,24 +335,27 @@ impl Scheduler {
         let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
-            if !node.used && node.is_cultivating() {
-                node.busy_count += 1;
-                if node.busy_count == node.cultivation_time {
-                    self.cultivation_times.push(node.cultivation_time);
-                    node.cultivation_time = 0;
+            if !self.used[node.id] {
+                if node.is_cultivating() {
+                    node.busy_count += 1;
+                    if node.busy_count == node.cultivation_time {
+                        self.cultivation_times.push(node.cultivation_time);
+                        node.cultivation_time = 0;
+                        node.busy_count = 0;
+                    }
+                }
+            } else {
+                if node.node_type == NodeType::Magic {
+                    node.cultivation_time = new_cultivation_times[cultivation_time_index];
                     node.busy_count = 0;
+                    cultivation_time_index += 1;
                 }
             }
-            if node.used && node.node_type == NodeType::Magic {
-                node.cultivation_time = new_cultivation_times[cultivation_time_index];
-                node.busy_count = 0;
-                cultivation_time_index += 1;
-            }
-            node.used = false;
             if node.node_type == NodeType::Magic && node.cultivation_time == 0 {
                 num_avail_magic += 1;
             }
         }
+        self.used.fill(false);
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -396,14 +402,14 @@ impl Scheduler {
                     for op in &pp.operators {
                         if op.basis == 'Y' {
                             let node_label_x = format!("d{}{}", op.qubit, 'X');
-                            self.topo.set_node_used(&node_label_x);
+                            self.used[self.topo.get_node_id_from_label(&node_label_x)] = true;
                             let node_label_z = format!("d{}{}", op.qubit, 'Z');
-                            self.topo.set_node_used(&node_label_z);
+                            self.used[self.topo.get_node_id_from_label(&node_label_z)] = true;
                             _num_dependent_nodes += 2;
                         } else {
                             let node_label =
                                 format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                            self.topo.set_node_used(&node_label);
+                            self.used[self.topo.get_node_id_from_label(&node_label)] = true;
                             _num_dependent_nodes += 1;
                         }
                     }
@@ -441,7 +447,7 @@ impl Scheduler {
                 // Update node statistics and mark as used
                 for node in best_graph.iter_nodes() {
                     self.stats.inc(node.node_type);
-                    self.topo.get_node_mut(node.id).used = true;
+                    self.used[node.id] = true;
                 }
                 pp_paths.push((pp.clone(), best_graph));
                 to_remove.push(best_pp_idx);
@@ -494,7 +500,7 @@ impl Scheduler {
         if terminals.len() == 1 && !pauli_product.is_tgate {
             let node_id = terminals[0];
             let node = self.topo.get_node(node_id);
-            if node.used {
+            if self.used[node.id] {
                 info_sched!("  Single node {} is used", node.label);
                 return None;
             }
@@ -506,7 +512,7 @@ impl Scheduler {
         // first check that all terminals are accessible
         for node_id in terminals.iter() {
             let node = self.topo.get_node(*node_id);
-            if node.used {
+            if self.used[node.id] {
                 return None;
             }
         }
@@ -532,14 +538,14 @@ impl Scheduler {
                     let node_label = format!("d{}{}", op.qubit, term);
                     let node = self.topo.get_node_from_label(&node_label);
                     // Check if node is already used
-                    if node.used {
+                    if self.used[node.id] {
                         info_sched!("  Node {} is already used", node_label);
                         return None;
                     }
                     // check for at least one unused magic or bus nb
                     if !node.nbors.iter().any(|nb_id| {
                                              let nb = self.topo.get_node(*nb_id);
-                                             !nb.used
+                                             !self.used[nb.id]
                                          })
                     {
                         info_sched!("  No unused neighbors for node {}", node.id);
@@ -551,14 +557,14 @@ impl Scheduler {
                 let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
                 let node = self.topo.get_node_from_label(&node_label);
                 // Check if node is already used
-                if node.used {
+                if self.used[node.id] {
                     info_sched!("  Node {} is already used", node_label);
                     return None;
                 }
                 // check for at least one unused magic or bus nb
                 if !node.nbors.iter().any(|nb_id| {
                                          let nb = self.topo.get_node(*nb_id);
-                                         !nb.used
+                                         !self.used[nb.id]
                                      })
                 {
                     info_sched!("  No unused neighbors for node {}", node.id);
@@ -585,7 +591,7 @@ impl Scheduler {
                              paired_node.id);
                 for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
-                    if nb.used || !nb.is_routing() {
+                    if self.used[nb.id] || !nb.is_routing() {
                         continue;
                     }
                     // If we are using top/bottom
@@ -602,7 +608,7 @@ impl Scheduler {
             if !pair_found {
                 for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
-                    if nb.used || !nb.is_routing() {
+                    if self.used[nb.id] || !nb.is_routing() {
                         continue;
                     }
                     // Only include neighbors on the side (same row, different column)
@@ -666,7 +672,7 @@ impl Scheduler {
             let curr_root_id = visited.get(node_id).unwrap().clone();
             for nb_id in node.nbors.iter() {
                 let nb = self.topo.get_node(*nb_id);
-                if nb.used {
+                if self.used[nb.id] {
                     continue;
                 }
                 if nb.node_type == NodeType::Data {
