@@ -1,6 +1,7 @@
+use crate::node::{Node, NodeType};
 use crate::pauliproduct::PauliProduct;
 use crate::utils::Timer;
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use plotters::prelude::*;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -9,50 +10,6 @@ use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NodeType {
-    Magic,
-    Bus,
-    Data,
-}
-
-#[derive(Debug, Clone)]
-pub struct Node {
-    pub node_type: NodeType,
-    pub id: usize,
-    pub label: String,
-    pub paired_data_id: Option<usize>,
-    pub pos: (f64, f64),
-    pub busy_count: i32,
-    pub cultivation_time: i32,
-    pub edges: IndexSet<usize>,
-    pub used: bool,
-}
-
-impl Node {
-    fn new(id: usize, paired_data_id: Option<usize>, label: String, x: f64, y: f64,
-           node_type: NodeType, busy_count: i32, cultivation_time: i32)
-           -> Self {
-        Node { node_type,
-               id: id,
-               label: label,
-               paired_data_id: paired_data_id,
-               pos: (x, y),
-               busy_count,
-               cultivation_time,
-               edges: IndexSet::new(),
-               used: false }
-    }
-
-    fn add_edge(&mut self, other: usize) {
-        self.edges.insert(other);
-    }
-
-    pub fn is_cultivating(&self) -> bool {
-        self.cultivation_time > 0 && self.busy_count < self.cultivation_time
-    }
-}
 
 pub struct TopoGraph {
     nodes: IndexMap<usize, Node>,
@@ -98,6 +55,7 @@ impl TopoGraph {
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
         self.use_magic_routing = use_magic_routing;
+        Node::set_magic_routing(use_magic_routing);
 
         if !self.topo_fname.is_empty() {
             if let Err(e) = self.read_topo_from_file(rseed, sides_only) {
@@ -583,7 +541,7 @@ impl TopoGraph {
             let mut dangling_ids: Vec<usize> = Vec::new();
             for (id, node) in self.nodes.iter() {
                 // there is at most one path going into the bus/magic node
-                if self.is_routing_node(node) && node.edges.len() <= 1 && node.id != root_node {
+                if node.is_routing() && node.edges.len() <= 1 && node.id != root_node {
                     dangling_ids.push(id.clone());
                 }
             }
@@ -598,14 +556,6 @@ impl TopoGraph {
             }
         }
         num_trimmed
-    }
-
-    pub fn is_routing_node(&self, node: &Node) -> bool {
-        if self.use_magic_routing {
-            return node.node_type == NodeType::Bus || node.node_type == NodeType::Magic;
-        } else {
-            return node.node_type == NodeType::Bus;
-        }
     }
 
     pub fn get_node(&self, id: usize) -> &Node {
