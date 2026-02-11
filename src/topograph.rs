@@ -346,7 +346,7 @@ impl TopoGraph {
                               NodeType::Data,
                               0,
                               0);
-        self.nodes.insert(id1, node1);
+        self.nodes.push(node1);
         self.node_ids_from_labels.insert(label1, id1);
         self.num_nodes += 1;
         let id2 = self.num_nodes;
@@ -359,7 +359,7 @@ impl TopoGraph {
                               NodeType::Data,
                               0,
                               0);
-        self.nodes.insert(id2, node2);
+        self.nodes.push(node2);
         self.node_ids_from_labels.insert(label2, id2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label.clone());
@@ -382,7 +382,7 @@ impl TopoGraph {
                              node_type,
                              0,
                              0);
-        self.nodes.insert(self.num_nodes, node);
+        self.nodes.push(node);
         self.node_ids_from_labels.insert(label.clone(), self.num_nodes);
         self.num_nodes += 1;
         label
