@@ -1,6 +1,7 @@
 use crate::circuit::Circuit;
 use crate::node::NodeType;
 use crate::pauliproduct::PauliProduct;
+use crate::steinertree::SteinerTreeComputation;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 use crate::utils::{
@@ -13,8 +14,6 @@ use indexmap::IndexSet;
 #[cfg(debug_assertions)]
 use log::{debug, info};
 use rand_simple::Exponential;
-use simple_logging;
-use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -124,28 +123,6 @@ impl SchedulerTimers {
     }
 }
 
-struct SteinerTreeData {
-    visited: Vec<Option<usize>>,
-    paths: Vec<Vec<usize>>,
-    queue: VecDeque<usize>,
-}
-
-impl SteinerTreeData {
-    pub fn new(num_nodes: usize) -> Self {
-        SteinerTreeData { visited: vec![None; num_nodes],
-                          paths: vec![Vec::with_capacity(num_nodes); num_nodes],
-                          queue: VecDeque::with_capacity(num_nodes) }
-    }
-
-    pub fn clear(&mut self) {
-        self.visited.fill(None);
-        for path in self.paths.iter_mut() {
-            path.clear();
-        }
-        self.queue.clear();
-    }
-}
-
 pub struct Scheduler {
     circuit: Circuit,
     topo: TopoGraph,
@@ -156,7 +133,7 @@ pub struct Scheduler {
     stats: ScheduleStats,
     scheduled_products: Vec<Vec<PauliProduct>>,
     used: Vec<bool>,
-    stree_data: SteinerTreeData,
+    stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
 
@@ -191,7 +168,7 @@ impl Scheduler {
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     scheduled_products: Vec::new(),
                     used: vec![false; num_nodes],
-                    stree_data: SteinerTreeData::new(num_nodes),
+                    stree_computation: SteinerTreeComputation::new(num_nodes),
                     timers: SchedulerTimers::new() }
     }
 
@@ -545,7 +522,12 @@ impl Scheduler {
             return None;
         }
         self.timers.steiner_tree.start();
-        let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
+        let g = self.stree_computation.get_steiner_tree(&self.topo,
+                                                        &self.used,
+                                                        &root_ids,
+                                                        &terminals,
+                                                        pauli_product.is_tgate);
+        //let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
         self.timers.steiner_tree.stop();
         if let Some(g) = g {
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
@@ -645,183 +627,6 @@ impl Scheduler {
             }
         }
         root_ids.into_iter().collect()
-    }
-
-    // this can be viewed as a greedy multi-source shortest path algorithm
-    fn get_steiner_tree(&mut self, root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>,
-                        is_tgate: bool)
-                        -> Option<TreeGraph> {
-        debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
-        self.stree_data.clear();
-        let mut tree = TreeGraph::new(self.topo.num_nodes);
-        let mut cultivator: Option<usize> = None;
-        let mut num_paths: usize = 0;
-        debug_sched!("    Number of root labels {}", root_ids.len());
-        // every root must have a path to every other root
-        let reqd_paths = root_ids.len() * (root_ids.len() - 1);
-        debug_sched!("    Require {} paths", reqd_paths);
-
-        for root_id in root_ids {
-            debug_sched!("      {}root node {}{}", GREEN, root_id, RESET);
-            self.stree_data.visited[*root_id] = Some(*root_id);
-            self.stree_data.queue.push_back(*root_id);
-            let root = self.topo.get_node(*root_id);
-            tree.add_node(root.id, root.is_routing());
-            if cultivator.is_none()
-               && root.node_type == NodeType::Magic
-               && root.cultivation_time == 0
-            {
-                cultivator = Some(*root_id);
-                debug_sched!("      {}found root cultivator {}{}",
-                             GREEN,
-                             cultivator.unwrap(),
-                             RESET);
-            }
-            // add terminals
-            let root_node = self.topo.get_node(*root_id);
-            for nb_id in root_node.nbors.iter() {
-                let nb = self.topo.get_node(*nb_id);
-                if terminal_nodes.contains(&nb_id) {
-                    tree.add_node(nb.id, nb.is_routing());
-                    tree.add_edge(*root_id, *nb_id);
-                    debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
-                    debug_sched!("      {}add edge {}->{}{}", GREEN, root_id, nb_id, RESET);
-                }
-            }
-        }
-        while let Some(node_id) = self.stree_data.queue.pop_front() {
-            (num_paths, cultivator) = self.visit_neighbors(node_id, reqd_paths, is_tgate,
-                                                           cultivator, num_paths, &mut tree);
-            if num_paths == reqd_paths {
-                if is_tgate && cultivator.is_none() {
-                    continue;
-                }
-                // we have all the paths and terms and a cultivator (if needed), so we can now
-                // return the tree (bfs_graph)
-                tree.root_node_id = if is_tgate {
-                    debug_sched!("      {}tree complete, cultivator {}{}",
-                                 GREEN,
-                                 cultivator.unwrap(),
-                                 RESET);
-                    Some(cultivator.unwrap())
-                } else {
-                    debug_sched!("      {}tree complete{}", GREEN, RESET);
-                    Some(root_ids[0])
-                };
-                let _num_trimmed = tree.trim_dangling_nodes();
-                debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
-                // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
-                // makes the path shorter
-                return Some(tree);
-            }
-        }
-        None
-    }
-
-    fn visit_neighbors(&mut self, node_id: usize, reqd_paths: usize, is_tgate: bool,
-                       starting_cultivator: Option<usize>, num_start_paths: usize,
-                       tree: &mut TreeGraph)
-                       -> (usize, Option<usize>) {
-        let node = self.topo.get_node(node_id);
-        let curr_root_id = self.stree_data.visited[node_id].unwrap();
-        let mut num_paths = num_start_paths;
-        #[cfg(debug_assertions)]
-        {
-            let curr_num_paths = self.stree_data.paths.iter().map(|set| set.len()).sum::<usize>();
-            debug_assert_eq!(num_paths, curr_num_paths);
-        }
-        let mut cultivator = starting_cultivator;
-        for nb_id in node.nbors.iter() {
-            let nb = self.topo.get_node(*nb_id);
-            if self.used[nb.id] {
-                continue;
-            }
-            if nb.node_type == NodeType::Data {
-                // all data nodes are already linked in
-                continue;
-            }
-            // check for path links between roots via routing nodes
-            if nb.is_routing() && node.is_routing() && self.stree_data.visited[*nb_id].is_some() {
-                let nb_root_id = self.stree_data.visited[*nb_id].unwrap();
-                if curr_root_id == nb_root_id {
-                    continue;
-                }
-                let curr_root_paths = &self.stree_data.paths[curr_root_id];
-                if !curr_root_paths.contains(&nb_root_id) {
-                    // update the nb root IndexSet to contain paths to all the roots in
-                    // the curr_root IndexSet
-                    let nb_root_paths = self.stree_data.paths[nb_root_id].clone();
-                    // Create merged set containing all roots from both groups
-                    let mut merged_set = curr_root_paths.clone();
-                    merged_set.push(nb_root_id.clone());
-                    merged_set.extend(nb_root_paths.iter().cloned());
-                    merged_set.push(curr_root_id.clone());
-                    // Update all roots in the merged set to have the complete merged set
-                    for root_id in merged_set.iter() {
-                        assert!(num_paths >= self.stree_data.paths[*root_id].len());
-                        num_paths -= self.stree_data.paths[*root_id].len();
-                        self.stree_data.paths[*root_id] = merged_set.clone();
-                        // Don't include self
-                        let pos = self.stree_data.paths[*root_id].iter()
-                                                                 .position(|&id| id == *root_id)
-                                                                 .unwrap();
-                        self.stree_data.paths[*root_id].swap_remove(pos);
-                        num_paths += self.stree_data.paths[*root_id].len();
-                    }
-                    #[cfg(debug_assertions)]
-                    {
-                        let curr_num_paths =
-                            self.stree_data.paths.iter().map(|set| set.len()).sum::<usize>();
-                        debug_assert_eq!(num_paths, curr_num_paths);
-                    }
-                    debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
-                                 GREEN,
-                                 curr_root_id,
-                                 nb_root_id,
-                                 num_paths,
-                                 reqd_paths,
-                                 RESET);
-                    debug_sched!("      {}paths:{:?}{}", GREEN, self.stree_data.paths, RESET);
-                    tree.add_edge(node_id, *nb_id);
-                    debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
-                    if num_paths == reqd_paths {
-                        if is_tgate && cultivator.is_none() {
-                            continue;
-                        }
-                        // we break here because we previously found a cultivator, and now have
-                        // found all the paths
-                        break;
-                    }
-                }
-                continue;
-            }
-            let nb_is_cultivator = is_tgate
-                                   && cultivator.is_none()
-                                   && nb.node_type == NodeType::Magic
-                                   && nb.cultivation_time == 0;
-            // add routing node/cultivator
-            if nb.is_routing() || nb_is_cultivator {
-                tree.add_node(nb.id, nb.is_routing());
-                tree.add_edge(node_id, *nb_id);
-                debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
-                debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
-                self.stree_data.queue.push_back(*nb_id);
-                if cultivator.is_none() && nb_is_cultivator {
-                    cultivator = Some(*nb_id);
-                    debug_sched!("      {}found clutivator {}{}",
-                                 GREEN,
-                                 cultivator.unwrap(),
-                                 RESET);
-                    if num_paths == reqd_paths {
-                        // we break here because we previously found all the paths, and now have
-                        // found a cultivator
-                        break;
-                    }
-                }
-            }
-            self.stree_data.visited[*nb_id] = Some(curr_root_id);
-        }
-        (num_paths as usize, cultivator)
     }
 
     fn gen_cultivation_time(&mut self) -> i32 {
