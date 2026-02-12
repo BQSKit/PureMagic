@@ -702,12 +702,11 @@ impl Scheduler {
         let node = self.topo.get_node(node_id);
         let curr_root_id = visited[node_id].unwrap();
         let mut num_paths = num_start_paths;
-        /*
         #[cfg(debug_assertions)]
         {
             let curr_num_paths = paths.iter().map(|set| set.len()).sum::<usize>();
             debug_assert_eq!(num_paths, curr_num_paths);
-        } */
+        }
         let mut cultivator = starting_cultivator;
         for nb_id in node.nbors.iter() {
             let nb = self.topo.get_node(*nb_id);
@@ -736,19 +735,17 @@ impl Scheduler {
                     merged_set.insert(curr_root_id.clone());
                     // Update all roots in the merged set to have the complete merged set
                     for root_id in merged_set.iter() {
-                        let mut full_set = merged_set.clone();
-                        full_set.swap_remove(root_id); // Don't include self
                         assert!(num_paths >= paths[*root_id].len());
                         num_paths -= paths[*root_id].len();
-                        paths[*root_id] = full_set;
+                        paths[*root_id] = merged_set.clone();
+                        paths[*root_id].swap_remove(root_id); // Don't include self
                         num_paths += paths[*root_id].len();
                     }
-                    /*
                     #[cfg(debug_assertions)]
                     {
                         let curr_num_paths = paths.iter().map(|set| set.len()).sum::<usize>();
                         debug_assert_eq!(num_paths, curr_num_paths);
-                    } */
+                    }
                     debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
                                  GREEN,
                                  curr_root_id,
