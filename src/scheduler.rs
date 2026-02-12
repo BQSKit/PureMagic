@@ -619,8 +619,8 @@ impl Scheduler {
                         -> Option<TreeGraph> {
         debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
         let mut visited: Vec<Option<usize>> = vec![None; self.topo.num_nodes];
-        let mut paths: Vec<IndexSet<usize>> =
-            vec![IndexSet::with_capacity(root_ids.len()); self.topo.num_nodes];
+        let mut paths: Vec<Vec<usize>> =
+            vec![Vec::with_capacity(self.topo.num_nodes); self.topo.num_nodes];
         let mut queue: VecDeque<usize> = VecDeque::with_capacity(self.topo.num_nodes);
         let mut tree = TreeGraph::new(self.topo.num_nodes);
         let mut cultivator: Option<usize> = None;
@@ -695,7 +695,7 @@ impl Scheduler {
     }
 
     fn visit_neighbors(&mut self, node_id: usize, visited: &mut Vec<Option<usize>>,
-                       paths: &mut Vec<IndexSet<usize>>, tree: &mut TreeGraph,
+                       paths: &mut Vec<Vec<usize>>, tree: &mut TreeGraph,
                        queue: &mut VecDeque<usize>, reqd_paths: usize, is_tgate: bool,
                        starting_cultivator: Option<usize>, num_start_paths: usize)
                        -> (usize, Option<usize>) {
@@ -730,15 +730,17 @@ impl Scheduler {
                     let nb_root_paths = paths[nb_root_id].clone();
                     // Create merged set containing all roots from both groups
                     let mut merged_set = curr_root_paths.clone();
-                    merged_set.insert(nb_root_id.clone());
+                    merged_set.push(nb_root_id.clone());
                     merged_set.extend(nb_root_paths.iter().cloned());
-                    merged_set.insert(curr_root_id.clone());
+                    merged_set.push(curr_root_id.clone());
                     // Update all roots in the merged set to have the complete merged set
                     for root_id in merged_set.iter() {
                         assert!(num_paths >= paths[*root_id].len());
                         num_paths -= paths[*root_id].len();
                         paths[*root_id] = merged_set.clone();
-                        paths[*root_id].swap_remove(root_id); // Don't include self
+                        // Don't include self
+                        let pos = paths[*root_id].iter().position(|&id| id == *root_id).unwrap();
+                        paths[*root_id].swap_remove(pos);
                         num_paths += paths[*root_id].len();
                     }
                     #[cfg(debug_assertions)]
