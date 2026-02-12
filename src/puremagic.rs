@@ -4,6 +4,7 @@ mod circuit;
 mod node;
 mod pauliproduct;
 mod scheduler;
+mod steinertree;
 mod topograph;
 mod treegraph;
 mod utils;
