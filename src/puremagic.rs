@@ -7,6 +7,7 @@ mod scheduler;
 mod steinertree;
 mod topograph;
 mod treegraph;
+#[macro_use]
 mod utils;
 
 use circuit::Circuit;

@@ -115,3 +115,19 @@ impl IntermittentTimer {
         self.last_interval.as_secs_f64()
     }
 }
+
+#[macro_export]
+macro_rules! debug_sched {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        log::debug!($($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! info_sched {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        log::info!($($arg)*);
+    };
+}
