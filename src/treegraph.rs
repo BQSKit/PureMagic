@@ -13,6 +13,13 @@ impl TreeGraph {
         TreeGraph { nodes: IndexMap::new(), num_edges: 0, num_nodes: 0, root_node: None }
     }
 
+    pub fn with_capacity(node_capacity: usize) -> Self {
+        TreeGraph { nodes: IndexMap::with_capacity(node_capacity),
+                    num_edges: 0,
+                    num_nodes: 0,
+                    root_node: None }
+    }
+
     pub fn trim_dangling_nodes(&mut self) -> usize {
         let mut num_trimmed = 0;
         let root_node = self.root_node.unwrap();

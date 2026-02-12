@@ -118,11 +118,10 @@ pub struct Scheduler {
     plot_option: String,
     cultivation_times: Vec<i32>,
     schedule_product_timer: IntermittentTimer,
+    steiner_tree_timer: IntermittentTimer,
+    timestep_timer: IntermittentTimer,
     stats: ScheduleStats,
     scheduled_products: Vec<Vec<PauliProduct>>,
-    iteration_times: Vec<u128>,
-    some_count: Vec<usize>,
-    func_calls: usize,
     used: Vec<bool>,
 }
 
@@ -155,11 +154,10 @@ impl Scheduler {
                     plot_option,
                     cultivation_times: Vec::new(),
                     schedule_product_timer: IntermittentTimer::new("schedule_pauli_product", ""),
+                    steiner_tree_timer: IntermittentTimer::new("get_steiner_tree", ""),
+                    timestep_timer: IntermittentTimer::new("schedule_timestep", ""),
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     scheduled_products: Vec::new(),
-                    iteration_times: Vec::new(),
-                    some_count: Vec::new(),
-                    func_calls: 0,
                     used: vec![false; num_nodes] }
     }
 
@@ -208,11 +206,9 @@ impl Scheduler {
         if plot_steps == 0 {
             print!("Scheduling {} products:    ", total_to_schedule);
         }
-        let mut sum_iteration_time = 0;
-        let mut max_iteration_time = 0;
         // Main scheduling loop
         while !to_schedule.is_empty() {
-            let iteration_start_time = std::time::Instant::now();
+            self.timestep_timer.start();
             num_steps += 1;
             info_sched!("{}Step {}: {:?}{}",
                         CYAN,
@@ -296,12 +292,7 @@ impl Scheduler {
                 }
             }
             to_schedule = next_to_schedule;
-            let iteration_time = iteration_start_time.elapsed().as_micros();
-            sum_iteration_time += iteration_time;
-            if iteration_time > max_iteration_time {
-                max_iteration_time = iteration_time;
-            }
-            self.iteration_times.push(iteration_time);
+            self.timestep_timer.stop();
         }
         self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
@@ -313,10 +304,11 @@ impl Scheduler {
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
-        println!("Scheduling iteration time per step {:} μs avg, {:} μs max",
-                 sum_iteration_time / num_steps as u128,
-                 max_iteration_time);
+
+        self.steiner_tree_timer.done();
         self.schedule_product_timer.done();
+        self.timestep_timer.done();
+
         self.print_schedule()?;
         Ok((num_steps, scheduled.len()))
     }
@@ -374,7 +366,6 @@ impl Scheduler {
                                  std::cmp::Reverse(to_schedule[idx].count_weighted_terms())
                              });
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
-        self.func_calls = 0;
         while !remaining_to_schedule.is_empty() {
             let mut to_remove = Vec::new();
             let mut best_pp: Option<(usize, TreeGraph)> = None;
@@ -388,13 +379,14 @@ impl Scheduler {
                     info_sched!("  Skip lower weight product {}", pp);
                     continue;
                 }
-                self.schedule_product_timer.start();
                 let pp_graph = if num_avail_magic == 0 && pp.is_tgate {
                     None
                 } else {
-                    self.schedule_pauli_product(pp)
+                    self.schedule_product_timer.start();
+                    let pp_graph = self.schedule_pauli_product(pp);
+                    self.schedule_product_timer.stop();
+                    pp_graph
                 };
-                self.schedule_product_timer.stop();
                 if pp_graph.is_none() {
                     info_sched!("  Could not schedule {} on graph", pp.id);
                     next_to_schedule.push(pp.clone());
@@ -458,7 +450,6 @@ impl Scheduler {
                 remaining_to_schedule.shift_remove(&pp_i);
             }
         }
-        self.some_count.push(self.func_calls);
         let mut title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
         if next_to_schedule.len() > 0 {
             title += "\nUnscheduled: ";
@@ -510,18 +501,17 @@ impl Scheduler {
             return Some(g);
         }
         // first check that all terminals are accessible
-        for node_id in terminals.iter() {
-            let node = self.topo.get_node(*node_id);
-            if self.used[node.id] {
-                return None;
-            }
+        if terminals.iter().any(|node_id| self.used[*node_id]) {
+            return None;
         }
         // Get root nodes next to terminals
         let root_ids = self.get_root_nodes(&terminals);
         if root_ids.is_empty() {
             return None;
         }
+        self.steiner_tree_timer.start();
         let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
+        self.steiner_tree_timer.stop();
         if let Some(g) = g {
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
@@ -630,7 +620,7 @@ impl Scheduler {
         let mut visited: IndexMap<usize, usize> = IndexMap::with_capacity(self.topo.num_nodes);
         let mut paths: IndexMap<usize, IndexSet<usize>> = IndexMap::with_capacity(root_ids.len());
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
-        let mut tree = TreeGraph::new();
+        let mut tree = TreeGraph::with_capacity(terminal_nodes.len() * 5);
         let mut cultivator = None;
         let mut total_paths = 0;
         debug_sched!("    Number of root labels {}", root_ids.len());
@@ -843,10 +833,6 @@ impl Scheduler {
             }
             writeln!(file, "{}{}", id_string, RESET)?;
         }
-        for i in 0..self.scheduled_products.len() {
-            writeln!(file, "{} {}", self.iteration_times[i], self.some_count[i])?;
-        }
-
         println!("Scheduled products written to {}", output_fname);
         Ok(())
     }
