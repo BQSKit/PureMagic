@@ -1,17 +1,9 @@
+use crate::debug_sched;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 use crate::utils::{GREEN, RESET};
-use log::debug;
 use std::collections::VecDeque;
-
-// FIXME: these macros are also defined in scheduler.rs. How do we avoid that?
-macro_rules! debug_sched {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        debug!($($arg)*);
-    };
-}
 
 pub struct SteinerTreeComputation {
     num_nodes: usize,

@@ -1,4 +1,6 @@
 use crate::circuit::Circuit;
+use crate::debug_sched;
+use crate::info_sched;
 use crate::node::NodeType;
 use crate::pauliproduct::PauliProduct;
 use crate::steinertree::SteinerTreeComputation;
@@ -11,25 +13,9 @@ use crate::utils::{
 use crate::utils::{IntermittentTimer, Timer};
 
 use indexmap::IndexSet;
-#[cfg(debug_assertions)]
-use log::{debug, info};
 use rand_simple::Exponential;
 use std::io::{self, Write};
 use std::path::Path;
-
-macro_rules! debug_sched {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        debug!($($arg)*);
-    };
-}
-
-macro_rules! info_sched {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        info!($($arg)*);
-    };
-}
 
 struct ScheduleStats {
     data_qubits: usize,
