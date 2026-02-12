@@ -545,10 +545,6 @@ impl TopoGraph {
         self.nodes.iter()
     }
 
-    pub fn _iter_edges(&self) -> impl Iterator<Item = (&usize, &usize)> + '_ {
-        self.nodes.iter().flat_map(|node| node.nbors.iter().map(move |edge_id| (&node.id, edge_id)))
-    }
-
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.nodes.iter_mut()
     }
@@ -656,7 +652,7 @@ impl TopoGraph {
                 let mut stroke_width = 1;
                 // Check if edge is part of any path
                 for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                    if path_graph.contains_edge(&node.id, nb_id) {
+                    if path_graph.contains_edge(node.id, *nb_id) {
                         edge_color = &path_colors[i];
                         stroke_width = 6;
                         break;
@@ -674,9 +670,9 @@ impl TopoGraph {
             let mut root_node = None;
             // Check if node is part of any path
             for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                if path_graph.contains_node(&node.id) {
+                if path_graph.contains_node(node.id) {
                     border_color = Some(&path_colors[i]);
-                    root_node = path_graph.root_node.clone();
+                    root_node = path_graph.root_node_id.clone();
                     break;
                 }
             }
@@ -749,10 +745,12 @@ impl TopoGraph {
         }
         // Draw Pauli product labels
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-            if let Some(first_data_node) =
-                path_graph.iter_nodes().filter(|n| matches!(n.node_type, NodeType::Data)).next()
+            if let Some(first_data_node_id) =
+                path_graph.iter_nodes()
+                          .filter(|id| matches!(self.nodes[*id].node_type, NodeType::Data))
+                          .next()
             {
-                let (x, y) = first_data_node.pos;
+                let (x, y) = self.nodes[first_data_node_id].pos;
                 let product_str = pp.get_product_str();
                 let text_width = product_str.len() as f32 * 0.125;
                 // Draw text background

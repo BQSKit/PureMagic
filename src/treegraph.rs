@@ -1,46 +1,58 @@
-use crate::node::Node;
-use indexmap::IndexMap;
-
 pub struct TreeGraph {
-    nodes: IndexMap<usize, Node>,
+    nodes: Vec<Option<Vec<usize>>>,
+    routing_nodes: Vec<Option<bool>>,
     pub num_edges: usize,
     pub num_nodes: usize,
-    pub root_node: Option<usize>,
+    pub root_node_id: Option<usize>,
 }
 
 impl TreeGraph {
-    pub fn new() -> Self {
-        TreeGraph { nodes: IndexMap::new(), num_edges: 0, num_nodes: 0, root_node: None }
+    pub fn new(num_nodes: usize) -> Self {
+        TreeGraph { nodes: vec![None; num_nodes],
+                    routing_nodes: vec![None; num_nodes],
+                    num_edges: 0,
+                    num_nodes: num_nodes,
+                    root_node_id: None }
     }
 
-    pub fn with_capacity(node_capacity: usize) -> Self {
-        TreeGraph { nodes: IndexMap::with_capacity(node_capacity),
-                    num_edges: 0,
-                    num_nodes: 0,
-                    root_node: None }
+    pub fn iter_nodes(&self) -> impl Iterator<Item = usize> {
+        self.nodes.iter().enumerate().filter_map(|(i, node_opt)| node_opt.as_ref().map(|_| i))
+    }
+
+    pub fn contains_node(&self, id: usize) -> bool {
+        self.nodes[id].is_some()
+    }
+
+    pub fn contains_edge(&self, node_id1: usize, node_id2: usize) -> bool {
+        if let Some(nbs) = &self.nodes[node_id1] { nbs.contains(&node_id2) } else { false }
+    }
+
+    pub fn add_node(&mut self, id: usize, is_routing: bool) {
+        self.nodes[id] = Some(Vec::new());
+        self.routing_nodes[id] = Some(is_routing);
+        self.num_nodes += 1;
+    }
+
+    pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
+        self.nodes[node_id1].as_mut().unwrap().push(node_id2);
+        self.nodes[node_id2].as_mut().unwrap().push(node_id1);
+        self.num_edges += 1;
     }
 
     pub fn trim_dangling_nodes(&mut self) -> usize {
         let mut num_trimmed = 0;
-        let root_node = self.root_node.unwrap();
+        let root_id = self.root_node_id.unwrap();
         loop {
             // Find dangling bus nodes
-            /*
             let mut dangling_ids: Vec<usize> = Vec::new();
-            for (id, node) in self.nodes.iter() {
-                // there is at most one path going into the bus/magic node
-                if node.is_routing() && node.edges.len() <= 1 && node.id != root_node {
-                    dangling_ids.push(id.clone());
+            for (node_id, node_opt) in self.nodes.iter().enumerate() {
+                if let Some(nbs) = node_opt {
+                    let is_routing = self.routing_nodes[node_id].unwrap();
+                    if is_routing && nbs.len() <= 1 && node_id != root_id {
+                        dangling_ids.push(node_id);
+                    }
                 }
-            } */
-            let dangling_ids: Vec<usize> =
-                self.nodes
-                    .iter()
-                    .filter(|(_, node)| {
-                        node.is_routing() && node.nbors.len() <= 1 && node.id != root_node
-                    })
-                    .map(|(id, _)| *id)
-                    .collect();
+            }
             // Remove dangling nodes if any found
             if dangling_ids.is_empty() {
                 break;
@@ -54,74 +66,27 @@ impl TreeGraph {
         num_trimmed
     }
 
-    pub fn get_node(&self, id: usize) -> &Node {
-        self.nodes.get(&id).expect(&format!("Node {} not found", id))
-    }
-
-    pub fn get_node_mut(&mut self, id: usize) -> &mut Node {
-        self.nodes.get_mut(&id).expect(&format!("Node {} not found", id))
-    }
-
-    pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.values()
-    }
-
-    pub fn _iter_edges(&self) -> impl Iterator<Item = (&usize, &usize)> + '_ {
-        self.nodes
-            .iter()
-            .flat_map(|(node_id, node)| node.nbors.iter().map(move |edge_id| (node_id, edge_id)))
-    }
-
-    pub fn contains_node(&self, node_id: &usize) -> bool {
-        self.nodes.contains_key(node_id)
-    }
-
-    pub fn contains_edge(&self, node_id1: &usize, node_id2: &usize) -> bool {
-        if let Some(node) = self.nodes.get(node_id1) {
-            node.nbors.contains(node_id2)
-        } else {
-            false
-        }
-    }
-
-    pub fn add_node(&mut self, node: Node) {
-        let new_node = Node::new(node.id,
-                                 node.paired_data_id,
-                                 node.label.to_string(),
-                                 node.pos.0,
-                                 node.pos.1,
-                                 node.node_type,
-                                 node.busy_count,
-                                 node.cultivation_time);
-        self.nodes.insert(new_node.id, new_node);
-        self.num_nodes += 1;
-    }
-
-    pub fn remove_node(&mut self, node_id: usize) {
-        // Get edges to remove from neighbors
-        let node = self.get_node(node_id);
-        let edges_to_remove: Vec<(usize, usize)> =
-            node.nbors.iter().map(|neighbor| (neighbor.clone(), node_id)).collect();
+    fn remove_node(&mut self, node_id: usize) {
+        let nb_ids: Vec<usize> = self.nodes[node_id].as_ref().unwrap().iter().copied().collect();
         // Remove edges from neighbor nodes
-        for (nb_id, edge_to_remove) in edges_to_remove {
-            if let Some(nb) = self.nodes.get_mut(&nb_id) {
-                nb.nbors.swap_remove(&edge_to_remove);
-                self.num_edges -= 1;
-            }
+        for nb_id in nb_ids {
+            // FIXME: this could be inefficient
+            let pos =
+                self.nodes[nb_id].as_ref().unwrap().iter().position(|&id| id == node_id).unwrap();
+            self.nodes[nb_id].as_mut().unwrap().swap_remove(pos);
+            self.num_edges -= 1;
         }
         // Remove the node itself
-        if self.nodes.swap_remove(&node_id).is_some() {
-            self.num_nodes -= 1;
-        }
-    }
-
-    pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
-        self.get_node_mut(node_id1).add_neighbor(node_id2);
-        self.get_node_mut(node_id2).add_neighbor(node_id1);
-        self.num_edges += 1;
+        self.nodes[node_id] = None;
+        self.routing_nodes[node_id] = None;
+        self.num_nodes -= 1;
     }
 
     pub fn node_list(&self) -> Vec<usize> {
-        self.nodes.keys().cloned().collect()
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node_opt)| node_opt.as_ref().map(|_| i))
+            .collect()
     }
 }
