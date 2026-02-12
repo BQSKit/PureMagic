@@ -110,6 +110,42 @@ impl ScheduleStats {
     }
 }
 
+struct SchedulerTimers {
+    schedule_product: IntermittentTimer,
+    steiner_tree: IntermittentTimer,
+    timestep: IntermittentTimer,
+}
+
+impl SchedulerTimers {
+    pub fn new() -> Self {
+        SchedulerTimers { schedule_product: IntermittentTimer::new("schedule_pauli_product", ""),
+                          steiner_tree: IntermittentTimer::new("get_steiner_tree", ""),
+                          timestep: IntermittentTimer::new("schedule_timestep", "") }
+    }
+}
+
+struct SteinerTreeData {
+    visited: Vec<Option<usize>>,
+    paths: Vec<Vec<usize>>,
+    queue: VecDeque<usize>,
+}
+
+impl SteinerTreeData {
+    pub fn new(num_nodes: usize) -> Self {
+        SteinerTreeData { visited: vec![None; num_nodes],
+                          paths: vec![Vec::with_capacity(num_nodes); num_nodes],
+                          queue: VecDeque::with_capacity(num_nodes) }
+    }
+
+    pub fn clear(&mut self) {
+        self.visited.fill(None);
+        for path in self.paths.iter_mut() {
+            path.clear();
+        }
+        self.queue.clear();
+    }
+}
+
 pub struct Scheduler {
     circuit: Circuit,
     topo: TopoGraph,
@@ -117,12 +153,11 @@ pub struct Scheduler {
     magic_state_lambda: f64,
     plot_option: String,
     cultivation_times: Vec<i32>,
-    schedule_product_timer: IntermittentTimer,
-    steiner_tree_timer: IntermittentTimer,
-    timestep_timer: IntermittentTimer,
     stats: ScheduleStats,
     scheduled_products: Vec<Vec<PauliProduct>>,
     used: Vec<bool>,
+    stree_data: SteinerTreeData,
+    timers: SchedulerTimers,
 }
 
 impl Scheduler {
@@ -153,12 +188,11 @@ impl Scheduler {
                     magic_state_lambda,
                     plot_option,
                     cultivation_times: Vec::new(),
-                    schedule_product_timer: IntermittentTimer::new("schedule_pauli_product", ""),
-                    steiner_tree_timer: IntermittentTimer::new("get_steiner_tree", ""),
-                    timestep_timer: IntermittentTimer::new("schedule_timestep", ""),
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     scheduled_products: Vec::new(),
-                    used: vec![false; num_nodes] }
+                    used: vec![false; num_nodes],
+                    stree_data: SteinerTreeData::new(num_nodes),
+                    timers: SchedulerTimers::new() }
     }
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
@@ -208,7 +242,7 @@ impl Scheduler {
         }
         // Main scheduling loop
         while !to_schedule.is_empty() {
-            self.timestep_timer.start();
+            self.timers.timestep.start();
             num_steps += 1;
             info_sched!("{}Step {}: {:?}{}",
                         CYAN,
@@ -292,7 +326,7 @@ impl Scheduler {
                 }
             }
             to_schedule = next_to_schedule;
-            self.timestep_timer.stop();
+            self.timers.timestep.stop();
         }
         self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
@@ -305,9 +339,9 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
 
-        self.steiner_tree_timer.done();
-        self.schedule_product_timer.done();
-        self.timestep_timer.done();
+        self.timers.steiner_tree.done();
+        self.timers.schedule_product.done();
+        self.timers.timestep.done();
 
         self.print_schedule()?;
         Ok((num_steps, scheduled.len()))
@@ -382,9 +416,9 @@ impl Scheduler {
                 let pp_graph = if num_avail_magic == 0 && pp.is_tgate {
                     None
                 } else {
-                    self.schedule_product_timer.start();
+                    self.timers.schedule_product.start();
                     let pp_graph = self.schedule_pauli_product(pp);
-                    self.schedule_product_timer.stop();
+                    self.timers.schedule_product.stop();
                     pp_graph
                 };
                 if pp_graph.is_none() {
@@ -510,9 +544,9 @@ impl Scheduler {
         if root_ids.is_empty() {
             return None;
         }
-        self.steiner_tree_timer.start();
+        self.timers.steiner_tree.start();
         let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
-        self.steiner_tree_timer.stop();
+        self.timers.steiner_tree.stop();
         if let Some(g) = g {
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
@@ -618,10 +652,7 @@ impl Scheduler {
                         is_tgate: bool)
                         -> Option<TreeGraph> {
         debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
-        let mut visited: Vec<Option<usize>> = vec![None; self.topo.num_nodes];
-        let mut paths: Vec<Vec<usize>> =
-            vec![Vec::with_capacity(self.topo.num_nodes); self.topo.num_nodes];
-        let mut queue: VecDeque<usize> = VecDeque::with_capacity(self.topo.num_nodes);
+        self.stree_data.clear();
         let mut tree = TreeGraph::new(self.topo.num_nodes);
         let mut cultivator: Option<usize> = None;
         let mut num_paths: usize = 0;
@@ -632,8 +663,8 @@ impl Scheduler {
 
         for root_id in root_ids {
             debug_sched!("      {}root node {}{}", GREEN, root_id, RESET);
-            visited[*root_id] = Some(*root_id);
-            queue.push_back(*root_id);
+            self.stree_data.visited[*root_id] = Some(*root_id);
+            self.stree_data.queue.push_back(*root_id);
             let root = self.topo.get_node(*root_id);
             tree.add_node(root.id, root.is_routing());
             if cultivator.is_none()
@@ -658,16 +689,9 @@ impl Scheduler {
                 }
             }
         }
-        while let Some(node_id) = queue.pop_front() {
-            (num_paths, cultivator) = self.visit_neighbors(node_id,
-                                                           &mut visited,
-                                                           &mut paths,
-                                                           &mut tree,
-                                                           &mut queue,
-                                                           reqd_paths,
-                                                           is_tgate,
-                                                           cultivator,
-                                                           num_paths);
+        while let Some(node_id) = self.stree_data.queue.pop_front() {
+            (num_paths, cultivator) = self.visit_neighbors(node_id, reqd_paths, is_tgate,
+                                                           cultivator, num_paths, &mut tree);
             if num_paths == reqd_paths {
                 if is_tgate && cultivator.is_none() {
                     continue;
@@ -694,17 +718,16 @@ impl Scheduler {
         None
     }
 
-    fn visit_neighbors(&mut self, node_id: usize, visited: &mut Vec<Option<usize>>,
-                       paths: &mut Vec<Vec<usize>>, tree: &mut TreeGraph,
-                       queue: &mut VecDeque<usize>, reqd_paths: usize, is_tgate: bool,
-                       starting_cultivator: Option<usize>, num_start_paths: usize)
+    fn visit_neighbors(&mut self, node_id: usize, reqd_paths: usize, is_tgate: bool,
+                       starting_cultivator: Option<usize>, num_start_paths: usize,
+                       tree: &mut TreeGraph)
                        -> (usize, Option<usize>) {
         let node = self.topo.get_node(node_id);
-        let curr_root_id = visited[node_id].unwrap();
+        let curr_root_id = self.stree_data.visited[node_id].unwrap();
         let mut num_paths = num_start_paths;
         #[cfg(debug_assertions)]
         {
-            let curr_num_paths = paths.iter().map(|set| set.len()).sum::<usize>();
+            let curr_num_paths = self.stree_data.paths.iter().map(|set| set.len()).sum::<usize>();
             debug_assert_eq!(num_paths, curr_num_paths);
         }
         let mut cultivator = starting_cultivator;
@@ -718,16 +741,16 @@ impl Scheduler {
                 continue;
             }
             // check for path links between roots via routing nodes
-            if nb.is_routing() && node.is_routing() && visited[*nb_id].is_some() {
-                let nb_root_id = visited[*nb_id].unwrap();
+            if nb.is_routing() && node.is_routing() && self.stree_data.visited[*nb_id].is_some() {
+                let nb_root_id = self.stree_data.visited[*nb_id].unwrap();
                 if curr_root_id == nb_root_id {
                     continue;
                 }
-                let curr_root_paths = &paths[curr_root_id];
+                let curr_root_paths = &self.stree_data.paths[curr_root_id];
                 if !curr_root_paths.contains(&nb_root_id) {
                     // update the nb root IndexSet to contain paths to all the roots in
                     // the curr_root IndexSet
-                    let nb_root_paths = paths[nb_root_id].clone();
+                    let nb_root_paths = self.stree_data.paths[nb_root_id].clone();
                     // Create merged set containing all roots from both groups
                     let mut merged_set = curr_root_paths.clone();
                     merged_set.push(nb_root_id.clone());
@@ -735,17 +758,20 @@ impl Scheduler {
                     merged_set.push(curr_root_id.clone());
                     // Update all roots in the merged set to have the complete merged set
                     for root_id in merged_set.iter() {
-                        assert!(num_paths >= paths[*root_id].len());
-                        num_paths -= paths[*root_id].len();
-                        paths[*root_id] = merged_set.clone();
+                        assert!(num_paths >= self.stree_data.paths[*root_id].len());
+                        num_paths -= self.stree_data.paths[*root_id].len();
+                        self.stree_data.paths[*root_id] = merged_set.clone();
                         // Don't include self
-                        let pos = paths[*root_id].iter().position(|&id| id == *root_id).unwrap();
-                        paths[*root_id].swap_remove(pos);
-                        num_paths += paths[*root_id].len();
+                        let pos = self.stree_data.paths[*root_id].iter()
+                                                                 .position(|&id| id == *root_id)
+                                                                 .unwrap();
+                        self.stree_data.paths[*root_id].swap_remove(pos);
+                        num_paths += self.stree_data.paths[*root_id].len();
                     }
                     #[cfg(debug_assertions)]
                     {
-                        let curr_num_paths = paths.iter().map(|set| set.len()).sum::<usize>();
+                        let curr_num_paths =
+                            self.stree_data.paths.iter().map(|set| set.len()).sum::<usize>();
                         debug_assert_eq!(num_paths, curr_num_paths);
                     }
                     debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
@@ -755,7 +781,7 @@ impl Scheduler {
                                  num_paths,
                                  reqd_paths,
                                  RESET);
-                    debug_sched!("      {}paths:{:?}{}", GREEN, paths, RESET);
+                    debug_sched!("      {}paths:{:?}{}", GREEN, self.stree_data.paths, RESET);
                     tree.add_edge(node_id, *nb_id);
                     debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
                     if num_paths == reqd_paths {
@@ -779,7 +805,7 @@ impl Scheduler {
                 tree.add_edge(node_id, *nb_id);
                 debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
                 debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
-                queue.push_back(*nb_id);
+                self.stree_data.queue.push_back(*nb_id);
                 if cultivator.is_none() && nb_is_cultivator {
                     cultivator = Some(*nb_id);
                     debug_sched!("      {}found clutivator {}{}",
@@ -793,7 +819,7 @@ impl Scheduler {
                     }
                 }
             }
-            visited[*nb_id] = Some(curr_root_id);
+            self.stree_data.visited[*nb_id] = Some(curr_root_id);
         }
         (num_paths as usize, cultivator)
     }
