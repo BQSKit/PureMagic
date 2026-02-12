@@ -9,7 +9,7 @@ use crate::utils::{
 };
 use crate::utils::{IntermittentTimer, Timer};
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 #[cfg(debug_assertions)]
 use log::{debug, info};
 use rand_simple::Exponential;
@@ -618,12 +618,13 @@ impl Scheduler {
                         is_tgate: bool)
                         -> Option<TreeGraph> {
         debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
-        let mut visited: IndexMap<usize, usize> = IndexMap::with_capacity(self.topo.num_nodes);
-        let mut paths: IndexMap<usize, IndexSet<usize>> = IndexMap::with_capacity(root_ids.len());
-        let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
+        let mut visited: Vec<Option<usize>> = vec![None; self.topo.num_nodes];
+        let mut paths: Vec<IndexSet<usize>> =
+            vec![IndexSet::with_capacity(root_ids.len()); self.topo.num_nodes];
+        let mut queue: VecDeque<usize> = VecDeque::with_capacity(self.topo.num_nodes);
         let mut tree = TreeGraph::new(self.topo.num_nodes);
-        let mut cultivator = None;
-        let mut total_paths = 0;
+        let mut cultivator: Option<usize> = None;
+        let mut num_paths: usize = 0;
         debug_sched!("    Number of root labels {}", root_ids.len());
         // every root must have a path to every other root
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
@@ -631,16 +632,15 @@ impl Scheduler {
 
         for root_id in root_ids {
             debug_sched!("      {}root node {}{}", GREEN, root_id, RESET);
-            paths.insert(root_id.clone(), IndexSet::new());
-            visited.insert(root_id.clone(), root_id.clone());
-            queue.push_back(root_id);
+            visited[*root_id] = Some(*root_id);
+            queue.push_back(*root_id);
             let root = self.topo.get_node(*root_id);
             tree.add_node(root.id, root.is_routing());
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
                && root.cultivation_time == 0
             {
-                cultivator = Some(root_id);
+                cultivator = Some(*root_id);
                 debug_sched!("      {}found root cultivator {}{}",
                              GREEN,
                              cultivator.unwrap(),
@@ -659,89 +659,16 @@ impl Scheduler {
             }
         }
         while let Some(node_id) = queue.pop_front() {
-            let node = self.topo.get_node(*node_id);
-            let curr_root_id = visited.get(node_id).unwrap().clone();
-            for nb_id in node.nbors.iter() {
-                let nb = self.topo.get_node(*nb_id);
-                if self.used[nb.id] {
-                    continue;
-                }
-                if nb.node_type == NodeType::Data {
-                    // all data nodes are already linked in
-                    continue;
-                }
-                // check for path links between roots via routing nodes
-                if nb.is_routing() && node.is_routing() && visited.contains_key(nb_id) {
-                    let nb_root_id = visited.get(nb_id).unwrap().clone();
-                    if curr_root_id == nb_root_id {
-                        continue;
-                    }
-                    let curr_root_paths = paths.get(&curr_root_id).unwrap();
-                    if !curr_root_paths.contains(&nb_root_id) {
-                        // update the nb root IndexSet to contain paths to all the roots in
-                        // the curr_root IndexSet
-                        let nb_root_paths = paths.get(&nb_root_id).unwrap().clone();
-                        // Create merged set containing all roots from both groups
-                        let mut merged_set = curr_root_paths.clone();
-                        merged_set.insert(nb_root_id.clone());
-                        merged_set.extend(nb_root_paths.iter().cloned());
-                        merged_set.insert(curr_root_id.clone());
-                        // Update all roots in the merged set to have the complete merged set
-                        for root_id in merged_set.iter() {
-                            let mut full_set = merged_set.clone();
-                            full_set.swap_remove(root_id); // Don't include self
-                            paths.insert(root_id.clone(), full_set);
-                        }
-                        // Recalculate total_paths
-                        total_paths = paths.values().map(|set| set.len()).sum::<usize>();
-                        debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
-                                     GREEN,
-                                     curr_root_id,
-                                     nb_root_id,
-                                     total_paths,
-                                     reqd_paths,
-                                     RESET);
-                        debug_sched!("      {}paths:{:?}{}", GREEN, paths, RESET);
-                        tree.add_edge(*node_id, *nb_id);
-                        debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
-                        if total_paths == reqd_paths {
-                            if is_tgate && cultivator.is_none() {
-                                continue;
-                            }
-                            // we break here because we previously found a cultivator, and now have
-                            // found all the paths
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                let nb_is_cultivator = is_tgate
-                                       && cultivator == None
-                                       && nb.node_type == NodeType::Magic
-                                       && nb.cultivation_time == 0;
-                // add routing node/cultivator
-                if nb.is_routing() || nb_is_cultivator {
-                    tree.add_node(nb.id, nb.is_routing());
-                    tree.add_edge(*node_id, *nb_id);
-                    debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
-                    debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
-                    queue.push_back(nb_id);
-                    if cultivator.is_none() && nb_is_cultivator {
-                        cultivator = Some(nb_id);
-                        debug_sched!("      {}found clutivator {}{}",
-                                     GREEN,
-                                     cultivator.unwrap(),
-                                     RESET);
-                        if total_paths == reqd_paths {
-                            // we break here because we previously found all the paths, and now have
-                            // found a cultivator
-                            break;
-                        }
-                    }
-                }
-                visited.insert(nb_id.clone(), curr_root_id.clone());
-            }
-            if total_paths == reqd_paths {
+            (num_paths, cultivator) = self.visit_neighbors(node_id,
+                                                           &mut visited,
+                                                           &mut paths,
+                                                           &mut tree,
+                                                           &mut queue,
+                                                           reqd_paths,
+                                                           is_tgate,
+                                                           cultivator,
+                                                           num_paths);
+            if num_paths == reqd_paths {
                 if is_tgate && cultivator.is_none() {
                     continue;
                 }
@@ -752,7 +679,7 @@ impl Scheduler {
                                  GREEN,
                                  cultivator.unwrap(),
                                  RESET);
-                    Some(*cultivator.unwrap())
+                    Some(cultivator.unwrap())
                 } else {
                     debug_sched!("      {}tree complete{}", GREEN, RESET);
                     Some(root_ids[0])
@@ -765,6 +692,111 @@ impl Scheduler {
             }
         }
         None
+    }
+
+    fn visit_neighbors(&mut self, node_id: usize, visited: &mut Vec<Option<usize>>,
+                       paths: &mut Vec<IndexSet<usize>>, tree: &mut TreeGraph,
+                       queue: &mut VecDeque<usize>, reqd_paths: usize, is_tgate: bool,
+                       starting_cultivator: Option<usize>, num_start_paths: usize)
+                       -> (usize, Option<usize>) {
+        let node = self.topo.get_node(node_id);
+        let curr_root_id = visited[node_id].unwrap();
+        let mut num_paths = num_start_paths;
+        /*
+        #[cfg(debug_assertions)]
+        {
+            let curr_num_paths = paths.iter().map(|set| set.len()).sum::<usize>();
+            debug_assert_eq!(num_paths, curr_num_paths);
+        } */
+        let mut cultivator = starting_cultivator;
+        for nb_id in node.nbors.iter() {
+            let nb = self.topo.get_node(*nb_id);
+            if self.used[nb.id] {
+                continue;
+            }
+            if nb.node_type == NodeType::Data {
+                // all data nodes are already linked in
+                continue;
+            }
+            // check for path links between roots via routing nodes
+            if nb.is_routing() && node.is_routing() && visited[*nb_id].is_some() {
+                let nb_root_id = visited[*nb_id].unwrap();
+                if curr_root_id == nb_root_id {
+                    continue;
+                }
+                let curr_root_paths = &paths[curr_root_id];
+                if !curr_root_paths.contains(&nb_root_id) {
+                    // update the nb root IndexSet to contain paths to all the roots in
+                    // the curr_root IndexSet
+                    let nb_root_paths = paths[nb_root_id].clone();
+                    // Create merged set containing all roots from both groups
+                    let mut merged_set = curr_root_paths.clone();
+                    merged_set.insert(nb_root_id.clone());
+                    merged_set.extend(nb_root_paths.iter().cloned());
+                    merged_set.insert(curr_root_id.clone());
+                    // Update all roots in the merged set to have the complete merged set
+                    for root_id in merged_set.iter() {
+                        let mut full_set = merged_set.clone();
+                        full_set.swap_remove(root_id); // Don't include self
+                        assert!(num_paths >= paths[*root_id].len());
+                        num_paths -= paths[*root_id].len();
+                        paths[*root_id] = full_set;
+                        num_paths += paths[*root_id].len();
+                    }
+                    /*
+                    #[cfg(debug_assertions)]
+                    {
+                        let curr_num_paths = paths.iter().map(|set| set.len()).sum::<usize>();
+                        debug_assert_eq!(num_paths, curr_num_paths);
+                    } */
+                    debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
+                                 GREEN,
+                                 curr_root_id,
+                                 nb_root_id,
+                                 num_paths,
+                                 reqd_paths,
+                                 RESET);
+                    debug_sched!("      {}paths:{:?}{}", GREEN, paths, RESET);
+                    tree.add_edge(node_id, *nb_id);
+                    debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
+                    if num_paths == reqd_paths {
+                        if is_tgate && cultivator.is_none() {
+                            continue;
+                        }
+                        // we break here because we previously found a cultivator, and now have
+                        // found all the paths
+                        break;
+                    }
+                }
+                continue;
+            }
+            let nb_is_cultivator = is_tgate
+                                   && cultivator.is_none()
+                                   && nb.node_type == NodeType::Magic
+                                   && nb.cultivation_time == 0;
+            // add routing node/cultivator
+            if nb.is_routing() || nb_is_cultivator {
+                tree.add_node(nb.id, nb.is_routing());
+                tree.add_edge(node_id, *nb_id);
+                debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
+                debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
+                queue.push_back(*nb_id);
+                if cultivator.is_none() && nb_is_cultivator {
+                    cultivator = Some(*nb_id);
+                    debug_sched!("      {}found clutivator {}{}",
+                                 GREEN,
+                                 cultivator.unwrap(),
+                                 RESET);
+                    if num_paths == reqd_paths {
+                        // we break here because we previously found all the paths, and now have
+                        // found a cultivator
+                        break;
+                    }
+                }
+            }
+            visited[*nb_id] = Some(curr_root_id);
+        }
+        (num_paths as usize, cultivator)
     }
 
     fn gen_cultivation_time(&mut self) -> i32 {
