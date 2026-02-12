@@ -437,7 +437,8 @@ impl Scheduler {
                             best_graph.num_edges,
                             _node_list);
                 // Update node statistics and mark as used
-                for node in best_graph.iter_nodes() {
+                for node_id in best_graph.iter_nodes() {
+                    let node = self.topo.get_node(node_id);
                     self.stats.inc(node.node_type);
                     self.used[node.id] = true;
                 }
@@ -495,8 +496,8 @@ impl Scheduler {
                 info_sched!("  Single node {} is used", node.label);
                 return None;
             }
-            let mut g = TreeGraph::new();
-            g.add_node(node.clone());
+            let mut g = TreeGraph::new(self.topo.num_nodes);
+            g.add_node(node.id, node.is_routing());
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
         }
@@ -620,7 +621,7 @@ impl Scheduler {
         let mut visited: IndexMap<usize, usize> = IndexMap::with_capacity(self.topo.num_nodes);
         let mut paths: IndexMap<usize, IndexSet<usize>> = IndexMap::with_capacity(root_ids.len());
         let mut queue = VecDeque::with_capacity(self.topo.num_nodes);
-        let mut tree = TreeGraph::with_capacity(terminal_nodes.len() * 5);
+        let mut tree = TreeGraph::new(self.topo.num_nodes);
         let mut cultivator = None;
         let mut total_paths = 0;
         debug_sched!("    Number of root labels {}", root_ids.len());
@@ -634,7 +635,7 @@ impl Scheduler {
             visited.insert(root_id.clone(), root_id.clone());
             queue.push_back(root_id);
             let root = self.topo.get_node(*root_id);
-            tree.add_node(root.clone());
+            tree.add_node(root.id, root.is_routing());
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
                && root.cultivation_time == 0
@@ -650,7 +651,7 @@ impl Scheduler {
             for nb_id in root_node.nbors.iter() {
                 let nb = self.topo.get_node(*nb_id);
                 if terminal_nodes.contains(&nb_id) {
-                    tree.add_node(nb.clone());
+                    tree.add_node(nb.id, nb.is_routing());
                     tree.add_edge(*root_id, *nb_id);
                     debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
                     debug_sched!("      {}add edge {}->{}{}", GREEN, root_id, nb_id, RESET);
@@ -720,7 +721,7 @@ impl Scheduler {
                                        && nb.cultivation_time == 0;
                 // add routing node/cultivator
                 if nb.is_routing() || nb_is_cultivator {
-                    tree.add_node(nb.clone());
+                    tree.add_node(nb.id, nb.is_routing());
                     tree.add_edge(*node_id, *nb_id);
                     debug_sched!("      {}add node {}{}", GREEN, nb_id, RESET);
                     debug_sched!("      {}add edge {}->{}{}", GREEN, node_id, nb_id, RESET);
@@ -746,7 +747,7 @@ impl Scheduler {
                 }
                 // we have all the paths and terms and a cultivator (if needed), so we can now
                 // return the tree (bfs_graph)
-                tree.root_node = if is_tgate {
+                tree.root_node_id = if is_tgate {
                     debug_sched!("      {}tree complete, cultivator {}{}",
                                  GREEN,
                                  cultivator.unwrap(),
