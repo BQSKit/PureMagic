@@ -2,7 +2,7 @@ use crate::debug_sched;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-use crate::utils::{GREEN, RESET};
+use crate::utils::{GREEN, RED, RESET};
 use std::collections::VecDeque;
 
 pub struct SteinerTreeComputation {
@@ -30,7 +30,8 @@ impl SteinerTreeComputation {
 
     // this can be viewed as a greedy multi-source shortest path algorithm
     pub fn get_steiner_tree(&mut self, topo: &TopoGraph, used: &Vec<bool>,
-                            root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>, is_tgate: bool)
+                            root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>, is_tgate: bool,
+                            num_scheduled: usize)
                             -> Option<TreeGraph> {
         debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
         self.clear();
@@ -41,7 +42,6 @@ impl SteinerTreeComputation {
         // every root must have a path to every other root
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
-
         for root_id in root_ids {
             debug_sched!("      {}root node {}{}", GREEN, root_id, RESET);
             self.visited[*root_id] = Some(*root_id);
@@ -70,6 +70,9 @@ impl SteinerTreeComputation {
                 }
             }
         }
+
+        let max_dist = self.get_max_dist(topo, terminal_nodes) + 1;
+        let mut search_steps = 0;
         while let Some(node_id) = self.queue.pop_front() {
             (num_paths, cultivator) = self.visit_neighbors(node_id, topo, used, reqd_paths,
                                                            is_tgate, cultivator, num_paths,
@@ -94,10 +97,46 @@ impl SteinerTreeComputation {
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
                 // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
                 // makes the path shorter
+                /*
+                eprintln!("search succeeded with {} steps, with max dist of {}, ratio {:.2}",
+                          search_steps,
+                          max_dist,
+                          search_steps as f64 / max_dist as f64);
+                 */
                 return Some(tree);
             }
+            search_steps += 1;
+            // early exit to cut off the long tail in computation
+            if num_scheduled > 0 && search_steps > max_dist * 100 {
+                //eprintln!("{RED}stopping BFS search after {} steps, given that max dist is {}{RESET}",
+                //          search_steps, max_dist);
+                break;
+            }
         }
+        /*
+        eprintln!("search failed with {} steps, with max dist of {}, ratio {:.2}",
+                  search_steps,
+                  max_dist,
+                  search_steps as f64 / max_dist as f64);
+         */
         None
+    }
+
+    fn get_max_dist(&self, topo: &TopoGraph, terminal_nodes: &Vec<usize>) -> usize {
+        let mut max_dist = 0;
+        for i in 0..terminal_nodes.len() {
+            let node_i = topo.get_node(terminal_nodes[i]);
+            for j in (i + 1)..terminal_nodes.len() {
+                let node_j = topo.get_node(terminal_nodes[j]);
+                let manhattan_dist = ((node_i.pos.0 - node_j.pos.0).abs()
+                                      + (node_i.pos.1 - node_j.pos.1).abs())
+                                     as usize;
+                if manhattan_dist > max_dist {
+                    max_dist = manhattan_dist;
+                }
+            }
+        }
+        max_dist
     }
 
     fn visit_neighbors(&mut self, node_id: usize, topo: &TopoGraph, used: &Vec<bool>,

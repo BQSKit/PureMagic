@@ -380,7 +380,7 @@ impl Scheduler {
                     None
                 } else {
                     self.timers.schedule_product.start();
-                    let pp_graph = self.schedule_pauli_product(pp);
+                    let pp_graph = self.schedule_pauli_product(pp, pp_paths.len());
                     self.timers.schedule_product.stop();
                     pp_graph
                 };
@@ -476,7 +476,8 @@ impl Scheduler {
         }
     }
 
-    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TreeGraph> {
+    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
+                              -> Option<TreeGraph> {
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
         let terminals = self.get_terminal_nodes(pauli_product);
@@ -512,7 +513,8 @@ impl Scheduler {
                                                         &self.used,
                                                         &root_ids,
                                                         &terminals,
-                                                        pauli_product.is_tgate);
+                                                        pauli_product.is_tgate,
+                                                        num_scheduled);
         //let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
         self.timers.steiner_tree.stop();
         if let Some(g) = g {
