@@ -15,7 +15,8 @@ use crate::utils::{
 
 use indexmap::IndexSet;
 use rand_simple::Exponential;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 struct ScheduleStats {
@@ -653,15 +654,16 @@ impl Scheduler {
                                                                  .unwrap_or("circuit");
         let output_fname = format!("{}.schedule", circuit_stem);
 
-        let mut file = std::fs::File::create(&output_fname)?;
+        let file = File::create(&output_fname)?;
+        let mut buf_file = BufWriter::new(file);
 
-        writeln!(file, "# Scheduled Products by Timestep")?;
-        writeln!(file, "# Circuit: {}", self.circuit.circuit_fname)?;
-        writeln!(file, "# Total steps: {}", self.scheduled_products.len())?;
-        writeln!(file,
+        writeln!(buf_file, "# Scheduled Products by Timestep")?;
+        writeln!(buf_file, "# Circuit: {}", self.circuit.circuit_fname)?;
+        writeln!(buf_file, "# Total steps: {}", self.scheduled_products.len())?;
+        writeln!(buf_file,
                  "# Total products: {}",
                  self.scheduled_products.iter().map(|v| v.len()).sum::<usize>())?;
-        writeln!(file)?;
+        writeln!(buf_file)?;
 
         let colors = [GREEN, RED, YELLOW, BLUE, MAGENTA, CYAN, WHITE, LGREEN, LRED, LYELLOW,
                       LBLUE, LMAGENTA, LCYAN, LWHITE];
@@ -683,14 +685,14 @@ impl Scheduler {
                 }
             }
             for i in 0..self.circuit.num_qubits {
-                write!(file, "{}{}", combined_colors[i], combined_chars[i])?;
+                write!(buf_file, "{}{}", combined_colors[i], combined_chars[i])?;
             }
             let mut id_string = String::new();
             for (idx, pp) in sorted_products.iter().enumerate() {
                 let color = colors[idx % colors.len()];
                 id_string.push_str(&format!(" {}{}", color, pp.id));
             }
-            writeln!(file, "{}{}", id_string, RESET)?;
+            writeln!(buf_file, "{}{}", id_string, RESET)?;
         }
         println!("Scheduled products written to {}", output_fname);
         Ok(())
