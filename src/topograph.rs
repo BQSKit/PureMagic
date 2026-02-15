@@ -8,7 +8,9 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+#[cfg(debug_assertions)]
+use std::io::Write;
+use std::io::{self, BufRead};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
