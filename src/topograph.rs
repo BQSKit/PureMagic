@@ -1,7 +1,7 @@
+use crate::fn_timer;
 use crate::node::{Node, NodeType};
 use crate::pauliproduct::PauliProduct;
 use crate::treegraph::TreeGraph;
-use crate::utils::Timer;
 use indexmap::IndexMap;
 use plotters::prelude::*;
 use rand::SeedableRng;
@@ -50,7 +50,6 @@ impl TopoGraph {
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
                     topo_fname: &String, rseed: &u32, use_magic_routing: bool,
                     ancilla_rows: usize, sides_only: bool) {
-        let _timer = Timer::new("set_topo");
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
         self.use_magic_routing = use_magic_routing;
@@ -95,7 +94,7 @@ impl TopoGraph {
     }
 
     pub fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
-        let _timer = Timer::new("read_topo_from_file");
+        let _timer = fn_timer!();
         // Read the grid layout
         let mut rows = Vec::new();
         let file = File::open(&self.topo_fname)?;
@@ -594,7 +593,7 @@ impl TopoGraph {
     pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, TreeGraph)],
                 title_str: &str)
                 -> Result<(), Box<dyn std::error::Error>> {
-        //let _timer = Timer::new("plot");
+        let _timer = fn_timer!();
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
 

@@ -2,7 +2,8 @@ use crate::debug_sched;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-use crate::utils::{GREEN, RED, RESET};
+#[cfg(debug_assertions)]
+use crate::utils::{GREEN, RESET};
 use std::collections::VecDeque;
 
 pub struct SteinerTreeComputation {
@@ -10,14 +11,20 @@ pub struct SteinerTreeComputation {
     visited: Vec<Option<usize>>,
     paths: Vec<Vec<usize>>,
     queue: VecDeque<usize>,
+    early_terminations: usize,
+    num_calls: usize,
+    termination_threshold: usize,
 }
 
 impl SteinerTreeComputation {
-    pub fn new(num_nodes: usize) -> Self {
+    pub fn new(num_nodes: usize, termination_threshold: usize) -> Self {
         SteinerTreeComputation { num_nodes: num_nodes,
                                  visited: vec![None; num_nodes],
                                  paths: vec![Vec::with_capacity(num_nodes); num_nodes],
-                                 queue: VecDeque::with_capacity(num_nodes) }
+                                 queue: VecDeque::with_capacity(num_nodes),
+                                 early_terminations: 0,
+                                 num_calls: 0,
+                                 termination_threshold: termination_threshold }
     }
 
     pub fn clear(&mut self) {
@@ -34,6 +41,7 @@ impl SteinerTreeComputation {
                             num_scheduled: usize)
                             -> Option<TreeGraph> {
         debug_sched!("    BFS from nodes {:?} to nodes {:?}", root_ids, terminal_nodes);
+        self.num_calls += 1;
         self.clear();
         let mut tree = TreeGraph::new(self.num_nodes);
         let mut cultivator: Option<usize> = None;
@@ -107,18 +115,11 @@ impl SteinerTreeComputation {
             }
             search_steps += 1;
             // early exit to cut off the long tail in computation
-            if num_scheduled > 0 && search_steps > max_dist * 100 {
-                //eprintln!("{RED}stopping BFS search after {} steps, given that max dist is {}{RESET}",
-                //          search_steps, max_dist);
+            if num_scheduled > 0 && search_steps > max_dist * self.termination_threshold {
+                self.early_terminations += 1;
                 break;
             }
         }
-        /*
-        eprintln!("search failed with {} steps, with max dist of {}, ratio {:.2}",
-                  search_steps,
-                  max_dist,
-                  search_steps as f64 / max_dist as f64);
-         */
         None
     }
 
@@ -241,5 +242,9 @@ impl SteinerTreeComputation {
             self.visited[*nb_id] = Some(curr_root_id);
         }
         (num_paths as usize, cultivator)
+    }
+
+    pub fn get_call_counts(&mut self) -> (usize, usize) {
+        (self.num_calls, self.early_terminations)
     }
 }
