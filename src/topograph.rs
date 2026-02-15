@@ -563,6 +563,7 @@ impl TopoGraph {
         &self.nodes[*node_id]
     }
 
+    #[cfg(debug_assertions)]
     pub fn print(&self) -> io::Result<()> {
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
