@@ -1,16 +1,17 @@
 use crate::circuit::Circuit;
 use crate::debug_sched;
+use crate::fn_timer;
 use crate::info_sched;
 use crate::node::NodeType;
 use crate::pauliproduct::PauliProduct;
 use crate::steinertree::SteinerTreeComputation;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
+use crate::utils::IntermittentTimer;
 use crate::utils::{
     BLUE, CYAN, GREEN, LBLUE, LCYAN, LGREEN, LMAGENTA, LRED, LWHITE, LYELLOW, MAGENTA, RED, RESET,
     WHITE, YELLOW,
 };
-use crate::utils::{IntermittentTimer, Timer};
 
 use indexmap::IndexSet;
 use rand_simple::Exponential;
@@ -125,7 +126,7 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new(circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-               plot_option: String, rseed: u32)
+               plot_option: String, rseed: u32, stree_termination_threshold: usize)
                -> Self {
         if log_level != "none" {
             let circuit_stem = Path::new(&circuit.circuit_fname).file_stem()
@@ -154,12 +155,13 @@ impl Scheduler {
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     scheduled_products: Vec::new(),
                     used: vec![false; num_nodes],
-                    stree_computation: SteinerTreeComputation::new(num_nodes),
+                    stree_computation: SteinerTreeComputation::new(num_nodes,
+                                                                   stree_termination_threshold),
                     timers: SchedulerTimers::new() }
     }
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
-        let _timer = Timer::new("schedule_circuit");
+        let _timer = fn_timer!();
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -302,51 +304,17 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
 
+        let (num_calls, early_terminations) = self.stree_computation.get_call_counts();
+        println!("Steiner tree computation called {} times, with {} ({:.2}%) early terminations",
+                 num_calls,
+                 early_terminations,
+                 100.0 * early_terminations as f64 / num_calls as f64);
         self.timers.steiner_tree.done();
         self.timers.schedule_product.done();
         self.timers.timestep.done();
 
         self.print_schedule()?;
         Ok((num_steps, scheduled.len()))
-    }
-
-    fn setup_timestep(&mut self) -> i32 {
-        // Collect magic nodes that need new busy counts
-        let num_used_magic_nodes =
-            self.topo
-                .iter_nodes()
-                .filter(|node| self.used[node.id] && node.node_type == NodeType::Magic)
-                .count();
-        // Generate new cultivation times for magic nodes
-        let new_cultivation_times: Vec<i32> =
-            (0..num_used_magic_nodes).map(|_| self.gen_cultivation_time()).collect();
-        // Update busy counts and reset used flags
-        let mut num_avail_magic = 0;
-        let mut cultivation_time_index = 0;
-        for node in self.topo.iter_nodes_mut() {
-            if !self.used[node.id] {
-                if node.is_cultivating() {
-                    node.busy_count += 1;
-                    if node.busy_count == node.cultivation_time {
-                        self.cultivation_times.push(node.cultivation_time);
-                        node.cultivation_time = 0;
-                        node.busy_count = 0;
-                    }
-                }
-            } else {
-                if node.node_type == NodeType::Magic {
-                    node.cultivation_time = new_cultivation_times[cultivation_time_index];
-                    node.busy_count = 0;
-                    cultivation_time_index += 1;
-                }
-            }
-            if node.node_type == NodeType::Magic && node.cultivation_time == 0 {
-                num_avail_magic += 1;
-            }
-        }
-        self.used.fill(false);
-        info_sched!("  Available magic {}", num_avail_magic);
-        num_avail_magic
     }
 
     fn schedule_timestep(
@@ -474,6 +442,45 @@ impl Scheduler {
             }
             (None, None, next_to_schedule)
         }
+    }
+
+    fn setup_timestep(&mut self) -> i32 {
+        // Collect magic nodes that need new busy counts
+        let num_used_magic_nodes =
+            self.topo
+                .iter_nodes()
+                .filter(|node| self.used[node.id] && node.node_type == NodeType::Magic)
+                .count();
+        // Generate new cultivation times for magic nodes
+        let new_cultivation_times: Vec<i32> =
+            (0..num_used_magic_nodes).map(|_| self.gen_cultivation_time()).collect();
+        // Update busy counts and reset used flags
+        let mut num_avail_magic = 0;
+        let mut cultivation_time_index = 0;
+        for node in self.topo.iter_nodes_mut() {
+            if !self.used[node.id] {
+                if node.is_cultivating() {
+                    node.busy_count += 1;
+                    if node.busy_count == node.cultivation_time {
+                        self.cultivation_times.push(node.cultivation_time);
+                        node.cultivation_time = 0;
+                        node.busy_count = 0;
+                    }
+                }
+            } else {
+                if node.node_type == NodeType::Magic {
+                    node.cultivation_time = new_cultivation_times[cultivation_time_index];
+                    node.busy_count = 0;
+                    cultivation_time_index += 1;
+                }
+            }
+            if node.node_type == NodeType::Magic && node.cultivation_time == 0 {
+                num_avail_magic += 1;
+            }
+        }
+        self.used.fill(false);
+        info_sched!("  Available magic {}", num_avail_magic);
+        num_avail_magic
     }
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
@@ -640,6 +647,7 @@ impl Scheduler {
     }
 
     fn print_schedule(&self) -> io::Result<()> {
+        let _timer = fn_timer!();
         let circuit_stem = Path::new(&self.circuit.circuit_fname).file_stem()
                                                                  .and_then(|s| s.to_str())
                                                                  .unwrap_or("circuit");

@@ -38,6 +38,8 @@ indexmap = "2.11"
 #[dependencies.pyo3-built]
 #version = "0.4"
 
+stdext = "0.3"
+
 [dev-dependencies]
 criterion = "0.5"  # For benchmarking
 tempfile = "3.7"   # For temporary test files

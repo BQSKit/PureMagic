@@ -89,6 +89,9 @@ struct Args {
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
+    /// Early termination threshold for Steiner Tree search - Multiple of max. Manhattan distance
+    #[arg(short, long, default_value = "10")]
+    stree_termination_threshold: usize,
     #[arg(
         short,
         long,
@@ -164,6 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (circuit, fname)
     };
     let num_layers = circuit.print_statistics();
+    #[cfg(debug_assertions)]
     circuit.print()?;
 
     // Plot circuit if requested
@@ -185,6 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         args.use_magic_routing,
                         args.ancilla_rows,
                         args.sides_only);
+    #[cfg(debug_assertions)]
     topo_graph.print()?;
 
     if args.plot.contains(&"topo".to_string()) {
@@ -198,7 +203,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.magic_state_lambda,
                                        &args.log_scheduler,
                                        args.plot.join(" "),
-                                       args.rseed);
+                                       args.rseed,
+                                       args.stree_termination_threshold);
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit(args.best_fit)?;
 

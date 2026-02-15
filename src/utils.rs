@@ -38,6 +38,26 @@ impl Drop for Timer {
     }
 }
 
+// this enables the use of a timer without having to specify the function name
+#[macro_export]
+macro_rules! fn_timer {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let full_name = type_name_of(f);
+        // Remove the trailing "::f"
+        let name = &full_name[..full_name.len() - 3];
+        // Remove the crate prefix to get "Circuit::load_circuit" instead of "puremagic::circuit::Circuit::load_circuit"
+        let short_name = name.split("::").skip(2).collect::<Vec<_>>().join("::");
+        $crate::utils::Timer::new(&short_name)
+    }};
+    ($custom_name:expr) => {{
+        $crate::utils::Timer::new($custom_name)
+    }};
+}
+
 pub struct IntermittentTimer {
     start_time: Option<Instant>,
     total_elapsed: Duration,

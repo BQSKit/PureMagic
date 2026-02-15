@@ -1,5 +1,5 @@
+use crate::fn_timer;
 use crate::pauliproduct::PauliProduct;
-use crate::utils::Timer;
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use std::fs::create_dir_all;
@@ -27,7 +27,7 @@ impl Circuit {
     }
 
     pub fn load_circuit(&mut self) -> io::Result<()> {
-        let _timer = Timer::new("load_circuit");
+        let _timer = fn_timer!();
 
         let file = File::open(&self.circuit_fname)?;
         let reader = BufReader::new(file);
@@ -90,6 +90,7 @@ impl Circuit {
     }
 
     pub fn save_circuit_to_file(&self, circuit_fname: String) -> io::Result<()> {
+        let _timer = fn_timer!();
         let mut file = File::create(&circuit_fname)?;
 
         for product in &self.products {
@@ -114,7 +115,7 @@ impl Circuit {
     }
 
     pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
-        let _timer = Timer::new("plot");
+        let _timer = fn_timer!();
         // Get circuit filename
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
@@ -266,7 +267,7 @@ impl Circuit {
     }
 
     pub fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let _timer = Timer::new("plot_layer_stats");
+        let _timer = fn_timer!();
         // Get circuit filename
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
@@ -576,7 +577,9 @@ impl Circuit {
         (layers.len(), num_cliffords, avg_products, max_products as i32)
     }
 
+    #[cfg(debug_assertions)]
     pub fn print(&self) -> io::Result<()> {
+        let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
         let output_fname = format!("{}.circuit.txt", circuit_stem);
@@ -597,7 +600,6 @@ impl Circuit {
     }
 
     fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
-        let _timer = Timer::new("get_layers");
         // Return cached layers if available
         if let Some(cached) = self.layers.borrow().as_ref() {
             return cached.iter()
@@ -648,7 +650,7 @@ impl Circuit {
     }
 
     pub fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let _timer = Timer::new("plot_qubit_coupling");
+        let _timer = fn_timer!();
         // Get circuit filename
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
