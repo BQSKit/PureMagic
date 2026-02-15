@@ -3,6 +3,8 @@ use crate::pauliproduct::PauliProduct;
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use std::fs::create_dir_all;
+#[cfg(debug_assertions)]
+use std::io::BufWriter;
 use std::{
     cell::RefCell,
     fs::File,
@@ -583,16 +585,17 @@ impl Circuit {
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
         let output_fname = format!("{}.circuit.txt", circuit_stem);
-        let mut file = File::create(&output_fname)?;
+        let file = File::create(&output_fname)?;
+        let mut buf_file = BufWriter::new(file);
 
         let layers = self.get_layers();
 
-        writeln!(file, "layer id product ancilla? ES? clifford? children parents")?;
+        writeln!(buf_file, "layer id product ancilla? ES? clifford? children parents")?;
         for (i, layer) in layers.iter().enumerate() {
             let mut sorted_layer = layer.clone();
             sorted_layer.sort_by_key(|pp| pp.id);
             for pp in sorted_layer {
-                writeln!(file, "{}: {}", i, pp)?;
+                writeln!(buf_file, "{}: {}", i, pp)?;
             }
         }
         println!("Wrote circuit to {}", output_fname);
