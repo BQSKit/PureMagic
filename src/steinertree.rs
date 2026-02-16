@@ -105,12 +105,6 @@ impl SteinerTreeComputation {
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
                 // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
                 // makes the path shorter
-                /*
-                eprintln!("search succeeded with {} steps, with max dist of {}, ratio {:.2}",
-                          search_steps,
-                          max_dist,
-                          search_steps as f64 / max_dist as f64);
-                 */
                 return Some(tree);
             }
             search_steps += 1;
