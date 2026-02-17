@@ -98,7 +98,7 @@ struct Args {
         value_delimiter = ',',
         value_parser = |s: &str| {
             match s.to_lowercase().as_str() {
-                "topo" | "circuit" | "cstats" | "paths" | "" => Ok(s.to_string()),
+                "topo" | "circuit" | "coupling" | "cstats" | "paths" | "" => Ok(s.to_string()),
                 _ => Err(format!(
                     "invalid plot option '{}'; must be one of: topo, circuit, cstats, paths",
                     s
@@ -173,6 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Plot circuit if requested
     if args.plot.contains(&"circuit".to_string()) {
         circuit.plot(args.show_product_ids)?;
+    }
+    if args.plot.contains(&"coupling".to_string()) {
         circuit.plot_qubit_coupling()?;
     }
     if args.plot.contains(&"cstats".to_string()) {
