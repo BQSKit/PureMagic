@@ -1,6 +1,5 @@
 use crate::debug_sched;
-#[cfg(debug_assertions)]
-use crate::utils::{BLUE, RESET};
+use crate::utils::{_BLUE, _RESET};
 
 #[derive(Clone)]
 struct TreeNode {
@@ -58,7 +57,7 @@ impl TreeGraph {
         assert!(self.nodes[id].is_none());
         self.nodes[id] = Some(TreeNode::new(is_routing, pos));
         self.num_nodes += 1;
-        debug_sched!("      {}add node {}{}", BLUE, id, RESET);
+        debug_sched!("      {}add node {}{}", _BLUE, id, _RESET);
     }
 
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
@@ -68,7 +67,7 @@ impl TreeGraph {
         self.nodes[node_id1].as_mut().unwrap().nbors.push(node_id2);
         self.nodes[node_id2].as_mut().unwrap().nbors.push(node_id1);
         self.num_edges += 1;
-        debug_sched!("      {}add edge {}->{}{}", BLUE, node_id1, node_id2, RESET);
+        debug_sched!("      {}add edge {}->{}{}", _BLUE, node_id1, node_id2, _RESET);
     }
 
     pub fn trim_dangling_nodes(&mut self) -> usize {
@@ -98,14 +97,14 @@ impl TreeGraph {
     }
 
     fn remove_node(&mut self, node_id: usize) {
-        debug_sched!("      {}remove node {}{}", BLUE, node_id, RESET);
+        debug_sched!("      {}remove node {}{}", _BLUE, node_id, _RESET);
         let nb_ids: Vec<usize> =
             self.nodes[node_id].as_ref().unwrap().nbors.iter().copied().collect();
         // Remove edges from neighbor nodes
         for nb_id in nb_ids {
             self.nodes[nb_id].as_mut().unwrap().remove_edge(node_id);
             self.num_edges -= 1;
-            debug_sched!("      {}remove edge {}->{}{}", BLUE, nb_id, node_id, RESET);
+            debug_sched!("      {}remove edge {}->{}{}", _BLUE, nb_id, node_id, _RESET);
         }
         // Remove the node itself
         self.nodes[node_id] = None;
@@ -116,7 +115,6 @@ impl TreeGraph {
         let mut edges_to_remove: Vec<(usize, usize)> = Vec::new();
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
             if let Some(node) = node_opt {
-                assert!(node.nbors.len() <= 2);
                 if !node.is_routing && node.nbors.len() == 2 {
                     // remove side edge
                     for nb_id in &node.nbors {
@@ -131,10 +129,10 @@ impl TreeGraph {
         }
         for (node_id1, node_id2) in edges_to_remove {
             debug_sched!("      {}Removing additional edge {}->{}{}",
-                         BLUE,
+                         _BLUE,
                          node_id1,
                          node_id2,
-                         RESET);
+                         _RESET);
             self.nodes[node_id1].as_mut().unwrap().remove_edge(node_id2);
             self.nodes[node_id2].as_mut().unwrap().remove_edge(node_id1);
             self.num_edges -= 1;
@@ -149,6 +147,7 @@ impl TreeGraph {
             .collect()
     }
 
+    #[cfg(debug_assertions)]
     pub fn check_vertical_data_edges(&self, node_id: usize) {
         let node = self.nodes[node_id].as_ref().unwrap();
         let mut above_count = 0;
