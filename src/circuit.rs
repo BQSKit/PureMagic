@@ -719,45 +719,36 @@ impl Circuit {
         for product in &self.products {
             let qubits: Vec<usize> = product.get_qubits();
             // Count coupling for all pairs of qubits in this product
-            for i in 0..(qubits.len() - 1) {
-                for j in (i + 1)..qubits.len() {
-                    let qubit_i = qubits[i];
-                    let qubit_j = qubits[j];
+            for i in 0..qubits.len() {
+                for j in 0..qubits.len() {
+                    let qubit_i = qubits[i] / 2;
+                    let qubit_j = qubits[j] / 2;
+                    if qubit_i == qubit_j {
+                        continue;
+                    }
                     assert!(qubit_i < self.num_qubits && qubit_j < self.num_qubits);
-                    matrix[qubit_i][qubit_j] += 1;
-                    matrix[qubit_j][qubit_i] += 1; // Make matrix symmetric
+                    matrix[qubit_i * 2][qubit_j * 2] += 1;
+                    matrix[qubit_j * 2][qubit_i * 2] += 1; // Make matrix symmetric
                 }
             }
         }
+        self.print_coupling_frequency(&matrix);
         matrix
     }
 
-    fn _build_pair_coupling_matrix(&self) -> Vec<Vec<usize>> {
-        let num_pairs = (self.num_qubits + 1) / 2;
-        let mut matrix = vec![vec![0; num_pairs]; num_pairs];
-
-        for product in &self.products {
-            let qubits: Vec<usize> = product.get_qubits();
-
-            // Convert qubits to their pair indices (0,1 -> 0; 2,3 -> 1; etc.)
-            let mut qubit_pairs: Vec<usize> = qubits.iter().map(|&qubit| qubit / 2).collect();
-
-            // Remove duplicates and sort
-            qubit_pairs.sort();
-            qubit_pairs.dedup();
-
-            // Count coupling for all pairs of qubit pairs in this product
-            for i in 0..(qubit_pairs.len() - 1) {
-                for j in (i + 1)..qubit_pairs.len() {
-                    let pair_i = qubit_pairs[i];
-                    let pair_j = qubit_pairs[j];
-
-                    assert!(pair_i < num_pairs && pair_j < num_pairs);
-                    matrix[pair_i][pair_j] += 1;
-                    matrix[pair_j][pair_i] += 1; // Make matrix symmetric
-                }
+    fn print_coupling_frequency(&self, coupling_matrix: &Vec<Vec<usize>>) {
+        let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
+        for i in 0..(self.num_qubits - 1) {
+            for j in (i + 1)..self.num_qubits {
+                pairs.push((i, j, coupling_matrix[i][j]));
             }
         }
-        matrix
+        pairs.sort_by(|p1, p2| p1.2.cmp(&p2.2).reverse());
+        eprintln!("Pair frequencies:");
+        for (q1, q2, n) in pairs {
+            if n != 0 {
+                eprintln!("  {} {} {}", q1, q2, n);
+            }
+        }
     }
 }
