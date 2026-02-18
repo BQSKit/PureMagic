@@ -1,21 +1,21 @@
 use std::time::{Duration, Instant};
 
 // Add these near the top of scheduler.rs, before the struct definitions
-pub const RED: &str = "\x1b[31m";
-pub const GREEN: &str = "\x1b[32m";
-pub const YELLOW: &str = "\x1b[33m";
-pub const BLUE: &str = "\x1b[34m";
-pub const MAGENTA: &str = "\x1b[35m";
-pub const CYAN: &str = "\x1b[36m";
-pub const WHITE: &str = "\x1b[37m";
-pub const LRED: &str = "\x1b[91m";
-pub const LGREEN: &str = "\x1b[92m";
-pub const LYELLOW: &str = "\x1b[93m";
-pub const LBLUE: &str = "\x1b[94m";
-pub const LMAGENTA: &str = "\x1b[95m";
-pub const LCYAN: &str = "\x1b[96m";
-pub const LWHITE: &str = "\x1b[97m";
-pub const RESET: &str = "\x1b[0m";
+pub const _RED: &str = "\x1b[31m";
+pub const _GREEN: &str = "\x1b[32m";
+pub const _YELLOW: &str = "\x1b[33m";
+pub const _BLUE: &str = "\x1b[34m";
+pub const _MAGENTA: &str = "\x1b[35m";
+pub const _CYAN: &str = "\x1b[36m";
+pub const _WHITE: &str = "\x1b[37m";
+pub const _LRED: &str = "\x1b[91m";
+pub const _LGREEN: &str = "\x1b[92m";
+pub const _LYELLOW: &str = "\x1b[93m";
+pub const _LBLUE: &str = "\x1b[94m";
+pub const _LMAGENTA: &str = "\x1b[95m";
+pub const _LCYAN: &str = "\x1b[96m";
+pub const _LWHITE: &str = "\x1b[97m";
+pub const _RESET: &str = "\x1b[0m";
 
 pub struct Timer {
     name: String,
@@ -31,10 +31,10 @@ impl Timer {
 impl Drop for Timer {
     fn drop(&mut self) {
         println!("{}Timing: {} took {:.2} s{}",
-                 CYAN,
+                 _CYAN,
                  self.name,
                  self.start.elapsed().as_secs_f64(),
-                 RESET);
+                 _RESET);
     }
 }
 
@@ -94,13 +94,13 @@ impl IntermittentTimer {
             }
         };
         println!("{}Timing: {} took {} (avg {} max {} over {} calls){}",
-                 CYAN,
+                 _CYAN,
                  self.name,
                  format_time(total_secs),
                  format_time(avg_secs),
                  format_time(max_secs),
                  self.num_intervals,
-                 RESET);
+                 _RESET);
     }
 
     #[allow(dead_code)]
@@ -125,7 +125,7 @@ impl IntermittentTimer {
             self.num_intervals += 1;
 
             if !self.interval_label.is_empty() {
-                println!("{}{:.2} s{}", CYAN, self.last_interval.as_secs_f64(), RESET);
+                println!("{}{:.2} s{}", _CYAN, self.last_interval.as_secs_f64(), _RESET);
             }
         }
     }

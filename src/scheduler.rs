@@ -9,8 +9,8 @@ use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 use crate::utils::IntermittentTimer;
 use crate::utils::{
-    BLUE, CYAN, GREEN, LBLUE, LCYAN, LGREEN, LMAGENTA, LRED, LWHITE, LYELLOW, MAGENTA, RED, RESET,
-    WHITE, YELLOW,
+    _BLUE, _CYAN, _GREEN, _LBLUE, _LCYAN, _LGREEN, _LMAGENTA, _LRED, _LWHITE, _LYELLOW, _MAGENTA,
+    _RED, _RESET, _WHITE, _YELLOW,
 };
 
 use indexmap::IndexSet;
@@ -215,12 +215,12 @@ impl Scheduler {
             self.timers.timestep.start();
             num_steps += 1;
             info_sched!("{}Step {}: {:?}{}",
-                        CYAN,
+                        _CYAN,
                         num_steps,
                         to_schedule.iter()
                                    .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
                                    .collect::<Vec<_>>(),
-                        RESET);
+                        _RESET);
 
             let (title_str, pp_paths, mut next_to_schedule) =
                 self.schedule_timestep(num_steps, &to_schedule, best_fit);
@@ -238,7 +238,7 @@ impl Scheduler {
                 if !self.topo.iter_nodes().any(|node| node.is_cultivating()) {
                     return Err(io::Error::new(io::ErrorKind::Other,
                                               format!("{}Cannot schedule on current layout{}",
-                                                      RED, RESET)));
+                                                      _RED, _RESET)));
                 }
                 to_schedule = next_to_schedule;
                 continue;
@@ -436,14 +436,14 @@ impl Scheduler {
                 // if any magic node is available and we scheduled nothing, then we must terminate
                 // with an error, since we should be able to schedule something
                 panic!("{}Step {}: Cannot schedule products [{}] on current layout ({} magic){}",
-                       RED,
+                       _RED,
                        step_i,
                        to_schedule.iter()
                                   .map(|pp| pp.get_product_str())
                                   .collect::<Vec<_>>()
                                   .join(", "),
                        num_avail_magic,
-                       RESET);
+                       _RESET);
             }
             (None, None, next_to_schedule)
         }
@@ -669,8 +669,8 @@ impl Scheduler {
                  self.scheduled_products.iter().map(|v| v.len()).sum::<usize>())?;
         writeln!(buf_file)?;
 
-        let colors = [GREEN, RED, YELLOW, BLUE, MAGENTA, CYAN, WHITE, LGREEN, LRED, LYELLOW,
-                      LBLUE, LMAGENTA, LCYAN, LWHITE];
+        let colors = [_GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED,
+                      _LYELLOW, _LBLUE, _LMAGENTA, _LCYAN, _LWHITE];
 
         for step_products in &self.scheduled_products {
             let mut sorted_products = step_products.clone();
@@ -678,7 +678,7 @@ impl Scheduler {
                                pp.operators.iter().map(|op| op.qubit).min().unwrap_or(usize::MAX)
                            });
             let mut combined_chars = vec!['_'; self.circuit.num_qubits];
-            let mut combined_colors = vec![RESET; self.circuit.num_qubits];
+            let mut combined_colors = vec![_RESET; self.circuit.num_qubits];
             for (idx, pp) in sorted_products.iter().enumerate() {
                 let color = colors[idx % colors.len()];
                 for op in &pp.operators {
@@ -696,7 +696,7 @@ impl Scheduler {
                 let color = colors[idx % colors.len()];
                 id_string.push_str(&format!(" {}{}", color, pp.id));
             }
-            writeln!(buf_file, "{}{}", id_string, RESET)?;
+            writeln!(buf_file, "{}{}", id_string, _RESET)?;
         }
         println!("Scheduled products written to {}", output_fname);
         Ok(())

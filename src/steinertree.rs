@@ -2,8 +2,7 @@ use crate::debug_sched;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-#[cfg(debug_assertions)]
-use crate::utils::{GREEN, LGREEN, RESET};
+use crate::utils::{_GREEN, _LGREEN, _RESET};
 use std::collections::VecDeque;
 
 pub struct SteinerTreeComputation {
@@ -51,7 +50,7 @@ impl SteinerTreeComputation {
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
         for root_id in root_ids {
-            debug_sched!("      {}root node {}{}", GREEN, root_id, RESET);
+            debug_sched!("      {}root node {}{}", _GREEN, root_id, _RESET);
             self.visited[*root_id] = Some(*root_id);
             self.queue.push_back(*root_id);
             let root = topo.get_node(*root_id);
@@ -64,9 +63,9 @@ impl SteinerTreeComputation {
             {
                 cultivator = Some(*root_id);
                 debug_sched!("      {}found root cultivator {}{}",
-                             GREEN,
+                             _GREEN,
                              cultivator.unwrap(),
-                             RESET);
+                             _RESET);
             }
             // add terminals
             let root_node = topo.get_node(*root_id);
@@ -83,10 +82,10 @@ impl SteinerTreeComputation {
 
         let max_dist = self.get_max_dist(topo, terminal_nodes) + 1;
         let mut search_steps = 0;
-        debug_sched!("      {}Before while loop{}", LGREEN, RESET);
+        debug_sched!("      {}Before while loop{}", _LGREEN, _RESET);
         tree.remove_double_edges();
         while let Some(node_id) = self.queue.pop_front() {
-            debug_sched!("      {}Visit neighbors of {}{}", LGREEN, node_id, RESET);
+            debug_sched!("      {}Visit neighbors of {}{}", _LGREEN, node_id, _RESET);
             (num_paths, cultivator) = self.visit_neighbors(node_id, topo, used, reqd_paths,
                                                            is_tgate, cultivator, num_paths,
                                                            &mut tree);
@@ -98,16 +97,17 @@ impl SteinerTreeComputation {
                 // return the tree (bfs_graph)
                 tree.root_node_id = if is_tgate {
                     debug_sched!("      {}tree complete, cultivator {}{}",
-                                 GREEN,
+                                 _GREEN,
                                  cultivator.unwrap(),
-                                 RESET);
+                                 _RESET);
                     Some(cultivator.unwrap())
                 } else {
-                    debug_sched!("      {}tree complete{}", GREEN, RESET);
+                    debug_sched!("      {}tree complete{}", _GREEN, _RESET);
                     Some(root_ids[0])
                 };
                 let _num_trimmed = tree.trim_dangling_nodes();
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
+                #[cfg(debug_assertions)]
                 self.check_edges(topo, &tree);
                 // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
                 // makes the path shorter
@@ -150,7 +150,7 @@ impl SteinerTreeComputation {
         #[cfg(debug_assertions)]
         {
             let curr_num_paths = self.paths.iter().map(|set| set.len()).sum::<usize>();
-            debug_assert_eq!(num_paths, curr_num_paths);
+            assert_eq!(num_paths, curr_num_paths);
         }
         let mut cultivator = starting_cultivator;
         for nb_id in node.nbors.iter() {
@@ -187,22 +187,22 @@ impl SteinerTreeComputation {
                         let pos =
                             self.paths[*root_id].iter().position(|&id| id == *root_id).unwrap();
                         self.paths[*root_id].swap_remove(pos);
-                        debug_sched!("      {}removing self for {}{}", GREEN, *root_id, RESET);
+                        debug_sched!("      {}removing self for {}{}", _GREEN, *root_id, _RESET);
                         num_paths += self.paths[*root_id].len();
                     }
                     #[cfg(debug_assertions)]
                     {
                         let curr_num_paths = self.paths.iter().map(|set| set.len()).sum::<usize>();
-                        debug_assert_eq!(num_paths, curr_num_paths);
+                        assert_eq!(num_paths, curr_num_paths);
                     }
                     debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
-                                 GREEN,
+                                 _GREEN,
                                  curr_root_id,
                                  nb_root_id,
                                  num_paths,
                                  reqd_paths,
-                                 RESET);
-                    debug_sched!("      {}paths:{:?}{}", GREEN, self.paths, RESET);
+                                 _RESET);
+                    debug_sched!("      {}paths:{:?}{}", _GREEN, self.paths, _RESET);
                     tree.add_edge(node_id, *nb_id);
                     if num_paths == reqd_paths {
                         if is_tgate && cultivator.is_none() {
@@ -229,9 +229,9 @@ impl SteinerTreeComputation {
                 if cultivator.is_none() && nb_is_cultivator {
                     cultivator = Some(*nb_id);
                     debug_sched!("      {}found clutivator {}{}",
-                                 GREEN,
+                                 _GREEN,
                                  cultivator.unwrap(),
-                                 RESET);
+                                 _RESET);
                     if num_paths == reqd_paths {
                         // we break here because we previously found all the paths, and now have
                         // found a cultivator
@@ -248,19 +248,20 @@ impl SteinerTreeComputation {
         (self.num_calls, self.early_terminations)
     }
 
+    #[cfg(debug_assertions)]
     fn check_edges(&self, topo: &TopoGraph, tree: &TreeGraph) {
         for node_id in tree.iter_nodes() {
             let node = topo.get_node(node_id);
             // check that each data node has exactly one edge
             if node.node_type == NodeType::Data {
                 let num_edges = tree.get_num_node_edges(node_id);
-                assert!(num_edges == 1);
+                assert_eq!(num_edges, 1);
             }
             // check that edges are reciprocated
             for nb_id in node.nbors.iter() {
                 let n1n2 = tree.contains_edge(node_id, *nb_id);
                 let n2n1 = tree.contains_edge(*nb_id, node_id);
-                assert!(n1n2 == n2n1);
+                assert_eq!(n1n2, n2n1);
             }
             // check that if one top or bottom edge exists, so does the other
             if node.is_routing() {

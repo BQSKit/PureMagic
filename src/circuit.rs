@@ -641,9 +641,9 @@ impl Circuit {
             ready = next_ready;
         }
         // Verify all products were processed
-        debug_assert_eq!(processed,
-                         self.products.len(),
-                         "Circuit contains cycles or unreachable products");
+        assert_eq!(processed,
+                   self.products.len(),
+                   "Circuit contains cycles or unreachable products");
         // Cache the computed layers
         *self.layers.borrow_mut() = Some(index_layers.clone());
         // Convert indices to references
@@ -726,7 +726,6 @@ impl Circuit {
                     if qubit_i == qubit_j {
                         continue;
                     }
-                    assert!(qubit_i < self.num_qubits && qubit_j < self.num_qubits);
                     matrix[qubit_i * 2][qubit_j * 2] += 1;
                     matrix[qubit_j * 2][qubit_i * 2] += 1; // Make matrix symmetric
                 }
