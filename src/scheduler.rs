@@ -507,7 +507,7 @@ impl Scheduler {
                 return None;
             }
             let mut g = TreeGraph::new(self.topo.num_nodes);
-            g.add_node(node.id, node.is_routing());
+            g.add_node(node.id, node.is_routing(), node.pos);
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
         }
