@@ -82,7 +82,6 @@ impl SteinerTreeComputation {
 
         let max_dist = self.get_max_dist(topo, terminal_nodes) + 1;
         let mut search_steps = 0;
-        debug_sched!("      {}Before while loop{}", _LGREEN, _RESET);
         tree.remove_double_edges();
         while let Some(node_id) = self.queue.pop_front() {
             debug_sched!("      {}Visit neighbors of {}{}", _LGREEN, node_id, _RESET);
