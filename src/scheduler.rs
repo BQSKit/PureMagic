@@ -163,6 +163,10 @@ impl Scheduler {
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
+        #[cfg(debug_assertions)]
+        for node in self.topo.iter_nodes() {
+            debug_sched!("Node id {} is {}", node.id, node.label);
+        }
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -587,8 +591,9 @@ impl Scheduler {
             let mut pair_found = false;
             // first look for paired nodes (top/bottom)
             if terminals.contains(&paired_node.id) {
+                // we have already converted Ys into XZ in get_terminal_nodes
                 let pair = if node.label.contains("X") { Some("XX") } else { Some("ZZ") };
-                debug_sched!("    Found {} pair {}{} in terminals",
+                debug_sched!("    Found {} pair {},{} in terminals",
                              pair.unwrap(),
                              node.id,
                              paired_node.id);
@@ -601,7 +606,6 @@ impl Scheduler {
                     if (pair == Some("XX") && nb.pos.1 < node.pos.1)
                        || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
                     {
-                        //debug_sched!("    {}Found XX pair {} -> {}{}", BLUE, node_label, nb_label, RESET);
                         root_ids.insert(nb_id.clone());
                         pair_found = true;
                         break;

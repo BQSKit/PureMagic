@@ -747,6 +747,7 @@ impl TopoGraph {
         }
         // Draw Pauli product labels
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
+            self.check_edges(path_graph);
             if let Some(first_data_node_id) =
                 path_graph.iter_nodes()
                           .filter(|id| matches!(self.nodes[*id].node_type, NodeType::Data))
@@ -785,6 +786,22 @@ impl TopoGraph {
         root.present()?;
         println!("Plotted topology to {}", plot_fname);
         Ok(())
+    }
+
+    fn check_edges(&self, tree: &TreeGraph) {
+        for node_id in tree.iter_nodes() {
+            let node = self.get_node(node_id);
+            if node.node_type == NodeType::Data {
+                let num_edges = tree.get_num_node_edges(node_id);
+                if num_edges > 1 {
+                    eprintln!("WARNING: Data node {} has {} edges (should have 1)",
+                              node_id, num_edges);
+                }
+                if node.label == "d4X" {
+                    eprintln!("Node d4X found");
+                }
+            }
+        }
     }
 }
 
