@@ -116,27 +116,68 @@ impl TreeGraph {
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
             if let Some(node) = node_opt {
                 if !node.is_routing && node.nbors.len() == 2 {
+                    // if the nb has only one vertical edge, then remove the vertical edge,
+                    // otherwise remove the side edge
                     // remove side edge
-                    for nb_id in &node.nbors {
-                        let nb = self.nodes[*nb_id].as_ref().unwrap();
-                        // check y position
-                        if nb.pos.1 == node.pos.1 {
-                            edges_to_remove.push((node_id, *nb_id));
+                    let (side_nb_id, vert_nb_id) = {
+                        if node.pos.1 == self.nodes[node.nbors[0]].as_ref().unwrap().pos.1 {
+                            (node.nbors[0], node.nbors[1])
+                        } else {
+                            (node.nbors[1], node.nbors[0])
                         }
+                    };
+                    let vert_nb = self.nodes[vert_nb_id].as_ref().unwrap();
+                    if node.pos.1 < vert_nb.pos.1 && self.get_below_edge_count(vert_nb) == 1 {
+                        debug_sched!("      {}removing single below edge {}->{}{}",
+                                     _BLUE,
+                                     node_id,
+                                     vert_nb_id,
+                                     _RESET);
+                        edges_to_remove.push((node_id, vert_nb_id));
+                    } else if node.pos.1 > vert_nb.pos.1 && self.get_above_edge_count(vert_nb) == 1
+                    {
+                        debug_sched!("      {}removing single above edge {}->{}{}",
+                                     _BLUE,
+                                     node_id,
+                                     vert_nb_id,
+                                     _RESET);
+                        edges_to_remove.push((node_id, vert_nb_id));
+                    } else if node.pos.1 == vert_nb.pos.1 {
+                        debug_sched!("      {}removing extra side edge {}->{}{}",
+                                     _BLUE,
+                                     node_id,
+                                     side_nb_id,
+                                     _RESET);
+                        edges_to_remove.push((node_id, side_nb_id));
                     }
                 }
             }
         }
         for (node_id1, node_id2) in edges_to_remove {
-            debug_sched!("      {}Removing additional edge {}->{}{}",
-                         _BLUE,
-                         node_id1,
-                         node_id2,
-                         _RESET);
             self.nodes[node_id1].as_mut().unwrap().remove_edge(node_id2);
             self.nodes[node_id2].as_mut().unwrap().remove_edge(node_id1);
             self.num_edges -= 1;
         }
+    }
+
+    fn get_above_edge_count(&self, node: &TreeNode) -> usize {
+        node.nbors
+            .iter()
+            .filter(|nb_id| {
+                let nb = self.nodes[**nb_id].as_ref().unwrap();
+                node.pos.1 < nb.pos.1
+            })
+            .count()
+    }
+
+    fn get_below_edge_count(&self, node: &TreeNode) -> usize {
+        node.nbors
+            .iter()
+            .filter(|nb_id| {
+                let nb = self.nodes[**nb_id].as_ref().unwrap();
+                node.pos.1 > nb.pos.1
+            })
+            .count()
     }
 
     pub fn node_list(&self) -> Vec<usize> {
