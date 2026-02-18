@@ -248,7 +248,6 @@ impl SteinerTreeComputation {
         (self.num_calls, self.early_terminations)
     }
 
-    #[cfg(debug_assertions)]
     fn check_edges(&self, topo: &TopoGraph, tree: &TreeGraph) {
         for node_id in tree.iter_nodes() {
             let node = topo.get_node(node_id);
