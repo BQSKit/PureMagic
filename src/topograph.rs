@@ -660,9 +660,17 @@ impl TopoGraph {
                         break;
                     }
                 }
-                chart.draw_series(LineSeries::new(vec![(node.pos.0 as f32, node.pos.1 as f32),
-                                                       (nb.pos.0 as f32, nb.pos.1 as f32),],
-                                                  edge_color.stroke_width(stroke_width)))?;
+                if node.pos.0 != nb.pos.0
+                   && node.pos.1 != nb.pos.1
+                   && nb.node_type == NodeType::Data
+                {
+                    //eprintln!("edge {}->{}", node.label, nb.label);
+                    continue;
+                }
+                let edge_points = self.generate_edge_points(node.pos, nb.pos);
+                let mix = if node.pos.0 != nb.pos.0 && node.pos.1 < nb.pos.1 { 0.5 } else { 1.0 };
+                chart.draw_series(LineSeries::new(edge_points,
+                                                  edge_color.mix(mix).stroke_width(stroke_width)))?;
             }
         }
         // Draw nodes with path highlighting
@@ -747,7 +755,6 @@ impl TopoGraph {
         }
         // Draw Pauli product labels
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-            self.check_edges(path_graph);
             if let Some(first_data_node_id) =
                 path_graph.iter_nodes()
                           .filter(|id| matches!(self.nodes[*id].node_type, NodeType::Data))
@@ -788,19 +795,34 @@ impl TopoGraph {
         Ok(())
     }
 
-    fn check_edges(&self, tree: &TreeGraph) {
-        for node_id in tree.iter_nodes() {
-            let node = self.get_node(node_id);
-            if node.node_type == NodeType::Data {
-                let num_edges = tree.get_num_node_edges(node_id);
-                if num_edges > 1 {
-                    eprintln!("WARNING: Data node {} has {} edges (should have 1)",
-                              node_id, num_edges);
-                }
-                if node.label == "d4X" {
-                    eprintln!("Node d4X found");
-                }
-            }
+    fn generate_edge_points(&self, pos1: (f32, f32), pos2: (f32, f32)) -> Vec<(f32, f32)> {
+        let (x1, y1) = pos1;
+        let (x2, y2) = pos2;
+        if x1 == x2 || y1 == y2 {
+            // Straight edge (horizontal or vertical)
+            vec![(x1, y1), (x2, y2)]
+        } else {
+            // Diagonal edge - draw curved using quadratic Bézier curve
+            let mid_x = (x1 + x2) / 2.0;
+            let mid_y = (y1 + y2) / 2.0;
+            // Create control point - curve_offset determines left (-) or right (+)
+            let curve_offset = if x1 < x2 { 0.2 } else { -0.2 };
+            let control_x = mid_x + curve_offset;
+            let control_y = mid_y;
+            // Generate points along the quadratic Bézier curve
+            let num_points = 10;
+            (0..=num_points).map(|i| {
+                                let t = i as f32 / num_points as f32;
+                                let one_minus_t = 1.0 - t;
+                                let x = one_minus_t.powi(2) * x1
+                                        + 2.0 * one_minus_t * t * control_x
+                                        + t.powi(2) * x2;
+                                let y = one_minus_t.powi(2) * y1
+                                        + 2.0 * one_minus_t * t * control_y
+                                        + t.powi(2) * y2;
+                                (x, y)
+                            })
+                            .collect()
         }
     }
 }

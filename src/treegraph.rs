@@ -49,6 +49,7 @@ impl TreeGraph {
         if let Some(node) = &self.nodes[node_id1] { node.nbors.contains(&node_id2) } else { false }
     }
 
+    #[cfg(debug_assertions)]
     pub fn get_num_node_edges(&self, node_id: usize) -> usize {
         self.nodes[node_id].as_ref().map(|node| node.nbors.len()).unwrap_or(0)
     }
@@ -126,6 +127,7 @@ impl TreeGraph {
                             (node.nbors[1], node.nbors[0])
                         }
                     };
+                    debug_sched!("      {}Found node {} with two edges{}", _BLUE, node_id, _RESET);
                     let vert_nb = self.nodes[vert_nb_id].as_ref().unwrap();
                     if node.pos.1 < vert_nb.pos.1 && self.get_below_edge_count(vert_nb) == 1 {
                         debug_sched!("      {}removing single below edge {}->{}{}",
@@ -142,7 +144,7 @@ impl TreeGraph {
                                      vert_nb_id,
                                      _RESET);
                         edges_to_remove.push((node_id, vert_nb_id));
-                    } else if node.pos.1 == vert_nb.pos.1 {
+                    } else {
                         debug_sched!("      {}removing extra side edge {}->{}{}",
                                      _BLUE,
                                      node_id,
