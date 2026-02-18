@@ -342,8 +342,8 @@ impl TopoGraph {
         let node1 = Node::new(id1,
                               None,
                               label1.to_string(),
-                              col as f64 - 0.25,
-                              (self.num_rows - 1 - row) as f64,
+                              col as f32 - 0.25,
+                              (self.num_rows - 1 - row) as f32,
                               NodeType::Data,
                               0,
                               0);
@@ -355,8 +355,8 @@ impl TopoGraph {
         let node2 = Node::new(id2,
                               None,
                               label2.to_string(),
-                              col as f64 + 0.25,
-                              (self.num_rows - 1 - row) as f64,
+                              col as f32 + 0.25,
+                              (self.num_rows - 1 - row) as f32,
                               NodeType::Data,
                               0,
                               0);
@@ -378,8 +378,8 @@ impl TopoGraph {
         let node = Node::new(self.num_nodes,
                              None,
                              label.to_string(),
-                             col as f64,
-                             (self.num_rows - 1 - row) as f64,
+                             col as f32,
+                             (self.num_rows - 1 - row) as f32,
                              node_type,
                              0,
                              0);

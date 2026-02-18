@@ -3,7 +3,7 @@ use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 #[cfg(debug_assertions)]
-use crate::utils::{GREEN, LGREEN, RED, RESET};
+use crate::utils::{GREEN, LGREEN, RESET};
 use std::collections::VecDeque;
 
 pub struct SteinerTreeComputation {
@@ -56,7 +56,7 @@ impl SteinerTreeComputation {
             self.queue.push_back(*root_id);
             let root = topo.get_node(*root_id);
             if !tree.contains_node(root.id) {
-                tree.add_node(root.id, root.is_routing());
+                tree.add_node(root.id, root.is_routing(), root.pos);
             }
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
@@ -74,7 +74,7 @@ impl SteinerTreeComputation {
                 let nb = topo.get_node(*nb_id);
                 if terminal_nodes.contains(&nb_id) {
                     if !tree.contains_node(nb.id) {
-                        tree.add_node(nb.id, nb.is_routing());
+                        tree.add_node(nb.id, nb.is_routing(), nb.pos);
                     }
                     tree.add_edge(*root_id, *nb_id);
                 }
@@ -85,7 +85,6 @@ impl SteinerTreeComputation {
         let mut search_steps = 0;
         debug_sched!("      {}Before while loop{}", LGREEN, RESET);
         tree.remove_double_edges();
-        self.check_edges(&topo, &tree);
         while let Some(node_id) = self.queue.pop_front() {
             debug_sched!("      {}Visit neighbors of {}{}", LGREEN, node_id, RESET);
             (num_paths, cultivator) = self.visit_neighbors(node_id, topo, used, reqd_paths,
@@ -107,7 +106,6 @@ impl SteinerTreeComputation {
                     debug_sched!("      {}tree complete{}", GREEN, RESET);
                     Some(root_ids[0])
                 };
-                self.check_edges(&topo, &tree);
                 let _num_trimmed = tree.trim_dangling_nodes();
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
                 self.check_edges(topo, &tree);
@@ -224,7 +222,7 @@ impl SteinerTreeComputation {
             // add routing node/cultivator
             if nb.is_routing() || nb_is_cultivator {
                 if !tree.contains_node(nb.id) {
-                    tree.add_node(nb.id, nb.is_routing());
+                    tree.add_node(nb.id, nb.is_routing(), nb.pos);
                 }
                 tree.add_edge(node_id, *nb_id);
                 self.queue.push_back(*nb_id);
@@ -250,33 +248,24 @@ impl SteinerTreeComputation {
         (self.num_calls, self.early_terminations)
     }
 
+    #[cfg(debug_assertions)]
     fn check_edges(&self, topo: &TopoGraph, tree: &TreeGraph) {
         for node_id in tree.iter_nodes() {
             let node = topo.get_node(node_id);
+            // check that each data node has exactly one edge
             if node.node_type == NodeType::Data {
                 let num_edges = tree.get_num_node_edges(node_id);
-                if num_edges > 1 {
-                    debug_sched!("{}WARNING: Data node {} has {} edges (should have 1){}",
-                                 RED,
-                                 node_id,
-                                 num_edges,
-                                 RESET);
-                }
+                assert!(num_edges == 1);
             }
+            // check that edges are reciprocated
             for nb_id in node.nbors.iter() {
                 let n1n2 = tree.contains_edge(node_id, *nb_id);
                 let n2n1 = tree.contains_edge(*nb_id, node_id);
-                if n1n2 != n2n1 {
-                    debug_sched!("{}ERROR: edge from {}->{} {} and edge from {}->{} {}{}",
-                                 RED,
-                                 node_id,
-                                 *nb_id,
-                                 n1n2,
-                                 *nb_id,
-                                 node_id,
-                                 n2n1,
-                                 RESET);
-                }
+                assert!(n1n2 == n2n1);
+            }
+            // check that if one top or bottom edge exists, so does the other
+            if node.is_routing() {
+                tree.check_vertical_data_edges(node_id);
             }
         }
     }

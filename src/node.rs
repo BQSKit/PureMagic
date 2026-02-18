@@ -14,7 +14,7 @@ pub struct Node {
     pub id: usize,
     pub label: String,
     pub paired_data_id: Option<usize>,
-    pub pos: (f64, f64),
+    pub pos: (f32, f32),
     pub busy_count: i32,
     pub cultivation_time: i32,
     pub nbors: IndexSet<usize>,
@@ -23,7 +23,7 @@ pub struct Node {
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
-    pub fn new(id: usize, paired_data_id: Option<usize>, label: String, x: f64, y: f64,
+    pub fn new(id: usize, paired_data_id: Option<usize>, label: String, x: f32, y: f32,
                node_type: NodeType, busy_count: i32, cultivation_time: i32)
                -> Self {
         Node { node_type,
