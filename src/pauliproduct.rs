@@ -159,6 +159,8 @@ impl fmt::Display for PauliProduct {
         let clifford_str = if self.is_tgate { "T-gate" } else { "clifford" };
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
 
-        write!(f, "{} {} {} {:?} {:?}", self.id, ops, clifford_str, self.children, self.parents)
+        write!(f,
+               "{} {} {} children {:?} parents {:?}",
+               self.id, ops, clifford_str, self.children, self.parents)
     }
 }

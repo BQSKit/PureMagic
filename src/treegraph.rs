@@ -10,6 +10,8 @@ struct TreeNode {
     pub is_data: bool,
     // position is needed so that we can determine which links are top or bottom
     pub pos: (f32, f32),
+    #[cfg(debug_assertions)]
+    pub label: String,
 }
 
 impl TreeNode {
@@ -17,7 +19,9 @@ impl TreeNode {
         TreeNode { nbors: Vec::new(),
                    is_routing: node.is_routing(),
                    is_data: node.node_type == NodeType::Data,
-                   pos: node.pos }
+                   pos: node.pos,
+                   #[cfg(debug_assertions)]
+                   label: node.label.clone() }
     }
 
     pub fn remove_edge(&mut self, nb_id: usize) {
@@ -64,7 +68,7 @@ impl TreeGraph {
         assert!(self.nodes[node.id].is_none());
         self.nodes[node.id] = Some(TreeNode::new(node));
         self.num_nodes += 1;
-        debug_sched!("      {}add node {}{}", _BLUE, node.id, _RESET);
+        debug_sched!("      {}add node {}{}", _BLUE, node.label, _RESET);
     }
 
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
@@ -72,12 +76,13 @@ impl TreeGraph {
         #[cfg(debug_assertions)]
         {
             let node1 = self.nodes[node_id1].as_ref().unwrap();
+            let node2 = self.nodes[node_id2].as_ref().unwrap();
+            /*
             let node1_type = if node1.is_data {
                 "data"
             } else {
                 if !node1.is_routing { "magic" } else { "bus" }
             };
-            let node2 = self.nodes[node_id2].as_ref().unwrap();
             let node2_type = if node2.is_data {
                 "data"
             } else {
@@ -89,13 +94,14 @@ impl TreeGraph {
                          node1_type,
                          node2_type,
                          if node1.nbors.contains(&node_id2) { "DUPLICATE" } else { "" });
+            */
             debug_assert!(!node1.nbors.contains(&node_id2));
             debug_assert!(!node2.nbors.contains(&node_id1));
+            debug_sched!("      {}add edge {}->{}{}", _BLUE, node1.label, node2.label, _RESET);
         }
         self.nodes[node_id1].as_mut().unwrap().nbors.push(node_id2);
         self.nodes[node_id2].as_mut().unwrap().nbors.push(node_id1);
         self.num_edges += 1;
-        debug_sched!("      {}add edge {}->{}{}", _BLUE, node_id1, node_id2, _RESET);
     }
 
     pub fn trim_dangling_nodes(&mut self) -> usize {
@@ -125,14 +131,20 @@ impl TreeGraph {
     }
 
     fn remove_node(&mut self, node_id: usize) {
-        debug_sched!("      {}remove node {}{}", _BLUE, node_id, _RESET);
-        let nb_ids: Vec<usize> =
-            self.nodes[node_id].as_ref().unwrap().nbors.iter().copied().collect();
+        let node = self.nodes[node_id].as_ref().unwrap();
+        let nb_ids: Vec<usize> = node.nbors.iter().copied().collect();
+        debug_sched!("      {}remove node {}{}", _BLUE, node.label, _RESET);
+        for nb_id in &nb_ids {
+            debug_sched!("      {}remove edge {}->{}{}",
+                         _BLUE,
+                         self.nodes[*nb_id].as_ref().unwrap().label,
+                         node.label,
+                         _RESET);
+        }
         // Remove edges from neighbor nodes
         for nb_id in nb_ids {
             self.nodes[nb_id].as_mut().unwrap().remove_edge(node_id);
             self.num_edges -= 1;
-            debug_sched!("      {}remove edge {}->{}{}", _BLUE, nb_id, node_id, _RESET);
         }
         // Remove the node itself
         self.nodes[node_id] = None;
@@ -154,28 +166,31 @@ impl TreeGraph {
                             (node.nbors[1], node.nbors[0])
                         }
                     };
-                    debug_sched!("      {}Found node {} with two edges{}", _BLUE, node_id, _RESET);
+                    debug_sched!("      {}Found node {} with two edges{}",
+                                 _BLUE,
+                                 node.label,
+                                 _RESET);
                     let vert_nb = self.nodes[vert_nb_id].as_ref().unwrap();
                     if node.pos.1 < vert_nb.pos.1 && self.get_below_edge_count(vert_nb) == 1 {
                         debug_sched!("      {}removing single below edge {}->{}{}",
                                      _BLUE,
-                                     node_id,
-                                     vert_nb_id,
+                                     node.label,
+                                     vert_nb.label,
                                      _RESET);
                         edges_to_remove.push((node_id, vert_nb_id));
                     } else if node.pos.1 > vert_nb.pos.1 && self.get_above_edge_count(vert_nb) == 1
                     {
                         debug_sched!("      {}removing single above edge {}->{}{}",
                                      _BLUE,
-                                     node_id,
-                                     vert_nb_id,
+                                     node.label,
+                                     vert_nb.label,
                                      _RESET);
                         edges_to_remove.push((node_id, vert_nb_id));
                     } else {
                         debug_sched!("      {}removing extra side edge {}->{}{}",
                                      _BLUE,
-                                     node_id,
-                                     side_nb_id,
+                                     node.label,
+                                     self.nodes[side_nb_id].as_ref().unwrap().label,
                                      _RESET);
                         edges_to_remove.push((node_id, side_nb_id));
                     }
@@ -218,8 +233,9 @@ impl TreeGraph {
     }
 
     #[cfg(debug_assertions)]
-    pub fn check_vertical_data_edges(&self, node_id: usize) {
+    pub fn get_num_vertical_data_edges(&self, node_id: usize) -> (usize, usize) {
         let node = self.nodes[node_id].as_ref().unwrap();
+        assert!(node.is_routing);
         let mut above_count = 0;
         let mut below_count = 0;
         for nb_id in &node.nbors {
@@ -232,11 +248,6 @@ impl TreeGraph {
                 }
             }
         }
-        if above_count > 0 {
-            assert_eq!(above_count, 2, "Routing node {} has {} nbors above", node_id, above_count);
-        }
-        if below_count > 0 {
-            assert_eq!(below_count, 2, "Routing node {} has {} nbors below", node_id, below_count);
-        }
+        (above_count, below_count)
     }
 }
