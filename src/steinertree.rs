@@ -2,6 +2,7 @@ use crate::debug_sched;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
+#[allow(unused_imports)]
 use crate::utils::{_GREEN, _LGREEN, _RESET};
 use std::collections::VecDeque;
 
@@ -55,7 +56,7 @@ impl SteinerTreeComputation {
             self.queue.push_back(*root_id);
             let root = topo.get_node(*root_id);
             if !tree.contains_node(root.id) {
-                tree.add_node(root.id, root.is_routing(), root.pos);
+                tree.add_node(root);
             }
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
@@ -73,7 +74,7 @@ impl SteinerTreeComputation {
                 let nb = topo.get_node(*nb_id);
                 if terminal_nodes.contains(&nb_id) {
                     if !tree.contains_node(nb.id) {
-                        tree.add_node(nb.id, nb.is_routing(), nb.pos);
+                        tree.add_node(nb);
                     }
                     tree.add_edge(*root_id, *nb_id);
                 }
@@ -221,13 +222,15 @@ impl SteinerTreeComputation {
             // add routing node/cultivator
             if nb.is_routing() || nb_is_cultivator {
                 if !tree.contains_node(nb.id) {
-                    tree.add_node(nb.id, nb.is_routing(), nb.pos);
+                    tree.add_node(nb);
+                    tree.add_edge(node_id, *nb_id);
+                } else {
+                    debug_assert!(tree.contains_edge(node_id, *nb_id));
                 }
-                tree.add_edge(node_id, *nb_id);
                 self.queue.push_back(*nb_id);
                 if cultivator.is_none() && nb_is_cultivator {
                     cultivator = Some(*nb_id);
-                    debug_sched!("      {}found clutivator {}{}",
+                    debug_sched!("      {}found cultivator {}{}",
                                  _GREEN,
                                  cultivator.unwrap(),
                                  _RESET);
@@ -264,6 +267,7 @@ impl SteinerTreeComputation {
             }
             // check that if one top or bottom edge exists, so does the other
             if node.is_routing() {
+                debug_sched!("Checking vertical edges for node {}", node.label);
                 tree.check_vertical_data_edges(node_id);
             }
         }
