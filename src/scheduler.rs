@@ -163,10 +163,11 @@ impl Scheduler {
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
+        /*
         #[cfg(debug_assertions)]
         for node in self.topo.iter_nodes() {
             debug_sched!("Node id {} is {}", node.id, node.label);
-        }
+        } */
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -401,11 +402,11 @@ impl Scheduler {
             if let Some((best_pp_idx, best_graph)) = best_pp {
                 let pp = &to_schedule[best_pp_idx];
                 let _node_list = best_graph.node_list();
-                info_sched!("  * Scheduled product {} with {} nodes and {} edges: {:?}",
+                info_sched!("  * Scheduled product {} with {} nodes and {} edges",
                             pp,
                             best_graph.num_nodes,
-                            best_graph.num_edges,
-                            _node_list);
+                            best_graph.num_edges);
+                //_node_list);
                 // Update node statistics and mark as used
                 for node_id in best_graph.iter_nodes() {
                     let node = self.topo.get_node(node_id);
@@ -595,8 +596,8 @@ impl Scheduler {
                 let pair = if node.label.contains("X") { Some("XX") } else { Some("ZZ") };
                 debug_sched!("    Found {} pair {},{} in terminals",
                              pair.unwrap(),
-                             node.id,
-                             paired_node.id);
+                             node.label,
+                             paired_node.label);
                 for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
                     if self.used[nb.id] || !nb.is_routing() {

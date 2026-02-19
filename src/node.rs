@@ -50,7 +50,8 @@ impl Node {
 
     pub fn is_routing(&self) -> bool {
         if USE_MAGIC_ROUTING.load(Ordering::Relaxed) {
-            self.node_type == NodeType::Bus || self.node_type == NodeType::Magic
+            assert_ne!(self.node_type, NodeType::Bus);
+            self.node_type == NodeType::Magic
         } else {
             self.node_type == NodeType::Bus
         }
