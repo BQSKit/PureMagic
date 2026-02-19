@@ -48,7 +48,6 @@ impl SteinerTreeComputation {
         let mut tree = TreeGraph::new(self.num_nodes);
         let mut cultivator: Option<usize> = None;
         let mut num_paths: usize = 0;
-        debug_sched!("    Number of root labels {}", root_ids.len());
         // every root must have a path to every other root
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
