@@ -29,6 +29,7 @@ struct ScheduleStats {
     bus_scheduled: usize,
     data_scheduled: usize,
     magic_scheduled: usize,
+    sum_magic_unused: usize,
 }
 
 impl ScheduleStats {
@@ -41,7 +42,8 @@ impl ScheduleStats {
                         sum_magic_scheduled: 0,
                         bus_scheduled: 0,
                         data_scheduled: 0,
-                        magic_scheduled: 0 }
+                        magic_scheduled: 0,
+                        sum_magic_unused: 0 }
     }
 
     pub fn summarize(&self, num_steps: usize) {
@@ -49,17 +51,23 @@ impl ScheduleStats {
         let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_steps) as f64;
         let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_steps) as f64;
         let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_steps) as f64;
+        let magic_unused_frac =
+            self.sum_magic_unused as f64 / (self.magic_qubits * num_steps) as f64;
         // Print final statistics
         println!("Qubit fractions used:");
         println!("  data:        {:.3}", data_frac);
         println!("  bus:         {:.3}", bus_frac);
         println!("  magic:       {:.3}", magic_frac);
+        println!("Magic unused {:.3}", magic_unused_frac);
     }
 
-    pub fn update(&mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize) -> String {
+    pub fn update(&mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize,
+                  magic_unused: usize)
+                  -> String {
         self.sum_data_scheduled += self.data_scheduled;
         self.sum_bus_scheduled += self.bus_scheduled;
         self.sum_magic_scheduled += self.magic_scheduled;
+        self.sum_magic_unused += magic_unused;
 
         info_sched!("Scheduling results:");
         let frac_paths = pp_paths_len as f64 / to_schedule_len as f64;
@@ -422,7 +430,8 @@ impl Scheduler {
                 remaining_to_schedule.shift_remove(&pp_i);
             }
         }
-        let mut title = self.stats.update(step_i, pp_paths.len(), to_schedule.len());
+        let mut title =
+            self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize);
         if next_to_schedule.len() > 0 {
             title += "\nUnscheduled: ";
         }
