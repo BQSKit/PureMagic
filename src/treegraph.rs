@@ -133,13 +133,16 @@ impl TreeGraph {
     fn remove_node(&mut self, node_id: usize) {
         let node = self.nodes[node_id].as_ref().unwrap();
         let nb_ids: Vec<usize> = node.nbors.iter().copied().collect();
-        debug_sched!("      {}remove node {}{}", _BLUE, node.label, _RESET);
-        for nb_id in &nb_ids {
-            debug_sched!("      {}remove edge {}->{}{}",
-                         _BLUE,
-                         self.nodes[*nb_id].as_ref().unwrap().label,
-                         node.label,
-                         _RESET);
+        #[cfg(debug_assertions)]
+        {
+            debug_sched!("      {}remove node {}{}", _BLUE, node.label, _RESET);
+            for nb_id in &nb_ids {
+                debug_sched!("      {}remove edge {}->{}{}",
+                             _BLUE,
+                             self.nodes[*nb_id].as_ref().unwrap().label,
+                             node.label,
+                             _RESET);
+            }
         }
         // Remove edges from neighbor nodes
         for nb_id in nb_ids {

@@ -586,6 +586,8 @@ impl Scheduler {
 
     fn get_root_nodes(&self, terminals: &[usize]) -> Vec<usize> {
         let mut root_ids = IndexSet::new();
+        // need to get a root node for every terminal
+        let mut terminals_matched: IndexSet<usize> = terminals.iter().copied().collect();
         for node_id in terminals.iter() {
             let node = self.topo.get_node(*node_id);
             let paired_node = self.topo.get_node(node.paired_data_id.unwrap());
@@ -608,6 +610,8 @@ impl Scheduler {
                        || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
                     {
                         root_ids.insert(nb_id.clone());
+                        terminals_matched.swap_remove(node_id);
+                        terminals_matched.swap_remove(&paired_node.id);
                         pair_found = true;
                         break;
                     }
@@ -622,10 +626,18 @@ impl Scheduler {
                     // Only include neighbors on the side (same row, different column)
                     if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
                         root_ids.insert(nb_id.clone());
+                        terminals_matched.swap_remove(node_id);
                         break;
                     }
                 }
             }
+        }
+        if !terminals_matched.is_empty() {
+            debug_sched!("    could not find root nodes for terminals: {:?}",
+                         terminals_matched.iter()
+                                          .map(|id| &self.topo.get_node(*id).label)
+                                          .collect::<Vec<_>>(),);
+            return Vec::new();
         }
         root_ids.into_iter().collect()
     }
