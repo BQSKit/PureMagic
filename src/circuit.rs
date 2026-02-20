@@ -43,7 +43,9 @@ impl Circuit {
             let mut product = PauliProduct::new();
             product.set_from_str(i as i32, &product_string)
                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-            self.products.push(product);
+            if product.gate_type.is_t() || product.gate_type.is_m() {
+                self.products.push(product);
+            }
         }
         // Find maximum qubit
         self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
