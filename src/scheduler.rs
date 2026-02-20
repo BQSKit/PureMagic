@@ -423,7 +423,9 @@ impl Scheduler {
                 }
                 pp_paths.push((pp.clone(), best_graph));
                 to_remove.push(best_pp_idx);
-                num_avail_magic -= 1;
+                if pp.is_tgate {
+                    num_avail_magic -= 1;
+                }
             }
 
             for pp_i in to_remove {
@@ -459,7 +461,7 @@ impl Scheduler {
         }
     }
 
-    fn setup_timestep(&mut self) -> i32 {
+    fn setup_timestep(&mut self) -> usize {
         // Collect magic nodes that need new busy counts
         let num_used_magic_nodes =
             self.topo
