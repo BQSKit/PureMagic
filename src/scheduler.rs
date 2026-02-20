@@ -423,7 +423,7 @@ impl Scheduler {
                 }
                 pp_paths.push((pp.clone(), best_graph));
                 to_remove.push(best_pp_idx);
-                if pp.is_tgate {
+                if pp.gate_type.is_t() {
                     num_avail_magic -= 1;
                 }
             }
