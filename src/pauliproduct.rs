@@ -16,11 +16,11 @@ impl GateType {
         matches!(self, GateType::T)
     }
 
-    pub fn _is_s(&self) -> bool {
+    pub fn is_s(&self) -> bool {
         matches!(self, GateType::S)
     }
 
-    pub fn _is_sx(&self) -> bool {
+    pub fn is_sx(&self) -> bool {
         matches!(self, GateType::SX)
     }
 
@@ -108,12 +108,10 @@ impl PauliProduct {
                 }
             }
         }
-        if self.gate_type.is_clifford() {
-            if self.gate_type.is_cx() {
-                assert_eq!(self.operators.len(), 2);
-            } else {
-                assert_eq!(self.operators.len(), 1);
-            }
+        if self.gate_type.is_cx() {
+            assert_eq!(self.operators.len(), 2);
+        } else if self.gate_type.is_s() || self.gate_type.is_sx() {
+            assert_eq!(self.operators.len(), 1, "Should have max 1 qubit: {}", self);
         }
         self.max_qubit = self.operators.iter().map(|op| op.qubit).max().unwrap_or(0);
         Ok(())

@@ -1,5 +1,5 @@
 use crate::fn_timer;
-use crate::pauliproduct::{GateType, PauliProduct};
+use crate::pauliproduct::PauliProduct;
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use std::fs::create_dir_all;
@@ -573,7 +573,7 @@ impl Circuit {
         for (i, layer) in layers.iter().enumerate() {
             num_products[i] += layer.len();
             for pp in layer {
-                if pp.gate_type != GateType::T {
+                if pp.gate_type.is_clifford() {
                     num_cliffords += 1;
                 }
             }
