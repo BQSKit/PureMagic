@@ -1,5 +1,5 @@
 use crate::fn_timer;
-use crate::pauliproduct::PauliProduct;
+use crate::pauliproduct::{GateType, PauliProduct};
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use std::fs::create_dir_all;
@@ -36,6 +36,10 @@ impl Circuit {
         // Read and parse products
         for (i, line) in reader.lines().enumerate() {
             let product_string = line?.trim().to_string();
+            if product_string.ends_with("<Z>") || product_string.ends_with("<X>") {
+                // we ignore Z and X cliffords
+                continue;
+            }
             let mut product = PauliProduct::new();
             product.set_from_str(i as i32, &product_string)
                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -75,13 +79,12 @@ impl Circuit {
 
     pub fn generate_random(&mut self, num_products: usize, num_qubits: usize,
                            spread_probability: f64, decay_factor: f64) {
-        for product_id in 0..num_products {
-            let product = PauliProduct::generate_random(product_id as i32,
-                                                        num_qubits,
-                                                        spread_probability,
-                                                        decay_factor);
-            self.products.push(product);
-        }
+        self.products.extend((0..num_products).map(|product_id| {
+                                                  PauliProduct::gen_rnd_t(product_id as i32,
+                                                                          num_qubits,
+                                                                          spread_probability,
+                                                                          decay_factor)
+                                              }));
         // Find maximum qubit
         self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
 
@@ -201,7 +204,7 @@ impl Circuit {
                             (col as f32 - 0.1, start_pos as f32 - 0.5),
                             (col as f32 + 0.7, start_pos as f32 + rect_height - 0.4),
                         ],
-                        if pp.is_tgate {
+                        if pp.gate_type.is_t() {
                             //RGBColor(0x22, 0xFF, 0x22).mix(0.2).filled()
                             product_color.mix(0.2).filled()
                         } else {
@@ -568,7 +571,7 @@ impl Circuit {
         for (i, layer) in layers.iter().enumerate() {
             num_products[i] += layer.len();
             for pp in layer {
-                if !pp.is_tgate {
+                if pp.gate_type != GateType::T {
                     num_cliffords += 1;
                 }
             }

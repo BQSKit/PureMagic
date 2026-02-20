@@ -3,7 +3,7 @@ use crate::debug_sched;
 use crate::fn_timer;
 use crate::info_sched;
 use crate::node::NodeType;
-use crate::pauliproduct::PauliProduct;
+use crate::pauliproduct::{GateType, PauliProduct};
 use crate::steinertree::SteinerTreeComputation;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
@@ -358,7 +358,7 @@ impl Scheduler {
                     info_sched!("  Skip lower weight product {}", pp);
                     continue;
                 }
-                let pp_graph = if num_avail_magic == 0 && pp.is_tgate {
+                let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
                     None
                 } else {
                     self.timers.schedule_product.start();
@@ -509,7 +509,7 @@ impl Scheduler {
         }
         let terminals = terminals.unwrap();
         // Handle single data node case
-        if terminals.len() == 1 && !pauli_product.is_tgate {
+        if terminals.len() == 1 && pauli_product.gate_type != GateType::M {
             let node_id = terminals[0];
             let node = self.topo.get_node(node_id);
             if self.used[node.id] {
@@ -535,7 +535,7 @@ impl Scheduler {
                                                         &self.used,
                                                         &root_ids,
                                                         &terminals,
-                                                        pauli_product.is_tgate,
+                                                        pauli_product.gate_type,
                                                         num_scheduled);
         //let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
         self.timers.steiner_tree.stop();
