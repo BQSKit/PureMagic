@@ -15,10 +15,26 @@ impl GateType {
     pub fn is_t(&self) -> bool {
         matches!(self, GateType::T)
     }
-    /*
+
+    pub fn _is_s(&self) -> bool {
+        matches!(self, GateType::S)
+    }
+
+    pub fn _is_sx(&self) -> bool {
+        matches!(self, GateType::SX)
+    }
+
+    pub fn is_cx(&self) -> bool {
+        matches!(self, GateType::CX)
+    }
+
+    pub fn is_m(&self) -> bool {
+        matches!(self, GateType::M)
+    }
+
     pub fn is_clifford(&self) -> bool {
-        matches!(self, GateType::S | GateType::SX | GateType::CX)
-    } */
+        matches!(self, GateType::S | GateType::SX | GateType::CX | GateType::M)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,9 +108,13 @@ impl PauliProduct {
                 }
             }
         }
-        //if self.num_ys % 2 == 1 {
-        //    self.need_ancilla = true;
-        //}
+        if self.gate_type.is_clifford() {
+            if self.gate_type.is_cx() {
+                assert_eq!(self.operators.len(), 2);
+            } else {
+                assert_eq!(self.operators.len(), 1);
+            }
+        }
         self.max_qubit = self.operators.iter().map(|op| op.qubit).max().unwrap_or(0);
         Ok(())
     }
