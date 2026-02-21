@@ -9,6 +9,8 @@ pub enum GateType {
     SX,
     CX,
     M,
+    Z,
+    X,
 }
 
 impl GateType {
@@ -30,6 +32,14 @@ impl GateType {
 
     pub fn is_m(&self) -> bool {
         matches!(self, GateType::M)
+    }
+
+    pub fn is_x(&self) -> bool {
+        matches!(self, GateType::X)
+    }
+
+    pub fn is_z(&self) -> bool {
+        matches!(self, GateType::Z)
     }
 
     pub fn is_clifford(&self) -> bool {
@@ -96,6 +106,8 @@ impl PauliProduct {
                         "<CX>" => self.gate_type = GateType::CX,
                         "<S>" | "<Sdg>" => self.gate_type = GateType::S,
                         "<SX>" | "<SXdg>" => self.gate_type = GateType::SX,
+                        "<Z>" => self.gate_type = GateType::Z,
+                        "<X>" => self.gate_type = GateType::X,
                         _ => {
                             return Err(format!("Unknown gate {} in {}", gate_type, s).into());
                         }
