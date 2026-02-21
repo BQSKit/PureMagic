@@ -13,7 +13,7 @@ use crate::utils::{
     _RED, _RESET, _WHITE, _YELLOW,
 };
 
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use rand_simple::Exponential;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -129,6 +129,7 @@ pub struct Scheduler {
     stats: ScheduleStats,
     scheduled_products: Vec<Vec<PauliProduct>>,
     used: Vec<bool>,
+    cx_paths: IndexMap<i32, TreeGraph>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
@@ -164,6 +165,7 @@ impl Scheduler {
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     scheduled_products: Vec::new(),
                     used: vec![false; num_nodes],
+                    cx_paths: IndexMap::new(),
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
                     timers: SchedulerTimers::new() }
@@ -256,7 +258,16 @@ impl Scheduler {
             if let Some(ref pp_paths) = pp_paths {
                 let mut products_in_step = Vec::new();
                 let mut children_to_schedule = IndexSet::new();
-                for (pp, _) in pp_paths {
+                for (pp, pp_path) in pp_paths {
+                    if pp.gate_type.is_cx() && !pp.children.is_empty() {
+                        let child = self.circuit.get_product(pp.children[0]);
+                        if child.gate_type.is_cx() {
+                            assert_eq!(child.operators.len(), 2);
+                            assert_eq!(child.operators, pp.operators);
+                            debug_sched!("Scheduled first round CX {} with child {}", pp, child);
+                            self.cx_paths.insert(child.id, pp_path.clone());
+                        }
+                    }
                     products_in_step.push(pp.clone());
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
@@ -353,6 +364,13 @@ impl Scheduler {
 
             for &pp_i in &remaining_to_schedule {
                 let pp = &to_schedule[pp_i];
+                if pp.gate_type.is_cx() {
+                    if let Some(cx_path) = self.cx_paths.swap_remove(&pp.id) {
+                        debug_sched!("Found previous round CX {}", pp.id);
+                        best_pp = Some((pp_i as usize, cx_path));
+                        break;
+                    }
+                }
                 let pp_term_weight = pp.count_weighted_terms();
                 if pp_term_weight < best_pp_term_weight {
                     info_sched!("  Skip lower weight product {}", pp);
@@ -496,6 +514,12 @@ impl Scheduler {
             }
         }
         self.used.fill(false);
+        // set all CX nodes as used
+        for pp_path in self.cx_paths.values() {
+            for node_id in pp_path.iter_nodes() {
+                self.used[node_id] = true;
+            }
+        }
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -549,29 +573,30 @@ impl Scheduler {
                 }
             }
             return None;
+        } else {
+            // first check that all terminals are accessible
+            if terminals.iter().any(|node_id| self.used[*node_id]) {
+                return None;
+            }
+            // Get root nodes next to terminals
+            let root_ids = self.get_root_nodes(&terminals);
+            if root_ids.is_empty() {
+                return None;
+            }
+            self.timers.steiner_tree.start();
+            let g = self.stree_computation.get_steiner_tree(&self.topo,
+                                                            &self.used,
+                                                            &root_ids,
+                                                            &terminals,
+                                                            pauli_product.gate_type,
+                                                            num_scheduled);
+            self.timers.steiner_tree.stop();
+            if let Some(g) = g {
+                info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
+                return Some(g);
+            }
+            None
         }
-        // first check that all terminals are accessible
-        if terminals.iter().any(|node_id| self.used[*node_id]) {
-            return None;
-        }
-        // Get root nodes next to terminals
-        let root_ids = self.get_root_nodes(&terminals);
-        if root_ids.is_empty() {
-            return None;
-        }
-        self.timers.steiner_tree.start();
-        let g = self.stree_computation.get_steiner_tree(&self.topo,
-                                                        &self.used,
-                                                        &root_ids,
-                                                        &terminals,
-                                                        pauli_product.gate_type,
-                                                        num_scheduled);
-        self.timers.steiner_tree.stop();
-        if let Some(g) = g {
-            info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
-            return Some(g);
-        }
-        None
     }
 
     fn get_terminal_nodes(&self, pauli_product: &PauliProduct) -> Option<Vec<usize>> {

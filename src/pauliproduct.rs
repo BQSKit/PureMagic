@@ -47,7 +47,7 @@ impl GateType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Operator {
     pub qubit: usize,
     pub basis: char,
