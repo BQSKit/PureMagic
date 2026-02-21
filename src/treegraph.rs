@@ -3,7 +3,7 @@ use crate::node::{Node, NodeType};
 #[allow(unused_imports)]
 use crate::utils::{_BLUE, _RESET};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct TreeNode {
     pub nbors: Vec<usize>,
     pub is_routing: bool,
@@ -31,6 +31,7 @@ impl TreeNode {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TreeGraph {
     // if a node is included in the graph, then it is a vector of its neighbors
     nodes: Vec<Option<TreeNode>>,
