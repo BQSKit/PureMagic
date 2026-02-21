@@ -511,17 +511,44 @@ impl Scheduler {
         }
         let terminals = terminals.unwrap();
         // Handle single data node case
-        if terminals.len() == 1 && !pauli_product.gate_type.is_t() {
+        if terminals.len() == 1 && pauli_product.gate_type.is_m() {
             let node_id = terminals[0];
             let node = self.topo.get_node(node_id);
             if self.used[node.id] {
-                info_sched!("  Single node {} is used", node.label);
+                info_sched!("  Node for M {} is used", node.label);
                 return None;
             }
             let mut g = TreeGraph::new(self.topo.num_nodes);
             g.add_node(node);
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
+        } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
+            let node_id = terminals[0];
+            let node = self.topo.get_node(node_id);
+            if self.used[node.id] {
+                info_sched!("  Node for {:?} {} is used", pauli_product.gate_type, node.label);
+                return None;
+            }
+            for nb_id in &node.nbors {
+                let nb = self.topo.get_node(*nb_id);
+                if nb.pos.1 == node.pos.1 {
+                    info_sched!("  product {} on node {} has available ancilla {}",
+                                pauli_product,
+                                node.label,
+                                nb.label);
+                    if !self.used[*nb_id] {
+                        let mut g = TreeGraph::new(self.topo.num_nodes);
+                        g.add_node(node);
+                        g.add_node(nb);
+                        g.add_edge(node_id, *nb_id);
+                        info_sched!("  Can schedule product {} on {} nodes",
+                                    pauli_product,
+                                    g.num_nodes);
+                        return Some(g);
+                    }
+                }
+            }
+            return None;
         }
         // first check that all terminals are accessible
         if terminals.iter().any(|node_id| self.used[*node_id]) {
@@ -539,7 +566,6 @@ impl Scheduler {
                                                         &terminals,
                                                         pauli_product.gate_type,
                                                         num_scheduled);
-        //let g = self.get_steiner_tree(&root_ids, &terminals, pauli_product.is_tgate);
         self.timers.steiner_tree.stop();
         if let Some(g) = g {
             info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
@@ -718,7 +744,7 @@ impl Scheduler {
             let mut id_string = String::new();
             for (idx, pp) in sorted_products.iter().enumerate() {
                 let color = colors[idx % colors.len()];
-                id_string.push_str(&format!(" {}{}", color, pp.id));
+                id_string.push_str(&format!(" {}{}<{:?}>", color, pp.id, pp.gate_type));
             }
             writeln!(buf_file, "{}{}", id_string, _RESET)?;
         }

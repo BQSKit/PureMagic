@@ -37,17 +37,15 @@ impl Circuit {
         // Read and parse products
         for line in reader.lines() {
             let product_string = line?.trim().to_string();
-            if product_string.ends_with("<Z>") || product_string.ends_with("<X>") {
-                // we ignore Z and X cliffords
-                continue;
-            }
             let mut product = PauliProduct::new();
             product.set_from_str(product_id, &product_string)
                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-            if product.gate_type.is_t() || product.gate_type.is_m() {
-                self.products.push(product);
-                product_id += 1;
+            if product.gate_type.is_x() || product.gate_type.is_z() {
+                // skip X and Z
+                continue;
             }
+            self.products.push(product);
+            product_id += 1;
         }
         // Find maximum qubit
         self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
