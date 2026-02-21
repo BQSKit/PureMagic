@@ -33,18 +33,20 @@ impl Circuit {
 
         let file = File::open(&self.circuit_fname)?;
         let reader = BufReader::new(file);
+        let mut product_id: i32 = 0;
         // Read and parse products
-        for (i, line) in reader.lines().enumerate() {
+        for line in reader.lines() {
             let product_string = line?.trim().to_string();
             if product_string.ends_with("<Z>") || product_string.ends_with("<X>") {
                 // we ignore Z and X cliffords
                 continue;
             }
             let mut product = PauliProduct::new();
-            product.set_from_str(i as i32, &product_string)
+            product.set_from_str(product_id, &product_string)
                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
             if product.gate_type.is_t() || product.gate_type.is_m() {
                 self.products.push(product);
+                product_id += 1;
             }
         }
         // Find maximum qubit
