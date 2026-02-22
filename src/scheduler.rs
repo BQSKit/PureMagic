@@ -130,6 +130,7 @@ pub struct Scheduler {
     scheduled_products: Vec<Vec<PauliProduct>>,
     used: Vec<bool>,
     cx_paths: IndexMap<i32, TreeGraph>,
+    s_paths: IndexMap<i32, (usize, TreeGraph)>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
@@ -166,6 +167,7 @@ impl Scheduler {
                     scheduled_products: Vec::new(),
                     used: vec![false; num_nodes],
                     cx_paths: IndexMap::new(),
+                    s_paths: IndexMap::new(),
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
                     timers: SchedulerTimers::new() }
@@ -173,25 +175,10 @@ impl Scheduler {
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
-        /*
-        #[cfg(debug_assertions)]
-        for node in self.topo.iter_nodes() {
-            debug_sched!("Node id {} is {}", node.id, node.label);
-        } */
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        // Initialize magic nodes with busy counts
-        // Collect magic node labels first to avoid borrow conflicts
-        let magic_ids: Vec<usize> = self.topo
-                                        .iter_nodes()
-                                        .filter(|node| node.node_type == NodeType::Magic)
-                                        .map(|node| node.id.clone())
-                                        .collect();
-        for id in magic_ids {
-            self.topo.get_node_mut(id).cultivation_time = self.gen_cultivation_time();
-            self.topo.get_node_mut(id).busy_count = 0;
-        }
+        self.initialize_magic_nodes();
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
         // Track parent relationships
@@ -232,17 +219,10 @@ impl Scheduler {
                                    .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
                                    .collect::<Vec<_>>(),
                         _RESET);
-
             let (title_str, pp_paths, mut next_to_schedule) =
                 self.schedule_timestep(num_steps, &to_schedule, best_fit);
-            for pp in next_to_schedule.clone() {
-                if scheduled.contains(&pp.id) {
-                    return Err(io::Error::new(io::ErrorKind::Other,
-                                              format!("Next to schedule: {} is already scheduled",
-                                                      pp.id)));
-                }
-            }
-
+            debug_assert!(!next_to_schedule.iter().any(|pp| scheduled.contains(&pp.id)),
+                          "Next to schedule contains already scheduled product");
             if pp_paths.is_none() {
                 // if all magic nodes are available but nothing could be scheduled, this means
                 // we must terminate with an error, since we should be able to schedule something
@@ -303,17 +283,15 @@ impl Scheduler {
                 if total_to_schedule - scheduled.len() == plot_steps {
                     print!("\n");
                 }
-            } else {
+            } else if title_str.is_some() {
                 // Plot if requested
-                if title_str.is_some() {
-                    let fname_added = format!(".{}", num_steps);
-                    let curr_dir = std::env::current_dir()?;
-                    std::env::set_current_dir(path_dir.as_ref().unwrap())?;
-                    self.topo
-                        .plot(&fname_added, pp_paths.as_ref().unwrap(), &title_str.unwrap())
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                    std::env::set_current_dir(curr_dir)?;
-                }
+                let fname_added = format!(".{}", num_steps);
+                let curr_dir = std::env::current_dir()?;
+                std::env::set_current_dir(path_dir.as_ref().unwrap())?;
+                self.topo
+                    .plot(&fname_added, pp_paths.as_ref().unwrap(), &title_str.unwrap())
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                std::env::set_current_dir(curr_dir)?;
             }
             to_schedule = next_to_schedule;
             self.timers.timestep.stop();
@@ -342,13 +320,27 @@ impl Scheduler {
         Ok((num_steps, scheduled.len()))
     }
 
+    fn initialize_magic_nodes(&mut self) {
+        // Initialize magic nodes with busy counts
+        // Collect magic node labels first to avoid borrow conflicts
+        let magic_ids: Vec<usize> = self.topo
+                                        .iter_nodes()
+                                        .filter(|node| node.node_type == NodeType::Magic)
+                                        .map(|node| node.id)
+                                        .collect();
+        for id in magic_ids {
+            self.topo.get_node_mut(id).cultivation_time = self.gen_cultivation_time();
+            self.topo.get_node_mut(id).busy_count = 0;
+        }
+    }
+
     fn schedule_timestep(
         &mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
         -> (Option<String>, Option<Vec<(PauliProduct, TreeGraph)>>, Vec<PauliProduct>) {
         let mut num_avail_magic = self.setup_timestep();
         let mut pp_paths = Vec::with_capacity(to_schedule.len().min(10));
         let mut next_to_schedule = Vec::with_capacity(to_schedule.len().min(10));
-        let mut _num_dependent_nodes = 0;
+        //let mut _num_dependent_nodes = 0;
 
         let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
         // Presort products from most to least resource-intensive
@@ -357,74 +349,12 @@ impl Scheduler {
                              });
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
-            let mut to_remove = Vec::new();
-            let mut best_pp: Option<(usize, TreeGraph)> = None;
-            let mut best_pp_graph_size = usize::MAX;
-            let mut best_pp_term_weight = 0;
-
-            for &pp_i in &remaining_to_schedule {
-                let pp = &to_schedule[pp_i];
-                if pp.gate_type.is_cx() {
-                    if let Some(cx_path) = self.cx_paths.swap_remove(&pp.id) {
-                        debug_sched!("Found previous round CX {}", pp.id);
-                        best_pp = Some((pp_i as usize, cx_path));
-                        break;
-                    }
-                }
-                let pp_term_weight = pp.count_weighted_terms();
-                if pp_term_weight < best_pp_term_weight {
-                    info_sched!("  Skip lower weight product {}", pp);
-                    continue;
-                }
-                let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
-                    None
-                } else {
-                    self.timers.schedule_product.start();
-                    let pp_graph = self.schedule_pauli_product(pp, pp_paths.len());
-                    self.timers.schedule_product.stop();
-                    pp_graph
-                };
-                if pp_graph.is_none() {
-                    info_sched!("  Could not schedule {} on graph", pp.id);
-                    next_to_schedule.push(pp.clone());
-                    // Mark dependent nodes as used
-                    for op in &pp.operators {
-                        if op.basis == 'Y' {
-                            let node_label_x = format!("d{}{}", op.qubit, 'X');
-                            self.used[self.topo.get_node_id_from_label(&node_label_x)] = true;
-                            let node_label_z = format!("d{}{}", op.qubit, 'Z');
-                            self.used[self.topo.get_node_id_from_label(&node_label_z)] = true;
-                            _num_dependent_nodes += 2;
-                        } else {
-                            let node_label =
-                                format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                            self.used[self.topo.get_node_id_from_label(&node_label)] = true;
-                            _num_dependent_nodes += 1;
-                        }
-                    }
-                    to_remove.push(pp_i);
-                } else {
-                    let pp_graph = pp_graph.unwrap();
-                    if pp_term_weight >= best_pp_term_weight {
-                        // regard the best graph as the one with the most terms and the smallest
-                        // tree with those number of terms
-                        let pp_graph_size = pp_graph.num_nodes;
-                        if pp_graph_size < best_pp_graph_size {
-                            best_pp_term_weight = pp_term_weight;
-                            best_pp_graph_size = pp_graph_size;
-                            best_pp = Some((pp_i, pp_graph));
-                            info_sched!("  New best graph for pp {}, term weight {}, size {}",
-                                        pp.get_product_str(),
-                                        pp_term_weight,
-                                        best_pp_graph_size);
-                            if !best_fit {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
+            let (best_pp, mut to_remove) = self.find_best_product(to_schedule,
+                                                                  &remaining_to_schedule,
+                                                                  &mut next_to_schedule,
+                                                                  pp_paths.len(),
+                                                                  num_avail_magic,
+                                                                  best_fit);
             if let Some((best_pp_idx, best_graph)) = best_pp {
                 let pp = &to_schedule[best_pp_idx];
                 let _node_list = best_graph.node_list();
@@ -432,7 +362,6 @@ impl Scheduler {
                             pp,
                             best_graph.num_nodes,
                             best_graph.num_edges);
-                //_node_list);
                 // Update node statistics and mark as used
                 for node_id in best_graph.iter_nodes() {
                     let node = self.topo.get_node(node_id);
@@ -445,7 +374,6 @@ impl Scheduler {
                     num_avail_magic -= 1;
                 }
             }
-
             for pp_i in to_remove {
                 remaining_to_schedule.shift_remove(&pp_i);
             }
@@ -458,7 +386,7 @@ impl Scheduler {
         for pp in &next_to_schedule {
             title += &format!("{} ", pp.get_product_str());
         }
-        info_sched!("  Removed {} dependent nodes", _num_dependent_nodes);
+        //info_sched!("  Removed {} dependent nodes", _num_dependent_nodes);
         if !pp_paths.is_empty() {
             (Some(title), Some(pp_paths), next_to_schedule)
         } else {
@@ -522,6 +450,79 @@ impl Scheduler {
         }
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
+    }
+
+    fn find_best_product(&mut self, to_schedule: &[PauliProduct],
+                         remaining_to_schedule: &IndexSet<usize>,
+                         next_to_schedule: &mut Vec<PauliProduct>, num_scheduled: usize,
+                         num_avail_magic: usize, best_fit: bool)
+                         -> (Option<(usize, TreeGraph)>, Vec<usize>) {
+        let mut best_pp: Option<(usize, TreeGraph)>;
+        let mut best_pp_graph_size = usize::MAX;
+        let mut best_pp_term_weight = 0;
+        let mut to_remove: Vec<usize> = Vec::new();
+
+        for &pp_i in remaining_to_schedule {
+            let pp = &to_schedule[pp_i];
+            if pp.gate_type.is_cx() {
+                if let Some(cx_path) = self.cx_paths.swap_remove(&pp.id) {
+                    debug_sched!("Found previous round CX {}", pp.id);
+                    return (Some((pp_i as usize, cx_path)), to_remove);
+                }
+            }
+            let pp_term_weight = pp.count_weighted_terms();
+            if pp_term_weight < best_pp_term_weight {
+                info_sched!("  Skip lower weight product {}", pp);
+                continue;
+            }
+            let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
+                None
+            } else {
+                self.timers.schedule_product.start();
+                let pp_graph = self.schedule_pauli_product(pp, num_scheduled);
+                self.timers.schedule_product.stop();
+                pp_graph
+            };
+            if pp_graph.is_none() {
+                info_sched!("  Could not schedule {} on graph", pp.id);
+                next_to_schedule.push(pp.clone());
+                // Mark dependent nodes as used
+                for op in &pp.operators {
+                    if op.basis == 'Y' {
+                        let node_label_x = format!("d{}{}", op.qubit, 'X');
+                        self.used[self.topo.get_node_id_from_label(&node_label_x)] = true;
+                        let node_label_z = format!("d{}{}", op.qubit, 'Z');
+                        self.used[self.topo.get_node_id_from_label(&node_label_z)] = true;
+                        //_num_dependent_nodes += 2;
+                    } else {
+                        let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                        self.used[self.topo.get_node_id_from_label(&node_label)] = true;
+                        //_num_dependent_nodes += 1;
+                    }
+                }
+                to_remove.push(pp_i);
+            } else {
+                let pp_graph = pp_graph.unwrap();
+                if pp_term_weight >= best_pp_term_weight {
+                    // regard the best graph as the one with the most terms and the smallest
+                    // tree with those number of terms
+                    let pp_graph_size = pp_graph.num_nodes;
+                    if pp_graph_size < best_pp_graph_size {
+                        best_pp_term_weight = pp_term_weight;
+                        best_pp_graph_size = pp_graph_size;
+                        info_sched!("  New best graph for pp {}, term weight {}, size {}",
+                                    pp.get_product_str(),
+                                    pp_term_weight,
+                                    best_pp_graph_size);
+                        best_pp = Some((pp_i, pp_graph));
+                        if !best_fit {
+                            return (best_pp, to_remove);
+                        }
+                    }
+                }
+            }
+        }
+        (None, to_remove)
     }
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
