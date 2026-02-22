@@ -747,6 +747,7 @@ impl Scheduler {
         let colors = [_GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED,
                       _LYELLOW, _LBLUE, _LMAGENTA, _LCYAN, _LWHITE];
 
+        let mut prev_cx: IndexSet<i32> = IndexSet::new();
         for step_products in &self.scheduled_products {
             let mut sorted_products = step_products.clone();
             sorted_products.sort_by_key(|pp| {
@@ -760,6 +761,29 @@ impl Scheduler {
                     if op.qubit < self.circuit.num_qubits {
                         combined_chars[op.qubit] = op.basis;
                         combined_colors[op.qubit] = color;
+                    }
+                }
+                if pp.gate_type.is_cx() {
+                    let mut second_round = false;
+                    // always 2 parents for 2 terms
+                    if pp.parents.len() == 2 {
+                        if prev_cx.swap_remove(&pp.parents[0]) {
+                            second_round = true;
+                        }
+                    }
+                    if !second_round {
+                        debug_sched!("First round of CX {} {}", pp.id, pp);
+                        prev_cx.insert(pp.id);
+                        // First round is Z only
+                        let qubit = pp.operators[0].qubit;
+                        combined_colors[qubit] = _RESET;
+                        combined_chars[qubit] = '_';
+                    } else {
+                        debug_sched!("second round of CX {} {}", pp.id, pp);
+                        // Second round is X only
+                        let qubit = pp.operators[1].qubit;
+                        combined_colors[qubit] = _RESET;
+                        combined_chars[qubit] = '_';
                     }
                 }
             }
