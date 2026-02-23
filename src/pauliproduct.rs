@@ -43,7 +43,7 @@ impl GateType {
     }
 
     pub fn is_clifford(&self) -> bool {
-        matches!(self, GateType::S | GateType::SX | GateType::CX | GateType::M)
+        self.is_cx() || self.is_s() || self.is_sx()
     }
 }
 
