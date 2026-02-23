@@ -129,8 +129,6 @@ pub struct Scheduler {
     stats: ScheduleStats,
     scheduled_products: Vec<Vec<PauliProduct>>,
     used: Vec<bool>,
-    cx_paths: IndexMap<i32, TreeGraph>,
-    s_paths: IndexMap<i32, (usize, TreeGraph)>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
@@ -166,8 +164,6 @@ impl Scheduler {
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     scheduled_products: Vec::new(),
                     used: vec![false; num_nodes],
-                    cx_paths: IndexMap::new(),
-                    s_paths: IndexMap::new(),
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
                     timers: SchedulerTimers::new() }
@@ -178,7 +174,7 @@ impl Scheduler {
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        self.initialize_magic_nodes();
+        self.init_magic_nodes();
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
         // Track parent relationships
@@ -239,15 +235,6 @@ impl Scheduler {
                 let mut products_in_step = Vec::new();
                 let mut children_to_schedule = IndexSet::new();
                 for (pp, pp_path) in pp_paths {
-                    if pp.gate_type.is_cx() && !pp.children.is_empty() {
-                        let child = self.circuit.get_product(pp.children[0]);
-                        if child.gate_type.is_cx() {
-                            assert_eq!(child.operators.len(), 2);
-                            assert_eq!(child.operators, pp.operators);
-                            debug_sched!("Scheduled first round CX {} with child {}", pp, child);
-                            self.cx_paths.insert(child.id, pp_path.clone());
-                        }
-                    }
                     products_in_step.push(pp.clone());
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
@@ -320,7 +307,7 @@ impl Scheduler {
         Ok((num_steps, scheduled.len()))
     }
 
-    fn initialize_magic_nodes(&mut self) {
+    fn init_magic_nodes(&mut self) {
         // Initialize magic nodes with busy counts
         // Collect magic node labels first to avoid borrow conflicts
         let magic_ids: Vec<usize> = self.topo
@@ -337,6 +324,7 @@ impl Scheduler {
     fn schedule_timestep(
         &mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
         -> (Option<String>, Option<Vec<(PauliProduct, TreeGraph)>>, Vec<PauliProduct>) {
+        eprintln!("***schedule timestep {}", step_i);
         let mut num_avail_magic = self.setup_timestep();
         let mut pp_paths = Vec::with_capacity(to_schedule.len().min(10));
         let mut next_to_schedule = Vec::with_capacity(to_schedule.len().min(10));
@@ -442,12 +430,6 @@ impl Scheduler {
             }
         }
         self.used.fill(false);
-        // set all CX nodes as used
-        for pp_path in self.cx_paths.values() {
-            for node_id in pp_path.iter_nodes() {
-                self.used[node_id] = true;
-            }
-        }
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -464,12 +446,6 @@ impl Scheduler {
 
         for &pp_i in remaining_to_schedule {
             let pp = &to_schedule[pp_i];
-            if pp.gate_type.is_cx() {
-                if let Some(cx_path) = self.cx_paths.swap_remove(&pp.id) {
-                    debug_sched!("Found previous round CX {}", pp.id);
-                    return (Some((pp_i as usize, cx_path)), to_remove);
-                }
-            }
             let pp_term_weight = pp.count_weighted_terms();
             if pp_term_weight < best_pp_term_weight {
                 info_sched!("  Skip lower weight product {}", pp);
@@ -729,6 +705,7 @@ impl Scheduler {
 
     fn print_schedule(&self) -> io::Result<()> {
         let _timer = fn_timer!();
+        debug_sched!("Printing schedule");
         let circuit_stem = Path::new(&self.circuit.circuit_fname).file_stem()
                                                                  .and_then(|s| s.to_str())
                                                                  .unwrap_or("circuit");
@@ -773,14 +750,14 @@ impl Scheduler {
                         }
                     }
                     if !second_round {
-                        debug_sched!("First round of CX {} {}", pp.id, pp);
+                        debug_sched!("  first round of CX {} {}", pp.id, pp);
                         prev_cx.insert(pp.id);
                         // First round is Z only
                         let qubit = pp.operators[0].qubit;
                         combined_colors[qubit] = _RESET;
                         combined_chars[qubit] = '_';
                     } else {
-                        debug_sched!("second round of CX {} {}", pp.id, pp);
+                        debug_sched!("  second round of CX {} {}", pp.id, pp);
                         // Second round is X only
                         let qubit = pp.operators[1].qubit;
                         combined_colors[qubit] = _RESET;
