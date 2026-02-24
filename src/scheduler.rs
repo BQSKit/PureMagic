@@ -135,6 +135,7 @@ pub struct Scheduler {
     scheduled_products_by_step: Vec<Vec<PauliProduct>>,
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
+    clifford_paths: IndexMap<i32, (PauliProduct, TreeGraph)>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
@@ -171,6 +172,7 @@ impl Scheduler {
                     scheduled_products_by_step: Vec::new(),
                     scheduled_products: IndexSet::new(),
                     used: vec![false; num_nodes],
+                    clifford_paths: IndexMap::new(),
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
                     timers: SchedulerTimers::new() }
@@ -227,10 +229,12 @@ impl Scheduler {
                 // Remove scheduled products from to_schedule
                 to_schedule.retain(|pp| !scheduled_ids.contains(&pp.id));
                 // Add children from scheduled products
-                let mut products_in_step = Vec::new();
                 let mut children_to_schedule = IndexSet::new();
                 for (pp, _) in pp_paths.iter() {
-                    products_in_step.push(pp.clone());
+                    if !self.clifford_paths.contains_key(&pp.id) && pp.gate_type.is_clifford() {
+                        // don't add children if pp is a first round clifford
+                        continue;
+                    }
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
                         remaining_parents[child_id as usize] -= 1;
@@ -239,13 +243,25 @@ impl Scheduler {
                         }
                     }
                 }
-                self.scheduled_products_by_step.push(products_in_step);
+                // First add back all cliffords that were scheduled for the first round
+                for (pp, pp_path) in pp_paths.iter() {
+                    if pp.gate_type.is_clifford() {
+                        if self.clifford_paths.swap_remove(&pp.id).is_none() {
+                            //to_schedule.push(pp.clone());
+                            self.clifford_paths.insert(pp.id, ((*pp).clone(), (*pp_path).clone()));
+                        }
+                    }
+                }
                 // Extend next_to_schedule with children from IndexSet
                 to_schedule.extend(children_to_schedule.iter().map(|&id| {
                                                                   self.circuit
                                                                       .get_product(id)
                                                                       .clone()
                                                               }));
+                // add products to the current step list
+                let products_in_step: Vec<PauliProduct> =
+                    pp_paths.iter().map(|(pp, _)| pp.clone()).collect();
+                self.scheduled_products_by_step.push(products_in_step);
                 #[cfg(debug_assertions)]
                 self.check_dependencies(&pp_paths)?;
                 let num_scheduled = self.scheduled_products.len();
@@ -329,9 +345,19 @@ impl Scheduler {
     fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
                          -> Option<Vec<(PauliProduct, TreeGraph)>> {
         let mut num_avail_magic = self.update_cultivators();
-        let mut pp_paths = Vec::with_capacity(to_schedule.len().min(10));
+        let mut pp_paths: Vec<(PauliProduct, TreeGraph)> =
+            Vec::with_capacity(to_schedule.len().min(10));
         // clear out used from previous timestep
         self.used.fill(false);
+        // mark all previous first round cliffords as used
+        for (_, (pp, pp_path)) in &self.clifford_paths {
+            // marke clifford nodes as used so they can't be double scheduled
+            for node_id in pp_path.iter_nodes() {
+                self.used[node_id] = true;
+            }
+            // add the previous trees to the paths collection
+            pp_paths.push(((*pp).clone(), (*pp_path).clone()));
+        }
         // Presort products from most to least resource-intensive
         let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
             to_schedule.iter()
@@ -679,7 +705,7 @@ impl Scheduler {
 
     fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, TreeGraph)>) -> io::Result<()> {
         for (pp, _) in pp_paths {
-            if self.scheduled_products.contains(&pp.id) {
+            if self.scheduled_products.contains(&pp.id) && !pp.gate_type.is_clifford() {
                 return Err(io::Error::new(io::ErrorKind::Other,
                                           format!("pp {} already scheduled", pp.id)));
             }
@@ -734,24 +760,17 @@ impl Scheduler {
                     }
                 }
                 if pp.gate_type.is_cx() {
-                    let mut second_round = false;
-                    // always 2 parents for 2 terms
-                    if pp.parents.len() == 2 {
-                        if prev_cx.swap_remove(&pp.parents[0]) {
-                            second_round = true;
-                        }
-                    }
-                    if !second_round {
+                    if !prev_cx.swap_remove(&pp.id) {
                         debug_sched!("  first round of CX {} {}", pp.id, pp);
                         prev_cx.insert(pp.id);
-                        // First round is Z only
-                        let qubit = pp.operators[0].qubit;
+                        // First round is qubit 0, clear qubit 1
+                        let qubit = pp.operators[1].qubit;
                         combined_colors[qubit] = _RESET;
                         combined_chars[qubit] = '_';
                     } else {
                         debug_sched!("  second round of CX {} {}", pp.id, pp);
-                        // Second round is X only
-                        let qubit = pp.operators[1].qubit;
+                        // Second round is qubit 1, clear qubit 0
+                        let qubit = pp.operators[0].qubit;
                         combined_colors[qubit] = _RESET;
                         combined_chars[qubit] = '_';
                     }
