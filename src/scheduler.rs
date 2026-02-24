@@ -14,6 +14,7 @@ use crate::utils::{
 };
 
 use indexmap::{IndexMap, IndexSet};
+use itertools::Itertools;
 use rand_simple::Exponential;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -30,6 +31,7 @@ struct ScheduleStats {
     data_scheduled: usize,
     magic_scheduled: usize,
     sum_magic_unused: usize,
+    update_string: String,
 }
 
 impl ScheduleStats {
@@ -43,7 +45,8 @@ impl ScheduleStats {
                         bus_scheduled: 0,
                         data_scheduled: 0,
                         magic_scheduled: 0,
-                        sum_magic_unused: 0 }
+                        sum_magic_unused: 0,
+                        update_string: String::new() }
     }
 
     pub fn summarize(&self, num_steps: usize) {
@@ -62,8 +65,7 @@ impl ScheduleStats {
     }
 
     pub fn update(&mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize,
-                  magic_unused: usize)
-                  -> String {
+                  magic_unused: usize) {
         self.sum_data_scheduled += self.data_scheduled;
         self.sum_bus_scheduled += self.bus_scheduled;
         self.sum_magic_scheduled += self.magic_scheduled;
@@ -85,7 +87,7 @@ impl ScheduleStats {
                     self.magic_scheduled,
                     self.magic_qubits,
                     frac_magic);
-        let title =
+        self.update_string =
             format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
                         bus {:.2}, magic {:.2}, total qubits {}",
                     step_i, frac_paths, frac_data, frac_bus, frac_magic, tot_qubits);
@@ -93,7 +95,6 @@ impl ScheduleStats {
         self.data_scheduled = 0;
         self.bus_scheduled = 0;
         self.magic_scheduled = 0;
-        title
     }
 
     pub fn inc(&mut self, node_type: NodeType) {
@@ -102,6 +103,10 @@ impl ScheduleStats {
             NodeType::Magic => self.magic_scheduled += 1,
             NodeType::Data => self.data_scheduled += 1,
         }
+    }
+
+    pub fn get_update_str(&self) -> &String {
+        &self.update_string
     }
 }
 
@@ -127,7 +132,8 @@ pub struct Scheduler {
     plot_option: String,
     cultivation_times: Vec<i32>,
     stats: ScheduleStats,
-    scheduled_products: Vec<Vec<PauliProduct>>,
+    scheduled_products_by_step: Vec<Vec<PauliProduct>>,
+    scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
@@ -162,7 +168,8 @@ impl Scheduler {
                     plot_option,
                     cultivation_times: Vec::new(),
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
-                    scheduled_products: Vec::new(),
+                    scheduled_products_by_step: Vec::new(),
+                    scheduled_products: IndexSet::new(),
                     used: vec![false; num_nodes],
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
@@ -183,8 +190,6 @@ impl Scheduler {
                                                 pp.parents.len()
                                             })
                                             .collect();
-
-        let mut scheduled = IndexSet::new();
         let mut num_steps = 0;
         // Setup path plotting
         let mut plot_steps = 0;
@@ -215,26 +220,16 @@ impl Scheduler {
                                    .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
                                    .collect::<Vec<_>>(),
                         _RESET);
-            let (title_str, pp_paths, mut next_to_schedule) =
-                self.schedule_timestep(num_steps, &to_schedule, best_fit);
-            debug_assert!(!next_to_schedule.iter().any(|pp| scheduled.contains(&pp.id)),
-                          "Next to schedule contains already scheduled product");
-            if pp_paths.is_none() {
-                // if all magic nodes are available but nothing could be scheduled, this means
-                // we must terminate with an error, since we should be able to schedule something
-                if !self.topo.iter_nodes().any(|node| node.is_cultivating()) {
-                    return Err(io::Error::new(io::ErrorKind::Other,
-                                              format!("{}Cannot schedule on current layout{}",
-                                                      _RED, _RESET)));
-                }
-                to_schedule = next_to_schedule;
-                continue;
-            }
-            // Process scheduled products
-            if let Some(ref pp_paths) = pp_paths {
+            if let Some(pp_paths) = self.schedule_timestep(num_steps, &to_schedule, best_fit) {
+                debug_sched!("Scheduled timestep {}", num_steps);
+                // Collect scheduled product ids for fast lookup
+                let scheduled_ids: IndexSet<i32> = pp_paths.iter().map(|(pp, _)| pp.id).collect();
+                // Remove scheduled products from to_schedule
+                to_schedule.retain(|pp| !scheduled_ids.contains(&pp.id));
+                // Add children from scheduled products
                 let mut products_in_step = Vec::new();
                 let mut children_to_schedule = IndexSet::new();
-                for (pp, pp_path) in pp_paths {
+                for (pp, _) in pp_paths.iter() {
                     products_in_step.push(pp.clone());
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
@@ -244,43 +239,53 @@ impl Scheduler {
                         }
                     }
                 }
-                self.scheduled_products.push(products_in_step);
+                self.scheduled_products_by_step.push(products_in_step);
                 // Extend next_to_schedule with children from IndexSet
-                next_to_schedule.extend(children_to_schedule.iter().map(|&id| {
-                                                                       self.circuit
-                                                                           .get_product(id)
-                                                                           .clone()
-                                                                   }));
-                for (pp, _) in pp_paths {
-                    self.check_dependencies(pp, &scheduled)?;
-                    scheduled.insert(pp.id);
+                to_schedule.extend(children_to_schedule.iter().map(|&id| {
+                                                                  self.circuit
+                                                                      .get_product(id)
+                                                                      .clone()
+                                                              }));
+                #[cfg(debug_assertions)]
+                self.check_dependencies(&pp_paths)?;
+                let num_scheduled = self.scheduled_products.len();
+                if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
+                    // Update progress counter if we are not plotting
+                    if num_steps == plot_steps {
+                        print!("Scheduling {} products:    ", total_to_schedule);
+                    }
+                    let perc_complete = (num_scheduled * 100) / total_to_schedule;
+                    if perc_complete > prev_perc_complete {
+                        print!("\x08\x08\x08{:02}%", perc_complete);
+                        std::io::stdout().flush()?;
+                        prev_perc_complete = perc_complete;
+                    }
+                    if total_to_schedule - num_scheduled == plot_steps {
+                        print!("\n");
+                    }
+                } else {
+                    // Else plot if requested - plot_steps was set at the beginning of the loop
+                    let update_str = self.stats.get_update_str();
+                    assert!(!update_str.is_empty());
+                    let fname_added = format!(".{}", num_steps);
+                    let curr_dir = std::env::current_dir()?;
+                    std::env::set_current_dir(path_dir.as_ref().unwrap())?;
+                    self.topo
+                        .plot(&fname_added, &pp_paths, &update_str)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    std::env::set_current_dir(curr_dir)?;
                 }
+            } else {
+                debug_sched!("Could not schedule anything on timestep {}", num_steps);
+                // if all magic nodes are available but nothing could be scheduled, this means
+                // we must terminate with an error, since we should be able to schedule something
+                if !self.topo.iter_nodes().any(|node| node.is_cultivating()) {
+                    return Err(io::Error::new(io::ErrorKind::Other,
+                                              format!("{}Cannot schedule on current layout{}",
+                                                      _RED, _RESET)));
+                }
+                // otherwise try again
             }
-            // Update progress
-            if num_steps >= plot_steps && (total_to_schedule - scheduled.len() >= plot_steps) {
-                if num_steps == plot_steps {
-                    print!("Scheduling {} products:    ", total_to_schedule);
-                }
-                let perc_complete = (scheduled.len() * 100) / total_to_schedule;
-                if perc_complete > prev_perc_complete {
-                    print!("\x08\x08\x08{:02}%", perc_complete);
-                    std::io::stdout().flush()?;
-                    prev_perc_complete = perc_complete;
-                }
-                if total_to_schedule - scheduled.len() == plot_steps {
-                    print!("\n");
-                }
-            } else if title_str.is_some() {
-                // Plot if requested
-                let fname_added = format!(".{}", num_steps);
-                let curr_dir = std::env::current_dir()?;
-                std::env::set_current_dir(path_dir.as_ref().unwrap())?;
-                self.topo
-                    .plot(&fname_added, pp_paths.as_ref().unwrap(), &title_str.unwrap())
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                std::env::set_current_dir(curr_dir)?;
-            }
-            to_schedule = next_to_schedule;
             self.timers.timestep.stop();
         }
         self.stats.summarize(num_steps);
@@ -304,7 +309,7 @@ impl Scheduler {
         self.timers.timestep.done();
 
         self.print_schedule()?;
-        Ok((num_steps, scheduled.len()))
+        Ok((num_steps, self.scheduled_products.len()))
     }
 
     fn init_magic_nodes(&mut self) {
@@ -321,32 +326,27 @@ impl Scheduler {
         }
     }
 
-    fn schedule_timestep(
-        &mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
-        -> (Option<String>, Option<Vec<(PauliProduct, TreeGraph)>>, Vec<PauliProduct>) {
-        eprintln!("***schedule timestep {}", step_i);
-        let mut num_avail_magic = self.setup_timestep();
+    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
+                         -> Option<Vec<(PauliProduct, TreeGraph)>> {
+        let mut num_avail_magic = self.update_cultivators();
         let mut pp_paths = Vec::with_capacity(to_schedule.len().min(10));
-        let mut next_to_schedule = Vec::with_capacity(to_schedule.len().min(10));
-        //let mut _num_dependent_nodes = 0;
-
-        let mut remaining_to_schedule: IndexSet<usize> = (0..to_schedule.len()).collect();
+        // clear out used from previous timestep
+        self.used.fill(false);
         // Presort products from most to least resource-intensive
-        remaining_to_schedule.sort_by_key(|&idx| {
-                                 std::cmp::Reverse(to_schedule[idx].count_weighted_terms())
-                             });
+        let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
+            to_schedule.iter()
+                       .sorted_by_key(|pp| std::cmp::Reverse(pp.count_weighted_terms()))
+                       .map(|pp| (pp.id, pp))
+                       .collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
-            let (best_pp, mut to_remove) = self.find_best_product(to_schedule,
-                                                                  &remaining_to_schedule,
-                                                                  &mut next_to_schedule,
-                                                                  pp_paths.len(),
-                                                                  num_avail_magic,
-                                                                  best_fit);
+            let (best_pp, cannot_schedule) = self.find_best_product(&remaining_to_schedule,
+                                                                    pp_paths.len(),
+                                                                    num_avail_magic,
+                                                                    best_fit);
             if let Some((best_pp_idx, best_graph)) = best_pp {
-                let pp = &to_schedule[best_pp_idx];
-                let _node_list = best_graph.node_list();
-                info_sched!("  * Scheduled product {} with {} nodes and {} edges",
+                let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap();
+                info_sched!("  Scheduled product {} with {} nodes and {} edges",
                             pp,
                             best_graph.num_nodes,
                             best_graph.num_edges);
@@ -356,28 +356,20 @@ impl Scheduler {
                     self.stats.inc(node.node_type);
                     self.used[node.id] = true;
                 }
-                pp_paths.push((pp.clone(), best_graph));
-                to_remove.push(best_pp_idx);
+                pp_paths.push(((*pp).clone(), best_graph));
+                // don't schedule again
+                remaining_to_schedule.shift_remove(&best_pp_idx);
                 if pp.gate_type.is_t() {
                     num_avail_magic -= 1;
                 }
             }
-            for pp_i in to_remove {
+            // remove all those we cannot schedule this timestep
+            for pp_i in cannot_schedule {
                 remaining_to_schedule.shift_remove(&pp_i);
             }
         }
-        let mut title =
-            self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize);
-        if next_to_schedule.len() > 0 {
-            title += "\nUnscheduled: ";
-        }
-        for pp in &next_to_schedule {
-            title += &format!("{} ", pp.get_product_str());
-        }
-        //info_sched!("  Removed {} dependent nodes", _num_dependent_nodes);
-        if !pp_paths.is_empty() {
-            (Some(title), Some(pp_paths), next_to_schedule)
-        } else {
+        self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize);
+        if pp_paths.is_empty() {
             if num_avail_magic > 0 {
                 // if any magic node is available and we scheduled nothing, then we must terminate
                 // with an error, since we should be able to schedule something
@@ -391,11 +383,13 @@ impl Scheduler {
                        num_avail_magic,
                        _RESET);
             }
-            (None, None, next_to_schedule)
+            None
+        } else {
+            Some(pp_paths)
         }
     }
 
-    fn setup_timestep(&mut self) -> usize {
+    fn update_cultivators(&mut self) -> usize {
         // Collect magic nodes that need new busy counts
         let num_used_magic_nodes =
             self.topo
@@ -429,23 +423,19 @@ impl Scheduler {
                 num_avail_magic += 1;
             }
         }
-        self.used.fill(false);
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
 
-    fn find_best_product(&mut self, to_schedule: &[PauliProduct],
-                         remaining_to_schedule: &IndexSet<usize>,
-                         next_to_schedule: &mut Vec<PauliProduct>, num_scheduled: usize,
-                         num_avail_magic: usize, best_fit: bool)
-                         -> (Option<(usize, TreeGraph)>, Vec<usize>) {
-        let mut best_pp: Option<(usize, TreeGraph)>;
+    fn find_best_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
+                         num_scheduled: usize, num_avail_magic: usize, best_fit: bool)
+                         -> (Option<(i32, TreeGraph)>, Vec<i32>) {
+        let mut best_pp: Option<(i32, TreeGraph)>;
         let mut best_pp_graph_size = usize::MAX;
         let mut best_pp_term_weight = 0;
-        let mut to_remove: Vec<usize> = Vec::new();
+        let mut cannot_schedule: Vec<i32> = Vec::new();
 
-        for &pp_i in remaining_to_schedule {
-            let pp = &to_schedule[pp_i];
+        for (&pp_i, &pp) in remaining_to_schedule {
             let pp_term_weight = pp.count_weighted_terms();
             if pp_term_weight < best_pp_term_weight {
                 info_sched!("  Skip lower weight product {}", pp);
@@ -459,26 +449,7 @@ impl Scheduler {
                 self.timers.schedule_product.stop();
                 pp_graph
             };
-            if pp_graph.is_none() {
-                info_sched!("  Could not schedule {} on graph", pp.id);
-                next_to_schedule.push(pp.clone());
-                // Mark dependent nodes as used
-                for op in &pp.operators {
-                    if op.basis == 'Y' {
-                        let node_label_x = format!("d{}{}", op.qubit, 'X');
-                        self.used[self.topo.get_node_id_from_label(&node_label_x)] = true;
-                        let node_label_z = format!("d{}{}", op.qubit, 'Z');
-                        self.used[self.topo.get_node_id_from_label(&node_label_z)] = true;
-                        //_num_dependent_nodes += 2;
-                    } else {
-                        let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                        self.used[self.topo.get_node_id_from_label(&node_label)] = true;
-                        //_num_dependent_nodes += 1;
-                    }
-                }
-                to_remove.push(pp_i);
-            } else {
-                let pp_graph = pp_graph.unwrap();
+            if let Some(pp_graph) = pp_graph {
                 if pp_term_weight >= best_pp_term_weight {
                     // regard the best graph as the one with the most terms and the smallest
                     // tree with those number of terms
@@ -486,19 +457,34 @@ impl Scheduler {
                     if pp_graph_size < best_pp_graph_size {
                         best_pp_term_weight = pp_term_weight;
                         best_pp_graph_size = pp_graph_size;
-                        info_sched!("  New best graph for pp {}, term weight {}, size {}",
+                        info_sched!("  Best graph for pp {}, term weight {}, size {}",
                                     pp.get_product_str(),
                                     pp_term_weight,
                                     best_pp_graph_size);
                         best_pp = Some((pp_i, pp_graph));
                         if !best_fit {
-                            return (best_pp, to_remove);
+                            return (best_pp, cannot_schedule);
                         }
                     }
                 }
+            } else {
+                info_sched!("  Could not schedule {} on graph", pp.id);
+                // Mark dependent nodes as used
+                for op in &pp.operators {
+                    if op.basis == 'Y' {
+                        let node_label_x = format!("d{}{}", op.qubit, 'X');
+                        self.used[self.topo.get_node_id_from_label(&node_label_x)] = true;
+                        let node_label_z = format!("d{}{}", op.qubit, 'Z');
+                        self.used[self.topo.get_node_id_from_label(&node_label_z)] = true;
+                    } else {
+                        let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
+                        self.used[self.topo.get_node_id_from_label(&node_label)] = true;
+                    }
+                }
+                cannot_schedule.push(pp_i);
             }
         }
-        (None, to_remove)
+        (None, cannot_schedule)
     }
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
@@ -507,7 +493,8 @@ impl Scheduler {
         // Terminal nodes contain only the data qubits
         let terminals = self.get_terminal_nodes(pauli_product);
         if terminals.is_none() {
-            info_sched!("  No data nodes found in working graph");
+            info_sched!("    Cannot schedule {}: no data nodes found in working graph",
+                        pauli_product.id);
             return None;
         }
         let terminals = terminals.unwrap();
@@ -516,24 +503,28 @@ impl Scheduler {
             let node_id = terminals[0];
             let node = self.topo.get_node(node_id);
             if self.used[node.id] {
-                info_sched!("  Node for M {} is used", node.label);
+                info_sched!("    Cannot schedule {}: node for M {} is used",
+                            pauli_product.id,
+                            node.label);
                 return None;
             }
             let mut g = TreeGraph::new(self.topo.num_nodes);
             g.add_node(node);
-            info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
             return Some(g);
         } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
             let node_id = terminals[0];
             let node = self.topo.get_node(node_id);
             if self.used[node.id] {
-                info_sched!("  Node for {:?} {} is used", pauli_product.gate_type, node.label);
+                info_sched!("    Cannot schedule {}: node for {:?} {} is used",
+                            pauli_product.id,
+                            pauli_product.gate_type,
+                            node.label);
                 return None;
             }
             for nb_id in &node.nbors {
                 let nb = self.topo.get_node(*nb_id);
                 if nb.pos.1 == node.pos.1 {
-                    info_sched!("  product {} on node {} has available ancilla {}",
+                    info_sched!("    product {} on node {} has available ancilla {}",
                                 pauli_product,
                                 node.label,
                                 nb.label);
@@ -542,22 +533,22 @@ impl Scheduler {
                         g.add_node(node);
                         g.add_node(nb);
                         g.add_edge(node_id, *nb_id);
-                        info_sched!("  Can schedule product {} on {} nodes",
-                                    pauli_product,
-                                    g.num_nodes);
                         return Some(g);
                     }
                 }
             }
+            info_sched!("    Cannot schedule S/SX {}: no available ancilla", pauli_product.id);
             return None;
         } else {
             // first check that all terminals are accessible
             if terminals.iter().any(|node_id| self.used[*node_id]) {
+                info_sched!("    Cannot schedule {}: used terminals", pauli_product.id);
                 return None;
             }
             // Get root nodes next to terminals
             let root_ids = self.get_root_nodes(&terminals);
             if root_ids.is_empty() {
+                info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
                 return None;
             }
             self.timers.steiner_tree.start();
@@ -569,9 +560,9 @@ impl Scheduler {
                                                             num_scheduled);
             self.timers.steiner_tree.stop();
             if let Some(g) = g {
-                info_sched!("  Can schedule product {} on {} nodes", pauli_product, g.num_nodes);
                 return Some(g);
             }
+            info_sched!("    Cannot schedule {}: no steiner tree found", pauli_product.id);
             None
         }
     }
@@ -686,20 +677,21 @@ impl Scheduler {
         cultivation_time
     }
 
-    fn check_dependencies(&self, pp: &PauliProduct, scheduled: &IndexSet<i32>) -> io::Result<()> {
-        if scheduled.contains(&pp.id) {
-            return Err(io::Error::new(io::ErrorKind::Other,
-                                      format!("pp {} already scheduled", pp.id)));
-        }
-
-        for &parent_id in &pp.parents {
-            if !scheduled.contains(&parent_id) {
+    fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, TreeGraph)>) -> io::Result<()> {
+        for (pp, _) in pp_paths {
+            if self.scheduled_products.contains(&pp.id) {
                 return Err(io::Error::new(io::ErrorKind::Other,
-                                          format!("pp {} scheduled before parent {}",
-                                                  pp.id, parent_id)));
+                                          format!("pp {} already scheduled", pp.id)));
             }
+            for &parent_id in &pp.parents {
+                if !self.scheduled_products.contains(&parent_id) {
+                    return Err(io::Error::new(io::ErrorKind::Other,
+                                              format!("pp {} scheduled before parent {}",
+                                                      pp.id, parent_id)));
+                }
+            }
+            self.scheduled_products.insert(pp.id);
         }
-
         Ok(())
     }
 
@@ -716,17 +708,17 @@ impl Scheduler {
 
         writeln!(buf_file, "# Scheduled Products by Timestep")?;
         writeln!(buf_file, "# Circuit: {}", self.circuit.circuit_fname)?;
-        writeln!(buf_file, "# Total steps: {}", self.scheduled_products.len())?;
+        writeln!(buf_file, "# Total steps: {}", self.scheduled_products_by_step.len())?;
         writeln!(buf_file,
                  "# Total products: {}",
-                 self.scheduled_products.iter().map(|v| v.len()).sum::<usize>())?;
+                 self.scheduled_products_by_step.iter().map(|v| v.len()).sum::<usize>())?;
         writeln!(buf_file)?;
 
         let colors = [_GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED,
                       _LYELLOW, _LBLUE, _LMAGENTA, _LCYAN, _LWHITE];
 
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
-        for step_products in &self.scheduled_products {
+        for step_products in &self.scheduled_products_by_step {
             let mut sorted_products = step_products.clone();
             sorted_products.sort_by_key(|pp| {
                                pp.operators.iter().map(|op| op.qubit).min().unwrap_or(usize::MAX)
