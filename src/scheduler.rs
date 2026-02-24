@@ -31,7 +31,7 @@ struct ScheduleStats {
     data_scheduled: usize,
     magic_scheduled: usize,
     sum_magic_unused: usize,
-    update_string: String,
+    plot_info_str: String,
 }
 
 impl ScheduleStats {
@@ -46,7 +46,7 @@ impl ScheduleStats {
                         data_scheduled: 0,
                         magic_scheduled: 0,
                         sum_magic_unused: 0,
-                        update_string: String::new() }
+                        plot_info_str: String::new() }
     }
 
     pub fn summarize(&self, num_steps: usize) {
@@ -87,7 +87,7 @@ impl ScheduleStats {
                     self.magic_scheduled,
                     self.magic_qubits,
                     frac_magic);
-        self.update_string =
+        self.plot_info_str =
             format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
                         bus {:.2}, magic {:.2}, total qubits {}",
                     step_i, frac_paths, frac_data, frac_bus, frac_magic, tot_qubits);
@@ -105,8 +105,8 @@ impl ScheduleStats {
         }
     }
 
-    pub fn get_update_str(&self) -> &String {
-        &self.update_string
+    pub fn get_plot_info_str(&self) -> &String {
+        &self.plot_info_str
     }
 }
 
@@ -132,10 +132,10 @@ pub struct Scheduler {
     plot_option: String,
     cultivation_times: Vec<i32>,
     stats: ScheduleStats,
-    scheduled_products_by_step: Vec<Vec<PauliProduct>>,
+    scheduled_products_by_step: Vec<(usize, Vec<PauliProduct>)>,
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
-    clifford_paths: IndexMap<i32, (PauliProduct, TreeGraph)>,
+    clifford_paths: IndexMap<i32, (usize, PauliProduct, TreeGraph)>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
@@ -231,9 +231,19 @@ impl Scheduler {
                 // Add children from scheduled products
                 let mut children_to_schedule = IndexSet::new();
                 for (pp, _) in pp_paths.iter() {
-                    if !self.clifford_paths.contains_key(&pp.id) && pp.gate_type.is_clifford() {
-                        // don't add children if pp is a first round clifford
-                        continue;
+                    if pp.gate_type.is_clifford() {
+                        if !self.clifford_paths.contains_key(&pp.id) {
+                            // don't add children if pp is a first round clifford
+                            continue;
+                        }
+                        if pp.gate_type.is_s() || pp.gate_type.is_sx() {
+                            // don't add children for the second round S/SX
+                            if let Some((count, _, _)) = self.clifford_paths.get(&pp.id) {
+                                if *count == 1 {
+                                    continue;
+                                }
+                            }
+                        }
                     }
                     // Add children to next round if all parents scheduled
                     for &child_id in &pp.children {
@@ -243,12 +253,18 @@ impl Scheduler {
                         }
                     }
                 }
-                // First add back all cliffords that were scheduled for the first round
+                // First add back all cliffords that were scheduled for the first or second rounds
                 for (pp, pp_path) in pp_paths.iter() {
                     if pp.gate_type.is_clifford() {
-                        if self.clifford_paths.swap_remove(&pp.id).is_none() {
-                            //to_schedule.push(pp.clone());
-                            self.clifford_paths.insert(pp.id, ((*pp).clone(), (*pp_path).clone()));
+                        if let Some(clifford_path) = self.clifford_paths.get_mut(&pp.id) {
+                            clifford_path.0 -= 1;
+                            if clifford_path.0 == 0 {
+                                self.clifford_paths.swap_remove(&pp.id);
+                            }
+                        } else {
+                            let count = if pp.gate_type.is_cx() { 1 } else { 2 };
+                            self.clifford_paths
+                                .insert(pp.id, (count, (*pp).clone(), (*pp_path).clone()));
                         }
                     }
                 }
@@ -261,12 +277,13 @@ impl Scheduler {
                 // add products to the current step list
                 let products_in_step: Vec<PauliProduct> =
                     pp_paths.iter().map(|(pp, _)| pp.clone()).collect();
-                self.scheduled_products_by_step.push(products_in_step);
+                self.scheduled_products_by_step.push((num_steps, products_in_step));
                 #[cfg(debug_assertions)]
                 self.check_dependencies(&pp_paths)?;
                 let num_scheduled = self.scheduled_products.len();
                 if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
-                    // Update progress counter if we are not plotting
+                    // Update progress counter if we are not plotting either the start or end of
+                    // the loop
                     if num_steps == plot_steps {
                         print!("Scheduling {} products:    ", total_to_schedule);
                     }
@@ -281,13 +298,13 @@ impl Scheduler {
                     }
                 } else {
                     // Else plot if requested - plot_steps was set at the beginning of the loop
-                    let update_str = self.stats.get_update_str();
-                    assert!(!update_str.is_empty());
+                    let plot_info_str = self.stats.get_plot_info_str();
+                    assert!(!plot_info_str.is_empty());
                     let fname_added = format!(".{}", num_steps);
                     let curr_dir = std::env::current_dir()?;
                     std::env::set_current_dir(path_dir.as_ref().unwrap())?;
                     self.topo
-                        .plot(&fname_added, &pp_paths, &update_str)
+                        .plot(&fname_added, &pp_paths, &plot_info_str)
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                     std::env::set_current_dir(curr_dir)?;
                 }
@@ -324,7 +341,8 @@ impl Scheduler {
         self.timers.schedule_product.done();
         self.timers.timestep.done();
 
-        self.print_schedule()?;
+        #[cfg(debug_assertions)]
+        self.check_clifford_repetitions()?;
         Ok((num_steps, self.scheduled_products.len()))
     }
 
@@ -350,7 +368,7 @@ impl Scheduler {
         // clear out used from previous timestep
         self.used.fill(false);
         // mark all previous first round cliffords as used
-        for (_, (pp, pp_path)) in &self.clifford_paths {
+        for (_, (_, pp, pp_path)) in &self.clifford_paths {
             // marke clifford nodes as used so they can't be double scheduled
             for node_id in pp_path.iter_nodes() {
                 self.used[node_id] = true;
@@ -721,7 +739,7 @@ impl Scheduler {
         Ok(())
     }
 
-    fn print_schedule(&self) -> io::Result<()> {
+    pub fn print_schedule(&self, hdr: &String) -> io::Result<()> {
         let _timer = fn_timer!();
         debug_sched!("Printing schedule");
         let circuit_stem = Path::new(&self.circuit.circuit_fname).file_stem()
@@ -732,19 +750,23 @@ impl Scheduler {
         let file = File::create(&output_fname)?;
         let mut buf_file = BufWriter::new(file);
 
-        writeln!(buf_file, "# Scheduled Products by Timestep")?;
-        writeln!(buf_file, "# Circuit: {}", self.circuit.circuit_fname)?;
-        writeln!(buf_file, "# Total steps: {}", self.scheduled_products_by_step.len())?;
-        writeln!(buf_file,
-                 "# Total products: {}",
-                 self.scheduled_products_by_step.iter().map(|v| v.len()).sum::<usize>())?;
-        writeln!(buf_file)?;
+        let max_step: usize =
+            self.scheduled_products_by_step.last().map(|(step_i, _)| *step_i).unwrap_or(0);
+        let max_width = max_step.to_string().len();
+        let tot_products =
+            self.scheduled_products_by_step.iter().map(|(_, v)| v.len()).sum::<usize>();
+        writeln!(buf_file, "{}", hdr)?;
+        writeln!(buf_file, "# Total active steps: {}", self.scheduled_products_by_step.len())?;
+        writeln!(buf_file, "# Total steps: {}", max_step)?;
+        writeln!(buf_file, "# Total products: {}", tot_products)?;
+        writeln!(buf_file, "# Parallelism: {:.2}", max_step as f64 / tot_products as f64)?;
 
         let colors = [_GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED,
                       _LYELLOW, _LBLUE, _LMAGENTA, _LCYAN, _LWHITE];
 
+        // FIXME: check that each CX is repeated 2x exactly, and each S/SX is repeated 3x
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
-        for step_products in &self.scheduled_products_by_step {
+        for (step_i, step_products) in &self.scheduled_products_by_step {
             let mut sorted_products = step_products.clone();
             sorted_products.sort_by_key(|pp| {
                                pp.operators.iter().map(|op| op.qubit).min().unwrap_or(usize::MAX)
@@ -776,6 +798,7 @@ impl Scheduler {
                     }
                 }
             }
+            write!(buf_file, "{:width$}: ", step_i, width = max_width)?;
             for i in 0..self.circuit.num_qubits {
                 write!(buf_file, "{}{}", combined_colors[i], combined_chars[i])?;
             }
@@ -787,6 +810,49 @@ impl Scheduler {
             writeln!(buf_file, "{}{}", id_string, _RESET)?;
         }
         println!("Scheduled products written to {}", output_fname);
+        Ok(())
+    }
+
+    fn check_clifford_repetitions(&self) -> io::Result<()> {
+        // map the product id to a vector containing the timesteps on which the product was found
+        let mut cx_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
+        let mut s_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
+        for (step_i, step_products) in &self.scheduled_products_by_step {
+            for pp in step_products {
+                if pp.gate_type.is_cx() {
+                    let steps = cx_counts.entry(pp.id).or_insert(Vec::new());
+                    steps.push(*step_i);
+                } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
+                    let steps = s_counts.entry(pp.id).or_insert(Vec::new());
+                    steps.push(*step_i);
+                }
+            }
+        }
+        let mut errors = Vec::new();
+        for (pp_id, steps) in &cx_counts {
+            let pp = self.circuit.get_product(*pp_id);
+            if pp.gate_type.is_cx() {
+                if steps.len() != 2 || steps[0] != steps[1] - 1 {
+                    errors.push(format!("  product {} not scheduled 2x {:?}", pp, steps));
+                }
+            }
+        }
+        for (pp_id, steps) in &s_counts {
+            let pp = self.circuit.get_product(*pp_id);
+            if pp.gate_type.is_s() {
+                if steps.len() != 3 || steps[0] != steps[1] - 1 || steps[1] != steps[2] - 1 {
+                    errors.push(format!("  product {} not scheduled 3x {:?}", pp, steps));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::Other,
+                                      format!("Clifford repetition errors:\n{}",
+                                              errors.join("\n"))));
+        }
+        println!("Clifford repetition check passed ({} CX, {} S/SX products)",
+                 cx_counts.len(),
+                 s_counts.len());
         Ok(())
     }
 }

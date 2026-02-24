@@ -117,38 +117,32 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
-
-    println!("PureMagic - Git branch: {} | Commit: {} | Built: {}",
-             env!("VERGEN_GIT_BRANCH"),
-             env!("VERGEN_GIT_SHA"),
-             env!("VERGEN_BUILD_TIMESTAMP"));
-
     let args = Args::parse();
-    println!("{:#?}", args);
-
+    let mut hdr = format!("PureMagic - Git branch: {} | Commit: {} | Built: {}",
+                          env!("VERGEN_GIT_BRANCH"),
+                          &(env!("VERGEN_GIT_SHA"))[0..8],
+                          env!("VERGEN_BUILD_TIMESTAMP"));
+    println!("{}\n{:#?}", hdr, args);
+    hdr = format!("# {}\n# {:?}", &hdr, args);
     // Validate arguments
     if !args.generate_random && args.circuit_fname.is_none() {
         eprintln!("Error: Either --circuit <filename> or --generate-random must be specified");
         std::process::exit(1);
     }
-
     if args.generate_random && (args.spread_probability < 0.0 || args.spread_probability > 1.0) {
         eprintln!("Error: spread_probability must be between 0.0 and 1.0");
         std::process::exit(1);
     }
-
     if args.generate_random && (args.decay_factor < 0.0 || args.decay_factor > 1.0) {
         eprintln!("Error: decay_factor must be between 0.0 and 1.0");
         std::process::exit(1);
     }
-
     // Initialize circuit
     let (circuit, circuit_fname) = if args.generate_random {
         println!("Generating random circuit with {} products on {} qubits",
                  args.random_products, args.random_qubits);
         println!("  spread_probability: {}", args.spread_probability);
         println!("  decay_factor: {}", args.decay_factor);
-
         let spread_str = args.spread_probability.to_string().replace(".", "_");
         let decay_str = args.decay_factor.to_string().replace(".", "_");
         let fname = format!("random_circuit-{}-{}_n{}", spread_str, decay_str, args.random_qubits);
@@ -166,10 +160,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circuit.load_circuit()?;
         (circuit, fname)
     };
+    let num_products = circuit.num_products();
     let num_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
-
     // Plot circuit if requested
     if args.plot.contains(&"circuit".to_string()) {
         circuit.plot(args.show_product_ids)?;
@@ -193,11 +187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         args.sides_only);
     #[cfg(debug_assertions)]
     topo_graph.print()?;
-
     if args.plot.contains(&"topo".to_string()) {
         topo_graph.plot(".topo", &[], "")?;
     }
-
     let mut num_qubits = topo_graph.num_qubits;
 
     let mut scheduler = Scheduler::new(circuit,
@@ -209,26 +201,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.stree_termination_threshold);
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit(args.best_fit)?;
-
+    debug_assert_eq!(num_scheduled, num_products);
     // Calculate and print statistics
-    let speedup = num_scheduled as f64 / tot_num_steps as f64;
     let volume = num_qubits * tot_num_steps;
-    println!("Scheduled {} in {} time steps ({:.3} speedup) volume {}",
-             num_scheduled, tot_num_steps, speedup, volume);
-
+    println!("Scheduled {} in {} time steps, volume {}", num_scheduled, tot_num_steps, volume);
+    scheduler.print_schedule(&hdr)?;
     print!("Generating Pure Magic layout for comparison:\n  ");
     let mut best_magic_topo_graph = TopoGraph::new();
     best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
     best_magic_topo_graph.update_statistics();
     num_qubits = best_magic_topo_graph.num_qubits;
-
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
     let optimal_volume = num_qubits * num_layers;
     println!("Optimal time steps {} ({:.3} speedup) volume {}",
              num_layers, optimal_speedup, optimal_volume);
-
-    println!("Parallel efficiency {:.3}", speedup as f64 / optimal_speedup as f64);
-    println!("Scheduling efficiency {:.3}", optimal_volume as f64 / volume as f64);
-
+    println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
+    println!("Parallelism: {:.3}x", num_products as f64 / tot_num_steps as f64);
     Ok(())
 }
