@@ -228,14 +228,6 @@ impl TreeGraph {
             .count()
     }
 
-    pub fn node_list(&self) -> Vec<usize> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, node_opt)| node_opt.as_ref().map(|_| i))
-            .collect()
-    }
-
     #[cfg(debug_assertions)]
     pub fn get_num_vertical_data_edges(&self, node_id: usize) -> (usize, usize) {
         let node = self.nodes[node_id].as_ref().unwrap();
