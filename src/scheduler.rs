@@ -721,6 +721,7 @@ impl Scheduler {
         cultivation_time
     }
 
+    #[cfg(debug_assertions)]
     fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, TreeGraph)>) -> io::Result<()> {
         for (pp, _) in pp_paths {
             if self.scheduled_products.contains(&pp.id) && !pp.gate_type.is_clifford() {
@@ -813,6 +814,7 @@ impl Scheduler {
         Ok(())
     }
 
+    #[cfg(debug_assertions)]
     fn check_clifford_repetitions(&self) -> io::Result<()> {
         // map the product id to a vector containing the timesteps on which the product was found
         let mut cx_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
