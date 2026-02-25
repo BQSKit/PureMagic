@@ -1,0 +1,3 @@
+[submodule "tableau"]
+	path = tableau
+	url = git@github.com:stevenhofmeyr/tableau.git
