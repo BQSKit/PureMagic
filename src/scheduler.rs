@@ -280,6 +280,7 @@ impl Scheduler {
                 self.scheduled_products_by_step.push((num_steps, products_in_step));
                 #[cfg(debug_assertions)]
                 self.check_dependencies(&pp_paths)?;
+                self.scheduled_products.extend(pp_paths.iter().map(|(pp, _)| pp.id));
                 let num_scheduled = self.scheduled_products.len();
                 if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
                     // Update progress counter if we are not plotting either the start or end of
@@ -735,7 +736,6 @@ impl Scheduler {
                                                       pp.id, parent_id)));
                 }
             }
-            self.scheduled_products.insert(pp.id);
         }
         Ok(())
     }
