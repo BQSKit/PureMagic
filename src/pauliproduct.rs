@@ -47,6 +47,12 @@ impl GateType {
     }
 }
 
+impl fmt::Display for GateType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Operator {
     pub qubit: usize,
@@ -102,7 +108,7 @@ impl PauliProduct {
                     let gate_type = &s[i..];
                     match gate_type {
                         "<M>" => self.gate_type = GateType::M,
-                        "<pi/8>" => self.gate_type = GateType::T,
+                        "<T>" => self.gate_type = GateType::T,
                         "<CX>" => self.gate_type = GateType::CX,
                         "<S>" | "<Sdg>" => self.gate_type = GateType::S,
                         "<SX>" | "<SXdg>" => self.gate_type = GateType::SX,
@@ -129,7 +135,7 @@ impl PauliProduct {
         Ok(())
     }
 
-    pub fn get_product_str(&self) -> String {
+    pub fn to_operator_str(&self) -> String {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
         format!("{}<{:?}>", ops, self.gate_type)
     }
