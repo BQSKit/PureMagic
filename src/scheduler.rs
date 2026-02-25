@@ -482,7 +482,7 @@ impl Scheduler {
     fn find_best_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
                          num_scheduled: usize, num_avail_magic: usize, best_fit: bool)
                          -> (Option<(i32, TreeGraph)>, Vec<i32>) {
-        let mut best_pp: Option<(i32, TreeGraph)>;
+        let mut best_pp: Option<(i32, TreeGraph)> = None;
         let mut best_pp_graph_size = usize::MAX;
         let mut best_pp_term_weight = 0;
         let mut cannot_schedule: Vec<i32> = Vec::new();
@@ -515,7 +515,7 @@ impl Scheduler {
                                     best_pp_graph_size);
                         best_pp = Some((pp_i, pp_graph));
                         if !best_fit {
-                            return (best_pp, cannot_schedule);
+                            break;
                         }
                     }
                 }
@@ -536,7 +536,7 @@ impl Scheduler {
                 cannot_schedule.push(pp_i);
             }
         }
-        (None, cannot_schedule)
+        (best_pp, cannot_schedule)
     }
 
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
