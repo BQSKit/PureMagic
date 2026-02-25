@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.stree_termination_threshold);
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit(args.best_fit)?;
-    debug_assert_eq!(num_scheduled, num_products);
+    assert_eq!(num_scheduled, num_products);
     // Calculate and print statistics
     let volume = num_qubits * tot_num_steps;
     println!("Scheduled {} in {} time steps, volume {}", num_scheduled, tot_num_steps, volume);

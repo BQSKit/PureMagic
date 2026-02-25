@@ -186,6 +186,7 @@ impl Scheduler {
         self.init_magic_nodes();
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
+        debug_sched!("Initial to_schedule len {}", to_schedule.len());
         // Track parent relationships
         let mut remaining_parents: Vec<_> = (0..self.circuit.num_products()).map(|id| {
                                                 let pp = self.circuit.get_product(id as i32);
@@ -212,7 +213,7 @@ impl Scheduler {
             print!("Scheduling {} products:    ", total_to_schedule);
         }
         // Main scheduling loop
-        while !to_schedule.is_empty() {
+        while !to_schedule.is_empty() || !self.clifford_paths.is_empty() {
             self.timers.timestep.start();
             num_steps += 1;
             info_sched!("{}Step {}: {:?}{}",
@@ -224,10 +225,12 @@ impl Scheduler {
                         _RESET);
             if let Some(pp_paths) = self.schedule_timestep(num_steps, &to_schedule, best_fit) {
                 debug_sched!("Scheduled timestep {}", num_steps);
+                debug_sched!("After timestep, to_schedule len {}", to_schedule.len());
                 // Collect scheduled product ids for fast lookup
                 let scheduled_ids: IndexSet<i32> = pp_paths.iter().map(|(pp, _)| pp.id).collect();
                 // Remove scheduled products from to_schedule
                 to_schedule.retain(|pp| !scheduled_ids.contains(&pp.id));
+                debug_sched!("After purge, to_schedule len {}", to_schedule.len());
                 // Add children from scheduled products
                 let mut children_to_schedule = IndexSet::new();
                 for (pp, _) in pp_paths.iter() {
@@ -268,12 +271,17 @@ impl Scheduler {
                         }
                     }
                 }
+                debug_sched!("After inserting previous round cliffords, to_schedule len {}",
+                             to_schedule.len());
                 // Extend next_to_schedule with children from IndexSet
                 to_schedule.extend(children_to_schedule.iter().map(|&id| {
                                                                   self.circuit
                                                                       .get_product(id)
                                                                       .clone()
                                                               }));
+                debug_sched!("After adding {} children, to_schedule len {}",
+                             children_to_schedule.len(),
+                             to_schedule.len());
                 // add products to the current step list
                 let products_in_step: Vec<PauliProduct> =
                     pp_paths.iter().map(|(pp, _)| pp.clone()).collect();
@@ -283,8 +291,7 @@ impl Scheduler {
                 self.scheduled_products.extend(pp_paths.iter().map(|(pp, _)| pp.id));
                 let num_scheduled = self.scheduled_products.len();
                 if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
-                    // Update progress counter if we are not plotting either the start or end of
-                    // the loop
+                    // Update progress counter if not plotting at the start or end of the loop
                     if num_steps == plot_steps {
                         print!("Scheduling {} products:    ", total_to_schedule);
                     }
