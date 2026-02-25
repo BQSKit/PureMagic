@@ -132,7 +132,7 @@ pub struct Scheduler {
     plot_option: String,
     cultivation_times: Vec<i32>,
     stats: ScheduleStats,
-    scheduled_products_by_step: Vec<(usize, Vec<PauliProduct>)>,
+    timestep_scheduled: Vec<(usize, Vec<PauliProduct>)>,
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, TreeGraph)>,
@@ -169,7 +169,7 @@ impl Scheduler {
                     plot_option,
                     cultivation_times: Vec::new(),
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
-                    scheduled_products_by_step: Vec::new(),
+                    timestep_scheduled: Vec::new(),
                     scheduled_products: IndexSet::new(),
                     used: vec![false; num_nodes],
                     clifford_paths: IndexMap::new(),
@@ -277,7 +277,7 @@ impl Scheduler {
                 // add products to the current step list
                 let products_in_step: Vec<PauliProduct> =
                     pp_paths.iter().map(|(pp, _)| pp.clone()).collect();
-                self.scheduled_products_by_step.push((num_steps, products_in_step));
+                self.timestep_scheduled.push((num_steps, products_in_step));
                 #[cfg(debug_assertions)]
                 self.check_dependencies(&pp_paths)?;
                 self.scheduled_products.extend(pp_paths.iter().map(|(pp, _)| pp.id));
@@ -752,12 +752,12 @@ impl Scheduler {
         let mut buf_file = BufWriter::new(file);
 
         let max_step: usize =
-            self.scheduled_products_by_step.last().map(|(step_i, _)| *step_i).unwrap_or(0);
+            self.timestep_scheduled.last().map(|(step_i, _)| *step_i).unwrap_or(0);
         let max_width = max_step.to_string().len();
-        let tot_products =
-            self.scheduled_products_by_step.iter().map(|(_, v)| v.len()).sum::<usize>();
+        let tot_products = self.timestep_scheduled.iter().map(|(_, v)| v.len()).sum::<usize>();
+        assert_eq!(tot_products, self.scheduled_products.len());
         writeln!(buf_file, "{}", hdr)?;
-        writeln!(buf_file, "# Total active steps: {}", self.scheduled_products_by_step.len())?;
+        writeln!(buf_file, "# Total active steps: {}", self.timestep_scheduled.len())?;
         writeln!(buf_file, "# Total steps: {}", max_step)?;
         writeln!(buf_file, "# Total products: {}", tot_products)?;
         writeln!(buf_file, "# Parallelism: {:.2}", max_step as f64 / tot_products as f64)?;
@@ -767,7 +767,7 @@ impl Scheduler {
 
         // FIXME: check that each CX is repeated 2x exactly, and each S/SX is repeated 3x
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
-        for (step_i, step_products) in &self.scheduled_products_by_step {
+        for (step_i, step_products) in &self.timestep_scheduled {
             let mut sorted_products = step_products.clone();
             sorted_products.sort_by_key(|pp| {
                                pp.operators.iter().map(|op| op.qubit).min().unwrap_or(usize::MAX)
@@ -819,7 +819,7 @@ impl Scheduler {
         // map the product id to a vector containing the timesteps on which the product was found
         let mut cx_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
         let mut s_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
-        for (step_i, step_products) in &self.scheduled_products_by_step {
+        for (step_i, step_products) in &self.timestep_scheduled {
             for pp in step_products {
                 if pp.gate_type.is_cx() {
                     let steps = cx_counts.entry(pp.id).or_insert(Vec::new());
