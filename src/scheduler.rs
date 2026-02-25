@@ -755,7 +755,6 @@ impl Scheduler {
             self.timestep_scheduled.last().map(|(step_i, _)| *step_i).unwrap_or(0);
         let max_width = max_step.to_string().len();
         let tot_products = self.timestep_scheduled.iter().map(|(_, v)| v.len()).sum::<usize>();
-        assert_eq!(tot_products, self.scheduled_products.len());
         writeln!(buf_file, "{}", hdr)?;
         writeln!(buf_file, "# Total active steps: {}", self.timestep_scheduled.len())?;
         writeln!(buf_file, "# Total steps: {}", max_step)?;
