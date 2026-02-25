@@ -62,7 +62,7 @@ Each line encodes a Pauli product with a sign (`+`/`-`), per-qubit operators (`_
 <M>     Measurement
 ```
 
-Files in this format can be obtained by using Tableau in the `tableau` directory, for example running:
+Files in this format can be obtained by using Tableau in the `tableau` submodule directory, for example running:
 
 ```
 python transpile_circuit.py -i circuit.qasm
@@ -71,6 +71,12 @@ python transpile_circuit.py -i circuit.qasm
 will produce a file `circuit.trans` which is in the correct input format for `puremagic`.
 
 Consult the `README.md` for usage details.
+
+Make sure to checkout the tableau submodule with
+
+```
+git submodule update --init
+```
 
 ## Output Files
 
