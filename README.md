@@ -72,7 +72,7 @@ will produce a file `circuit.trans` which is in the correct input format for `pu
 
 Consult the `README.md` for usage details.
 
-Make sure to checkout the tableau submodule with
+After cloning the PureMagic repository, make sure to checkout the tableau submodule with
 
 ```
 git submodule update --init

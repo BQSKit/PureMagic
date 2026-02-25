@@ -220,7 +220,7 @@ impl Scheduler {
                         _CYAN,
                         num_steps,
                         to_schedule.iter()
-                                   .map(|pp| format!("{}:{}", pp.id, pp.get_product_str()))
+                                   .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
                                    .collect::<Vec<_>>(),
                         _RESET);
             if let Some(pp_paths) = self.schedule_timestep(num_steps, &to_schedule, best_fit) {
@@ -429,7 +429,7 @@ impl Scheduler {
                        _RED,
                        step_i,
                        to_schedule.iter()
-                                  .map(|pp| pp.get_product_str())
+                                  .map(|pp| pp.to_operator_str())
                                   .collect::<Vec<_>>()
                                   .join(", "),
                        num_avail_magic,
@@ -510,7 +510,7 @@ impl Scheduler {
                         best_pp_term_weight = pp_term_weight;
                         best_pp_graph_size = pp_graph_size;
                         info_sched!("  Best graph for pp {}, term weight {}, size {}",
-                                    pp.get_product_str(),
+                                    pp.to_operator_str(),
                                     pp_term_weight,
                                     best_pp_graph_size);
                         best_pp = Some((pp_i, pp_graph));
