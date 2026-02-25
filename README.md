@@ -1,22 +1,114 @@
-# The Lattice Surgery Scheduling Problem (LSSP)
+# PureMagic
+
+A **Lattice Surgery Scheduling Problem (LSSP) solver** for quantum surface code topologies. PureMagic schedules transpiled quantum circuits onto an abstract physical hardware layer, minimizing execution time by exploiting parallelism through Steiner tree packing.
+
+The original Lattice Surgery Scheduling problem is described in the paper [Game of Surface Codes](https://arxiv.org/abs/1808.02892).
+
+The code in this repository is used for the paper [Scheduling Lattice Surgery with Magic State
+Cultivation](https://arxiv.org/pdf/2512.06484).
 
 
+## Building
 
-The lattice surgery scheduling problem (LSSP) we wish to address is the problem of scheduling a circuit on a logical map, which is topology consisting of logical qubits, or patches, of which some are data, some are bus, some are magic state and some are ancillary. Figure 4b from the LSSP paper shows a topology that is easily parallelizable. The green patches are bus qubits, the blue patches are data qubits, the orange patches are magic state qubits and the pink patches are ancillary qubits.
+Requires Rust (stable). Build with:
 
-![lssp-example-layout](images/lssp-topo.png)
+```bash
+cargo build --release
+```
 
-The circuits are expressed as a set of Pauli rotation measurements with dependencies that form a DAG. Following the paper, we can assume the circuits are always transpiled, which reduces both the number of operations and the potential parallelism. The latter is bad but for the circuits looked at in the paper, the benefits of shorter circuits were always greater than the loss of parallelism. Transpilation removes all the PI/4 rotations by commuting them past the qubit measurements. This simplifies the problem because we are left with only PI/8 rotations, for which we require only magic state qubits, not ancillary qubits. So the pink patches in the figure can be replaced by orange or purple patches. Because of the transpilation, each operator can require multiple qubits, so we have to use a Steiner tree to connect the magic qubit to the required data qubits over the bus qubits, with no overlapping paths (i.e. bus qubits can only be used for one operator).
+The binary is placed at `target/release/puremagic`.
 
-To quote the paper, "A Game of Surface Codes":
+## Usage
 
-"Clifford+T circuits can be written in
-terms of π/8 rotations, π/4 rotations and measurements. To convert input circuits into a standard form,
-π/4 rotations can be commuted to the end of the circuit and absorbed by the final measurements. Thus, any
-quantum computation can be written as a sequence of
-π/8 rotations grouped into layers of mutually commuting rotations. The number of rotations is the T count
-and the number of layers is the T depth. Each rotation
-can be performed by consuming a magic state via a
-Pauli product measurement. These measurements can
-be implemented in our framework in 1."
+```
+puremagic [OPTIONS] --circuit <FILE>
+```
+
+Run with `-h` to see the options.
+
+### Basic Examples
+
+```bash
+# Schedule a transpiled circuit from file
+./target/release/puremagic --circuit qft_n63.trans
+
+# Use best-fit scheduling with Pure Magic routing and debug logging
+./target/release/puremagic --circuit circuit.trans --best-fit --use-magic-routing --log-scheduler debug
+
+# Generate plots of topology, circuit layers, and scheduling paths
+./target/release/puremagic --circuit circuit.trans --plot topo,circuit,cstats,paths
+```
+
+## Circuit Format
+
+Input circuits use a transpiled Pauli product format. For example, here is a 4-qubit circuit:
+
+```
++_Z__<pi/8>      # T gate with Z on qubit 1
+-_X_Y<pi/8>      # T gate with X on qubit 1, Y on qubit 3
+-XZ__<CX>        # CX Clifford gate on qubits 0 and 1
++_X_Z<M>         # Measurement on qubits 1 and 3
+```
+
+Each line encodes a Pauli product with a sign (`+`/`-`), per-qubit operators (`_` for identity, `X`, `Y`, `Z`), and a gate type tag. Currently supported gates are:
+
+```
+<pi/8>  T gate
+<CX>    CX Clifford gate
+<S>     S/Sdg Clifford gate
+<SX>    SX/SXdg Clifford gate
+<M>     Measurement
+```
+
+## Output Files
+
+After scheduling, the following files are produced:
+
+| File | Contents |
+|------|----------|
+| `<name>.circuit.txt` | Circuit layer and dependency information. Debug builds. |
+| `<name>.sched_trace` | Detailed scheduling trace (requires `--log-scheduler`). Debug builds. |
+| `<name>.schedule` | Final schedule (timestep → operations) |
+| `<name>.topo.png` | Topology visualization (requires `--plot topo`) |
+| `<name>.topo.txt` | Topology file. Debug builds. |
+| `<name>.layer_stats.png` | Circuit layer statistics (requires `--plot cstats`) |
+| `<name>.paths/` | Per-timestep path visualizations (requires `--plot paths`) |
+
+## Topology File Format
+
+Topologies can be provided as a text file with node labels, grid positions, and types:
+
+```
+LABEL    X  Y  TYPE
+d0       0  0  Data
+d1       2  0  Data
+m0       1  1  Magic
+b0       1  0  Bus
+```
+
+For example, here is an 8-data qubit topology:
+
+```
+m  m  m  m  m  m  m  m  m
+m  dX m  dX m  dX m  dX m
+m  dZ m  dZ m  dZ m  dZ m
+m  m  m  m  m  m  m  m  m
+```
+
+If no topology file is provided, one is auto-generated based on the circuit's qubit count.
+
+## Project Structure
+
+```
+src/
+├── puremagic.rs       # CLI entry point and argument parsing
+├── scheduler.rs       # Core EAF scheduling algorithm
+├── circuit.rs         # Circuit DAG: products, layers, dependencies
+├── pauliproduct.rs    # Pauli product operations and gate types
+├── topograph.rs       # Topology graph: nodes, grid layout, qubit types
+├── steinertree.rs     # Steiner tree computation (greedy multi-source BFS)
+├── treegraph.rs       # Tree graph structure for scheduled operation paths
+├── node.rs            # Node type definitions (Magic, Bus, Data)
+└── utils.rs           # Timing utilities and logging macros
+```
 
