@@ -105,7 +105,7 @@ impl ScheduleStats {
         }
     }
 
-    pub fn get_plot_info_str(&self) -> &String {
+    pub fn get_plot_info_str(&self) -> &str {
         &self.plot_info_str
     }
 }
@@ -235,17 +235,15 @@ impl Scheduler {
                 let mut children_to_schedule = IndexSet::new();
                 for (pp, _) in pp_paths.iter() {
                     if pp.gate_type.is_clifford() {
-                        if !self.clifford_paths.contains_key(&pp.id) {
-                            // don't add children if pp is a first round clifford
-                            continue;
-                        }
-                        if pp.gate_type.is_s() || pp.gate_type.is_sx() {
-                            // don't add children for the second round S/SX
-                            if let Some((count, _, _)) = self.clifford_paths.get(&pp.id) {
-                                if *count == 1 {
-                                    continue;
-                                }
+                        if let Some((count, _, _)) = self.clifford_paths.get(&pp.id) {
+                            debug_assert!(pp.gate_type.is_s() || pp.gate_type.is_sx());
+                            if *count == 2 {
+                                // second round of S/SX clifford, don't add children
+                                continue;
                             }
+                        } else {
+                            // first round of clifford - don't add children
+                            continue;
                         }
                     }
                     // Add children to next round if all parents scheduled
@@ -747,7 +745,7 @@ impl Scheduler {
         Ok(())
     }
 
-    pub fn print_schedule(&self, hdr: &String) -> io::Result<()> {
+    pub fn print_schedule(&self, hdr: &str) -> io::Result<()> {
         let _timer = fn_timer!();
         debug_sched!("Printing schedule");
         let circuit_stem = Path::new(&self.circuit.circuit_fname).file_stem()
@@ -766,7 +764,7 @@ impl Scheduler {
         writeln!(buf_file, "# Total active steps: {}", self.timestep_scheduled.len())?;
         writeln!(buf_file, "# Total steps: {}", max_step)?;
         writeln!(buf_file, "# Total products: {}", tot_products)?;
-        writeln!(buf_file, "# Parallelism: {:.2}", max_step as f64 / tot_products as f64)?;
+        writeln!(buf_file, "# Parallelism: {:.2}", tot_products as f64 / max_step as f64)?;
 
         let colors = [_GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED,
                       _LYELLOW, _LBLUE, _LMAGENTA, _LCYAN, _LWHITE];
@@ -847,7 +845,7 @@ impl Scheduler {
         }
         for (pp_id, steps) in &s_counts {
             let pp = self.circuit.get_product(*pp_id);
-            if pp.gate_type.is_s() {
+            if pp.gate_type.is_s() || pp.gate_type.is_sx() {
                 if steps.len() != 3 || steps[0] != steps[1] - 1 || steps[1] != steps[2] - 1 {
                     errors.push(format!("  product {} not scheduled 3x {:?}", pp, steps));
                 }
