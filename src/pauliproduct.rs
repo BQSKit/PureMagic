@@ -2,7 +2,58 @@ use rand::Rng;
 use std::error::Error;
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GateType {
+    T,
+    S,
+    SX,
+    CX,
+    M,
+    Z,
+    X,
+}
+
+impl GateType {
+    pub fn is_t(&self) -> bool {
+        matches!(self, GateType::T)
+    }
+
+    pub fn is_s(&self) -> bool {
+        matches!(self, GateType::S)
+    }
+
+    pub fn is_sx(&self) -> bool {
+        matches!(self, GateType::SX)
+    }
+
+    pub fn is_cx(&self) -> bool {
+        matches!(self, GateType::CX)
+    }
+
+    pub fn is_m(&self) -> bool {
+        matches!(self, GateType::M)
+    }
+
+    pub fn is_x(&self) -> bool {
+        matches!(self, GateType::X)
+    }
+
+    pub fn is_z(&self) -> bool {
+        matches!(self, GateType::Z)
+    }
+
+    pub fn is_clifford(&self) -> bool {
+        self.is_cx() || self.is_s() || self.is_sx()
+    }
+}
+
+impl fmt::Display for GateType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Operator {
     pub qubit: usize,
     pub basis: char,
@@ -21,7 +72,7 @@ pub struct PauliProduct {
     pub children: Vec<i32>,
     pub max_qubit: usize,
     pub id: i32,
-    pub is_tgate: bool,
+    pub gate_type: GateType,
 }
 
 impl Default for PauliProduct {
@@ -31,7 +82,7 @@ impl Default for PauliProduct {
                        parents: Vec::new(),
                        children: Vec::new(),
                        id: -1,
-                       is_tgate: true }
+                       gate_type: GateType::T }
     }
 }
 
@@ -54,12 +105,17 @@ impl PauliProduct {
                     self.operators.push(Operator { qubit: i - 1, basis: c });
                 }
                 '<' => {
-                    let angle = &s[i..];
-                    match angle {
-                        "<M>" => self.is_tgate = false,
-                        "<pi/8>" => self.is_tgate = true,
+                    let gate_type = &s[i..];
+                    match gate_type {
+                        "<M>" => self.gate_type = GateType::M,
+                        "<T>" => self.gate_type = GateType::T,
+                        "<CX>" => self.gate_type = GateType::CX,
+                        "<S>" | "<Sdg>" => self.gate_type = GateType::S,
+                        "<SX>" | "<SXdg>" => self.gate_type = GateType::SX,
+                        "<Z>" => self.gate_type = GateType::Z,
+                        "<X>" => self.gate_type = GateType::X,
                         _ => {
-                            return Err(format!("Unknown angle {} in product {}", angle, s).into());
+                            return Err(format!("Unknown gate {} in {}", gate_type, s).into());
                         }
                     }
                     break;
@@ -70,26 +126,27 @@ impl PauliProduct {
                 }
             }
         }
-        //if self.num_ys % 2 == 1 {
-        //    self.need_ancilla = true;
-        //}
+        if self.gate_type.is_cx() {
+            assert_eq!(self.operators.len(), 2);
+        } else if self.gate_type.is_s() || self.gate_type.is_sx() {
+            assert_eq!(self.operators.len(), 1, "Should have max 1 qubit: {}", self);
+        }
         self.max_qubit = self.operators.iter().map(|op| op.qubit).max().unwrap_or(0);
         Ok(())
     }
 
-    pub fn get_product_str(&self) -> String {
+    pub fn to_operator_str(&self) -> String {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
-        let angle = if self.is_tgate { "<T>" } else { "<M>" };
-        format!("{}{}", ops, angle)
+        format!("{}<{:?}>", ops, self.gate_type)
     }
 
     pub fn get_qubits(&self) -> Vec<usize> {
         self.operators.iter().map(|op| op.qubit).collect()
     }
 
-    pub fn generate_random(product_id: i32, num_qubits: usize, spread_probability: f64,
-                           decay_factor: f64)
-                           -> Self {
+    pub fn gen_rnd_t(product_id: i32, num_qubits: usize, spread_probability: f64,
+                     decay_factor: f64)
+                     -> Self {
         let mut rng = rand::thread_rng();
         let mut operators = Vec::new();
         // Choose initial random location
@@ -133,20 +190,17 @@ impl PauliProduct {
                        children: Vec::new(),
                        max_qubit,
                        id: product_id,
-                       is_tgate: true }
+                       gate_type: GateType::T }
     }
 
     pub fn to_circuit_format(&self, num_qubits: usize) -> String {
         let mut rng = rand::thread_rng();
         let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
         let mut pauli_string = vec!['_'; num_qubits];
-
         for op in &self.operators {
             pauli_string[op.qubit] = op.basis;
         }
-
-        let angle = if self.is_tgate { "<pi/8>" } else { "<M>" };
-        format!("{}{}{}", sign, pauli_string.iter().collect::<String>(), angle)
+        format!("{}{}<{:?}>", sign, pauli_string.iter().collect::<String>(), self.gate_type)
     }
 
     pub fn count_weighted_terms(&self) -> usize {
@@ -156,11 +210,9 @@ impl PauliProduct {
 
 impl fmt::Display for PauliProduct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let clifford_str = if self.is_tgate { "T-gate" } else { "clifford" };
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
-
         write!(f,
-               "{} {} {} children {:?} parents {:?}",
-               self.id, ops, clifford_str, self.children, self.parents)
+               "{} {} <{:?}> children {:?} parents {:?}",
+               self.id, ops, self.gate_type, self.children, self.parents)
     }
 }
