@@ -761,7 +761,7 @@ impl TopoGraph {
                           .next()
             {
                 let (x, y) = self.nodes[first_data_node_id].pos;
-                let product_str = pp.get_product_str();
+                let product_str = pp.to_operator_str();
                 let text_width = product_str.len() as f32 * 0.125;
                 // Draw text background
                 chart.draw_series(std::iter::once(Rectangle::new([(x as f32 - 0.3,

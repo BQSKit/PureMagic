@@ -1,5 +1,6 @@
 use crate::debug_sched;
 use crate::node::NodeType;
+use crate::pauliproduct::GateType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 #[allow(unused_imports)]
@@ -37,8 +38,8 @@ impl SteinerTreeComputation {
 
     // this can be viewed as a greedy multi-source shortest path algorithm
     pub fn get_steiner_tree(&mut self, topo: &TopoGraph, used: &Vec<bool>,
-                            root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>, is_tgate: bool,
-                            num_scheduled: usize)
+                            root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>,
+                            gate_type: GateType, num_scheduled: usize)
                             -> Option<TreeGraph> {
         debug_sched!("    BFS from root nodes {:?} to terminal nodes {:?}",
                      root_ids.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>(),
@@ -91,15 +92,15 @@ impl SteinerTreeComputation {
                          topo.get_node(node_id).label,
                          _RESET);
             (num_paths, cultivator) = self.visit_neighbors(node_id, topo, used, reqd_paths,
-                                                           is_tgate, cultivator, num_paths,
+                                                           gate_type, cultivator, num_paths,
                                                            &mut tree);
             if num_paths == reqd_paths {
-                if is_tgate && cultivator.is_none() {
+                if gate_type.is_t() && cultivator.is_none() {
                     continue;
                 }
                 // we have all the paths and terms and a cultivator (if needed), so we can now
                 // return the tree (bfs_graph)
-                tree.root_node_id = if is_tgate {
+                tree.root_node_id = if gate_type.is_t() {
                     debug_sched!("      {}tree complete, cultivator {}{}",
                                  _GREEN,
                                  topo.get_node(cultivator.unwrap()).label,
@@ -145,8 +146,9 @@ impl SteinerTreeComputation {
     }
 
     fn visit_neighbors(&mut self, node_id: usize, topo: &TopoGraph, used: &Vec<bool>,
-                       reqd_paths: usize, is_tgate: bool, starting_cultivator: Option<usize>,
-                       num_start_paths: usize, tree: &mut TreeGraph)
+                       reqd_paths: usize, gate_type: GateType,
+                       starting_cultivator: Option<usize>, num_start_paths: usize,
+                       tree: &mut TreeGraph)
                        -> (usize, Option<usize>) {
         let node = topo.get_node(node_id);
         let curr_root_id = self.visited[node_id].unwrap();
@@ -225,7 +227,7 @@ impl SteinerTreeComputation {
                     }
                     tree.add_edge(node_id, *nb_id);
                     if num_paths == reqd_paths {
-                        if is_tgate && cultivator.is_none() {
+                        if gate_type.is_t() && cultivator.is_none() {
                             continue;
                         }
                         // we break here because we previously found a cultivator, and now have
@@ -235,7 +237,7 @@ impl SteinerTreeComputation {
                 }
                 continue;
             }
-            let nb_is_cultivator = is_tgate
+            let nb_is_cultivator = gate_type.is_t()
                                    && cultivator.is_none()
                                    && nb.node_type == NodeType::Magic
                                    && nb.cultivation_time == 0;
