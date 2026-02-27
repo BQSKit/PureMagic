@@ -4,13 +4,13 @@ Script to convert quantum circuit operations from verbose format to compact form
 
 Input format:
     Rotate -1: XXXX
-    Rotate 1: IIZX
+    Rotate 2: IIZX
     Measure +: IIZX
     Measure -: YZIX
 
 Output format:
     -XXXX<pi/8>
-    +__ZX<pi/8>
+    +__ZX<pi/4>
     +__ZX<M>
     -YZ_X<M>
 """
@@ -48,32 +48,35 @@ def convert_operation(line):
 
     # Determine the sign
     if operation == "Rotate":
-        if sign_part == "-1":
+        if sign_part in ["-1", "-2"]:
             sign = "-"
-        elif sign_part == "1" or sign_part == "+1":
+        elif sign_part in ["1", "+1", "2", "+2"]:
             sign = "+"
         else:
-            print(f"Warning: Unknown rotation sign '{sign_part}' in line: {line}", file=sys.stderr)
-            return None
+            raise RuntimeError(f"Warning: Unknown rotation sign '{sign_part}' in line: {line}")
     elif operation == "Measure":
         if sign_part == "+":
             sign = "+"
         elif sign_part == "-":
             sign = "-"
         else:
-            print(
-                f"Warning: Unknown measurement sign '{sign_part}' in line: {line}", file=sys.stderr
-            )
-            return None
+            raise RuntimeError(f"Warning: Unknown measurement sign '{sign_part}' in line: {line}")
+    else:
+        raise RuntimeError(f"Warning: Unknown operation '{operation}' in line: {line}")
 
     # Convert Pauli string: replace 'I' with '_'
     converted_pauli = pauli_string.replace("I", "_")
 
     # Determine the angle bracket
     if operation == "Rotate":
-        angle = "<pi/8>"
+        if sign_part in ["1", "-1", "+1"]:
+            angle = "<pi/8>"
+        else:
+            angle = "<pi/4>"
     elif operation == "Measure":
         angle = "<M>"
+    else:
+        raise RuntimeError(f"Warning: Unknown operation type {operation} in line: {line}")
 
     return f"{sign}{converted_pauli}{angle}"
 
