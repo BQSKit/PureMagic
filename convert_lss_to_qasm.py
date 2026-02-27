@@ -158,7 +158,7 @@ def get_s_product(i, lines):
     assert gate_type == "clifford"
     (qubits, terms) = get_qubits_and_terms(op_str)
     if len(qubits) == 1 and terms[0] == "Z":
-        return f"s q[{qubits[0]};"
+        return f"s q[{qubits[0]}];"
     return None
 
 
@@ -168,27 +168,22 @@ def preprocess(lines):
         i = i + skips
         if i + 1 >= len(lines):
             break
-        if lines[i][2] == "T" and lines[i + 1][2] == "T":
-            (sign, op_str, _) = lines[i]
-            (next_sign, next_op_str, _) = lines[i + 1]
-            if op_str != next_op_str:
-                continue
+        (sign, op_str, gate_type) = lines[i]
+        (next_sign, next_op_str, next_gate_type) = lines[i + 1]
+        if op_str != next_op_str:
+            # no reduction if they don't operate on exactly the same qubits with the same terms
+            continue
+        if gate_type == "T" and next_gate_type == "T":
             if sign != next_sign:
                 # different signs, cancel out the T gates
-                print(
-                    f"Cancel {i} {lines[i]} and {lines[i+1]}",
-                    file=sys.stderr,
-                )
+                # print(f"Cancel {i} {lines[i]} and {lines[i+1]}", file=sys.stderr)
                 lines[i] = None
                 lines[i + 1] = None
                 skips += 1
                 continue
             else:
                 # same sign, convert to Clifford Z
-                print(
-                    f"To clifford {i} {lines[i]} and {lines[i+1]}",
-                    file=sys.stderr,
-                )
+                # print(f"To clifford {i} {lines[i]} and {lines[i+1]}", file=sys.stderr)
                 (qubits, terms) = get_qubits_and_terms(op_str)
                 assert len(qubits) == 1 and terms[0] == "Z"
                 lines[i] = (sign, op_str, "clifford")
