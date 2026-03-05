@@ -19,10 +19,12 @@ import sys
 import argparse
 import re
 from pathlib import Path
-from typing import Optional
+from typing import IO, Optional
+
+Op = tuple[str, str, str]
 
 
-def convert_operation(line):
+def convert_operation(line: str) -> Optional[Op]:
     """
     Convert a single line from input format to output format.
 
@@ -38,15 +40,19 @@ def convert_operation(line):
 
     # Parse the input line using regex
     # Matches: "Rotate -1:", "Rotate 1:", "Measure +:", "Measure -:"
-    pattern = r"^(Rotate|Measure)\s+([+-]?\d*):?\s+([IXYZ]+)$"
-    match = re.match(pattern, line)
+    pattern: str = r"^(Rotate|Measure)\s+([+-]?\d*):?\s+([IXYZ]+)$"
+    match: Optional[re.Match[str]] = re.match(pattern, line)
 
     if not match:
         raise RuntimeError(f"Could not parse line: {line}")
 
+    operation: str
+    sign_part: str
+    pauli_string: str
     operation, sign_part, pauli_string = match.groups()
 
     # Determine the sign
+    sign: str
     if operation == "Rotate":
         if sign_part in ["-1", "-2"]:
             sign = "-"
@@ -65,9 +71,10 @@ def convert_operation(line):
         raise RuntimeError(f"Unknown operation '{operation}' in line: {line}")
 
     # Convert Pauli string: replace 'I' with '_'
-    converted_pauli = pauli_string.replace("I", "_")
+    converted_pauli: str = pauli_string.replace("I", "_")
 
     # Determine the angle bracket
+    gate_type: str
     if operation == "Rotate":
         if sign_part in ["1", "-1"]:
             gate_type = "T"
@@ -81,9 +88,9 @@ def convert_operation(line):
     return (sign, converted_pauli, gate_type)
 
 
-def get_qubits_and_terms(op_str):
-    qubits = []
-    terms = []
+def get_qubits_and_terms(op_str: str) -> tuple[list[int], list[str]]:
+    qubits: list[int] = []
+    terms: list[str] = []
     for i, op in enumerate(op_str):
         if op != "_":
             qubits.append(i)
@@ -91,7 +98,7 @@ def get_qubits_and_terms(op_str):
     return (qubits, terms)
 
 
-def get_cx_product(i, lines):
+def get_cx_product(i: int, lines: list[Op]) -> Optional[str]:
     if len(lines) <= i + 2:
         return None
     (sign, op_str, gate_type) = lines[i]
@@ -100,8 +107,8 @@ def get_cx_product(i, lines):
     if not "X" in terms or not "Z" in terms:
         return None
     assert len(qubits) == 2 and sign == "+" and terms[0] != terms[1]
-    xpos = qubits[0] if terms[0] == "X" else qubits[1]
-    zpos = qubits[0] if terms[0] == "Z" else qubits[1]
+    xpos: int = qubits[0] if terms[0] == "X" else qubits[1]
+    zpos: int = qubits[0] if terms[0] == "Z" else qubits[1]
     # check and clear next two lines
     for term in ["Z", "X"]:
         i += 1
@@ -114,15 +121,16 @@ def get_cx_product(i, lines):
     return f"cx q[{min(xpos,zpos)}], q[{max(xpos, zpos)}];"
 
 
-def get_t_product(i, lines):
-    (_, op_str, gate_type) = lines[i]
+def get_t_product(i: int, lines: list[Op]) -> str:
+    (sign, op_str, gate_type) = lines[i]
     assert gate_type == "T"
     (qubits, terms) = get_qubits_and_terms(op_str)
     assert len(qubits) == 1 and terms[0] == "Z"
-    return f"t q[{qubits[0]}];"
+    gate: str = "t" if sign == "+" else "tdg"
+    return f"{gate} q[{qubits[0]}];"
 
 
-def get_h_product(i, lines):
+def get_h_product(i: int, lines: list[Op]) -> Optional[str]:
     # check for Hadamard - ZXZ over 3 timesteps
     if len(lines) <= i + 2:
         return None
@@ -145,33 +153,34 @@ def get_h_product(i, lines):
     return f"h q[{qubits[0]}];"
 
 
-def get_m_product(i, lines):
+def get_m_product(i: int, lines: list[Op]) -> str:
     (_, op_str, gate_type) = lines[i]
     assert gate_type == "M"
-    qubits = get_qubits_and_terms(op_str)[0]
+    qubits: list[int] = get_qubits_and_terms(op_str)[0]
     assert len(qubits) == 1
     return f"measure q[{qubits[0]} -> meas[{qubits[0]};"
 
 
-def get_s_product(i, lines):
-    (_, op_str, gate_type) = lines[i]
+def get_s_product(i: int, lines: list[Op]) -> Optional[str]:
+    (sign, op_str, gate_type) = lines[i]
     assert gate_type == "clifford"
     (qubits, terms) = get_qubits_and_terms(op_str)
     if len(qubits) == 1 and terms[0] == "Z":
-        return f"s q[{qubits[0]}];"
+        gate: str = "s" if sign == "+" else "sdg"
+        return f"{gate} q[{qubits[0]}];"
     return None
 
 
-def preprocess(line_nums, lines):
-    new_lines = []
-    new_line_nums = []
-    skips = 0
+def preprocess(line_nums: list[int], lines: list[Op]) -> tuple[list[int], list[Op], int]:
+    new_lines: list[Op] = []
+    new_line_nums: list[int] = []
+    skips: int = 0
     for i in range(len(lines)):
-        k = i + skips
+        k: int = i + skips
         if k + 1 >= len(lines):
             break
         (sign, op_str, gate_type) = lines[k]
-        next_i = k + 1
+        next_i: int = k + 1
         (next_sign, next_op_str, next_gate_type) = lines[next_i]
         if op_str != next_op_str:
             # no reduction if they don't operate on exactly the same qubits with the same terms
@@ -199,15 +208,15 @@ def preprocess(line_nums, lines):
     return new_line_nums, new_lines, skips
 
 
-def get_converted_lines(input_path):
-    lines = []
-    line_nums = []
-    converted_count = 0
+def get_converted_lines(input_path: Path) -> tuple[list[int], list[Op]]:
+    lines: list[Op] = []
+    line_nums: list[int] = []
+    converted_count: int = 0
     # Read and convert the file
     try:
         with open(input_path, "r", encoding="utf-8") as f:
             for i, line in enumerate(f, 1):
-                converted_line = convert_operation(line)
+                converted_line: Optional[Op] = convert_operation(line)
                 if converted_line is None:
                     continue
                 lines.append(converted_line)
@@ -218,11 +227,12 @@ def get_converted_lines(input_path):
     return line_nums, lines
 
 
-def convert_file(input_file, output_file=None):
-    input_path = Path(input_file)
+def convert_file(input_file: str, output_file: Optional[str] = None) -> None:
+    input_path: Path = Path(input_file)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
     # Determine output file path
+    output_path: Path
     if output_file is None:
         output_path = input_path.with_suffix(input_path.suffix + ".converted")
     else:
@@ -230,8 +240,8 @@ def convert_file(input_file, output_file=None):
 
     line_nums, lines = get_converted_lines(input_path)
 
-    num_qubits = len(lines[0][1])
-    f = open(output_path, "w", encoding="utf-8")
+    num_qubits: int = len(lines[0][1])
+    f: IO[str] = open(output_path, "w", encoding="utf-8")
     print("OPENQASM 2.0;", file=f)
     print('include "qelib1.inc";', file=f)
     print(f"qreg q[{num_qubits}];", file=f)
@@ -241,19 +251,19 @@ def convert_file(input_file, output_file=None):
     print("}", file=f)
     print(f"creg c[{num_qubits}];", file=f)
 
-    num_lines = len(lines)
+    num_lines: int = len(lines)
     line_nums, lines, skips = preprocess(line_nums, lines)
     print(f"Preprocessed {num_lines} lines, skipped {skips} lines")
 
-    num_cliffords = 0
-    num_tgates = 0
-    num_measurements = 0
-    skips = 0
+    num_cliffords: int = 0
+    num_tgates: int = 0
+    num_measurements: int = 0
+    skips: int = 0
     for i in range(len(lines)):
-        k = i + skips
+        k: int = i + skips
         if k >= len(lines):
             break
-        gate_type = lines[k][2]
+        gate_type: str = lines[k][2]
         if gate_type == "T":
             num_tgates += 1
             print(get_t_product(k, lines), file=f)
@@ -262,17 +272,17 @@ def convert_file(input_file, output_file=None):
             print(get_m_product(k, lines), file=f)
         elif gate_type == "clifford":
             num_cliffords += 1
-            cx_product = get_cx_product(k, lines)
+            cx_product: Optional[str] = get_cx_product(k, lines)
             if cx_product is not None:
                 print(cx_product, file=f)
                 skips += 2
                 continue
-            h_product = get_h_product(k, lines)
+            h_product: Optional[str] = get_h_product(k, lines)
             if h_product is not None:
                 print(h_product, file=f)
                 skips += 2
                 continue
-            s_product = get_s_product(k, lines)
+            s_product: Optional[str] = get_s_product(k, lines)
             if s_product is not None:
                 print(s_product, file=f)
             else:
@@ -293,9 +303,9 @@ def convert_file(input_file, output_file=None):
     print(f"  Number of mesaurements: {num_measurements}")
 
 
-def main():
+def main() -> None:
     """Main function to handle command line arguments and run the conversion."""
-    parser = argparse.ArgumentParser(
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="Convert quantum circuit operations from verbose to compact format",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -320,7 +330,7 @@ Output format:
 
     parser.add_argument("input_file", help="Input file path")
     parser.add_argument("-o", "--output", help="Output file path (default: input_file.converted)")
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
 
     try:
         convert_file(args.input_file, args.output)
