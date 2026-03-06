@@ -385,7 +385,7 @@ impl Scheduler {
         // Presort products from most to least resource-intensive, caching the term weight
         let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
             to_schedule.iter()
-                       .sorted_by_key(|pp| std::cmp::Reverse(pp.count_weighted_terms()))
+                       .sorted_by_key(|pp| std::cmp::Reverse(pp.weight))
                        .map(|pp| (pp.id, pp))
                        .collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
@@ -482,7 +482,7 @@ impl Scheduler {
         let mut cannot_schedule: Vec<i32> = Vec::new();
 
         for (&pp_i, &pp) in remaining_to_schedule {
-            let pp_term_weight = pp.count_weighted_terms();
+            let pp_term_weight = pp.weight;
             if pp_term_weight < best_pp_term_weight {
                 info_sched!("  Skip lower weight product {}", pp);
                 continue;

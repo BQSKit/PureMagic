@@ -73,6 +73,7 @@ pub struct PauliProduct {
     pub max_qubit: usize,
     pub id: i32,
     pub gate_type: GateType,
+    pub weight: usize,
 }
 
 impl Default for PauliProduct {
@@ -82,7 +83,8 @@ impl Default for PauliProduct {
                        parents: Vec::new(),
                        children: Vec::new(),
                        id: -1,
-                       gate_type: GateType::T }
+                       gate_type: GateType::T,
+                       weight: 0 }
     }
 }
 
@@ -132,6 +134,7 @@ impl PauliProduct {
             assert_eq!(self.operators.len(), 1, "Should have max 1 qubit: {}", self);
         }
         self.max_qubit = self.operators.iter().map(|op| op.qubit).max().unwrap_or(0);
+        self.weight = self.operators.iter().map(|op| if op.basis == 'Y' { 2 } else { 1 }).sum();
         Ok(())
     }
 
@@ -190,7 +193,8 @@ impl PauliProduct {
                        children: Vec::new(),
                        max_qubit,
                        id: product_id,
-                       gate_type: GateType::T }
+                       gate_type: GateType::T,
+                       weight: 0 }
     }
 
     pub fn to_circuit_format(&self, num_qubits: usize) -> String {
@@ -201,10 +205,6 @@ impl PauliProduct {
             pauli_string[op.qubit] = op.basis;
         }
         format!("{}{}<{:?}>", sign, pauli_string.iter().collect::<String>(), self.gate_type)
-    }
-
-    pub fn count_weighted_terms(&self) -> usize {
-        self.operators.iter().map(|op| if op.basis == 'Y' { 2 } else { 1 }).sum()
     }
 }
 
