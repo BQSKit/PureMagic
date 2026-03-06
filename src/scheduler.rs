@@ -453,20 +453,16 @@ impl Scheduler {
         let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
-            if !self.used[node.id] {
-                if node.is_cultivating() {
-                    node.busy_count += 1;
-                    if node.busy_count == node.cultivation_time {
-                        self.cultivation_times.push(node.cultivation_time);
-                        node.cultivation_time = 0;
-                        node.busy_count = 0;
-                    }
-                }
-            } else {
-                if node.node_type == NodeType::Magic {
-                    node.cultivation_time = new_cultivation_times[cultivation_time_index];
+            if self.used[node.id] && node.node_type == NodeType::Magic {
+                node.cultivation_time = new_cultivation_times[cultivation_time_index];
+                node.busy_count = 0;
+                cultivation_time_index += 1;
+            } else if !self.used[node.id] && node.is_cultivating() {
+                node.busy_count += 1;
+                if node.busy_count == node.cultivation_time {
+                    self.cultivation_times.push(node.cultivation_time);
+                    node.cultivation_time = 0;
                     node.busy_count = 0;
-                    cultivation_time_index += 1;
                 }
             }
             if node.node_type == NodeType::Magic && node.cultivation_time == 0 {
@@ -538,13 +534,11 @@ impl Scheduler {
                               -> Option<TreeGraph> {
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
-        let terminals = self.get_terminal_nodes(pauli_product);
-        if terminals.is_none() {
+        let Some(terminals) = self.get_terminal_nodes(pauli_product) else {
             info_sched!("    Cannot schedule {}: no data nodes found in working graph",
                         pauli_product.id);
             return None;
-        }
-        let terminals = terminals.unwrap();
+        };
         // Handle single data node case
         if terminals.len() == 1 && pauli_product.gate_type.is_m() {
             let node_id = terminals[0];
@@ -664,7 +658,7 @@ impl Scheduler {
     fn get_root_nodes(&self, terminals: &[usize]) -> Vec<usize> {
         let mut root_ids = IndexSet::new();
         // need to get a root node for every terminal
-        let mut terminals_matched: IndexSet<usize> = terminals.iter().copied().collect();
+        let mut unmatched_count: usize = terminals.len();
         for node_id in terminals.iter() {
             let node = self.topo.get_node(*node_id);
             let paired_node = self.topo.get_node(node.paired_data_id.unwrap());
@@ -687,8 +681,8 @@ impl Scheduler {
                        || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
                     {
                         root_ids.insert(nb_id.clone());
-                        terminals_matched.swap_remove(node_id);
-                        terminals_matched.swap_remove(&paired_node.id);
+                        // saturating_sub guards against the second iteration over a matched pair
+                        unmatched_count = unmatched_count.saturating_sub(2);
                         pair_found = true;
                         break;
                     }
@@ -703,17 +697,15 @@ impl Scheduler {
                     // Only include neighbors on the side (same row, different column)
                     if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
                         root_ids.insert(nb_id.clone());
-                        terminals_matched.swap_remove(node_id);
+                        unmatched_count = unmatched_count.saturating_sub(1);
                         break;
                     }
                 }
             }
         }
-        if !terminals_matched.is_empty() {
-            debug_sched!("    could not find root nodes for terminals: {:?}",
-                         terminals_matched.iter()
-                                          .map(|id| &self.topo.get_node(*id).label)
-                                          .collect::<Vec<_>>(),);
+        if unmatched_count > 0 {
+            debug_sched!("    could not find root nodes for {} unmatched terminals",
+                         unmatched_count);
             return Vec::new();
         }
         root_ids.into_iter().collect()
