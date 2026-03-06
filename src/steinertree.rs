@@ -7,6 +7,8 @@ use crate::treegraph::TreeGraph;
 use crate::utils::{_GREEN, _LGREEN, _RESET};
 use std::collections::VecDeque;
 
+/// State container for greedy multi-source shortest path (Steiner tree) computation.
+/// Tracks visited nodes, path connectivity, and early termination statistics.
 pub struct SteinerTreeComputation {
     num_nodes: usize,
     visited: Vec<Option<usize>>,
@@ -18,6 +20,8 @@ pub struct SteinerTreeComputation {
 }
 
 impl SteinerTreeComputation {
+    /// Creates a new Steiner tree computation state.
+    /// `termination_threshold` controls early exit to avoid long tail computations.
     pub fn new(num_nodes: usize, termination_threshold: usize) -> Self {
         SteinerTreeComputation { num_nodes: num_nodes,
                                  visited: vec![None; num_nodes],
@@ -28,6 +32,7 @@ impl SteinerTreeComputation {
                                  termination_threshold: termination_threshold }
     }
 
+    /// Clears internal state for a fresh computation.
     pub fn clear(&mut self) {
         self.visited.fill(None);
         for path in self.paths.iter_mut() {
@@ -36,7 +41,10 @@ impl SteinerTreeComputation {
         self.queue.clear();
     }
 
-    // this can be viewed as a greedy multi-source shortest path algorithm
+    /// Greedy multi-source shortest path computation connecting all root nodes.
+    /// Expands from roots using BFS to find paths between all root pairs while
+    /// identifying a magic node (for T gates) if available. Returns a tree with
+    /// data and routing nodes, or None if no valid path exists.
     pub fn compute(&mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<usize>,
                    terminal_nodes: &Vec<usize>, gate_type: GateType, num_scheduled: usize)
                    -> Option<TreeGraph> {
@@ -127,6 +135,8 @@ impl SteinerTreeComputation {
         None
     }
 
+    /// Computes maximum Manhattan distance between any pair of terminal nodes.
+    /// Used to estimate search depth for early termination heuristic.
     fn get_max_dist(&self, topo: &TopoGraph, terminal_nodes: &Vec<usize>) -> usize {
         let mut max_dist = 0;
         for i in 0..terminal_nodes.len() {
@@ -144,6 +154,8 @@ impl SteinerTreeComputation {
         max_dist
     }
 
+    /// Explores neighbors of the current node during BFS, tracking path connections
+    /// and merging root groups when paths connect. Updates tree with new edges.
     fn visit_neighbors(&mut self, node_id: usize, topo: &TopoGraph, used: &Vec<bool>,
                        reqd_paths: usize, gate_type: GateType,
                        starting_cultivator: Option<usize>, num_start_paths: usize,
@@ -267,10 +279,13 @@ impl SteinerTreeComputation {
         (num_paths as usize, cultivator)
     }
 
+    /// Returns the total number of compute calls and count of early terminations.
     pub fn get_call_counts(&mut self) -> (usize, usize) {
         (self.num_calls, self.early_terminations)
     }
 
+    /// Validates tree structure in debug builds: ensures data nodes have exactly one edge,
+    /// edges are reciprocated, and routing nodes have matching top/bottom data edges.
     #[cfg(debug_assertions)]
     fn check_edges(&self, topo: &TopoGraph, tree: &TreeGraph) {
         for node_id in tree.iter_nodes() {

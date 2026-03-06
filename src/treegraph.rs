@@ -3,6 +3,8 @@ use crate::node::{Node, NodeType};
 #[allow(unused_imports)]
 use crate::utils::{_BLUE, _RESET};
 
+/// Internal node representation for a tree subgraph.
+/// Stores neighbor adjacencies, node type classification, and position for layout queries.
 #[derive(Debug, Clone)]
 struct TreeNode {
     pub nbors: Vec<usize>,
@@ -15,6 +17,7 @@ struct TreeNode {
 }
 
 impl TreeNode {
+    /// Creates a tree node from a topology node.
     pub fn new(node: &Node) -> Self {
         TreeNode { nbors: Vec::new(),
                    is_routing: node.is_routing(),
@@ -24,6 +27,7 @@ impl TreeNode {
                    label: node.label.clone() }
     }
 
+    /// Removes an edge to a neighbor node.
     pub fn remove_edge(&mut self, nb_id: usize) {
         // FIXME: this could be inefficient
         let pos = self.nbors.iter().position(|&id| id == nb_id).unwrap();
@@ -31,6 +35,8 @@ impl TreeNode {
     }
 }
 
+/// A sparse tree subgraph of the topology containing scheduled Pauli product routing.
+/// Nodes are sparse (only included nodes present); root marks the magic cultivator.
 #[derive(Debug, Clone)]
 pub struct TreeGraph {
     // if a node is included in the graph, then it is a vector of its neighbors
@@ -41,6 +47,7 @@ pub struct TreeGraph {
 }
 
 impl TreeGraph {
+    /// Creates a new empty tree graph with capacity for `num_nodes` nodes.
     pub fn new(num_nodes: usize) -> Self {
         TreeGraph { nodes: vec![None; num_nodes],
                     num_edges: 0,
@@ -48,23 +55,28 @@ impl TreeGraph {
                     root_node_id: None }
     }
 
+    /// Returns an iterator over node IDs in the tree.
     pub fn iter_nodes(&self) -> impl Iterator<Item = usize> {
         self.nodes.iter().enumerate().filter_map(|(i, node_opt)| node_opt.as_ref().map(|_| i))
     }
 
+    /// Checks if a node exists in the tree.
     pub fn contains_node(&self, id: usize) -> bool {
         self.nodes[id].is_some()
     }
 
+    /// Checks if an undirected edge exists between two nodes.
     pub fn contains_edge(&self, node_id1: usize, node_id2: usize) -> bool {
         if let Some(node) = &self.nodes[node_id1] { node.nbors.contains(&node_id2) } else { false }
     }
 
+    /// Returns the degree of a node (debug builds only).
     #[cfg(debug_assertions)]
     pub fn get_num_node_edges(&self, node_id: usize) -> usize {
         self.nodes[node_id].as_ref().map(|node| node.nbors.len()).unwrap_or(0)
     }
 
+    /// Adds a node to the tree from topology node data.
     pub fn add_node(&mut self, node: &Node) {
         assert!(self.nodes[node.id].is_none());
         self.nodes[node.id] = Some(TreeNode::new(node));
@@ -72,6 +84,7 @@ impl TreeGraph {
         debug_sched!("      {}add node {}{}", _BLUE, node.label, _RESET);
     }
 
+    /// Adds an undirected edge between two existing nodes.
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
         // make sure the edge doesn't already exist
         #[cfg(debug_assertions)]
@@ -105,6 +118,8 @@ impl TreeGraph {
         self.num_edges += 1;
     }
 
+    /// Removes routing nodes with degree ≤ 1 (except root) until none remain.
+    /// Returns the number of nodes trimmed.
     pub fn trim_dangling_nodes(&mut self) -> usize {
         let mut num_trimmed = 0;
         let root_id = self.root_node_id.unwrap();
@@ -131,6 +146,7 @@ impl TreeGraph {
         num_trimmed
     }
 
+    /// Removes a node and all its edges from the tree.
     fn remove_node(&mut self, node_id: usize) {
         let node = self.nodes[node_id].as_ref().unwrap();
         let nb_ids: Vec<usize> = node.nbors.iter().copied().collect();
@@ -155,6 +171,8 @@ impl TreeGraph {
         self.num_nodes -= 1;
     }
 
+    /// For data nodes with two edges (one side, one vertical), removes the weaker edge.
+    /// Prefers keeping vertical edges if they are unique connections.
     pub fn remove_double_edges(&mut self) {
         let mut edges_to_remove: Vec<(usize, usize)> = Vec::new();
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
@@ -208,6 +226,7 @@ impl TreeGraph {
         }
     }
 
+    /// Counts edges pointing upward (higher y position) from a node.
     fn get_above_edge_count(&self, node: &TreeNode) -> usize {
         node.nbors
             .iter()
@@ -218,6 +237,7 @@ impl TreeGraph {
             .count()
     }
 
+    /// Counts edges pointing downward (lower y position) from a node.
     fn get_below_edge_count(&self, node: &TreeNode) -> usize {
         node.nbors
             .iter()
@@ -228,6 +248,7 @@ impl TreeGraph {
             .count()
     }
 
+    /// Returns (above, below) count of vertical data edges for a routing node (debug only).
     #[cfg(debug_assertions)]
     pub fn get_num_vertical_data_edges(&self, node_id: usize) -> (usize, usize) {
         let node = self.nodes[node_id].as_ref().unwrap();

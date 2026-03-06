@@ -15,6 +15,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Represents the topological layout of a surface code quantum processor.
+/// Contains data, magic, and routing qubits arranged in a 2D grid.
+/// Supports both magic routing and bus routing architectures.
 pub struct TopoGraph {
     nodes: Vec<Node>,
     node_ids_from_labels: IndexMap<String, usize>,
@@ -35,6 +38,7 @@ pub struct TopoGraph {
 }
 
 impl TopoGraph {
+    /// Creates an empty topology graph.
     pub fn new() -> Self {
         TopoGraph { nodes: Vec::new(),
                     node_ids_from_labels: IndexMap::new(),
@@ -53,6 +57,8 @@ impl TopoGraph {
                     use_magic_routing: true }
     }
 
+    /// Initializes topology from file or generates a synthetic layout.
+    /// Sets up node metadata, qubit pairings, and edge connectivity.
     pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
                     topo_fname: &String, rseed: &u32, use_magic_routing: bool,
                     ancilla_rows: usize, sides_only: bool) {
@@ -99,6 +105,8 @@ impl TopoGraph {
         self.print_statistics();
     }
 
+    /// Loads topology from a file describing node labels and grid positions.
+    /// Supports randomized data node pairing for scheduling variation.
     pub fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
         let _timer = fn_timer!();
         // Read the grid layout
@@ -174,6 +182,7 @@ impl TopoGraph {
         Ok(())
     }
 
+    /// Generates a bus routing topology: data qubits with dedicated bus columns for routing.
     fn gen_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
         // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -224,6 +233,7 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
+    /// Generates a compact bus routing topology without separate bus columns.
     fn gen_compact_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
         // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -265,6 +275,7 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
+    /// Adds magic/bus nodes along a border row connecting to adjacent nodes.
     fn add_border_row(&mut self, row: usize) {
         let node_type = if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
         // Add corner bus nodes
@@ -276,6 +287,7 @@ impl TopoGraph {
         }
     }
 
+    /// Adds border nodes for compact bus topology (alternating magic/bus columns).
     fn add_border_row_compact(&mut self, row: usize) {
         for col in 0..self.num_cols {
             if col % 2 == 0 {
@@ -286,12 +298,15 @@ impl TopoGraph {
         }
     }
 
+    /// Adds magic nodes down a border column.
     fn add_border_column(&mut self, col: usize) {
         for row in 1..self.num_rows - 1 {
             self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
         }
     }
 
+    /// Generates a pure magic topology: all non-data qubits are magic nodes.
+    /// `ancilla_rows` controls spacing between data qubit rows.
     pub fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
                                sides_only: bool) {
         // minimum layout with all magic qubits
@@ -338,6 +353,8 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
+    /// Adds a pair of data qubits (X and Z basis) at the given position.
+    /// Both qubits share a combined label in the grid but have separate nodes.
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
@@ -371,6 +388,7 @@ impl TopoGraph {
         self.num_nodes += 1;
     }
 
+    /// Creates and adds a single node (magic, bus, or data) at grid position (col, row).
     fn add_qubit(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
         let ch = match node_type {
             NodeType::Magic => "m",
@@ -393,6 +411,7 @@ impl TopoGraph {
         label
     }
 
+    /// Establishes edges between adjacent nodes (4-connectivity with optional vertical data edges).
     fn set_edges(&mut self, sides_only: bool) {
         let mut edges_to_add = Vec::new();
         let mut vert_data_edges_to_add = Vec::new();
@@ -476,6 +495,7 @@ impl TopoGraph {
         }
     }
 
+    /// Extracts the left or right side data node label from a double data qubit label.
     fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
         // Find indices of numbers and operator
         let d_pos = label.find('d')?;
@@ -492,6 +512,7 @@ impl TopoGraph {
         }
     }
 
+    /// Extracts both left and right data node labels from a double data qubit label.
     fn get_data_labels(&self, label: &str) -> Option<(String, String)> {
         // Find indices of numbers and operator
         let d_pos = label.find('d')?;
@@ -504,6 +525,7 @@ impl TopoGraph {
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
     }
 
+    /// Recomputes qubit counts and builds fast data node lookup by qubit and basis.
     pub fn update_statistics(&mut self) {
         let mut data_count = 0;
         let mut magic_count = 0;
@@ -538,6 +560,7 @@ impl TopoGraph {
         self.num_qubits = self.num_data_qubits + self.num_bus_qubits + self.num_magic_qubits;
     }
 
+    /// Prints qubit type distribution to stdout.
     fn print_statistics(&mut self) {
         let total = self.num_qubits as f64;
         println!("Number of qubits:");
@@ -553,34 +576,41 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
+    /// Retrieves a node by its ID.
     pub fn get_node(&self, id: usize) -> &Node {
         &self.nodes[id]
     }
 
+    /// Retrieves a mutable reference to a node by its ID.
     pub fn get_node_mut(&mut self, id: usize) -> &mut Node {
         &mut self.nodes[id]
     }
 
+    /// Returns an iterator over all nodes.
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.iter()
     }
 
+    /// Returns a mutable iterator over all nodes.
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.nodes.iter_mut()
     }
 
+    /// Creates a bidirectional edge between two nodes.
     pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
         self.get_node_mut(node_id1).add_neighbor(node_id2);
         self.get_node_mut(node_id2).add_neighbor(node_id1);
         self.num_edges += 1;
     }
 
+    /// Fast lookup of a data node by qubit number and basis (X or Z).
     pub fn get_data_node_id(&self, qubit: usize, basis: char) -> usize {
         let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
         self.data_node_ids[qubit][basis_idx]
     }
 
 
+    /// Writes topology grid to a text file (debug builds only).
     #[cfg(debug_assertions)]
     pub fn print(&self) -> io::Result<()> {
         let topo_path = Path::new(&self.circuit_fname);
@@ -609,6 +639,8 @@ impl TopoGraph {
         Ok(())
     }
 
+    /// Plots the topology with scheduled Pauli product paths highlighted.
+    /// Generates PNG with nodes colored by type and edges colored by path.
     pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Arc<TreeGraph>)],
                 title_str: &str)
                 -> Result<(), Box<dyn std::error::Error>> {
@@ -811,6 +843,7 @@ impl TopoGraph {
         Ok(())
     }
 
+    /// Generates edge path points for drawing (straight for aligned nodes, curved for diagonal).
     fn generate_edge_points(&self, pos1: (f32, f32), pos2: (f32, f32)) -> Vec<(f32, f32)> {
         let (x1, y1) = pos1;
         let (x2, y2) = pos2;
@@ -843,7 +876,7 @@ impl TopoGraph {
     }
 }
 
-// Helper function to convert HSV to RGB
+/// Converts HSV color space to RGB for plotting.
 fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
     let c = v * s;
     let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());

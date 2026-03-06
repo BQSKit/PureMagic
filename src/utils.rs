@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-// Add these near the top of scheduler.rs, before the struct definitions
+/// ANSI escape codes for terminal colour output.
 pub const _RED: &str = "\x1b[31m";
 pub const _GREEN: &str = "\x1b[32m";
 pub const _YELLOW: &str = "\x1b[33m";
@@ -15,8 +15,10 @@ pub const _LBLUE: &str = "\x1b[94m";
 pub const _LMAGENTA: &str = "\x1b[95m";
 pub const _LCYAN: &str = "\x1b[96m";
 pub const _LWHITE: &str = "\x1b[97m";
+/// Resets all ANSI terminal formatting.
 pub const _RESET: &str = "\x1b[0m";
 
+/// RAII timer that prints the elapsed wall-clock time when it goes out of scope.
 pub struct Timer {
     name: String,
     start: Instant,
@@ -29,6 +31,7 @@ impl Timer {
 }
 
 impl Drop for Timer {
+    /// Prints elapsed time in seconds on drop.
     fn drop(&mut self) {
         println!("{}Timing: {} took {:.2} s{}",
                  _CYAN,
@@ -38,7 +41,9 @@ impl Drop for Timer {
     }
 }
 
-// this enables the use of a timer without having to specify the function name
+/// Creates a [`Timer`] scoped to the enclosing function.
+/// With no arguments, the function name is inferred automatically (crate prefix stripped).
+/// With a string argument, that string is used as the timer label instead.
 #[macro_export]
 macro_rules! fn_timer {
     () => {{
@@ -58,6 +63,9 @@ macro_rules! fn_timer {
     }};
 }
 
+/// Timer for repeated, non-contiguous intervals (e.g. timing a function called in a loop).
+/// Accumulates total, average, and maximum elapsed time across all start/stop pairs.
+/// Call [`done`](Self::done) at the end to print a summary.
 pub struct IntermittentTimer {
     start_time: Option<Instant>,
     total_elapsed: Duration,
@@ -69,6 +77,7 @@ pub struct IntermittentTimer {
 }
 
 impl IntermittentTimer {
+    /// Creates a new timer. `interval_label`, if non-empty, is printed on each `start`/`stop` pair.
     pub fn new(name: &str, interval_label: &str) -> Self {
         IntermittentTimer { start_time: None,
                             total_elapsed: Duration::new(0, 0),
@@ -79,6 +88,7 @@ impl IntermittentTimer {
                             interval_label: interval_label.to_string() }
     }
 
+    /// Prints a summary line with total, average, and maximum interval times and call count.
     pub fn done(&self) {
         let total_secs = self.total_elapsed.as_secs_f64();
         let avg_secs = total_secs / self.num_intervals as f64;
@@ -103,11 +113,13 @@ impl IntermittentTimer {
                  _RESET);
     }
 
+    /// Returns a compact summary string with the timer name and total elapsed seconds.
     #[allow(dead_code)]
     pub fn get_final(&self) -> String {
         format!("{}: {:.2}", self.name, self.total_elapsed.as_secs_f64())
     }
 
+    /// Starts a new timing interval. Optionally prints the interval label if set.
     pub fn start(&mut self) {
         if !self.interval_label.is_empty() {
             println!("{:<40}:", self.interval_label);
@@ -115,6 +127,7 @@ impl IntermittentTimer {
         self.start_time = Some(Instant::now());
     }
 
+    /// Stops the current interval and accumulates it into the running totals.
     pub fn stop(&mut self) {
         if let Some(start) = self.start_time.take() {
             self.last_interval = start.elapsed();
@@ -130,12 +143,14 @@ impl IntermittentTimer {
         }
     }
 
+    /// Returns the duration of the most recently completed interval in seconds.
     #[allow(dead_code)]
     pub fn get_interval(&self) -> f64 {
         self.last_interval.as_secs_f64()
     }
 }
 
+/// Emits a `log::debug!` message only in debug builds (no-op in release).
 #[macro_export]
 macro_rules! debug_sched {
     ($($arg:tt)*) => {
@@ -144,6 +159,7 @@ macro_rules! debug_sched {
     };
 }
 
+/// Emits a `log::info!` message only in debug builds (no-op in release).
 #[macro_export]
 macro_rules! info_sched {
     ($($arg:tt)*) => {

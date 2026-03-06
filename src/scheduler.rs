@@ -21,6 +21,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Accumulates statistics about scheduled Pauli products (node types and counts).
 struct ScheduleStats {
     data_qubits: usize,
     bus_qubits: usize,
@@ -36,6 +37,7 @@ struct ScheduleStats {
 }
 
 impl ScheduleStats {
+    /// Creates a new statistics tracker with qubit counts.
     pub fn new(data_qubits: usize, bus_qubits: usize, magic_qubits: usize) -> Self {
         ScheduleStats { data_qubits,
                         bus_qubits,
@@ -98,6 +100,7 @@ impl ScheduleStats {
         self.magic_scheduled = 0;
     }
 
+    /// Increments count for a scheduled node of the given type.
     pub fn inc(&mut self, node_type: NodeType) {
         match node_type {
             NodeType::Bus => self.bus_scheduled += 1,
@@ -106,11 +109,13 @@ impl ScheduleStats {
         }
     }
 
+    /// Returns the accumulated plot info string.
     pub fn get_plot_info_str(&self) -> &str {
         &self.plot_info_str
     }
 }
 
+/// Tracks timing of major scheduling operations.
 struct SchedulerTimers {
     schedule_product: IntermittentTimer,
     steiner_tree: IntermittentTimer,
@@ -119,6 +124,7 @@ struct SchedulerTimers {
 }
 
 impl SchedulerTimers {
+    /// Creates new timers for all scheduling operations.
     pub fn new() -> Self {
         SchedulerTimers { schedule_product: IntermittentTimer::new("schedule_pauli_product", ""),
                           steiner_tree: IntermittentTimer::new("compute_steiner_tree", ""),
@@ -127,6 +133,8 @@ impl SchedulerTimers {
     }
 }
 
+/// Main scheduler that assigns Pauli products to timesteps and routes them through the topology.
+/// Manages magic state cultivation, dependency tracking, and Clifford repetition logic.
 pub struct Scheduler {
     circuit: Circuit,
     topo: TopoGraph,
@@ -146,6 +154,8 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// Creates a new scheduler for a circuit on a topology.
+    /// `magic_state_lambda` controls magic state cultivation timing (exponential distribution parameter).
     pub fn new(circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
                plot_option: String, rseed: u32, stree_termination_threshold: usize)
                -> Self {
@@ -185,6 +195,9 @@ impl Scheduler {
                     astar: AStarComputation::new(num_nodes) }
     }
 
+    /// Main scheduling algorithm: greedily assigns products to timesteps.
+    /// Returns (total timesteps, total scheduled products).
+    /// `best_fit=true` explores all products per timestep; `false` stops at first match.
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
         self.rng_exp
@@ -360,6 +373,7 @@ impl Scheduler {
         Ok((num_steps, self.scheduled_products.len()))
     }
 
+    /// Initializes all magic nodes with random cultivation times (exponential distribution).
     fn init_magic_nodes(&mut self) {
         // Initialize magic nodes with busy counts
         // Collect magic node labels first to avoid borrow conflicts
@@ -374,6 +388,8 @@ impl Scheduler {
         }
     }
 
+    /// Schedules as many products as possible in a single timestep.
+    /// Returns list of (product, routing tree) pairs or None if nothing could be scheduled.
     fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
                          -> Option<Vec<(PauliProduct, Arc<TreeGraph>)>> {
         let mut num_avail_magic = self.update_cultivators();
@@ -450,6 +466,8 @@ impl Scheduler {
         }
     }
 
+    /// Updates magic node cultivation state: increments busy counts and generates new cultivation
+    /// times for nodes just scheduled. Returns count of ready (cultivation_time=0) magic nodes.
     fn update_cultivators(&mut self) -> usize {
         // Collect magic nodes that need new busy counts
         let num_used_magic_nodes =
@@ -491,6 +509,8 @@ impl Scheduler {
         num_avail_magic
     }
 
+    /// Searches remaining products for the best schedulable one by tree size/term weight.
+    /// Returns (best product ID and tree, list of products that cannot be scheduled this timestep).
     fn find_best_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
                          num_scheduled: usize, num_avail_magic: usize, best_fit: bool)
                          -> (Option<(i32, TreeGraph)>, Vec<i32>) {
@@ -548,6 +568,9 @@ impl Scheduler {
         (best_pp, cannot_schedule)
     }
 
+    /// Attempts to route a single Pauli product through the topology.
+    /// Uses A* for single-qubit T gates, Steiner tree for others.
+    /// Returns a routing tree or None if no valid routing exists.
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
                               -> Option<TreeGraph> {
         info_sched!("  Trying to schedule product {}", pauli_product);
@@ -640,6 +663,8 @@ impl Scheduler {
         }
     }
 
+    /// Extracts the data qubit nodes that a product operates on (terminals for tree routing).
+    /// For Y operators, both X and Z bases are included. Returns None if any terminal is unavailable.
     fn get_terminal_nodes(&self, pauli_product: &PauliProduct) -> Option<Vec<usize>> {
         // Initially terminal nodes contain only the data qubits
         let mut terminals = Vec::new();
@@ -687,6 +712,8 @@ impl Scheduler {
         Some(terminals)
     }
 
+    /// Finds routing nodes adjacent to each terminal (roots for tree construction).
+    /// Prefers vertical (top/bottom) roots for Y/paired operations; falls back to side roots.
     fn get_root_nodes(&self, terminals: &[usize]) -> Vec<usize> {
         let mut root_ids = IndexSet::new();
         // need to get a root node for every terminal
@@ -743,7 +770,7 @@ impl Scheduler {
         root_ids.into_iter().collect()
     }
 
-    /// Scheduling sort key for a product:
+    /// Scheduling sort key for a product (used for greedy prioritization).
     /// - T gates:        Manhattan distance from terminal centroid to nearest ready magic node.
     ///                   Returns f32::MAX when no magic node is ready.
     /// - Clifford gates: sum of pairwise Manhattan distances between terminals (a proxy for
@@ -789,11 +816,13 @@ impl Scheduler {
         }
     }
 
+    /// Generates a random magic state cultivation time from exponential distribution.
     fn gen_cultivation_time(&mut self) -> i32 {
         let cultivation_time = self.rng_exp.sample().round() as i32; // + 1;
         cultivation_time
     }
 
+    /// Validates that all scheduled products have their parents already scheduled (debug only).
     #[cfg(debug_assertions)]
     fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, Arc<TreeGraph>)>)
                           -> io::Result<()> {
@@ -813,6 +842,7 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Writes the schedule to a file with products colored and listed per timestep.
     pub fn print_schedule(&self, hdr: &str) -> io::Result<()> {
         let _timer = fn_timer!();
         debug_sched!("Printing schedule");
@@ -886,6 +916,7 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Validates that CX gates are scheduled exactly 2 consecutive times and S/SX 3 consecutive times (debug only).
     #[cfg(debug_assertions)]
     fn check_clifford_repetitions(&self) -> io::Result<()> {
         // map the product id to a vector containing the timesteps on which the product was found

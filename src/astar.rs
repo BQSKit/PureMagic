@@ -4,6 +4,8 @@ use crate::treegraph::TreeGraph;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+/// State container for A* pathfinding computations.
+/// Maintains parent pointers, g-costs, and closed set for multi-source searches.
 pub struct AStarComputation {
     parent: Vec<Option<usize>>,
     g_cost: Vec<u32>,
@@ -11,6 +13,7 @@ pub struct AStarComputation {
 }
 
 impl AStarComputation {
+    /// Creates a new A* computation state for a graph with `num_nodes` nodes.
     pub fn new(num_nodes: usize) -> Self {
         AStarComputation { parent: vec![None; num_nodes],
                            g_cost: vec![u32::MAX; num_nodes],
@@ -121,6 +124,7 @@ impl AStarComputation {
 
     /// Lower-bound heuristic: Manhattan distance from `pos` to the nearest ready magic node,
     /// floored to a u32 so it is always admissible for unit-weight edges.
+    /// Used to guide A* search towards available magic state sources.
     fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> u32 {
         ready_magic_positions.iter()
                              .map(|mp| (mp.0 - pos.0).abs() + (mp.1 - pos.1).abs())
