@@ -610,10 +610,12 @@ impl Scheduler {
                 info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
                 return None;
             }
-            let g = if root_ids.len() == 1 && pauli_product.gate_type.is_t() {
+            let g = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
+                // Single-qubit T gate (X, Z, or Y): use multi-source A*.
+                // For X/Z: one root, one terminal. For Y: two roots, two terminals.
                 self.timers.astar.start();
                 let g = self.astar.compute(&terminals[..],
-                                           root_ids[0],
+                                           &root_ids[..],
                                            &self.topo,
                                            &self.used,
                                            &self.ready_magic_positions);
@@ -621,10 +623,6 @@ impl Scheduler {
                 g
             } else {
                 self.timers.steiner_tree.start();
-                if pauli_product.gate_type.is_t() {
-                    eprintln!("T gate with steiner {} root_ids {:?} terminals {:?}",
-                              pauli_product, root_ids, terminals);
-                }
                 let g = self.stree_computation.compute(&self.topo,
                                                        &self.used,
                                                        &root_ids,
