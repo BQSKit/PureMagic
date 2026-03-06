@@ -382,11 +382,12 @@ impl Scheduler {
             // add the previous trees to the paths collection
             pp_paths.push(((*pp).clone(), (*pp_path).clone()));
         }
-        // Presort products from most to least resource-intensive
-        let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
+        // Presort products from most to least resource-intensive, caching the term weight
+        let mut remaining_to_schedule: IndexMap<i32, (&PauliProduct, usize)> =
             to_schedule.iter()
-                       .sorted_by_key(|pp| std::cmp::Reverse(pp.count_weighted_terms()))
-                       .map(|pp| (pp.id, pp))
+                       .map(|pp| (pp.id, pp, pp.count_weighted_terms()))
+                       .sorted_by_key(|&(_, _, w)| std::cmp::Reverse(w))
+                       .map(|(id, pp, w)| (id, (pp, w)))
                        .collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
@@ -395,7 +396,7 @@ impl Scheduler {
                                                                     num_avail_magic,
                                                                     best_fit);
             if let Some((best_pp_idx, best_graph)) = best_pp {
-                let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap();
+                let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap().0;
                 info_sched!("  Scheduled product {} with {} nodes and {} edges",
                             pp,
                             best_graph.num_nodes,
@@ -477,7 +478,8 @@ impl Scheduler {
         num_avail_magic
     }
 
-    fn find_best_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
+    fn find_best_product(&mut self,
+                         remaining_to_schedule: &IndexMap<i32, (&PauliProduct, usize)>,
                          num_scheduled: usize, num_avail_magic: usize, best_fit: bool)
                          -> (Option<(i32, TreeGraph)>, Vec<i32>) {
         let mut best_pp: Option<(i32, TreeGraph)> = None;
@@ -485,8 +487,7 @@ impl Scheduler {
         let mut best_pp_term_weight = 0;
         let mut cannot_schedule: Vec<i32> = Vec::new();
 
-        for (&pp_i, &pp) in remaining_to_schedule {
-            let pp_term_weight = pp.count_weighted_terms();
+        for (&pp_i, &(pp, pp_term_weight)) in remaining_to_schedule {
             if pp_term_weight < best_pp_term_weight {
                 info_sched!("  Skip lower weight product {}", pp);
                 continue;
@@ -500,21 +501,19 @@ impl Scheduler {
                 pp_graph
             };
             if let Some(pp_graph) = pp_graph {
-                if pp_term_weight >= best_pp_term_weight {
-                    // regard the best graph as the one with the most terms and the smallest
-                    // tree with those number of terms
-                    let pp_graph_size = pp_graph.num_nodes;
-                    if pp_graph_size < best_pp_graph_size {
-                        best_pp_term_weight = pp_term_weight;
-                        best_pp_graph_size = pp_graph_size;
-                        info_sched!("  Best graph for pp {}, term weight {}, size {}",
-                                    pp.to_operator_str(),
-                                    pp_term_weight,
-                                    best_pp_graph_size);
-                        best_pp = Some((pp_i, pp_graph));
-                        if !best_fit {
-                            break;
-                        }
+                // regard the best graph as the one with the most terms and the smallest
+                // tree with those number of terms
+                let pp_graph_size = pp_graph.num_nodes;
+                if pp_graph_size < best_pp_graph_size {
+                    best_pp_term_weight = pp_term_weight;
+                    best_pp_graph_size = pp_graph_size;
+                    info_sched!("  Best graph for pp {}, term weight {}, size {}",
+                                pp.to_operator_str(),
+                                pp_term_weight,
+                                best_pp_graph_size);
+                    best_pp = Some((pp_i, pp_graph));
+                    if !best_fit {
+                        break;
                     }
                 }
             } else {
