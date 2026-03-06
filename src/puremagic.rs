@@ -16,6 +16,8 @@ use scheduler::Scheduler;
 use topograph::TopoGraph;
 use utils::Timer;
 
+/// Command-line arguments for PureMagic.
+/// Controls circuit input, topology, scheduling strategy, and output options.
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -116,6 +118,8 @@ struct Args {
     plot: Vec<String>,
 }
 
+/// Entry point: parses arguments, loads or generates the circuit and topology, runs the
+/// scheduler, then prints scheduling efficiency and parallelism statistics.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
     let args = Args::parse();

@@ -12,6 +12,8 @@ use std::{
     path::Path,
 };
 
+/// Represents a quantum circuit as a DAG of Pauli products with dependency tracking.
+/// Layers are lazily computed and cached for efficient iteration.
 pub struct Circuit {
     products: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
@@ -20,6 +22,7 @@ pub struct Circuit {
 }
 
 impl Circuit {
+    /// Creates a new circuit from a filename (circuit is not loaded until `load_circuit()` is called).
     pub fn new(fname: &String) -> Self {
         let circuit = Circuit { products: Vec::new(),
                                 circuit_fname: fname.to_string(),
@@ -28,6 +31,8 @@ impl Circuit {
         circuit
     }
 
+    /// Loads Pauli products from file, skipping X and Z gates.
+    /// Populates `num_qubits` and establishes parent-child dependencies.
     pub fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
@@ -58,6 +63,8 @@ impl Circuit {
         Ok(())
     }
 
+    /// Establishes parent-child dependencies between products based on qubit operations.
+    /// A product becomes a child of the last product to operate on each of its qubits.
     fn generate_dependencies(&mut self) {
         // Collect parent/child relationships
         let mut relationships = Vec::new();
@@ -79,6 +86,9 @@ impl Circuit {
         }
     }
 
+    /// Generates a random T-gate circuit with spatial locality.
+    /// Each product is generated with Pauli operators spreading from a center qubit.
+    /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
     pub fn generate_random(&mut self, num_products: usize, num_qubits: usize,
                            spread_probability: f64, decay_factor: f64) {
         self.products.extend((0..num_products).map(|product_id| {
@@ -96,6 +106,7 @@ impl Circuit {
         self.generate_dependencies();
     }
 
+    /// Writes all products to a circuit file in standard format.
     pub fn save_circuit_to_file(&self, circuit_fname: String) -> io::Result<()> {
         let _timer = fn_timer!();
         let mut file = File::create(&circuit_fname)?;
@@ -109,18 +120,23 @@ impl Circuit {
         Ok(())
     }
 
+    /// Returns an iterator over products with no dependencies (ready to schedule).
     pub fn initial_products(&self) -> impl Iterator<Item = &PauliProduct> {
         self.products.iter().filter(|pp| pp.parents.is_empty())
     }
 
+    /// Retrieves a product by its ID.
     pub fn get_product(&self, id: i32) -> &PauliProduct {
         &self.products[id as usize]
     }
 
+    /// Returns the total number of products in the circuit.
     pub fn num_products(&self) -> usize {
         self.products.len()
     }
 
+    /// Plots the circuit structure as PNG files (split into 1000-layer chunks).
+    /// Each product is colored and labeled with Pauli operators.
     pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         // Get circuit filename
@@ -246,6 +262,7 @@ impl Circuit {
         Ok(())
     }
 
+    /// Returns a color for a product based on its index within a layer.
     fn get_layer_product_color(&self, product_index: usize) -> RGBColor {
         // Predefined color palette for products within a layer
         let colors = [
@@ -273,6 +290,8 @@ impl Circuit {
         colors[product_index % colors.len()]
     }
 
+    /// Plots moving average statistics of layer properties (products per layer, product size, etc.).
+    /// Generates an SVG file with configurable window size based on circuit size.
     pub fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         // Get circuit filename
@@ -505,6 +524,7 @@ impl Circuit {
         Ok(())
     }
 
+    /// Plots a metric computed over a moving window of layers.
     fn plot_moving_average<F>(&self,
                               //chart: &mut ChartContext<BitMapBackend,
                               chart: &mut ChartContext<SVGBackend,
@@ -538,6 +558,7 @@ impl Circuit {
         Ok(())
     }
 
+    /// Computes moving average of a metric across layers using a sliding window.
     fn compute_moving_average<F>(&self, layers: &[Vec<&PauliProduct>], window_size: usize,
                                  value_fn: F)
                                  -> Vec<f64>
@@ -554,6 +575,8 @@ impl Circuit {
               .collect()
     }
 
+    /// Prints circuit statistics (products, Cliffords, layers, avg/max products per layer).
+    /// Returns the total number of layers.
     pub fn print_statistics(&self) -> usize {
         let (num_layers, num_cliffords, avg_products, max_products) = self.get_statistics();
         println!("Circuit statistics:");
@@ -565,6 +588,7 @@ impl Circuit {
         num_layers
     }
 
+    /// Computes circuit statistics: layer count, Clifford count, avg/max products per layer.
     fn get_statistics(&self) -> (usize, i32, f64, i32) {
         let layers = self.get_layers();
         let mut num_cliffords = 0;
@@ -584,6 +608,7 @@ impl Circuit {
         (layers.len(), num_cliffords, avg_products, max_products as i32)
     }
 
+    /// Writes circuit layers to a text file (debug builds only).
     #[cfg(debug_assertions)]
     pub fn print(&self) -> io::Result<()> {
         let _timer = fn_timer!();
@@ -607,6 +632,8 @@ impl Circuit {
         Ok(())
     }
 
+    /// Computes circuit layers using topological sort (cached after first call).
+    /// Returns products grouped by their topological level (layer).
     fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
         // Return cached layers if available
         if let Some(cached) = self.layers.borrow().as_ref() {
@@ -657,6 +684,8 @@ impl Circuit {
                     .collect()
     }
 
+    /// Plots a heatmap of qubit coupling frequency (which pairs of qubits interact).
+    /// Uses log-scale intensity to highlight frequently coupled pairs.
     pub fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         // Get circuit filename
@@ -719,6 +748,7 @@ impl Circuit {
         Ok(())
     }
 
+    /// Builds a qubit coupling matrix: counts how many products couple each qubit pair.
     fn build_coupling_matrix(&self) -> Vec<Vec<usize>> {
         let mut matrix = vec![vec![0; self.num_qubits]; self.num_qubits];
         for product in &self.products {
@@ -740,6 +770,7 @@ impl Circuit {
         matrix
     }
 
+    /// Prints qubit coupling frequency statistics in descending order.
     fn print_coupling_frequency(&self, coupling_matrix: &Vec<Vec<usize>>) {
         let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
         for i in 0..(self.num_qubits - 1) {

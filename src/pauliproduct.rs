@@ -2,6 +2,8 @@ use rand::Rng;
 use std::error::Error;
 use std::fmt;
 
+/// Quantum gate types in the circuit.
+/// T gates require magic state distillation; S/SX/CX are Cliffords and repeat multiple times.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GateType {
     T,
@@ -14,34 +16,42 @@ pub enum GateType {
 }
 
 impl GateType {
+    /// Returns true if this is a T gate.
     pub fn is_t(&self) -> bool {
         matches!(self, GateType::T)
     }
 
+    /// Returns true if this is an S gate.
     pub fn is_s(&self) -> bool {
         matches!(self, GateType::S)
     }
 
+    /// Returns true if this is an SX gate.
     pub fn is_sx(&self) -> bool {
         matches!(self, GateType::SX)
     }
 
+    /// Returns true if this is a CX (CNOT) gate.
     pub fn is_cx(&self) -> bool {
         matches!(self, GateType::CX)
     }
 
+    /// Returns true if this is a measurement gate.
     pub fn is_m(&self) -> bool {
         matches!(self, GateType::M)
     }
 
+    /// Returns true if this is a Pauli X gate.
     pub fn is_x(&self) -> bool {
         matches!(self, GateType::X)
     }
 
+    /// Returns true if this is a Pauli Z gate.
     pub fn is_z(&self) -> bool {
         matches!(self, GateType::Z)
     }
 
+    /// Returns true if this is a Clifford gate (CX, S, or SX).
     pub fn is_clifford(&self) -> bool {
         self.is_cx() || self.is_s() || self.is_sx()
     }
@@ -53,6 +63,7 @@ impl fmt::Display for GateType {
     }
 }
 
+/// A single Pauli operator (X, Y, or Z) applied to a specific qubit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Operator {
     pub qubit: usize,
@@ -65,6 +76,8 @@ impl fmt::Display for Operator {
     }
 }
 
+/// A quantum gate represented as a Pauli product with dependency tracking.
+/// Weight is the sum of operator costs (Y counts as 2, others as 1).
 #[derive(Debug, Clone)]
 pub struct PauliProduct {
     pub operators: Vec<Operator>,
@@ -89,10 +102,13 @@ impl Default for PauliProduct {
 }
 
 impl PauliProduct {
+    /// Creates a new empty Pauli product.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Parses a circuit format string into this Pauli product.
+    /// Format: `[±][X/Y/Z operators][<gate_type>]` where _ denotes identity on a qubit.
     pub fn set_from_str(&mut self, product_id: i32, s: &str) -> Result<(), Box<dyn Error>> {
         self.id = product_id;
 
@@ -138,15 +154,19 @@ impl PauliProduct {
         Ok(())
     }
 
+    /// Returns a string representation of the operators (without sign).
     pub fn to_operator_str(&self) -> String {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
         format!("{}<{:?}>", ops, self.gate_type)
     }
 
+    /// Returns sorted list of qubits on which this product operates.
     pub fn get_qubits(&self) -> Vec<usize> {
         self.operators.iter().map(|op| op.qubit).collect()
     }
 
+    /// Generates a random T-gate product with spatial locality.
+    /// Starts at a random qubit and spreads to neighbors with decaying probability.
     pub fn gen_rnd_t(product_id: i32, num_qubits: usize, spread_probability: f64,
                      decay_factor: f64)
                      -> Self {
@@ -197,6 +217,7 @@ impl PauliProduct {
                        weight: 0 }
     }
 
+    /// Converts this product to circuit file format with random sign.
     pub fn to_circuit_format(&self, num_qubits: usize) -> String {
         let mut rng = rand::thread_rng();
         let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
