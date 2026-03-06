@@ -1,5 +1,6 @@
 use clap::Parser;
 
+mod astar;
 mod circuit;
 mod node;
 mod pauliproduct;

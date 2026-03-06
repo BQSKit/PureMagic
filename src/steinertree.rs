@@ -37,10 +37,9 @@ impl SteinerTreeComputation {
     }
 
     // this can be viewed as a greedy multi-source shortest path algorithm
-    pub fn get_steiner_tree(&mut self, topo: &TopoGraph, used: &Vec<bool>,
-                            root_ids: &Vec<usize>, terminal_nodes: &Vec<usize>,
-                            gate_type: GateType, num_scheduled: usize)
-                            -> Option<TreeGraph> {
+    pub fn compute(&mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<usize>,
+                   terminal_nodes: &Vec<usize>, gate_type: GateType, num_scheduled: usize)
+                   -> Option<TreeGraph> {
         debug_sched!("    BFS from root nodes {:?} to terminal nodes {:?}",
                      root_ids.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>(),
                      terminal_nodes.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>());

@@ -1,3 +1,4 @@
+use crate::astar::AStarComputation;
 use crate::circuit::Circuit;
 use crate::debug_sched;
 use crate::fn_timer;
@@ -14,7 +15,6 @@ use crate::utils::{
 };
 
 use indexmap::{IndexMap, IndexSet};
-use itertools::Itertools;
 use rand_simple::Exponential;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -114,13 +114,15 @@ impl ScheduleStats {
 struct SchedulerTimers {
     schedule_product: IntermittentTimer,
     steiner_tree: IntermittentTimer,
+    astar: IntermittentTimer,
     timestep: IntermittentTimer,
 }
 
 impl SchedulerTimers {
     pub fn new() -> Self {
         SchedulerTimers { schedule_product: IntermittentTimer::new("schedule_pauli_product", ""),
-                          steiner_tree: IntermittentTimer::new("get_steiner_tree", ""),
+                          steiner_tree: IntermittentTimer::new("compute_steiner_tree", ""),
+                          astar: IntermittentTimer::new("compute_astar", ""),
                           timestep: IntermittentTimer::new("schedule_timestep", "") }
     }
 }
@@ -139,6 +141,8 @@ pub struct Scheduler {
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Arc<TreeGraph>)>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
+    ready_magic_positions: Vec<(f32, f32)>,
+    astar: AStarComputation,
 }
 
 impl Scheduler {
@@ -176,7 +180,9 @@ impl Scheduler {
                     clifford_paths: IndexMap::new(),
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
-                    timers: SchedulerTimers::new() }
+                    timers: SchedulerTimers::new(),
+                    ready_magic_positions: Vec::new(),
+                    astar: AStarComputation::new(num_nodes) }
     }
 
     pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
@@ -345,6 +351,7 @@ impl Scheduler {
                  early_terminations,
                  100.0 * early_terminations as f64 / num_calls as f64);
         self.timers.steiner_tree.done();
+        self.timers.astar.done();
         self.timers.schedule_product.done();
         self.timers.timestep.done();
 
@@ -383,12 +390,15 @@ impl Scheduler {
             // add the previous trees to the paths collection
             pp_paths.push(((*pp).clone(), Arc::clone(pp_path)));
         }
-        // Presort products from most to least resource-intensive
+        // Presort products from smallest to largest tree size estimates
+        // Distances are precomputed once to avoid redundant calls during sorting.
+        let mut products_with_dist: Vec<(&PauliProduct, f32)> =
+            to_schedule.iter().map(|pp| (pp, self.tree_size_estimate(pp))).collect();
+        products_with_dist.sort_by(|(_, da), (_, db)| {
+                              da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
+                          });
         let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
-            to_schedule.iter()
-                       .sorted_by_key(|pp| std::cmp::Reverse(pp.weight))
-                       .map(|pp| (pp.id, pp))
-                       .collect();
+            products_with_dist.into_iter().map(|(pp, _)| (pp.id, pp)).collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
             let (best_pp, cannot_schedule) = self.find_best_product(&remaining_to_schedule,
@@ -470,6 +480,13 @@ impl Scheduler {
                 num_avail_magic += 1;
             }
         }
+        // Rebuild cache of ready magic positions used by tree_size_estimate.
+        self.ready_magic_positions =
+            self.topo
+                .iter_nodes()
+                .filter(|n| n.node_type == NodeType::Magic && n.cultivation_time == 0)
+                .map(|n| n.pos)
+                .collect();
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -593,14 +610,30 @@ impl Scheduler {
                 info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
                 return None;
             }
-            self.timers.steiner_tree.start();
-            let g = self.stree_computation.get_steiner_tree(&self.topo,
-                                                            &self.used,
-                                                            &root_ids,
-                                                            &terminals,
-                                                            pauli_product.gate_type,
-                                                            num_scheduled);
-            self.timers.steiner_tree.stop();
+            let g = if root_ids.len() == 1 && pauli_product.gate_type.is_t() {
+                self.timers.astar.start();
+                let g = self.astar.compute(&terminals[..],
+                                           root_ids[0],
+                                           &self.topo,
+                                           &self.used,
+                                           &self.ready_magic_positions);
+                self.timers.astar.stop();
+                g
+            } else {
+                self.timers.steiner_tree.start();
+                if pauli_product.gate_type.is_t() {
+                    eprintln!("T gate with steiner {} root_ids {:?} terminals {:?}",
+                              pauli_product, root_ids, terminals);
+                }
+                let g = self.stree_computation.compute(&self.topo,
+                                                       &self.used,
+                                                       &root_ids,
+                                                       &terminals,
+                                                       pauli_product.gate_type,
+                                                       num_scheduled);
+                self.timers.steiner_tree.stop();
+                g
+            };
             if let Some(g) = g {
                 return Some(g);
             }
@@ -712,13 +745,60 @@ impl Scheduler {
         root_ids.into_iter().collect()
     }
 
+    /// Scheduling sort key for a product:
+    /// - T gates:        Manhattan distance from terminal centroid to nearest ready magic node.
+    ///                   Returns f32::MAX when no magic node is ready.
+    /// - Clifford gates: sum of pairwise Manhattan distances between terminals (a proxy for
+    ///                   Steiner tree size; 0 for a single terminal).
+    fn tree_size_estimate(&self, pp: &PauliProduct) -> f32 {
+        // Collect terminal positions.
+        let mut positions: Vec<(f32, f32)> = Vec::new();
+        for op in &pp.operators {
+            if op.basis == 'Y' {
+                for basis in ['X', 'Z'] {
+                    let node = self.topo.get_node(self.topo.get_data_node_id(op.qubit, basis));
+                    positions.push(node.pos);
+                }
+            } else {
+                let node =
+                    self.topo.get_node(self.topo.get_data_node_id(op.qubit,
+                                                                  op.basis.to_ascii_uppercase()));
+                positions.push(node.pos);
+            }
+        }
+        if positions.is_empty() {
+            return f32::MAX;
+        }
+        if pp.gate_type.is_t() {
+            // Distance from centroid to nearest ready magic node.
+            let n = positions.len() as f32;
+            let cx = positions.iter().map(|p| p.0).sum::<f32>() / n;
+            let cy = positions.iter().map(|p| p.1).sum::<f32>() / n;
+            self.ready_magic_positions
+                .iter()
+                .map(|p| (p.0 - cx).abs() + (p.1 - cy).abs())
+                .fold(f32::MAX, f32::min)
+        } else {
+            // Sum of pairwise Manhattan distances between terminals.
+            let mut total = 0.0f32;
+            for i in 0..positions.len() {
+                for j in (i + 1)..positions.len() {
+                    total += (positions[i].0 - positions[j].0).abs()
+                             + (positions[i].1 - positions[j].1).abs();
+                }
+            }
+            total
+        }
+    }
+
     fn gen_cultivation_time(&mut self) -> i32 {
         let cultivation_time = self.rng_exp.sample().round() as i32; // + 1;
         cultivation_time
     }
 
     #[cfg(debug_assertions)]
-    fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, Arc<TreeGraph>)>) -> io::Result<()> {
+    fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, Arc<TreeGraph>)>)
+                          -> io::Result<()> {
         for (pp, _) in pp_paths {
             if self.scheduled_products.contains(&pp.id) && !pp.gate_type.is_clifford() {
                 return Err(io::Error::new(io::ErrorKind::Other,
