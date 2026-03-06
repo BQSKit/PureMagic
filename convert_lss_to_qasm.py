@@ -177,34 +177,34 @@ def preprocess(line_nums: list[int], lines: list[Op]) -> tuple[list[int], list[O
     skips: int = 0
     for i in range(len(lines)):
         k: int = i + skips
-        if k + 1 >= len(lines):
+        if k == len(lines):
             break
         (sign, op_str, gate_type) = lines[k]
-        next_i: int = k + 1
-        (next_sign, next_op_str, next_gate_type) = lines[next_i]
-        if op_str != next_op_str:
-            # no reduction if they don't operate on exactly the same qubits with the same terms
-            new_lines.append(lines[k])
-            new_line_nums.append(line_nums[k])
-            continue
-        if gate_type == "T" and next_gate_type == "T":
-            if sign != next_sign:
-                # different signs, cancel out the T gates
-                # print(f"Cancel {k} {lines[k]} and {lines[next_i]}", file=sys.stderr)
-                skips += 1
-                continue
-            else:
-                # same sign, convert to Clifford Z
-                # print(f"To clifford {k} {lines[k]} and {lines[next_i]}", file=sys.stderr)
-                (qubits, terms) = get_qubits_and_terms(op_str)
-                assert len(qubits) == 1 and terms[0] == "Z"
-                new_lines.append((sign, op_str, "clifford"))
+        if k + 1 < len(lines):
+            next_i: int = k + 1
+            (next_sign, next_op_str, next_gate_type) = lines[next_i]
+            if op_str != next_op_str:
+                # no reduction if they don't operate on exactly the same qubits with the same terms
+                new_lines.append(lines[k])
                 new_line_nums.append(line_nums[k])
-                skips += 1
                 continue
-        else:
-            new_lines.append(lines[k])
-            new_line_nums.append(line_nums[k])
+            if gate_type == "T" and next_gate_type == "T":
+                if sign != next_sign:
+                    # different signs, cancel out the T gates
+                    # print(f"Cancel {k} {lines[k]} and {lines[next_i]}", file=sys.stderr)
+                    skips += 1
+                    continue
+                else:
+                    # same sign, convert to Clifford Z
+                    # print(f"To clifford {k} {lines[k]} and {lines[next_i]}", file=sys.stderr)
+                    (qubits, terms) = get_qubits_and_terms(op_str)
+                    assert len(qubits) == 1 and terms[0] == "Z"
+                    new_lines.append((sign, op_str, "clifford"))
+                    new_line_nums.append(line_nums[k])
+                    skips += 1
+                    continue
+        new_lines.append(lines[k])
+        new_line_nums.append(line_nums[k])
     return new_line_nums, new_lines, skips
 
 
@@ -253,6 +253,7 @@ def convert_file(input_file: str, output_file: Optional[str] = None) -> None:
 
     num_lines: int = len(lines)
     line_nums, lines, skips = preprocess(line_nums, lines)
+    # skips: int = 0
     print(f"Preprocessed {num_lines} lines, skipped {skips} lines")
 
     num_cliffords: int = 0
@@ -264,33 +265,36 @@ def convert_file(input_file: str, output_file: Optional[str] = None) -> None:
         if k >= len(lines):
             break
         gate_type: str = lines[k][2]
+        product: str = ""
         if gate_type == "T":
             num_tgates += 1
-            print(get_t_product(k, lines), file=f)
+            product = get_t_product(k, lines)
         elif gate_type == "M":
             num_measurements += 1
-            print(get_m_product(k, lines), file=f)
+            product = get_m_product(k, lines)
         elif gate_type == "clifford":
             num_cliffords += 1
             cx_product: Optional[str] = get_cx_product(k, lines)
             if cx_product is not None:
-                print(cx_product, file=f)
+                product = cx_product
                 skips += 2
-                continue
-            h_product: Optional[str] = get_h_product(k, lines)
-            if h_product is not None:
-                print(h_product, file=f)
-                skips += 2
-                continue
-            s_product: Optional[str] = get_s_product(k, lines)
-            if s_product is not None:
-                print(s_product, file=f)
             else:
-                raise RuntimeError(
-                    f"Could not process line {lines[k]} on line {line_nums[k]}\n{lines[k - 1]}"
-                )
+                h_product: Optional[str] = get_h_product(k, lines)
+                if h_product is not None:
+                    product = h_product
+                    skips += 2
+                else:
+                    s_product: Optional[str] = get_s_product(k, lines)
+                    if s_product is not None:
+                        product = s_product
         else:
             raise RuntimeError(f"Unknown gate type {gate_type}")
+        if product == "":
+            raise RuntimeError(
+                f"Could not process line {lines[k]} on line {line_nums[k]}\n{lines[k - 1]}"
+            )
+        print(f"{product:20}  // {k}: {lines[k]}", file=f)
+        # print(f"{product}", file=f)
 
     print(f"Conversion complete")
     print(f"  Number of qubits: {num_qubits}")
