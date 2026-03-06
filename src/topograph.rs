@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, BufRead};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct TopoGraph {
@@ -608,7 +609,7 @@ impl TopoGraph {
         Ok(())
     }
 
-    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, TreeGraph)],
+    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Arc<TreeGraph>)],
                 title_str: &str)
                 -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();

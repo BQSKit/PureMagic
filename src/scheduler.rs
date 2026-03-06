@@ -19,6 +19,7 @@ use rand_simple::Exponential;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 struct ScheduleStats {
     data_qubits: usize,
@@ -135,7 +136,7 @@ pub struct Scheduler {
     timestep_scheduled: Vec<(usize, Vec<PauliProduct>)>,
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
-    clifford_paths: IndexMap<i32, (usize, PauliProduct, TreeGraph)>,
+    clifford_paths: IndexMap<i32, (usize, PauliProduct, Arc<TreeGraph>)>,
     stree_computation: SteinerTreeComputation,
     timers: SchedulerTimers,
 }
@@ -265,7 +266,7 @@ impl Scheduler {
                         } else {
                             let count = if pp.gate_type.is_cx() { 1 } else { 2 };
                             self.clifford_paths
-                                .insert(pp.id, (count, (*pp).clone(), (*pp_path).clone()));
+                                .insert(pp.id, (count, (*pp).clone(), Arc::clone(pp_path)));
                         }
                     }
                 }
@@ -367,9 +368,9 @@ impl Scheduler {
     }
 
     fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
-                         -> Option<Vec<(PauliProduct, TreeGraph)>> {
+                         -> Option<Vec<(PauliProduct, Arc<TreeGraph>)>> {
         let mut num_avail_magic = self.update_cultivators();
-        let mut pp_paths: Vec<(PauliProduct, TreeGraph)> =
+        let mut pp_paths: Vec<(PauliProduct, Arc<TreeGraph>)> =
             Vec::with_capacity(to_schedule.len().min(10));
         // clear out used from previous timestep
         self.used.fill(false);
@@ -380,7 +381,7 @@ impl Scheduler {
                 self.used[node_id] = true;
             }
             // add the previous trees to the paths collection
-            pp_paths.push(((*pp).clone(), (*pp_path).clone()));
+            pp_paths.push(((*pp).clone(), Arc::clone(pp_path)));
         }
         // Presort products from most to least resource-intensive
         let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
@@ -406,7 +407,7 @@ impl Scheduler {
                     self.stats.inc(node.node_type);
                     self.used[node.id] = true;
                 }
-                pp_paths.push(((*pp).clone(), best_graph));
+                pp_paths.push(((*pp).clone(), Arc::new(best_graph)));
                 // don't schedule again
                 remaining_to_schedule.swap_remove(&best_pp_idx);
                 if pp.gate_type.is_t() {
@@ -717,7 +718,7 @@ impl Scheduler {
     }
 
     #[cfg(debug_assertions)]
-    fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, TreeGraph)>) -> io::Result<()> {
+    fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, Arc<TreeGraph>)>) -> io::Result<()> {
         for (pp, _) in pp_paths {
             if self.scheduled_products.contains(&pp.id) && !pp.gate_type.is_clifford() {
                 return Err(io::Error::new(io::ErrorKind::Other,
