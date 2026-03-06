@@ -375,14 +375,14 @@ impl Scheduler {
         self.used.fill(false);
         // mark all previous first round cliffords as used
         for (_, (_, pp, pp_path)) in &self.clifford_paths {
-            // marke clifford nodes as used so they can't be double scheduled
+            // mark clifford nodes as used so they can't be double scheduled
             for node_id in pp_path.iter_nodes() {
                 self.used[node_id] = true;
             }
             // add the previous trees to the paths collection
             pp_paths.push(((*pp).clone(), (*pp_path).clone()));
         }
-        // Presort products from most to least resource-intensive, caching the term weight
+        // Presort products from most to least resource-intensive
         let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
             to_schedule.iter()
                        .sorted_by_key(|pp| std::cmp::Reverse(pp.weight))
@@ -408,14 +408,14 @@ impl Scheduler {
                 }
                 pp_paths.push(((*pp).clone(), best_graph));
                 // don't schedule again
-                remaining_to_schedule.shift_remove(&best_pp_idx);
+                remaining_to_schedule.swap_remove(&best_pp_idx);
                 if pp.gate_type.is_t() {
                     num_avail_magic -= 1;
                 }
             }
             // remove all those we cannot schedule this timestep
             for pp_i in cannot_schedule {
-                remaining_to_schedule.shift_remove(&pp_i);
+                remaining_to_schedule.swap_remove(&pp_i);
             }
         }
         self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize);
