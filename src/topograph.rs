@@ -17,6 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct TopoGraph {
     nodes: Vec<Node>,
     node_ids_from_labels: IndexMap<String, usize>,
+    // Fast lookup for data nodes: indexed by qubit number, [0] = X node id, [1] = Z node id
+    data_node_ids: Vec<[usize; 2]>,
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
     num_rows: usize,
@@ -35,6 +37,7 @@ impl TopoGraph {
     pub fn new() -> Self {
         TopoGraph { nodes: Vec::new(),
                     node_ids_from_labels: IndexMap::new(),
+                    data_node_ids: Vec::new(),
                     node_grid: Vec::new(),
                     num_cols: 0,
                     num_rows: 0,
@@ -513,6 +516,21 @@ impl TopoGraph {
             }
         }
 
+        // Build fast data-node lookup: label format is "d{qubit}{basis}" where basis is 'X' or 'Z'
+        self.data_node_ids.clear();
+        for node in &self.nodes {
+            if node.node_type == NodeType::Data {
+                let label = &node.label;
+                let basis: char = label.chars().last().unwrap();
+                let qubit: usize = label[1..label.len() - 1].parse().unwrap();
+                let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
+                if qubit >= self.data_node_ids.len() {
+                    self.data_node_ids.resize(qubit + 1, [usize::MAX; 2]);
+                }
+                self.data_node_ids[qubit][basis_idx] = node.id;
+            }
+        }
+
         self.num_data_qubits = data_count / 2;
         self.num_magic_qubits = magic_count;
         self.num_bus_qubits = bus_count;
@@ -556,14 +574,11 @@ impl TopoGraph {
         self.num_edges += 1;
     }
 
-    pub fn get_node_id_from_label(&mut self, node_label: &String) -> usize {
-        *self.node_ids_from_labels.get(node_label).unwrap()
+    pub fn get_data_node_id(&self, qubit: usize, basis: char) -> usize {
+        let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
+        self.data_node_ids[qubit][basis_idx]
     }
 
-    pub fn get_node_from_label(&self, node_label: &String) -> &Node {
-        let node_id = self.node_ids_from_labels.get(node_label).unwrap();
-        &self.nodes[*node_id]
-    }
 
     #[cfg(debug_assertions)]
     pub fn print(&self) -> io::Result<()> {

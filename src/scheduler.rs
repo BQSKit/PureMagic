@@ -236,8 +236,8 @@ impl Scheduler {
                 for (pp, _) in pp_paths.iter() {
                     if pp.gate_type.is_clifford() {
                         if let Some((count, _, _)) = self.clifford_paths.get(&pp.id) {
-                            debug_assert!(pp.gate_type.is_s() || pp.gate_type.is_sx());
                             if *count == 2 {
+                                debug_assert!(pp.gate_type.is_s() || pp.gate_type.is_sx());
                                 // second round of S/SX clifford, don't add children
                                 continue;
                             }
@@ -522,13 +522,12 @@ impl Scheduler {
                 // Mark dependent nodes as used
                 for op in &pp.operators {
                     if op.basis == 'Y' {
-                        let node_label_x = format!("d{}{}", op.qubit, 'X');
-                        self.used[self.topo.get_node_id_from_label(&node_label_x)] = true;
-                        let node_label_z = format!("d{}{}", op.qubit, 'Z');
-                        self.used[self.topo.get_node_id_from_label(&node_label_z)] = true;
+                        self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
+                        self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
                     } else {
-                        let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                        self.used[self.topo.get_node_id_from_label(&node_label)] = true;
+                        self.used
+                            [self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())] =
+                            true;
                     }
                 }
                 cannot_schedule.push(pp_i);
@@ -622,12 +621,12 @@ impl Scheduler {
         let mut terminals = Vec::new();
         for op in &pauli_product.operators {
             if op.basis == 'Y' {
-                for term in ['X', 'Z'] {
-                    let node_label = format!("d{}{}", op.qubit, term);
-                    let node = self.topo.get_node_from_label(&node_label);
+                for basis in ['X', 'Z'] {
+                    let node_id = self.topo.get_data_node_id(op.qubit, basis);
+                    let node = self.topo.get_node(node_id);
                     // Check if node is already used
                     if self.used[node.id] {
-                        info_sched!("  Node {} is already used", node_label);
+                        info_sched!("  Node {} is already used", node.label);
                         return None;
                     }
                     // check for at least one unused magic or bus nb
@@ -642,11 +641,11 @@ impl Scheduler {
                     terminals.push(node.id);
                 }
             } else {
-                let node_label = format!("d{}{}", op.qubit, op.basis.to_ascii_uppercase());
-                let node = self.topo.get_node_from_label(&node_label);
+                let node_id = self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase());
+                let node = self.topo.get_node(node_id);
                 // Check if node is already used
                 if self.used[node.id] {
-                    info_sched!("  Node {} is already used", node_label);
+                    info_sched!("  Node {} is already used", node.label);
                     return None;
                 }
                 // check for at least one unused magic or bus nb
