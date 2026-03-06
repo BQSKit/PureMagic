@@ -383,11 +383,10 @@ impl Scheduler {
             pp_paths.push(((*pp).clone(), (*pp_path).clone()));
         }
         // Presort products from most to least resource-intensive, caching the term weight
-        let mut remaining_to_schedule: IndexMap<i32, (&PauliProduct, usize)> =
+        let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
             to_schedule.iter()
-                       .map(|pp| (pp.id, pp, pp.count_weighted_terms()))
-                       .sorted_by_key(|&(_, _, w)| std::cmp::Reverse(w))
-                       .map(|(id, pp, w)| (id, (pp, w)))
+                       .sorted_by_key(|pp| std::cmp::Reverse(pp.count_weighted_terms()))
+                       .map(|pp| (pp.id, pp))
                        .collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
@@ -396,7 +395,7 @@ impl Scheduler {
                                                                     num_avail_magic,
                                                                     best_fit);
             if let Some((best_pp_idx, best_graph)) = best_pp {
-                let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap().0;
+                let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap();
                 info_sched!("  Scheduled product {} with {} nodes and {} edges",
                             pp,
                             best_graph.num_nodes,
@@ -478,8 +477,7 @@ impl Scheduler {
         num_avail_magic
     }
 
-    fn find_best_product(&mut self,
-                         remaining_to_schedule: &IndexMap<i32, (&PauliProduct, usize)>,
+    fn find_best_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
                          num_scheduled: usize, num_avail_magic: usize, best_fit: bool)
                          -> (Option<(i32, TreeGraph)>, Vec<i32>) {
         let mut best_pp: Option<(i32, TreeGraph)> = None;
@@ -487,7 +485,8 @@ impl Scheduler {
         let mut best_pp_term_weight = 0;
         let mut cannot_schedule: Vec<i32> = Vec::new();
 
-        for (&pp_i, &(pp, pp_term_weight)) in remaining_to_schedule {
+        for (&pp_i, &pp) in remaining_to_schedule {
+            let pp_term_weight = pp.count_weighted_terms();
             if pp_term_weight < best_pp_term_weight {
                 info_sched!("  Skip lower weight product {}", pp);
                 continue;
