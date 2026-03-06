@@ -17,24 +17,31 @@ impl AStarComputation {
                            closed: vec![false; num_nodes] }
     }
 
-    /// A* shortest path from `root_id` to the nearest ready, unused magic node.
-    /// Handles single-terminal T (one terminal) and single-Y T (two paired terminals sharing one
-    /// root).  Returns a TreeGraph with all terminals attached to root → path → magic,
-    /// with `root_node_id` set to the magic node, or None if no path exists.
-    pub fn compute(&mut self, terminal_ids: &[usize], root_id: usize, topo: &TopoGraph,
+    /// Multi-source A* from all `root_ids` to the nearest ready, unused magic node.
+    /// Each `terminal_ids[i]` is attached to `root_ids[i]` in the returned tree.
+    /// For single-X/Z T gates: one root, one terminal.
+    /// For single-Y T gates: two roots (one above X-data, one below Z-data), two terminals.
+    /// After building the main path (magic → winning root), any remaining roots that are not
+    /// on the path are stitched in by finding an adjacent node already in the tree.
+    /// Returns a TreeGraph with `root_node_id` set to the magic node, or None if no path exists.
+    pub fn compute(&mut self, terminal_ids: &[usize], root_ids: &[usize], topo: &TopoGraph,
                    used: &[bool], ready_magic_positions: &[(f32, f32)])
                    -> Option<TreeGraph> {
-        if used[root_id] {
-            return None;
-        }
         self.parent.fill(None);
         self.g_cost.fill(u32::MAX);
         self.closed.fill(false);
 
-        self.g_cost[root_id] = 0;
-        let h0 = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
         let mut heap: BinaryHeap<(Reverse<u32>, usize)> = BinaryHeap::new();
-        heap.push((Reverse(h0), root_id));
+        for &root_id in root_ids {
+            if !used[root_id] {
+                self.g_cost[root_id] = 0;
+                let h = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
+                heap.push((Reverse(h), root_id));
+            }
+        }
+        if heap.is_empty() {
+            return None;
+        }
 
         while let Some((_, node_id)) = heap.pop() {
             if self.closed[node_id] {
@@ -52,13 +59,7 @@ impl AStarComputation {
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id] {
                 let mut tree = TreeGraph::new(topo.num_nodes);
                 tree.root_node_id = Some(node_id);
-                // Attach all terminals (one for X/Z single-qubit T, two for single-Y T).
-                tree.add_node(topo.get_node(root_id));
-                for &tid in terminal_ids {
-                    tree.add_node(topo.get_node(tid));
-                    tree.add_edge(root_id, tid);
-                }
-                // Walk parent chain from magic back to root, adding nodes and edges.
+                // Walk parent chain from magic back to the winning root.
                 let mut curr = node_id;
                 if !tree.contains_node(curr) {
                     tree.add_node(topo.get_node(curr));
@@ -69,6 +70,26 @@ impl AStarComputation {
                     }
                     tree.add_edge(prev_id, curr);
                     curr = prev_id;
+                }
+                // Connect each root to its terminal. For roots not yet in the tree (losing roots
+                // in the multi-source case), find an adjacent tree node to stitch them in.
+                for (i, &root_id) in root_ids.iter().enumerate() {
+                    if !tree.contains_node(root_id) {
+                        // Find a tree node adjacent to this losing root and connect via it.
+                        let nbors = topo.get_node(root_id).nbors.clone();
+                        let conn = nbors.iter().find(|&&nb_id| tree.contains_node(nb_id));
+                        if let Some(&conn_id) = conn {
+                            tree.add_node(topo.get_node(root_id));
+                            tree.add_edge(conn_id, root_id);
+                        } else {
+                            return None;
+                        }
+                    }
+                    if i < terminal_ids.len() {
+                        let tid = terminal_ids[i];
+                        tree.add_node(topo.get_node(tid));
+                        tree.add_edge(root_id, tid);
+                    }
                 }
                 return Some(tree);
             }
