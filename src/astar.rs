@@ -52,17 +52,14 @@ impl AStarComputation {
             }
             self.closed[node_id] = true;
 
-            // Copy out what we need from topo before touching the astar fields.
             let (node_type, cultivation_time, nbors) = {
                 let node = topo.get_node(node_id);
                 (node.node_type, node.cultivation_time, node.nbors.clone())
             };
 
-            // Goal: an unused, ready magic node.
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id] {
                 let mut tree = TreeGraph::new(topo.num_nodes);
                 tree.root_node_id = Some(node_id);
-                // Walk parent chain from magic back to the winning root.
                 let mut curr = node_id;
                 if !tree.contains_node(curr) {
                     tree.add_node(topo.get_node(curr));
@@ -74,11 +71,8 @@ impl AStarComputation {
                     tree.add_edge(prev_id, curr);
                     curr = prev_id;
                 }
-                // Connect each root to its terminal. For roots not yet in the tree (losing roots
-                // in the multi-source case), find an adjacent tree node to stitch them in.
                 for (i, &root_id) in root_ids.iter().enumerate() {
                     if !tree.contains_node(root_id) {
-                        // Find a tree node adjacent to this losing root and connect via it.
                         let nbors = topo.get_node(root_id).nbors.clone();
                         let conn = nbors.iter().find(|&&nb_id| tree.contains_node(nb_id));
                         if let Some(&conn_id) = conn {
@@ -102,7 +96,6 @@ impl AStarComputation {
                 if used[nb_id] || self.closed[nb_id] {
                     continue;
                 }
-                // Copy nb data before mutating the astar fields.
                 let (nb_is_data, nb_pos) = {
                     let nb = topo.get_node(nb_id);
                     (nb.node_type == NodeType::Data, nb.pos)

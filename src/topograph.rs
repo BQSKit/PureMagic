@@ -80,7 +80,6 @@ impl TopoGraph {
         } else {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
-        // now make sure all data qubit pairs are set
         let node_ids: Vec<usize> = self.nodes.iter().map(|node| node.id).collect();
         for node_id in node_ids {
             let node = self.get_node(node_id);
@@ -109,7 +108,6 @@ impl TopoGraph {
     /// Supports randomized data node pairing for scheduling variation.
     pub fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
         let _timer = fn_timer!();
-        // Read the grid layout
         let mut rows = Vec::new();
         let file = File::open(&self.topo_fname)?;
         for line in io::BufReader::new(file).lines() {
@@ -119,7 +117,6 @@ impl TopoGraph {
                 rows.push(row);
             }
         }
-        // Transpose grid from row-major to col-major order
         self.num_rows = rows.len();
         self.num_cols = rows[0].len();
         self.node_grid = vec![vec![None; self.num_rows]; self.num_cols];
@@ -129,7 +126,6 @@ impl TopoGraph {
                 self.node_grid[col_i][row_i] = Some(col.clone());
             }
         }
-        // Count data nodes to create randomized mapping
         let mut pair_indices = Vec::new();
         let mut num_data_nodes = 0;
         for col in 0..self.num_cols {
@@ -143,15 +139,12 @@ impl TopoGraph {
             }
         }
         if *rseed != 0 {
-            // Create randomized pairing for data nodes
-            //let timer_seed = *rseed;
             let timer_seed =
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
             let mut rng = StdRng::seed_from_u64(timer_seed);
             pair_indices.shuffle(&mut rng);
         }
         println!("Data node order {:?}", pair_indices);
-        // Add nodes
         let mut di = 0;
         for col in 0..self.num_cols {
             for row in 0..self.num_rows {
@@ -175,7 +168,6 @@ impl TopoGraph {
                 }
             }
         }
-        // Add edges
         self.set_edges(sides_only);
         println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
 
@@ -184,7 +176,6 @@ impl TopoGraph {
 
     /// Generates a bus routing topology: data qubits with dedicated bus columns for routing.
     fn gen_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
-        // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
         let bus_rows = patch_rows + 1;
@@ -202,7 +193,6 @@ impl TopoGraph {
         let mut qi = 0;
         for col in 1..self.num_cols - 1 {
             if col % 2 == 0 {
-                // Data column
                 for row in 1..self.num_rows - 1 {
                     if row % 3 + 1 == 2 {
                         let node_type =
@@ -221,7 +211,6 @@ impl TopoGraph {
             } else {
                 let node_type =
                     if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
-                // Bus column
                 for row in 1..self.num_rows - 1 {
                     self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                 }
@@ -235,7 +224,6 @@ impl TopoGraph {
 
     /// Generates a compact bus routing topology without separate bus columns.
     fn gen_compact_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
-        // minimum layout with bus qubits
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
         let qubits_per_col = 2 * patch_rows;
@@ -250,7 +238,6 @@ impl TopoGraph {
         let mut qi = 0;
         for col in 0..self.num_cols {
             if col % 2 == 1 {
-                // Data column
                 for row in 1..self.num_rows - 1 {
                     if qi < max_qi && row < self.num_rows - 2 {
                         self.add_double_data_qubit(qi, col, row, row % 2 == 1);
@@ -264,7 +251,6 @@ impl TopoGraph {
             } else {
                 let node_type =
                     if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
-                // Bus column
                 for row in 1..self.num_rows - 1 {
                     self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                 }
@@ -278,7 +264,6 @@ impl TopoGraph {
     /// Adds magic/bus nodes along a border row connecting to adjacent nodes.
     fn add_border_row(&mut self, row: usize) {
         let node_type = if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
-        // Add corner bus nodes
         self.node_grid[0][row] = Some(self.add_qubit(0, row, node_type));
         self.node_grid[self.num_cols - 1][row] =
             Some(self.add_qubit(self.num_cols - 1, row, node_type));
@@ -309,7 +294,6 @@ impl TopoGraph {
     /// `ancilla_rows` controls spacing between data qubit rows.
     pub fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
                                sides_only: bool) {
-        // minimum layout with all magic qubits
         let row_spacing = ancilla_rows + 1;
         let col_spacing = if ancilla_rows == 0 { 2 } else { ancilla_rows + 1 };
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -328,7 +312,6 @@ impl TopoGraph {
         for col in 0..self.num_cols {
             for row in 0..self.num_rows {
                 if col % col_spacing == col_spacing - 1 {
-                    // data column
                     if (row % row_gap == row_spacing || row % row_gap == row_spacing - 1)
                        && !(ancilla_rows == 0 && row == self.num_rows - 1)
                     {
@@ -344,7 +327,6 @@ impl TopoGraph {
                         self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
                     }
                 } else {
-                    // magic column
                     self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
                 }
             }
@@ -419,16 +401,13 @@ impl TopoGraph {
         for row in 0..self.num_rows {
             for col in 0..self.num_cols {
                 if let Some(ref label) = self.node_grid[col][row] {
-                    // Add horizontal edges
                     if col > 0 {
                         if let Some(ref left_label) = self.node_grid[col - 1][row] {
                             edges_to_add.push((label.clone(), left_label.clone()));
                         }
                     }
                     if !sides_only {
-                        // Add vertical data edges
                         if row > 1 {
-                            // connecting up from Z
                             if label.starts_with('d') && label.ends_with('Z') {
                                 if let Some(ref up_label) = self.node_grid[col][row - 2] {
                                     if up_label.starts_with('b') || up_label.starts_with('m') {
@@ -439,7 +418,6 @@ impl TopoGraph {
                             }
                         }
                         if row < self.num_rows - 2 {
-                            // connecting down from X
                             if label.starts_with('d') && label.ends_with('X') {
                                 if let Some(ref up_label) = self.node_grid[col][row + 2] {
                                     if up_label.starts_with('b') || up_label.starts_with('m') {
@@ -450,7 +428,6 @@ impl TopoGraph {
                             }
                         }
                     }
-                    // add vertical non-data edges
                     if row > 0 {
                         if let Some(ref up_label) = self.node_grid[col][row - 1] {
                             if !label.starts_with('d') && !up_label.starts_with('d') {
@@ -654,25 +631,15 @@ impl TopoGraph {
             (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
         )
         .into_drawing_area();
-        /*
-        let plot_fname = format!("{}{}.svg", topo_stem, fname_added);
-        let root = SVGBackend::new(
-            &plot_fname,
-            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
-        )
-        .into_drawing_area();
-         */
         root.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&root).margin(10)
                                                .set_label_area_size(LabelAreaPosition::Bottom, 50)
                                                .build_cartesian_2d(-1f32..self.num_cols as f32,
                                                                    -1f32..self.num_rows as f32)?;
-        // Draw background
         chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
                                                           (self.num_cols as f32 - 0.5,
                                                            self.num_rows as f32 - 0.5)],
                                                          RGBColor(220, 220, 220).filled())))?;
-        // Draw grid lines
         for row in 0..=self.num_rows {
             chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
                                                    (self.num_cols as f32 - 0.5,
@@ -685,7 +652,6 @@ impl TopoGraph {
                                                     self.num_rows as f32 - 0.5),],
                                               WHITE.stroke_width(3)))?;
         }
-        // Generate colors for Pauli product paths
         let num_colors = pauli_product_paths.len().max(1);
         let path_colors: Vec<RGBAColor> =
             (0..num_colors).map(|i| {
@@ -694,13 +660,11 @@ impl TopoGraph {
                                RGBColor(r, g, b).to_rgba()
                            })
                            .collect();
-        // Draw edges with path coloring
         for node in &self.nodes {
             for nb_id in &node.nbors {
                 let nb = &self.nodes[*nb_id];
                 let mut edge_color = &BLACK.mix(0.5).to_rgba();
                 let mut stroke_width = 1;
-                // Check if edge is part of any path
                 for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
                     if path_graph.contains_edge(node.id, *nb_id) {
                         edge_color = &path_colors[i];
@@ -712,7 +676,6 @@ impl TopoGraph {
                    && node.pos.1 != nb.pos.1
                    && nb.node_type == NodeType::Data
                 {
-                    //eprintln!("edge {}->{}", node.label, nb.label);
                     continue;
                 }
                 let edge_points = self.generate_edge_points(node.pos, nb.pos);
@@ -721,12 +684,10 @@ impl TopoGraph {
                                                   edge_color.mix(mix).stroke_width(stroke_width)))?;
             }
         }
-        // Draw nodes with path highlighting
         for node in &self.nodes {
             let (x, y) = node.pos;
             let mut border_color = None;
             let mut root_node = None;
-            // Check if node is part of any path
             for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
                 if path_graph.contains_node(node.id) {
                     border_color = Some(&path_colors[i]);
@@ -734,7 +695,6 @@ impl TopoGraph {
                     break;
                 }
             }
-            // Draw node circle
             let node_color = match node.node_type {
                                  NodeType::Magic => {
                                      if border_color == None || Some(node.id.clone()) == root_node {
@@ -747,13 +707,11 @@ impl TopoGraph {
                                  NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
                              }.filled();
             chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32), 22, node_color)))?;
-            // Draw border if part of a path
             if let Some(color) = border_color {
                 chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
                                                               22,
                                                               color.stroke_width(3))))?;
             }
-            // Draw label
             let label_text = match node.node_type {
                 NodeType::Data => node.label.clone(),
                 NodeType::Magic => {
@@ -767,20 +725,6 @@ impl TopoGraph {
                         }
                     } else {
                         node.label.clone()
-                        /*
-                        if Some(node.label.clone()) == root_node {
-                            format!("R{}", (node.cultivation_time - node.busy_count))
-                        } else {
-                            if node.node_type == NodeType::Magic {
-                                if node.is_cultivating() {
-                                    (node.cultivation_time - node.busy_count).to_string()
-                                } else {
-                                    "  R".to_string()
-                                }
-                            } else {
-                                "  B".to_string()
-                            }
-                        } */
                     }
                 }
                 NodeType::Bus => {
@@ -791,7 +735,6 @@ impl TopoGraph {
                     }
                 }
             };
-            // Determine font style based on label content
             let font_style = if label_text.contains('R') {
                 ("sans-serif", 18, FontStyle::Bold).into_font()
             } else {
@@ -801,7 +744,6 @@ impl TopoGraph {
                                                         (x as f32 - 0.17, y as f32 + 0.09),
                                                         font_style)))?;
         }
-        // Draw Pauli product labels
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
             if let Some(first_data_node_id) =
                 path_graph.iter_nodes()
@@ -811,7 +753,6 @@ impl TopoGraph {
                 let (x, y) = self.nodes[first_data_node_id].pos;
                 let product_str = pp.to_operator_str();
                 let text_width = product_str.len() as f32 * 0.125;
-                // Draw text background
                 chart.draw_series(std::iter::once(Rectangle::new([(x as f32 - 0.3,
                                                                    y as f32 + 0.3),
                                                                   (x as f32 - 0.3
@@ -819,15 +760,12 @@ impl TopoGraph {
                                                                    y as f32 + 0.55)],
                                                                  path_colors[i].mix(0.2)
                                                                                .filled())))?;
-                // Draw product string
                 chart.draw_series(std::iter::once(Text::new(product_str,
                                                             (x as f32 - 0.2, y as f32 + 0.5),
                                                             ("sans-serif", 22).into_font())))?;
             }
         }
-        // Draw title
         if !title_str.is_empty() {
-            // manually deal with new lines, since the plotting doesn't
             let lines: Vec<&str> = title_str.split('\n').collect();
             for (i, line) in lines.iter().enumerate() {
                 chart.draw_series(std::iter::once(Text::new(line.to_string(),
@@ -848,17 +786,13 @@ impl TopoGraph {
         let (x1, y1) = pos1;
         let (x2, y2) = pos2;
         if x1 == x2 || y1 == y2 {
-            // Straight edge (horizontal or vertical)
             vec![(x1, y1), (x2, y2)]
         } else {
-            // Diagonal edge - draw curved using quadratic Bézier curve
             let mid_x = (x1 + x2) / 2.0;
             let mid_y = (y1 + y2) / 2.0;
-            // Create control point - curve_offset determines left (-) or right (+)
             let curve_offset = if x1 < x2 { 0.2 } else { -0.2 };
             let control_x = mid_x + curve_offset;
             let control_y = mid_y;
-            // Generate points along the quadratic Bézier curve
             let num_points = 10;
             (0..=num_points).map(|i| {
                                 let t = i as f32 / num_points as f32;
