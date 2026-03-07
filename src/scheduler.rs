@@ -16,6 +16,7 @@ use crate::utils::{
 
 use indexmap::{IndexMap, IndexSet};
 use rand_simple::Exponential;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -156,6 +157,7 @@ pub struct Scheduler {
     scheduled_ids_scratch: Vec<i32>,
     children_scratch: Vec<i32>,
     new_cultivation_times: Vec<i32>,
+    precomputed_clifford_trees: HashMap<i32, Arc<TreeGraph>>,
 }
 
 impl Scheduler {
@@ -202,7 +204,8 @@ impl Scheduler {
                     terminals_scratch: Vec::new(),
                     scheduled_ids_scratch: Vec::new(),
                     children_scratch: Vec::new(),
-                    new_cultivation_times: Vec::new() }
+                    new_cultivation_times: Vec::new(),
+                    precomputed_clifford_trees: HashMap::new() }
     }
 
     /// Main scheduling algorithm: greedily assigns products to timesteps.
@@ -213,6 +216,7 @@ impl Scheduler {
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         self.init_magic_nodes();
+        self.precompute_multi_term_clifford_trees();
         // Initialize scheduling
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
         debug_sched!("Initial to_schedule len {}", to_schedule.len());
@@ -280,7 +284,9 @@ impl Scheduler {
                     for &child_id in &pp.children {
                         remaining_parents[child_id as usize] -= 1;
                         if remaining_parents[child_id as usize] == 0 {
-                            if !self.children_scratch.contains(&child_id) { self.children_scratch.push(child_id); }
+                            if !self.children_scratch.contains(&child_id) {
+                                self.children_scratch.push(child_id);
+                            }
                         }
                     }
                 }
@@ -303,10 +309,10 @@ impl Scheduler {
                              to_schedule.len());
                 // Extend next_to_schedule with children from scratch buffer
                 to_schedule.extend(self.children_scratch.iter().map(|&id| {
-                                                                  self.circuit
-                                                                      .get_product(id)
-                                                                      .clone()
-                                                              }));
+                                                                   self.circuit
+                                                                       .get_product(id)
+                                                                       .clone()
+                                                               }));
                 debug_sched!("After adding {} children, to_schedule len {}",
                              self.children_scratch.len(),
                              to_schedule.len());
@@ -398,6 +404,52 @@ impl Scheduler {
         }
     }
 
+    /// Returns true if a product should have its Steiner tree precomputed.
+    /// Multi-term non-T gates (e.g. CX) always route the same way regardless of magic state,
+    /// so their trees can be fixed once on an empty topology.
+    fn should_precompute(pp: &PauliProduct) -> bool {
+        !pp.gate_type.is_t() && pp.operators.len() > 1
+    }
+
+    /// Builds a Steiner tree for a multi-term Clifford product on an empty topology.
+    /// Only used during precomputation (self.used must be all-false on entry).
+    fn precompute_steiner_tree(&mut self, pp: &PauliProduct) -> Option<TreeGraph> {
+        if !self.get_terminal_nodes(pp) {
+            return None;
+        }
+        let root_ids = self.get_root_nodes(&self.terminals_scratch[..]);
+        if root_ids.is_empty() {
+            return None;
+        }
+        self.stree_computation.compute(&self.topo, &self.used, &root_ids,
+                                       &self.terminals_scratch, pp.gate_type, 0)
+    }
+
+    /// Precomputes Steiner trees for all multi-term non-T products in the circuit,
+    /// using an empty topology (no nodes marked used). The result is stored in
+    /// `self.precomputed_clifford_trees` and used in `schedule_timestep` to skip
+    /// runtime Steiner tree search whenever the precomputed route is free.
+    fn precompute_multi_term_clifford_trees(&mut self) {
+        let _timer = fn_timer!("precompute_clifford_trees");
+        self.used.fill(false);
+        let num_products = self.circuit.num_products();
+        let mut num_precomputed = 0;
+        for pp_id in 0..num_products {
+            let pp = self.circuit.get_product(pp_id as i32).clone();
+            if Self::should_precompute(&pp) {
+                if let Some(tree) = self.precompute_steiner_tree(&pp) {
+                    self.precomputed_clifford_trees.insert(pp.id, Arc::new(tree));
+                    num_precomputed += 1;
+                } else {
+                    // Precomputation failed — this indicates a topology/circuit issue.
+                    // The product will be skipped at runtime (never scheduled via Steiner).
+                    eprintln!("{}Warning: failed to precompute tree for {}{}", _YELLOW, pp, _RESET);
+                }
+            }
+        }
+        println!("Precomputed {} multi-term Clifford trees", num_precomputed);
+    }
+
     /// Schedules as many products as possible in a single timestep.
     /// Returns list of (product, routing tree) pairs or None if nothing could be scheduled.
     fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct])
@@ -426,6 +478,47 @@ impl Scheduler {
         let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
             products_with_dist.into_iter().map(|(pp, _)| (pp.id, pp)).collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
+        // First pass: schedule multi-term Cliffords using precomputed trees.
+        // Iterate remaining products and look up each in the precomputed tree map.
+        // Only schedules if every node in the precomputed tree is currently free.
+        // Products whose tree is blocked are dropped from remaining and skipped this timestep.
+        let remaining_ids: Vec<i32> = remaining_to_schedule.keys().copied().collect();
+        for pp_id in remaining_ids {
+            // Clone the Arc immediately to end the borrow on precomputed_clifford_trees.
+            let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Arc::clone) else {
+                continue; // No precomputed tree; leave in remaining for find_next_product.
+            };
+            let all_free = tree.iter_nodes().all(|nid| !self.used[nid]);
+            // Remove from remaining: precomputed products are not handed to find_next_product.
+            remaining_to_schedule.swap_remove(&pp_id);
+            let pp = self.circuit.get_product(pp_id).clone();
+            if all_free {
+                for node_id in tree.iter_nodes() {
+                    let node_type = self.topo.get_node(node_id).node_type;
+                    self.stats.inc(node_type);
+                    self.used[node_id] = true;
+                }
+                info_sched!("  Scheduled product {} (precomputed) with {} nodes and {} edges",
+                            pp,
+                            tree.num_nodes,
+                            tree.num_edges);
+                pp_paths.push((pp, tree));
+            } else {
+                // Tree is blocked; mark this product's data qubits as used so nothing else
+                // occupies them this timestep, mirroring find_next_product's behaviour.
+                for op in &pp.operators {
+                    if op.basis == 'Y' {
+                        self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
+                        self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
+                    } else {
+                        self.used[self.topo.get_data_node_id(op.qubit,
+                                                             op.basis.to_ascii_uppercase())] =
+                            true;
+                    }
+                }
+            }
+        }
+        // Second pass: schedule remaining products (T gates, M, S/SX) via find_next_product.
         while !remaining_to_schedule.is_empty() {
             let best_pp =
                 self.find_next_product(&remaining_to_schedule, pp_paths.len(), num_avail_magic);
@@ -532,6 +625,12 @@ impl Scheduler {
         self.cannot_schedule.clear();
 
         for (&pp_i, &pp) in remaining_to_schedule {
+            // Should-precompute products are only scheduled via the precomputed-tree pass.
+            // If one reaches here (e.g. precomputation failed), skip it this timestep.
+            if Self::should_precompute(pp) {
+                self.cannot_schedule.push(pp_i);
+                continue;
+            }
             let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
                 None
             } else {
@@ -639,6 +738,9 @@ impl Scheduler {
                 self.timers.astar.stop();
                 g
             } else {
+                debug_assert!(!Self::should_precompute(pauli_product),
+                              "should_precompute product {:?} reached Steiner path",
+                              pauli_product.id);
                 self.timers.steiner_tree.start();
                 let g = self.stree_computation.compute(&self.topo,
                                                        &self.used,
@@ -734,7 +836,9 @@ impl Scheduler {
                     if (pair == Some("XX") && nb.pos.1 < node.pos.1)
                        || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
                     {
-                        if !root_ids.contains(nb_id) { root_ids.push(*nb_id); }
+                        if !root_ids.contains(nb_id) {
+                            root_ids.push(*nb_id);
+                        }
                         // saturating_sub guards against the second iteration over a matched pair
                         unmatched_count = unmatched_count.saturating_sub(2);
                         pair_found = true;
@@ -750,7 +854,9 @@ impl Scheduler {
                     }
                     // Only include neighbors on the side (same row, different column)
                     if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
-                        if !root_ids.contains(nb_id) { root_ids.push(*nb_id); }
+                        if !root_ids.contains(nb_id) {
+                            root_ids.push(*nb_id);
+                        }
                         unmatched_count = unmatched_count.saturating_sub(1);
                         break;
                     }
