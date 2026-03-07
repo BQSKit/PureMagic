@@ -80,9 +80,6 @@ struct Args {
         help = "Log level for scheduler (none, info, or debug)"
     )]
     log_scheduler: String,
-    /// Use first fit to choose the next product to schedule.
-    #[arg(short = 'b', long)]
-    best_fit: bool,
     /// Use magic qubits for routing in addition to bus qubits
     #[arg(short = 'u', long)]
     use_magic_routing: bool,
@@ -205,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        args.rseed,
                                        args.stree_termination_threshold);
 
-    let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit(args.best_fit)?;
+    let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;
     assert_eq!(num_scheduled, num_products);
     // Calculate and print statistics
     let volume = num_qubits * tot_num_steps;

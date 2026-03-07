@@ -197,8 +197,7 @@ impl Scheduler {
 
     /// Main scheduling algorithm: greedily assigns products to timesteps.
     /// Returns (total timesteps, total scheduled products).
-    /// `best_fit=true` explores all products per timestep; `false` stops at first match.
-    pub fn schedule_circuit(&mut self, best_fit: bool) -> io::Result<(usize, usize)> {
+    pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
         self.rng_exp
             .try_set_params(1.0 / self.magic_state_lambda)
@@ -243,7 +242,7 @@ impl Scheduler {
                                    .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
                                    .collect::<Vec<_>>(),
                         _RESET);
-            if let Some(pp_paths) = self.schedule_timestep(num_steps, &to_schedule, best_fit) {
+            if let Some(pp_paths) = self.schedule_timestep(num_steps, &to_schedule) {
                 debug_sched!("Scheduled timestep {}", num_steps);
                 debug_sched!("After timestep, to_schedule len {}", to_schedule.len());
                 // Collect scheduled product ids for fast lookup
@@ -390,7 +389,7 @@ impl Scheduler {
 
     /// Schedules as many products as possible in a single timestep.
     /// Returns list of (product, routing tree) pairs or None if nothing could be scheduled.
-    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct], best_fit: bool)
+    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct])
                          -> Option<Vec<(PauliProduct, Arc<TreeGraph>)>> {
         let mut num_avail_magic = self.update_cultivators();
         let mut pp_paths: Vec<(PauliProduct, Arc<TreeGraph>)> =
@@ -417,10 +416,8 @@ impl Scheduler {
             products_with_dist.into_iter().map(|(pp, _)| (pp.id, pp)).collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
-            let (best_pp, cannot_schedule) = self.find_best_product(&remaining_to_schedule,
-                                                                    pp_paths.len(),
-                                                                    num_avail_magic,
-                                                                    best_fit);
+            let (best_pp, cannot_schedule) =
+                self.find_next_product(&remaining_to_schedule, pp_paths.len(), num_avail_magic);
             if let Some((best_pp_idx, best_graph)) = best_pp {
                 let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap();
                 info_sched!("  Scheduled product {} with {} nodes and {} edges",
@@ -509,22 +506,14 @@ impl Scheduler {
         num_avail_magic
     }
 
-    /// Searches remaining products for the best schedulable one by tree size/term weight.
-    /// Returns (best product ID and tree, list of products that cannot be scheduled this timestep).
-    fn find_best_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
-                         num_scheduled: usize, num_avail_magic: usize, best_fit: bool)
+    /// Searches remaining products for the netxt schedulable one
+    /// Returns (product ID and tree, list of products that cannot be scheduled this timestep).
+    fn find_next_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
+                         num_scheduled: usize, num_avail_magic: usize)
                          -> (Option<(i32, TreeGraph)>, Vec<i32>) {
-        let mut best_pp: Option<(i32, TreeGraph)> = None;
-        let mut best_pp_graph_size = usize::MAX;
-        let mut best_pp_term_weight = 0;
         let mut cannot_schedule: Vec<i32> = Vec::new();
 
         for (&pp_i, &pp) in remaining_to_schedule {
-            let pp_term_weight = pp.weight;
-            if pp_term_weight < best_pp_term_weight {
-                info_sched!("  Skip lower weight product {}", pp);
-                continue;
-            }
             let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
                 None
             } else {
@@ -534,21 +523,8 @@ impl Scheduler {
                 pp_graph
             };
             if let Some(pp_graph) = pp_graph {
-                // regard the best graph as the one with the most terms and the smallest
-                // tree with those number of terms
-                let pp_graph_size = pp_graph.num_nodes;
-                if pp_graph_size < best_pp_graph_size {
-                    best_pp_term_weight = pp_term_weight;
-                    best_pp_graph_size = pp_graph_size;
-                    info_sched!("  Best graph for pp {}, term weight {}, size {}",
-                                pp.to_operator_str(),
-                                pp_term_weight,
-                                best_pp_graph_size);
-                    best_pp = Some((pp_i, pp_graph));
-                    if !best_fit {
-                        break;
-                    }
-                }
+                info_sched!("  Schedule {} on graph", pp.id);
+                return (Some((pp_i, pp_graph)), cannot_schedule);
             } else {
                 info_sched!("  Could not schedule {} on graph", pp.id);
                 // Mark dependent nodes as used
@@ -565,7 +541,7 @@ impl Scheduler {
                 cannot_schedule.push(pp_i);
             }
         }
-        (best_pp, cannot_schedule)
+        (None, cannot_schedule)
     }
 
     /// Attempts to route a single Pauli product through the topology.
