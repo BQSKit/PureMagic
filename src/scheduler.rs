@@ -151,6 +151,11 @@ pub struct Scheduler {
     timers: SchedulerTimers,
     ready_magic_positions: Vec<(f32, f32)>,
     astar: AStarComputation,
+    cannot_schedule: Vec<i32>,
+    terminals_scratch: Vec<usize>,
+    scheduled_ids_scratch: Vec<i32>,
+    children_scratch: Vec<i32>,
+    new_cultivation_times: Vec<i32>,
 }
 
 impl Scheduler {
@@ -192,7 +197,12 @@ impl Scheduler {
                                                                    stree_termination_threshold),
                     timers: SchedulerTimers::new(),
                     ready_magic_positions: Vec::new(),
-                    astar: AStarComputation::new(num_nodes) }
+                    astar: AStarComputation::new(num_nodes),
+                    cannot_schedule: Vec::new(),
+                    terminals_scratch: Vec::new(),
+                    scheduled_ids_scratch: Vec::new(),
+                    children_scratch: Vec::new(),
+                    new_cultivation_times: Vec::new() }
     }
 
     /// Main scheduling algorithm: greedily assigns products to timesteps.
@@ -246,12 +256,13 @@ impl Scheduler {
                 debug_sched!("Scheduled timestep {}", num_steps);
                 debug_sched!("After timestep, to_schedule len {}", to_schedule.len());
                 // Collect scheduled product ids for fast lookup
-                let scheduled_ids: IndexSet<i32> = pp_paths.iter().map(|(pp, _)| pp.id).collect();
+                self.scheduled_ids_scratch.clear();
+                self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(pp, _)| pp.id));
                 // Remove scheduled products from to_schedule
-                to_schedule.retain(|pp| !scheduled_ids.contains(&pp.id));
+                to_schedule.retain(|pp| !self.scheduled_ids_scratch.contains(&pp.id));
                 debug_sched!("After purge, to_schedule len {}", to_schedule.len());
                 // Add children from scheduled products
-                let mut children_to_schedule = IndexSet::new();
+                self.children_scratch.clear();
                 for (pp, _) in pp_paths.iter() {
                     if pp.gate_type.is_clifford() {
                         if let Some((count, _, _)) = self.clifford_paths.get(&pp.id) {
@@ -269,7 +280,7 @@ impl Scheduler {
                     for &child_id in &pp.children {
                         remaining_parents[child_id as usize] -= 1;
                         if remaining_parents[child_id as usize] == 0 {
-                            children_to_schedule.insert(child_id);
+                            if !self.children_scratch.contains(&child_id) { self.children_scratch.push(child_id); }
                         }
                     }
                 }
@@ -290,14 +301,14 @@ impl Scheduler {
                 }
                 debug_sched!("After inserting previous round cliffords, to_schedule len {}",
                              to_schedule.len());
-                // Extend next_to_schedule with children from IndexSet
-                to_schedule.extend(children_to_schedule.iter().map(|&id| {
+                // Extend next_to_schedule with children from scratch buffer
+                to_schedule.extend(self.children_scratch.iter().map(|&id| {
                                                                   self.circuit
                                                                       .get_product(id)
                                                                       .clone()
                                                               }));
                 debug_sched!("After adding {} children, to_schedule len {}",
-                             children_to_schedule.len(),
+                             self.children_scratch.len(),
                              to_schedule.len());
                 // add products to the current step list
                 let products_in_step: Vec<PauliProduct> =
@@ -416,7 +427,7 @@ impl Scheduler {
             products_with_dist.into_iter().map(|(pp, _)| (pp.id, pp)).collect();
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         while !remaining_to_schedule.is_empty() {
-            let (best_pp, cannot_schedule) =
+            let best_pp =
                 self.find_next_product(&remaining_to_schedule, pp_paths.len(), num_avail_magic);
             if let Some((best_pp_idx, best_graph)) = best_pp {
                 let pp: &PauliProduct = remaining_to_schedule.get(&best_pp_idx).unwrap();
@@ -438,8 +449,11 @@ impl Scheduler {
                 }
             }
             // remove all those we cannot schedule this timestep
-            for pp_i in cannot_schedule {
-                remaining_to_schedule.swap_remove(&pp_i);
+            // cannot_schedule is now self.cannot_schedule, but we can't borrow self mutably
+            // while calling swap_remove on remaining_to_schedule (which is also borrowed from self? No - it's a local).
+            // Safe to use self.cannot_schedule here since find_next_product has returned.
+            for i in 0..self.cannot_schedule.len() {
+                remaining_to_schedule.swap_remove(&self.cannot_schedule[i]);
             }
         }
         self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize);
@@ -473,14 +487,17 @@ impl Scheduler {
                 .filter(|node| self.used[node.id] && node.node_type == NodeType::Magic)
                 .count();
         // Generate new cultivation times for magic nodes
-        let new_cultivation_times: Vec<i32> =
-            (0..num_used_magic_nodes).map(|_| self.gen_cultivation_time()).collect();
+        self.new_cultivation_times.clear();
+        for _ in 0..num_used_magic_nodes {
+            let t = self.gen_cultivation_time();
+            self.new_cultivation_times.push(t);
+        }
         // Update busy counts and reset used flags
         let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
             if self.used[node.id] && node.node_type == NodeType::Magic {
-                node.cultivation_time = new_cultivation_times[cultivation_time_index];
+                node.cultivation_time = self.new_cultivation_times[cultivation_time_index];
                 node.busy_count = 0;
                 cultivation_time_index += 1;
             } else if !self.used[node.id] && node.is_cultivating() {
@@ -507,11 +524,12 @@ impl Scheduler {
     }
 
     /// Searches remaining products for the netxt schedulable one
-    /// Returns (product ID and tree, list of products that cannot be scheduled this timestep).
+    /// Returns product ID and tree, or None if no schedulable product found.
+    /// Products that cannot be scheduled this timestep are stored in self.cannot_schedule.
     fn find_next_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
                          num_scheduled: usize, num_avail_magic: usize)
-                         -> (Option<(i32, TreeGraph)>, Vec<i32>) {
-        let mut cannot_schedule: Vec<i32> = Vec::new();
+                         -> Option<(i32, TreeGraph)> {
+        self.cannot_schedule.clear();
 
         for (&pp_i, &pp) in remaining_to_schedule {
             let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
@@ -524,7 +542,7 @@ impl Scheduler {
             };
             if let Some(pp_graph) = pp_graph {
                 info_sched!("  Schedule {} on graph", pp.id);
-                return (Some((pp_i, pp_graph)), cannot_schedule);
+                return Some((pp_i, pp_graph));
             } else {
                 info_sched!("  Could not schedule {} on graph", pp.id);
                 // Mark dependent nodes as used
@@ -538,10 +556,10 @@ impl Scheduler {
                             true;
                     }
                 }
-                cannot_schedule.push(pp_i);
+                self.cannot_schedule.push(pp_i);
             }
         }
-        (None, cannot_schedule)
+        None
     }
 
     /// Attempts to route a single Pauli product through the topology.
@@ -551,14 +569,14 @@ impl Scheduler {
                               -> Option<TreeGraph> {
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
-        let Some(terminals) = self.get_terminal_nodes(pauli_product) else {
+        if !self.get_terminal_nodes(pauli_product) {
             info_sched!("    Cannot schedule {}: no data nodes found in working graph",
                         pauli_product.id);
             return None;
-        };
+        }
         // Handle single data node case
-        if terminals.len() == 1 && pauli_product.gate_type.is_m() {
-            let node_id = terminals[0];
+        if self.terminals_scratch.len() == 1 && pauli_product.gate_type.is_m() {
+            let node_id = self.terminals_scratch[0];
             let node = self.topo.get_node(node_id);
             if self.used[node.id] {
                 info_sched!("    Cannot schedule {}: node for M {} is used",
@@ -570,7 +588,7 @@ impl Scheduler {
             g.add_node(node);
             return Some(g);
         } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
-            let node_id = terminals[0];
+            let node_id = self.terminals_scratch[0];
             let node = self.topo.get_node(node_id);
             if self.used[node.id] {
                 info_sched!("    Cannot schedule {}: node for {:?} {} is used",
@@ -599,12 +617,12 @@ impl Scheduler {
             return None;
         } else {
             // first check that all terminals are accessible
-            if terminals.iter().any(|node_id| self.used[*node_id]) {
+            if self.terminals_scratch.iter().any(|node_id| self.used[*node_id]) {
                 info_sched!("    Cannot schedule {}: used terminals", pauli_product.id);
                 return None;
             }
             // Get root nodes next to terminals
-            let root_ids = self.get_root_nodes(&terminals);
+            let root_ids = self.get_root_nodes(&self.terminals_scratch[..]);
             if root_ids.is_empty() {
                 info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
                 return None;
@@ -613,7 +631,7 @@ impl Scheduler {
                 // Single-qubit T gate (X, Z, or Y): use multi-source A*.
                 // For X/Z: one root, one terminal. For Y: two roots, two terminals.
                 self.timers.astar.start();
-                let g = self.astar.compute(&terminals[..],
+                let g = self.astar.compute(&self.terminals_scratch[..],
                                            &root_ids[..],
                                            &self.topo,
                                            &self.used,
@@ -625,7 +643,7 @@ impl Scheduler {
                 let g = self.stree_computation.compute(&self.topo,
                                                        &self.used,
                                                        &root_ids,
-                                                       &terminals,
+                                                       &self.terminals_scratch,
                                                        pauli_product.gate_type,
                                                        num_scheduled);
                 self.timers.steiner_tree.stop();
@@ -640,10 +658,11 @@ impl Scheduler {
     }
 
     /// Extracts the data qubit nodes that a product operates on (terminals for tree routing).
-    /// For Y operators, both X and Z bases are included. Returns None if any terminal is unavailable.
-    fn get_terminal_nodes(&self, pauli_product: &PauliProduct) -> Option<Vec<usize>> {
+    /// For Y operators, both X and Z bases are included. Returns false if any terminal is unavailable.
+    /// Results are stored in self.terminals_scratch.
+    fn get_terminal_nodes(&mut self, pauli_product: &PauliProduct) -> bool {
         // Initially terminal nodes contain only the data qubits
-        let mut terminals = Vec::new();
+        self.terminals_scratch.clear();
         for op in &pauli_product.operators {
             if op.basis == 'Y' {
                 for basis in ['X', 'Z'] {
@@ -652,7 +671,7 @@ impl Scheduler {
                     // Check if node is already used
                     if self.used[node.id] {
                         info_sched!("  Node {} is already used", node.label);
-                        return None;
+                        return false;
                     }
                     // check for at least one unused magic or bus nb
                     if !node.nbors.iter().any(|nb_id| {
@@ -661,9 +680,9 @@ impl Scheduler {
                                          })
                     {
                         info_sched!("  No unused neighbors for node {}", node.id);
-                        return None;
+                        return false;
                     }
-                    terminals.push(node.id);
+                    self.terminals_scratch.push(node.id);
                 }
             } else {
                 let node_id = self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase());
@@ -671,7 +690,7 @@ impl Scheduler {
                 // Check if node is already used
                 if self.used[node.id] {
                     info_sched!("  Node {} is already used", node.label);
-                    return None;
+                    return false;
                 }
                 // check for at least one unused magic or bus nb
                 if !node.nbors.iter().any(|nb_id| {
@@ -680,18 +699,18 @@ impl Scheduler {
                                      })
                 {
                     info_sched!("  No unused neighbors for node {}", node.id);
-                    return None;
+                    return false;
                 }
-                terminals.push(node.id);
+                self.terminals_scratch.push(node.id);
             }
         }
-        Some(terminals)
+        true
     }
 
     /// Finds routing nodes adjacent to each terminal (roots for tree construction).
     /// Prefers vertical (top/bottom) roots for Y/paired operations; falls back to side roots.
     fn get_root_nodes(&self, terminals: &[usize]) -> Vec<usize> {
-        let mut root_ids = IndexSet::new();
+        let mut root_ids: Vec<usize> = Vec::new();
         // need to get a root node for every terminal
         let mut unmatched_count: usize = terminals.len();
         for node_id in terminals.iter() {
@@ -715,7 +734,7 @@ impl Scheduler {
                     if (pair == Some("XX") && nb.pos.1 < node.pos.1)
                        || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
                     {
-                        root_ids.insert(nb_id.clone());
+                        if !root_ids.contains(nb_id) { root_ids.push(*nb_id); }
                         // saturating_sub guards against the second iteration over a matched pair
                         unmatched_count = unmatched_count.saturating_sub(2);
                         pair_found = true;
@@ -731,7 +750,7 @@ impl Scheduler {
                     }
                     // Only include neighbors on the side (same row, different column)
                     if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
-                        root_ids.insert(nb_id.clone());
+                        if !root_ids.contains(nb_id) { root_ids.push(*nb_id); }
                         unmatched_count = unmatched_count.saturating_sub(1);
                         break;
                     }
@@ -743,7 +762,7 @@ impl Scheduler {
                          unmatched_count);
             return Vec::new();
         }
-        root_ids.into_iter().collect()
+        root_ids
     }
 
     /// Scheduling sort key for a product (used for greedy prioritization).
