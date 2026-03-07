@@ -172,12 +172,9 @@ impl PauliProduct {
                      -> Self {
         let mut rng = rand::thread_rng();
         let mut operators = Vec::new();
-        // Choose initial random location
         let center_qubit = rng.gen_range(0..num_qubits);
-        // Set operator at center location with random basis
         let center_basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
         operators.push(Operator { qubit: center_qubit, basis: center_basis });
-        // Spread left from center
         let mut current_prob = spread_probability;
         for distance in 1..=center_qubit {
             if rng.gen_range(0.0..1.0) < current_prob {
@@ -188,9 +185,8 @@ impl PauliProduct {
             current_prob *= decay_factor;
             if current_prob < 0.001 {
                 break;
-            } // Stop if probability becomes negligible
+            }
         }
-        // Spread right from center
         current_prob = spread_probability;
         for distance in 1..(num_qubits - center_qubit) {
             if rng.gen_range(0.0..1.0) < current_prob {
@@ -201,11 +197,9 @@ impl PauliProduct {
             current_prob *= decay_factor;
             if current_prob < 0.001 {
                 break;
-            } // Stop if probability becomes negligible
+            }
         }
-        // Sort operators by qubit index for consistency
         operators.sort_by_key(|op| op.qubit);
-        // Determine max qubit
         let max_qubit = operators.iter().map(|op| op.qubit).max().unwrap_or(0);
 
         PauliProduct { operators,

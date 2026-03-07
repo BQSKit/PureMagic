@@ -56,7 +56,6 @@ impl SteinerTreeComputation {
         let mut tree = TreeGraph::new(self.num_nodes);
         let mut cultivator: Option<usize> = None;
         let mut num_paths: usize = 0;
-        // every root must have a path to every other root
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
         for root_id in root_ids {
@@ -77,7 +76,6 @@ impl SteinerTreeComputation {
                              topo.get_node(cultivator.unwrap()).label,
                              _RESET);
             }
-            // add terminals
             let root_node = topo.get_node(*root_id);
             for nb_id in root_node.nbors.iter() {
                 let nb = topo.get_node(*nb_id);
@@ -105,8 +103,6 @@ impl SteinerTreeComputation {
                 if gate_type.is_t() && cultivator.is_none() {
                     continue;
                 }
-                // we have all the paths and terms and a cultivator (if needed), so we can now
-                // return the tree (bfs_graph)
                 tree.root_node_id = if gate_type.is_t() {
                     debug_sched!("      {}tree complete, cultivator {}{}",
                                  _GREEN,
@@ -121,12 +117,9 @@ impl SteinerTreeComputation {
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
                 #[cfg(debug_assertions)]
                 self.check_edges(topo, &tree);
-                // FIXME: for XX and ZZ, replace side edges with top/bottom, if that
-                // makes the path shorter
                 return Some(tree);
             }
             search_steps += 1;
-            // early exit to cut off the long tail in computation
             if num_scheduled > 0 && search_steps > max_dist * self.termination_threshold {
                 self.early_terminations += 1;
                 break;
@@ -176,10 +169,8 @@ impl SteinerTreeComputation {
                 continue;
             }
             if nb.node_type == NodeType::Data {
-                // all data nodes are already linked in
                 continue;
             }
-            // check for path links between roots via routing nodes
             if nb.is_routing() && node.is_routing() && self.visited[*nb_id].is_some() {
                 let nb_root_id = self.visited[*nb_id].unwrap();
                 if curr_root_id == nb_root_id {
@@ -187,20 +178,15 @@ impl SteinerTreeComputation {
                 }
                 let curr_root_paths = &self.paths[curr_root_id];
                 if !curr_root_paths.contains(&nb_root_id) {
-                    // update the nb root IndexSet to contain paths to all the roots in
-                    // the curr_root IndexSet
                     let nb_root_paths = self.paths[nb_root_id].clone();
-                    // Create merged set containing all roots from both groups
                     let mut merged_set = curr_root_paths.clone();
                     merged_set.push(nb_root_id.clone());
                     merged_set.extend(nb_root_paths.iter().cloned());
                     merged_set.push(curr_root_id.clone());
-                    // Update all roots in the merged set to have the complete merged set
                     for root_id in merged_set.iter() {
                         assert!(num_paths >= self.paths[*root_id].len());
                         num_paths -= self.paths[*root_id].len();
                         self.paths[*root_id] = merged_set.clone();
-                        // Don't include self
                         let pos =
                             self.paths[*root_id].iter().position(|&id| id == *root_id).unwrap();
                         self.paths[*root_id].swap_remove(pos);
@@ -241,8 +227,6 @@ impl SteinerTreeComputation {
                         if gate_type.is_t() && cultivator.is_none() {
                             continue;
                         }
-                        // we break here because we previously found a cultivator, and now have
-                        // found all the paths
                         break;
                     }
                 }
@@ -252,7 +236,6 @@ impl SteinerTreeComputation {
                                    && cultivator.is_none()
                                    && nb.node_type == NodeType::Magic
                                    && nb.cultivation_time == 0;
-            // add routing node/cultivator
             if nb.is_routing() || nb_is_cultivator {
                 if !tree.contains_node(nb.id) {
                     tree.add_node(nb);
@@ -268,8 +251,6 @@ impl SteinerTreeComputation {
                                  topo.get_node(cultivator.unwrap()).label,
                                  _RESET);
                     if num_paths == reqd_paths {
-                        // we break here because we previously found all the paths, and now have
-                        // found a cultivator
                         break;
                     }
                 }
@@ -290,18 +271,15 @@ impl SteinerTreeComputation {
     fn check_edges(&self, topo: &TopoGraph, tree: &TreeGraph) {
         for node_id in tree.iter_nodes() {
             let node = topo.get_node(node_id);
-            // check that each data node has exactly one edge
             if node.node_type == NodeType::Data {
                 let num_edges = tree.get_num_node_edges(node_id);
                 assert_eq!(num_edges, 1);
             }
-            // check that edges are reciprocated
             for nb_id in node.nbors.iter() {
                 let n1n2 = tree.contains_edge(node_id, *nb_id);
                 let n2n1 = tree.contains_edge(*nb_id, node_id);
                 assert_eq!(n1n2, n2n1);
             }
-            // check that if one top or bottom edge exists, so does the other
             if node.is_routing() {
                 debug_sched!("    Checking vertical edges for node {}", node.label);
                 let (above_count, below_count) = tree.get_num_vertical_data_edges(node_id);

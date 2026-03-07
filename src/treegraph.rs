@@ -178,9 +178,6 @@ impl TreeGraph {
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
             if let Some(node) = node_opt {
                 if node.is_data && node.nbors.len() == 2 {
-                    // if the nb has only one vertical edge, then remove the vertical edge,
-                    // otherwise remove the side edge
-                    // remove side edge
                     let (side_nb_id, vert_nb_id) = {
                         if node.pos.1 == self.nodes[node.nbors[0]].as_ref().unwrap().pos.1 {
                             (node.nbors[0], node.nbors[1])
