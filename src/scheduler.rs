@@ -321,7 +321,7 @@ impl Scheduler {
                     pp_paths.iter().map(|(pp, _)| pp.clone()).collect();
                 self.timestep_scheduled.push((num_steps, products_in_step));
                 #[cfg(debug_assertions)]
-                self.check_dependencies(&pp_paths)?;
+                self.check_timestep(&pp_paths)?;
                 self.scheduled_products.extend(pp_paths.iter().map(|(pp, _)| pp.id));
                 let num_scheduled = self.scheduled_products.len();
                 if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
@@ -386,6 +386,8 @@ impl Scheduler {
 
         #[cfg(debug_assertions)]
         self.check_clifford_repetitions()?;
+        #[cfg(debug_assertions)]
+        self.check_schedule()?;
         Ok((num_steps, self.scheduled_products.len()))
     }
 
@@ -421,8 +423,12 @@ impl Scheduler {
         if root_ids.is_empty() {
             return None;
         }
-        self.stree_computation.compute(&self.topo, &self.used, &root_ids,
-                                       &self.terminals_scratch, pp.gate_type, 0)
+        self.stree_computation.compute(&self.topo,
+                                       &self.used,
+                                       &root_ids,
+                                       &self.terminals_scratch,
+                                       pp.gate_type,
+                                       0)
     }
 
     /// Precomputes Steiner trees for all multi-term non-T products in the circuit,
@@ -511,8 +517,8 @@ impl Scheduler {
                         self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
                         self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
                     } else {
-                        self.used[self.topo.get_data_node_id(op.qubit,
-                                                             op.basis.to_ascii_uppercase())] =
+                        self.used
+                            [self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())] =
                             true;
                     }
                 }
@@ -923,21 +929,101 @@ impl Scheduler {
         cultivation_time
     }
 
-    /// Validates that all scheduled products have their parents already scheduled (debug only).
+    /// End-of-run completeness check (debug builds only):
+    /// verifies that every product in the circuit was scheduled at least once.
+    /// Per-timestep checks (dependency order, tree validity, overlap) are done in check_timestep.
     #[cfg(debug_assertions)]
-    fn check_dependencies(&mut self, pp_paths: &Vec<(PauliProduct, Arc<TreeGraph>)>)
-                          -> io::Result<()> {
-        for (pp, _) in pp_paths {
+    fn check_schedule(&self) -> io::Result<()> {
+        let num_products = self.circuit.num_products();
+        let mut errors: Vec<String> = Vec::new();
+        for pp_id in 0..num_products as i32 {
+            if !self.scheduled_products.contains(&pp_id) {
+                errors.push(format!("  product {} was never scheduled", pp_id));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::Other,
+                                      format!("Completeness errors:\n{}", errors.join("\n"))));
+        }
+        println!("Schedule check passed: all {} products scheduled", num_products);
+        Ok(())
+    }
+
+    /// Per-timestep validation (debug builds only), called immediately after each timestep
+    /// while pp_paths is still in scope. Checks:
+    /// 1. No non-Clifford product is scheduled twice.
+    /// 2. All parents of each product were scheduled in a prior timestep.
+    /// 3. Every product's routing tree contains all required terminal data nodes.
+    /// 4. T-gate trees have a magic root node.
+    /// 5. No two products in this timestep share a topology node.
+    #[cfg(debug_assertions)]
+    fn check_timestep(&self, pp_paths: &[(PauliProduct, Arc<TreeGraph>)]) -> io::Result<()> {
+        let mut step_used = vec![false; self.topo.num_nodes];
+        for (pp, tree) in pp_paths {
+            // 1. Already scheduled?
             if self.scheduled_products.contains(&pp.id) && !pp.gate_type.is_clifford() {
                 return Err(io::Error::new(io::ErrorKind::Other,
-                                          format!("pp {} already scheduled", pp.id)));
+                                          format!("product {} scheduled twice", pp.id)));
             }
+            // 2. All parents scheduled in a prior timestep?
             for &parent_id in &pp.parents {
                 if !self.scheduled_products.contains(&parent_id) {
                     return Err(io::Error::new(io::ErrorKind::Other,
-                                              format!("pp {} scheduled before parent {}",
+                                              format!("product {} scheduled before parent {}",
                                                       pp.id, parent_id)));
                 }
+            }
+            // 3. Terminal data nodes present in tree?
+            for op in &pp.operators {
+                if op.basis == 'Y' {
+                    for basis in ['X', 'Z'] {
+                        let nid = self.topo.get_data_node_id(op.qubit, basis);
+                        if !tree.contains_node(nid) {
+                            return Err(io::Error::new(io::ErrorKind::Other,
+                                                      format!("product {} (step 3): terminal \
+                                                               qubit {} basis {} missing from tree",
+                                                              pp.id, op.qubit, basis)));
+                        }
+                    }
+                } else {
+                    let nid = self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase());
+                    if !tree.contains_node(nid) {
+                        return Err(io::Error::new(io::ErrorKind::Other,
+                                                  format!("product {} terminal qubit {} basis \
+                                                           {} missing from tree",
+                                                          pp.id, op.qubit, op.basis)));
+                    }
+                }
+            }
+            // 4. Magic root node present for T gates?
+            if pp.gate_type.is_t() {
+                match tree.root_node_id {
+                    None => {
+                        return Err(io::Error::new(io::ErrorKind::Other,
+                                                  format!("product {}: T gate has no magic root \
+                                                           node",
+                                                          pp.id)));
+                    }
+                    Some(magic_id) => {
+                        if self.topo.get_node(magic_id).node_type != NodeType::Magic {
+                            return Err(io::Error::new(io::ErrorKind::Other,
+                                                      format!("product {}: root node {} is not \
+                                                               a Magic node",
+                                                              pp.id, magic_id)));
+                        }
+                    }
+                }
+            }
+            // 5. No overlap with other products in this timestep?
+            for node_id in tree.iter_nodes() {
+                if step_used[node_id] {
+                    return Err(io::Error::new(io::ErrorKind::Other,
+                                              format!("product {} shares node '{}' with another \
+                                                       product in the same timestep",
+                                                      pp.id,
+                                                      self.topo.get_node(node_id).label)));
+                }
+                step_used[node_id] = true;
             }
         }
         Ok(())
@@ -1017,7 +1103,8 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Validates that CX gates are scheduled exactly 2 consecutive times and S/SX 3 consecutive times (debug only).
+    /// Validates that CX gates are scheduled exactly 2 consecutive times and S/SX 3 consecutive
+    /// times (debug only).
     #[cfg(debug_assertions)]
     fn check_clifford_repetitions(&self) -> io::Result<()> {
         // map the product id to a vector containing the timesteps on which the product was found
