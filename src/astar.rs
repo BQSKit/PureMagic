@@ -10,6 +10,7 @@ pub struct AStarComputation {
     parent: Vec<Option<usize>>,
     g_cost: Vec<u32>,
     closed: Vec<bool>,
+    heap: BinaryHeap<(Reverse<u32>, usize)>,
 }
 
 impl AStarComputation {
@@ -17,7 +18,8 @@ impl AStarComputation {
     pub fn new(num_nodes: usize) -> Self {
         AStarComputation { parent: vec![None; num_nodes],
                            g_cost: vec![u32::MAX; num_nodes],
-                           closed: vec![false; num_nodes] }
+                           closed: vec![false; num_nodes],
+                           heap: BinaryHeap::new() }
     }
 
     /// Multi-source A* from all `root_ids` to the nearest ready, unused magic node.
@@ -34,27 +36,27 @@ impl AStarComputation {
         self.g_cost.fill(u32::MAX);
         self.closed.fill(false);
 
-        let mut heap: BinaryHeap<(Reverse<u32>, usize)> = BinaryHeap::new();
+        self.heap.clear();
         for &root_id in root_ids {
             if !used[root_id] {
                 self.g_cost[root_id] = 0;
                 let h = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
-                heap.push((Reverse(h), root_id));
+                self.heap.push((Reverse(h), root_id));
             }
         }
-        if heap.is_empty() {
+        if self.heap.is_empty() {
             return None;
         }
 
-        while let Some((_, node_id)) = heap.pop() {
+        while let Some((_, node_id)) = self.heap.pop() {
             if self.closed[node_id] {
                 continue;
             }
             self.closed[node_id] = true;
 
-            let (node_type, cultivation_time, nbors) = {
+            let (node_type, cultivation_time, num_nbors) = {
                 let node = topo.get_node(node_id);
-                (node.node_type, node.cultivation_time, node.nbors.clone())
+                (node.node_type, node.cultivation_time, node.nbors.len())
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id] {
@@ -73,9 +75,12 @@ impl AStarComputation {
                 }
                 for (i, &root_id) in root_ids.iter().enumerate() {
                     if !tree.contains_node(root_id) {
-                        let nbors = topo.get_node(root_id).nbors.clone();
-                        let conn = nbors.iter().find(|&&nb_id| tree.contains_node(nb_id));
-                        if let Some(&conn_id) = conn {
+                        let conn = topo.get_node(root_id)
+                                       .nbors
+                                       .iter()
+                                       .copied()
+                                       .find(|&nb_id| tree.contains_node(nb_id));
+                        if let Some(conn_id) = conn {
                             tree.add_node(topo.get_node(root_id));
                             tree.add_edge(conn_id, root_id);
                         } else {
@@ -92,7 +97,8 @@ impl AStarComputation {
             }
 
             let g = self.g_cost[node_id];
-            for nb_id in nbors {
+            for i in 0..num_nbors {
+                let nb_id = topo.get_node(node_id).nbors[i];
                 if used[nb_id] || self.closed[nb_id] {
                     continue;
                 }
@@ -108,7 +114,7 @@ impl AStarComputation {
                     self.g_cost[nb_id] = new_g;
                     self.parent[nb_id] = Some(node_id);
                     let h = Self::heuristic(nb_pos, ready_magic_positions);
-                    heap.push((Reverse(new_g + h), nb_id));
+                    self.heap.push((Reverse(new_g + h), nb_id));
                 }
             }
         }

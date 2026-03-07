@@ -1,4 +1,3 @@
-use indexmap::IndexSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Classification of nodes in the topological graph.
@@ -23,7 +22,7 @@ pub struct Node {
     pub pos: (f32, f32),
     pub busy_count: i32,
     pub cultivation_time: i32,
-    pub nbors: IndexSet<usize>,
+    pub nbors: Vec<usize>,
 }
 
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
@@ -40,7 +39,7 @@ impl Node {
                pos: (x, y),
                busy_count,
                cultivation_time,
-               nbors: IndexSet::new() }
+               nbors: Vec::new() }
     }
 
     /// Global switch to enable/disable magic routing (vs bus routing).
@@ -50,7 +49,9 @@ impl Node {
 
     /// Adds a neighbor to this node's connectivity list.
     pub fn add_neighbor(&mut self, other: usize) {
-        self.nbors.insert(other);
+        if !self.nbors.contains(&other) {
+            self.nbors.push(other);
+        }
     }
 
     /// Returns true if this magic node is currently cultivating (in progress).
