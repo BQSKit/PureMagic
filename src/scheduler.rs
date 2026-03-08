@@ -69,7 +69,7 @@ impl ScheduleStats {
     }
 
     pub fn update(&mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize,
-                  magic_unused: usize) {
+                  magic_unused: usize, plotting: bool) {
         self.sum_data_scheduled += self.data_scheduled;
         self.sum_bus_scheduled += self.bus_scheduled;
         self.sum_magic_scheduled += self.magic_scheduled;
@@ -91,10 +91,13 @@ impl ScheduleStats {
                     self.magic_scheduled,
                     self.magic_qubits,
                     frac_magic);
-        self.plot_info_str =
-            format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
-                        bus {:.2}, magic {:.2}, total qubits {}",
-                    step_i, frac_paths, frac_data, frac_bus, frac_magic, tot_qubits);
+        // Only build the format string when path plotting is active (called rarely).
+        if plotting {
+            self.plot_info_str =
+                format!("Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
+                            bus {:.2}, magic {:.2}, total qubits {}",
+                        step_i, frac_paths, frac_data, frac_bus, frac_magic, tot_qubits);
+        }
 
         self.data_scheduled = 0;
         self.bus_scheduled = 0;
@@ -158,6 +161,9 @@ pub struct Scheduler {
     children_scratch: Vec<i32>,
     new_cultivation_times: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Arc<TreeGraph>>,
+    // Reusable scratch buffers for schedule_timestep (avoids per-timestep allocations).
+    products_with_dist_scratch: Vec<(i32, f32)>,
+    remaining_ids_scratch: Vec<i32>,
 }
 
 impl Scheduler {
@@ -205,7 +211,9 @@ impl Scheduler {
                     scheduled_ids_scratch: Vec::new(),
                     children_scratch: Vec::new(),
                     new_cultivation_times: Vec::new(),
-                    precomputed_clifford_trees: HashMap::new() }
+                    precomputed_clifford_trees: HashMap::new(),
+                    products_with_dist_scratch: Vec::new(),
+                    remaining_ids_scratch: Vec::new() }
     }
 
     /// Main scheduling algorithm: greedily assigns products to timesteps.
@@ -245,6 +253,9 @@ impl Scheduler {
         if plot_steps == 0 {
             print!("Scheduling {} products:    ", total_to_schedule);
         }
+        let plotting = path_dir.is_some();
+        // Reuse pp_paths Vec across timesteps so the backing buffer is never freed and reallocated.
+        let mut pp_paths: Vec<(PauliProduct, Arc<TreeGraph>)> = Vec::new();
         // Main scheduling loop
         while !to_schedule.is_empty() || !self.clifford_paths.is_empty() {
             self.timers.timestep.start();
@@ -256,7 +267,7 @@ impl Scheduler {
                                    .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
                                    .collect::<Vec<_>>(),
                         _RESET);
-            if let Some(pp_paths) = self.schedule_timestep(num_steps, &to_schedule) {
+            if self.schedule_timestep(num_steps, &to_schedule, &mut pp_paths, plotting) {
                 debug_sched!("Scheduled timestep {}", num_steps);
                 debug_sched!("After timestep, to_schedule len {}", to_schedule.len());
                 // Collect scheduled product ids for fast lookup
@@ -457,12 +468,14 @@ impl Scheduler {
     }
 
     /// Schedules as many products as possible in a single timestep.
-    /// Returns list of (product, routing tree) pairs or None if nothing could be scheduled.
-    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct])
-                         -> Option<Vec<(PauliProduct, Arc<TreeGraph>)>> {
+    /// Fills `pp_paths` with (product, routing tree) pairs; returns false if nothing scheduled.
+    /// `pp_paths` is cleared on entry so the caller's buffer is reused across timesteps.
+    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct],
+                         pp_paths: &mut Vec<(PauliProduct, Arc<TreeGraph>)>,
+                         plotting: bool)
+                         -> bool {
         let mut num_avail_magic = self.update_cultivators();
-        let mut pp_paths: Vec<(PauliProduct, Arc<TreeGraph>)> =
-            Vec::with_capacity(to_schedule.len().min(10));
+        pp_paths.clear();
         // clear out used from previous timestep
         self.used.fill(false);
         // mark all previous first round cliffords as used
@@ -474,22 +487,38 @@ impl Scheduler {
             // add the previous trees to the paths collection
             pp_paths.push(((*pp).clone(), Arc::clone(pp_path)));
         }
-        // Presort products from smallest to largest tree size estimates
+        // Presort products from smallest to largest tree size estimates.
         // Distances are precomputed once to avoid redundant calls during sorting.
-        let mut products_with_dist: Vec<(&PauliProduct, f32)> =
-            to_schedule.iter().map(|pp| (pp, self.tree_size_estimate(pp))).collect();
-        products_with_dist.sort_by(|(_, da), (_, db)| {
-                              da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
-                          });
-        let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> =
-            products_with_dist.into_iter().map(|(pp, _)| (pp.id, pp)).collect();
+        // Reuse the scratch buffer to avoid per-timestep Vec allocation.
+        self.products_with_dist_scratch.clear();
+        for pp in to_schedule.iter() {
+            // Sequential borrows: tree_size_estimate borrow ends before push borrow begins.
+            let est = self.tree_size_estimate(pp);
+            self.products_with_dist_scratch.push((pp.id, est));
+        }
+        self.products_with_dist_scratch.sort_by(|(_, da), (_, db)| {
+                                            da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
+                                        });
+        // Build remaining_to_schedule from to_schedule refs (lifetime tied to the parameter,
+        // not to self), so later &mut self calls don't conflict. Use a local lookup map
+        // to index into to_schedule by id without an O(n²) scan.
+        let mut remaining_to_schedule: IndexMap<i32, &PauliProduct> = {
+            let to_sched_lookup: HashMap<i32, &PauliProduct> =
+                to_schedule.iter().map(|pp| (pp.id, pp)).collect();
+            self.products_with_dist_scratch
+                .iter()
+                .filter_map(|(id, _)| to_sched_lookup.get(id).map(|&pp| (*id, pp)))
+                .collect()
+        }; // to_sched_lookup drops here; remaining_to_schedule holds to_schedule-lifetime refs
         info_sched!("  Remaining to schedule: {}", remaining_to_schedule.len());
         // First pass: schedule multi-term Cliffords using precomputed trees.
         // Iterate remaining products and look up each in the precomputed tree map.
         // Only schedules if every node in the precomputed tree is currently free.
         // Products whose tree is blocked are dropped from remaining and skipped this timestep.
-        let remaining_ids: Vec<i32> = remaining_to_schedule.keys().copied().collect();
-        for pp_id in remaining_ids {
+        // Reuse scratch buffer for the key snapshot to avoid allocation.
+        self.remaining_ids_scratch.clear();
+        self.remaining_ids_scratch.extend(remaining_to_schedule.keys().copied());
+        for &pp_id in &self.remaining_ids_scratch {
             // Clone the Arc immediately to end the borrow on precomputed_clifford_trees.
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Arc::clone) else {
                 continue; // No precomputed tree; leave in remaining for find_next_product.
@@ -555,7 +584,8 @@ impl Scheduler {
                 remaining_to_schedule.swap_remove(&self.cannot_schedule[i]);
             }
         }
-        self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize);
+        self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic as usize,
+                          plotting);
         if pp_paths.is_empty() {
             if num_avail_magic > 0 {
                 // if any magic node is available and we scheduled nothing, then we must terminate
@@ -570,9 +600,9 @@ impl Scheduler {
                        num_avail_magic,
                        _RESET);
             }
-            None
+            false
         } else {
-            Some(pp_paths)
+            true
         }
     }
 
