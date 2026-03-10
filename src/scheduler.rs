@@ -708,39 +708,35 @@ impl Scheduler {
             let (&pp_i, &pp) = remaining.first().unwrap();
             // Should-precompute products should all be scheduled via the precomputed-tree pass
             debug_assert!(!Self::should_precompute(pp));
-
-            let pp_graph = if *num_avail_magic == 0 && pp.gate_type.is_t() {
-                None
-            } else {
-                self.schedule_pauli_product(pp)
-            };
-            if let Some(pp_graph) = pp_graph {
-                info_sched!("  Scheduled product {}", pp);
-                for node_id in pp_graph.iter_nodes() {
-                    let node = self.topo.get_node(node_id);
-                    self.stats.inc(node.node_type);
-                    self.used[node.id] = true;
-                }
-                if pp.gate_type.is_t() {
-                    *num_avail_magic -= 1;
-                }
-                pp_paths.push(((*pp).clone(), Rc::new(pp_graph)));
-                remaining.swap_remove(&pp_i);
-            } else {
-                info_sched!("  Could not schedule {} on graph", pp.id);
-                // Mark dependent nodes as used
-                for op in &pp.operators {
-                    if op.basis == 'Y' {
-                        self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
-                        self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
-                    } else {
-                        self.used
-                            [self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())] =
-                            true;
+            if *num_avail_magic > 0 || !pp.gate_type.is_t() {
+                if let Some(pp_graph) = self.schedule_pauli_product(pp) {
+                    info_sched!("  Scheduled product {}", pp);
+                    for node_id in pp_graph.iter_nodes() {
+                        let node = self.topo.get_node(node_id);
+                        self.stats.inc(node.node_type);
+                        self.used[node.id] = true;
                     }
+                    if pp.gate_type.is_t() {
+                        *num_avail_magic -= 1;
+                    }
+                    pp_paths.push(((*pp).clone(), Rc::new(pp_graph)));
+                    remaining.swap_remove(&pp_i);
+                    continue;
                 }
-                remaining.swap_remove(&pp_i);
             }
+            info_sched!("  Could not schedule {} on graph", pp.id);
+            // Mark dependent nodes as used
+            for op in &pp.operators {
+                if op.basis == 'Y' {
+                    self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
+                    self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
+                } else {
+                    self.used
+                        [self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())] =
+                        true;
+                }
+            }
+            remaining.swap_remove(&pp_i);
         }
     }
 
@@ -798,11 +794,8 @@ impl Scheduler {
             info_sched!("    Cannot schedule S/SX {}: no available ancilla", pauli_product.id);
             return None;
         } else {
-            // first check that all terminals are accessible
-            if self.terminals_scratch.iter().any(|node_id| self.used[*node_id]) {
-                info_sched!("    Cannot schedule {}: used terminals", pauli_product.id);
-                return None;
-            }
+            // all terminals should be accessible
+            debug_assert!(!self.terminals_scratch.iter().any(|node_id| self.used[*node_id]));
             // Get root nodes next to terminals
             let root_ids = self.get_root_nodes(&self.terminals_scratch[..]);
             if root_ids.is_empty() {
