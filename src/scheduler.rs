@@ -1,4 +1,5 @@
-use crate::astar::AStarComputation;
+//use crate::astar::AStarComputation;
+use crate::accum_start;
 use crate::circuit::Circuit;
 use crate::debug_sched;
 use crate::fn_timer;
@@ -9,7 +10,7 @@ use crate::pauliproduct::PauliProduct;
 use crate::steinertree::SteinerTreeComputation;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-use crate::utils::IntermittentTimer;
+use crate::utils::AccumTimers;
 use crate::utils::{
     _BLUE, _CYAN, _GREEN, _LBLUE, _LCYAN, _LGREEN, _LMAGENTA, _LRED, _LWHITE, _LYELLOW, _MAGENTA,
     _RED, _RESET, _WHITE, _YELLOW,
@@ -120,24 +121,6 @@ impl ScheduleStats {
     }
 }
 
-/// Tracks timing of major scheduling operations.
-struct SchedulerTimers {
-    schedule_product: IntermittentTimer,
-    steiner_tree: IntermittentTimer,
-    astar: IntermittentTimer,
-    timestep: IntermittentTimer,
-}
-
-impl SchedulerTimers {
-    /// Creates new timers for all scheduling operations.
-    pub fn new() -> Self {
-        SchedulerTimers { schedule_product: IntermittentTimer::new("schedule_pauli_product", ""),
-                          steiner_tree: IntermittentTimer::new("compute_steiner_tree", ""),
-                          astar: IntermittentTimer::new("compute_astar", ""),
-                          timestep: IntermittentTimer::new("schedule_timestep", "") }
-    }
-}
-
 /// Main scheduler that assigns Pauli products to timesteps and routes them through the topology.
 /// Manages magic state cultivation, dependency tracking, and Clifford repetition logic.
 pub struct Scheduler {
@@ -153,9 +136,8 @@ pub struct Scheduler {
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Rc<TreeGraph>)>,
     stree_computation: SteinerTreeComputation,
-    timers: SchedulerTimers,
     ready_magic_positions: Vec<(f32, f32)>,
-    astar: AStarComputation,
+    //astar: AStarComputation,
     greedypath: GreedyPathComputation,
     cannot_schedule: Vec<i32>,
     terminals_scratch: Vec<usize>,
@@ -166,6 +148,9 @@ pub struct Scheduler {
     // Reusable scratch buffers for schedule_timestep (avoids per-timestep allocations).
     products_with_dist_scratch: Vec<(i32, f32)>,
     remaining_ids_scratch: Vec<i32>,
+    timers: AccumTimers,
+    loop_timer: usize,
+    other_timer: usize,
 }
 
 impl Scheduler {
@@ -191,7 +176,9 @@ impl Scheduler {
         let num_bus_qubits = topo.num_bus_qubits;
         let num_magic_qubits = topo.num_magic_qubits;
         let num_nodes = topo.num_nodes;
-
+        let mut timers = AccumTimers::new();
+        let loop_timer = timers.add_or_get("schedule loop");
+        let other_timer = timers.add_or_get("other ");
         Scheduler { circuit,
                     topo,
                     rng_exp: Exponential::new(rseed),
@@ -205,9 +192,8 @@ impl Scheduler {
                     clifford_paths: IndexMap::new(),
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
-                    timers: SchedulerTimers::new(),
                     ready_magic_positions: Vec::new(),
-                    astar: AStarComputation::new(num_nodes),
+                    //astar: AStarComputation::new(num_nodes),
                     greedypath: GreedyPathComputation::new(num_nodes),
                     cannot_schedule: Vec::new(),
                     terminals_scratch: Vec::new(),
@@ -216,7 +202,10 @@ impl Scheduler {
                     new_cultivation_times: Vec::new(),
                     precomputed_clifford_trees: HashMap::new(),
                     products_with_dist_scratch: Vec::new(),
-                    remaining_ids_scratch: Vec::new() }
+                    remaining_ids_scratch: Vec::new(),
+                    timers: timers,
+                    loop_timer: loop_timer,
+                    other_timer: other_timer }
     }
 
     /// Main scheduling algorithm: greedily assigns products to timesteps.
@@ -257,9 +246,9 @@ impl Scheduler {
         }
         // Reuse pp_paths Vec across timesteps so the backing buffer is never freed/reallocated.
         let mut pp_paths: Vec<(PauliProduct, Rc<TreeGraph>)> = Vec::new();
-        // ── Main scheduling loop ──────────────────────────────────────────────────────────────
+        // main scheduling loop
         while !to_schedule.is_empty() || !self.clifford_paths.is_empty() {
-            self.timers.timestep.start();
+            self.timers.start(self.loop_timer);
             num_steps += 1;
             info_sched!("{}Step {}: {:?}{}",
                         _CYAN,
@@ -269,10 +258,10 @@ impl Scheduler {
                                    .collect::<Vec<_>>(),
                         _RESET);
             if self.schedule_timestep(num_steps, &to_schedule, &mut pp_paths, plotting) {
-                self.process_scheduled_timestep(&pp_paths,
-                                                &mut to_schedule,
-                                                &mut remaining_parents,
-                                                num_steps)?;
+                self.complete_timestep(&pp_paths,
+                                       &mut to_schedule,
+                                       &mut remaining_parents,
+                                       num_steps)?;
                 let num_scheduled = self.scheduled_products.len();
                 // Progress counter (text mode) or per-step topology plot (plot mode).
                 if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
@@ -308,7 +297,7 @@ impl Scheduler {
                                                       _RED, _RESET)));
                 }
             }
-            self.timers.timestep.stop();
+            self.timers.stop(self.loop_timer);
         }
         self.print_scheduling_stats(num_steps);
         #[cfg(debug_assertions)]
@@ -501,6 +490,8 @@ impl Scheduler {
     fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct],
                          pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>, plotting: bool)
                          -> bool {
+        let _timer = accum_start!(self.timers);
+        self.timers.start(self.other_timer);
         let mut num_avail_magic = self.update_cultivators();
         pp_paths.clear();
         self.used.fill(false);
@@ -512,8 +503,7 @@ impl Scheduler {
             }
             pp_paths.push(((*pp).clone(), Rc::clone(pp_path)));
         }
-        // Sort products by estimated routing cost (smallest tree first) so the greedy
-        // search schedules the easiest products first and leaves space for harder ones.
+        // Sort products by estimated routing cost (smallest tree first)
         // Reuse the scratch buffer to avoid per-timestep allocation.
         self.products_with_dist_scratch.clear();
         for pp in to_schedule.iter() {
@@ -533,8 +523,9 @@ impl Scheduler {
                 .collect()
         };
         info_sched!("  Remaining to schedule: {}", remaining.len());
-        self.schedule_precomputed_cliffords_pass(&mut remaining, pp_paths);
-        self.schedule_remaining_products_pass(&mut remaining, pp_paths, &mut num_avail_magic);
+        self.schedule_precomputed(&mut remaining, pp_paths);
+        self.timers.stop(self.other_timer);
+        self.schedule_remaining(&mut remaining, pp_paths, &mut num_avail_magic);
         self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic, plotting);
         if pp_paths.is_empty() {
             if num_avail_magic > 0 {
@@ -557,6 +548,7 @@ impl Scheduler {
     /// Updates magic node cultivation state: increments busy counts and generates new cultivation
     /// times for nodes just scheduled. Returns count of ready (cultivation_time=0) magic nodes.
     fn update_cultivators(&mut self) -> usize {
+        let _timer = accum_start!(self.timers);
         // Collect magic nodes that need new busy counts
         let num_used_magic_nodes =
             self.topo
@@ -605,7 +597,8 @@ impl Scheduler {
     ///                   Returns f32::MAX when no magic node is ready.
     /// - Clifford gates: sum of pairwise Manhattan distances between terminals (a proxy for
     ///                   Steiner tree size; 0 for a single terminal).
-    fn tree_size_estimate(&self, pp: &PauliProduct) -> f32 {
+    fn tree_size_estimate(&mut self, pp: &PauliProduct) -> f32 {
+        let _timer = accum_start!(self.timers);
         // Collect terminal positions.
         let mut positions: Vec<(f32, f32)> = Vec::new();
         for op in &pp.operators {
@@ -651,10 +644,9 @@ impl Scheduler {
     /// blocked are removed from `remaining` and their data qubits marked used (so no other
     /// product occupies them this timestep). Products without a precomputed tree stay in
     /// `remaining` for the second pass.
-    fn schedule_precomputed_cliffords_pass<'a>(&mut self,
-                                               remaining: &mut IndexMap<i32, &'a PauliProduct>,
-                                               pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>)
-    {
+    fn schedule_precomputed<'a>(&mut self, remaining: &mut IndexMap<i32, &'a PauliProduct>,
+                                pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>) {
+        let _timer = accum_start!(self.timers);
         // Snapshot the keys so we can mutate `remaining` inside the loop.
         // Uses the reusable scratch buffer to avoid allocation.
         self.remaining_ids_scratch.clear();
@@ -698,10 +690,10 @@ impl Scheduler {
     /// Second pass of `schedule_timestep`: greedily schedule T gates, measurements, and S/SX
     /// gates from `remaining` using A* or Steiner tree routing. Each call to `find_next_product`
     /// returns the best schedulable product, or None if nothing fits this timestep.
-    fn schedule_remaining_products_pass<'a>(&mut self,
-                                            remaining: &mut IndexMap<i32, &'a PauliProduct>,
-                                            pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>,
-                                            num_avail_magic: &mut usize) {
+    fn schedule_remaining<'a>(&mut self, remaining: &mut IndexMap<i32, &'a PauliProduct>,
+                              pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>,
+                              num_avail_magic: &mut usize) {
+        let _timer = accum_start!(self.timers);
         while !remaining.is_empty() {
             let best = self.find_next_product(remaining, pp_paths.len(), *num_avail_magic);
             if let Some((best_id, best_graph)) = best {
@@ -729,14 +721,14 @@ impl Scheduler {
         }
     }
 
-    /// Searches remaining products for the netxt schedulable one
+    /// Searches remaining products for the next schedulable one
     /// Returns product ID and tree, or None if no schedulable product found.
     /// Products that cannot be scheduled this timestep are stored in self.cannot_schedule.
     fn find_next_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
                          num_scheduled: usize, num_avail_magic: usize)
                          -> Option<(i32, TreeGraph)> {
+        let _timer = accum_start!(self.timers);
         self.cannot_schedule.clear();
-
         for (&pp_i, &pp) in remaining_to_schedule {
             // Should-precompute products are only scheduled via the precomputed-tree pass.
             // If one reaches here (e.g. precomputation failed), skip it this timestep.
@@ -747,9 +739,7 @@ impl Scheduler {
             let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
                 None
             } else {
-                self.timers.schedule_product.start();
                 let pp_graph = self.schedule_pauli_product(pp, num_scheduled);
-                self.timers.schedule_product.stop();
                 pp_graph
             };
             if let Some(pp_graph) = pp_graph {
@@ -779,6 +769,7 @@ impl Scheduler {
     /// Returns a routing tree or None if no valid routing exists.
     fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
                               -> Option<TreeGraph> {
+        let _timer = accum_start!(self.timers);
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
         if !self.get_terminal_nodes(pauli_product) {
@@ -842,7 +833,6 @@ impl Scheduler {
             let g = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
                 // Single-qubit T gate (X, Z, or Y): use multi-source A*.
                 // For X/Z: one root, one terminal. For Y: two roots, two terminals.
-                self.timers.astar.start();
                 /*
                 let g = self.astar.compute(&self.terminals_scratch[..],
                                            &root_ids[..],
@@ -855,20 +845,17 @@ impl Scheduler {
                                                 &self.topo,
                                                 &self.used,
                                                 &self.ready_magic_positions);
-                self.timers.astar.stop();
                 g
             } else {
                 debug_assert!(!Self::should_precompute(pauli_product),
                               "should_precompute product {:?} reached Steiner path",
                               pauli_product.id);
-                self.timers.steiner_tree.start();
                 let g = self.stree_computation.compute(&self.topo,
                                                        &self.used,
                                                        &root_ids,
                                                        &self.terminals_scratch,
                                                        pauli_product.gate_type,
                                                        num_scheduled);
-                self.timers.steiner_tree.stop();
                 g
             };
             if let Some(g) = g {
@@ -888,10 +875,11 @@ impl Scheduler {
     /// Performs all bookkeeping after a successful timestep:
     /// removes scheduled products from the work queue, unlocks children whose parents are all
     /// done, advances multi-round Clifford state, records the step, and runs debug checks.
-    fn process_scheduled_timestep(&mut self, pp_paths: &[(PauliProduct, Rc<TreeGraph>)],
-                                  to_schedule: &mut Vec<PauliProduct>,
-                                  remaining_parents: &mut Vec<usize>, num_steps: usize)
-                                  -> io::Result<()> {
+    fn complete_timestep(&mut self, pp_paths: &[(PauliProduct, Rc<TreeGraph>)],
+                         to_schedule: &mut Vec<PauliProduct>,
+                         remaining_parents: &mut Vec<usize>, num_steps: usize)
+                         -> io::Result<()> {
+        let _timer = accum_start!(self.timers);
         // Remove freshly-scheduled products from the work queue.
         self.scheduled_ids_scratch.clear();
         self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(pp, _)| pp.id));
@@ -971,10 +959,6 @@ impl Scheduler {
                  num_calls,
                  early_terminations,
                  100.0 * early_terminations as f64 / num_calls as f64);
-        self.timers.steiner_tree.done();
-        self.timers.astar.done();
-        self.timers.schedule_product.done();
-        self.timers.timestep.done();
     }
 
     /// Per-timestep validation (debug builds only), called immediately after each timestep

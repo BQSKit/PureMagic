@@ -1,14 +1,14 @@
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+//use std::cell::RefCell;
+//use std::sync::atomic::{AtomicBool, Ordering};
 
 // Per-rayon-thread reusable backtrack buffer for compute_parallel.
 // Avoids per-task allocation and allocator contention when threads run concurrently.
-thread_local! {
-    static BACKTRACKED: RefCell<Vec<bool>> = RefCell::new(Vec::new());
-}
+//thread_local! {
+//    static BACKTRACKED: RefCell<Vec<bool>> = RefCell::new(Vec::new());
+//}
 
 pub struct GreedyPathComputation {
     visited: Vec<bool>,
@@ -113,6 +113,7 @@ impl GreedyPathComputation {
     }
 }
 
+/*
 /// Parallel greedy walk for use in multi-threaded T-gate scheduling.
 ///
 /// Identical in logic to `GreedyPathComputation::compute`, but uses a shared
@@ -234,6 +235,7 @@ fn compute_parallel_impl(terminal_ids: &[usize], root_ids: &[usize], topo: &Topo
         }
     }
 }
+*/
 
 /// Builds a TreeGraph from the walked path and attaches terminal nodes.
 fn build_tree(path: &[usize], terminal_ids: &[usize], root_ids: &[usize], topo: &TopoGraph)
