@@ -245,23 +245,4 @@ impl TreeGraph {
             .count()
     }
 
-    /// Returns (above, below) count of vertical data edges for a routing node (debug only).
-    #[cfg(debug_assertions)]
-    pub fn get_num_vertical_data_edges(&self, node_id: usize) -> (usize, usize) {
-        let node = self.nodes[node_id].as_ref().unwrap();
-        assert!(node.is_routing);
-        let mut above_count = 0;
-        let mut below_count = 0;
-        for nb_id in &node.nbors {
-            let nb = self.nodes[*nb_id].as_ref().unwrap();
-            if nb.is_data {
-                if node.pos.1 < nb.pos.1 {
-                    above_count += 1;
-                } else if node.pos.1 > nb.pos.1 {
-                    below_count += 1;
-                }
-            }
-        }
-        (above_count, below_count)
-    }
 }
