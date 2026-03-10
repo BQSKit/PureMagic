@@ -13,12 +13,14 @@ use crate::treegraph::TreeGraph;
 pub struct GreedyPathComputation {
     visited: Vec<bool>,
     backtracked: Vec<bool>,
+    pub num_calls: usize,
 }
 
 impl GreedyPathComputation {
     pub fn new(num_nodes: usize) -> Self {
         GreedyPathComputation { visited: vec![false; num_nodes],
-                                backtracked: vec![false; num_nodes] }
+                                backtracked: vec![false; num_nodes],
+                                num_calls: 0 }
     }
 
     /// Greedy walk from root to the nearest ready magic node.
@@ -29,6 +31,7 @@ impl GreedyPathComputation {
     pub fn compute(&mut self, terminal_ids: &[usize], root_ids: &[usize], topo: &TopoGraph,
                    used: &[bool], ready_magic_positions: &[(f32, f32)])
                    -> Option<TreeGraph> {
+        self.num_calls += 1;
         self.visited.fill(false);
         self.backtracked.fill(false);
         let root_id = root_ids[0];

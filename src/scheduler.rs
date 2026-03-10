@@ -963,11 +963,12 @@ impl Scheduler {
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
-        let (num_calls, early_terminations) = self.stree_computation.get_call_counts();
-        println!("Steiner tree computation called {} times, with {} ({:.2}%) early terminations",
-                 num_calls,
-                 early_terminations,
-                 100.0 * early_terminations as f64 / num_calls as f64);
+        println!("Steiner tree computation called {} times", self.stree_computation.num_calls);
+        if self.use_greedypath {
+            println!("Greed path computation called {} times", self.greedypath.num_calls);
+        } else {
+            println!("A* computation called {} times", self.astar.num_calls);
+        }
     }
 
     /// Per-timestep validation (debug builds only), called immediately after each timestep
