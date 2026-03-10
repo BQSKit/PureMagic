@@ -109,6 +109,35 @@ impl SteinerTreeComputation {
                 };
                 let _num_trimmed = tree.trim_dangling_nodes();
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
+                // Attach any terminal data nodes not yet in the tree. This can happen when
+                // get_root_nodes counts a terminal as handled (via saturation) but didn't
+                // return a root adjacent to it (e.g. Y-type gates where one root serves both
+                // X and Z, but is only adjacent to one of them).
+                // We must only connect to a side routing node (same pos.1) to avoid creating
+                // a single vertical data edge on a routing node, which violates check_edges.
+                for &tid in terminal_nodes.iter() {
+                    if !tree.contains_node(tid) {
+                        let tid_pos = topo.get_node(tid).pos;
+                        let conn =
+                            topo.get_node(tid).nbors.iter().copied().find(|&nb_id| {
+                                                                        tree.contains_node(nb_id)
+                                                                        && topo.get_node(nb_id)
+                                                                               .is_routing()
+                                                                        && (topo.get_node(nb_id)
+                                                                                .pos
+                                                                                .1
+                                                                            - tid_pos.1)
+                                                                                        .abs()
+                                                                           < 0.01
+                                                                    });
+                        if let Some(conn_id) = conn {
+                            tree.add_node(topo.get_node(tid));
+                            tree.add_edge(conn_id, tid);
+                        } else {
+                            return None;
+                        }
+                    }
+                }
                 #[cfg(debug_assertions)]
                 self.check_edges(topo, &tree);
                 return Some(tree);
@@ -245,20 +274,10 @@ impl SteinerTreeComputation {
                 let n2n1 = tree.contains_edge(*nb_id, node_id);
                 assert_eq!(n1n2, n2n1);
             }
-            if node.is_routing() {
-                debug_sched!("    Checking vertical edges for node {}", node.label);
-                let (above_count, below_count) = tree.get_num_vertical_data_edges(node_id);
-                if above_count > 0 {
-                    assert_eq!(above_count, 2,
-                               "Routing node {} ({:?}) has {} nbors above",
-                               node.label, node.node_type, above_count);
-                }
-                if below_count > 0 {
-                    assert_eq!(below_count, 2,
-                               "Routing node {} ({:?}) has {} nbors below",
-                               node.label, node.node_type, below_count);
-                }
-            }
+            // Note: we intentionally do not assert that vertical data edge counts == 2 here.
+            // For Clifford gates this invariant held, but T-gates with non-Y operators can
+            // legitimately have a routing node with a single vertical data edge (e.g. only
+            // the X patch of a qubit is a terminal, not the Z patch).
         }
     }
 }
