@@ -148,7 +148,8 @@ pub struct Scheduler {
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
     // Reusable scratch buffers for schedule_timestep (avoids per-timestep allocations).
     // Used for sorting with tree size estimates
-    //products_with_dist_scratch: Vec<(i32, f32)>,
+    #[cfg(feature = "sort_products")]
+    products_with_dist_scratch: Vec<(i32, f32)>,
     remaining_ids_scratch: Vec<i32>,
     timers: AccumTimers,
     loop_timer: usize,
@@ -205,7 +206,8 @@ impl Scheduler {
                     children_scratch: Vec::new(),
                     new_cultivation_times: Vec::new(),
                     precomputed_clifford_trees: HashMap::new(),
-                    //products_with_dist_scratch: Vec::new(),
+                    #[cfg(feature = "sort_products")]
+                    products_with_dist_scratch: Vec::new(),
                     remaining_ids_scratch: Vec::new(),
                     timers: timers,
                     loop_timer: loop_timer,
@@ -507,27 +509,30 @@ impl Scheduler {
             }
             pp_paths.push(((*pp).clone(), Rc::clone(pp_path)));
         }
-        /*
-        This actually doesn't improve routing at all and it takes time
-        // Sort products by estimated routing cost (smallest tree first)
-        // Reuse the scratch buffer to avoid per-timestep allocation.
-        self.products_with_dist_scratch.clear();
-        for pp in to_schedule.iter() {
-            let est = self.tree_size_estimate(pp);
-            self.products_with_dist_scratch.push((pp.id, est));
-        }
-        self.products_with_dist_scratch
-            .sort_by(|(_, da), (_, db)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal));
-        // Build remaining_to_schedule with refs tied to `to_schedule` (not to self), so that
-        // &mut self calls inside the two passes don't conflict with these refs.
+        #[cfg(feature = "sort_products")]
         let mut remaining: IndexMap<i32, &PauliProduct> = {
+            // This actually doesn't improve routing at all and it takes time
+            // Sort products by estimated routing cost (smallest tree first)
+            // Reuse the scratch buffer to avoid per-timestep allocation.
+            self.products_with_dist_scratch.clear();
+            for pp in to_schedule.iter() {
+                let est = self.tree_size_estimate(pp);
+                self.products_with_dist_scratch.push((pp.id, est));
+            }
+            self.products_with_dist_scratch
+                .sort_by(|(_, da), (_, db)| {
+                    da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            // Build remaining_to_schedule with refs tied to `to_schedule` (not to self), so that
+            // &mut self calls inside the two passes don't conflict with these refs.
             let lookup: HashMap<i32, &PauliProduct> =
                 to_schedule.iter().map(|pp| (pp.id, pp)).collect();
             self.products_with_dist_scratch
                 .iter()
                 .filter_map(|(id, _)| lookup.get(id).map(|&pp| (*id, pp)))
                 .collect()
-        }; */
+        };
+        #[cfg(not(feature = "sort_products"))]
         let mut remaining: IndexMap<i32, &PauliProduct> =
             to_schedule.iter().map(|pp| (pp.id, pp)).collect();
 
@@ -601,12 +606,12 @@ impl Scheduler {
         num_avail_magic
     }
 
-    /*
     /// Scheduling sort key for a product (used for greedy prioritization).
     /// - T gates:        Manhattan distance from terminal centroid to nearest ready magic node.
     ///                   Returns f32::MAX when no magic node is ready.
     /// - Clifford gates: sum of pairwise Manhattan distances between terminals (a proxy for
     ///                   Steiner tree size; 0 for a single terminal).
+    #[cfg(feature = "sort_products")]
     fn tree_size_estimate(&mut self, pp: &PauliProduct) -> f32 {
         let _timer = accum_start!(self.timers);
         // Collect terminal positions.
@@ -648,7 +653,7 @@ impl Scheduler {
             total
         }
     }
-    */
+
     /// First pass of `schedule_timestep`: schedule all multi-term Clifford products that have
     /// a precomputed tree and whose nodes are all currently free. Products whose tree is
     /// blocked are removed from `remaining` and their data qubits marked used (so no other
