@@ -15,7 +15,7 @@ use std::{
 /// Represents a quantum circuit as a DAG of Pauli products with dependency tracking.
 /// Layers are lazily computed and cached for efficient iteration.
 pub struct Circuit {
-    products: Vec<PauliProduct>,
+    pub(crate) products: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
     pub circuit_fname: String,
     pub num_qubits: usize,
@@ -62,7 +62,7 @@ impl Circuit {
 
     /// Establishes parent-child dependencies between products based on qubit operations.
     /// A product becomes a child of the last product to operate on each of its qubits.
-    fn generate_dependencies(&mut self) {
+    pub(crate) fn generate_dependencies(&mut self) {
         let mut relationships = Vec::new();
         let mut current_pps = vec![-1; self.num_qubits];
 
@@ -79,39 +79,6 @@ impl Circuit {
             self.products[child_id as usize].parents.push(parent_id);
             self.products[parent_id as usize].children.push(child_id);
         }
-    }
-
-    /// Generates a random T-gate circuit with spatial locality.
-    /// Each product is generated with Pauli operators spreading from a center qubit.
-    /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
-    pub fn generate_random(&mut self, num_products: usize, num_qubits: usize,
-                           spread_probability: f64, decay_factor: f64) {
-        self.products.extend((0..num_products).map(|product_id| {
-                                                  PauliProduct::gen_rnd_t(product_id as i32,
-                                                                          num_qubits,
-                                                                          spread_probability,
-                                                                          decay_factor)
-                                              }));
-        self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
-
-        println!("Generated random circuit with {} products and {} qubits",
-                 self.products.len(),
-                 self.num_qubits);
-        self.generate_dependencies();
-    }
-
-    /// Writes all products to a circuit file in standard format.
-    pub fn save_circuit_to_file(&self, circuit_fname: String) -> io::Result<()> {
-        let _timer = fn_timer!();
-        let mut file = File::create(&circuit_fname)?;
-
-        for product in &self.products {
-            let circuit_line = product.to_circuit_format(self.num_qubits);
-            writeln!(file, "{}", circuit_line)?;
-        }
-
-        println!("Saved random circuit to {}", self.circuit_fname);
-        Ok(())
     }
 
     /// Returns an iterator over products with no dependencies (ready to schedule).
