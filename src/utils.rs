@@ -167,13 +167,13 @@ impl Drop for AccumTimers {
         let format_dur = |d: Duration| -> String {
             let secs = d.as_secs_f64();
             if secs >= 1.0 {
-                //format!("{:.2} s", secs)
-                format!("{:.1}", secs * 1_000.0)
+                format!("{:.2} s", secs)
+                //format!("{:.1}", secs * 1_000.0)
             } else if secs >= 0.001 {
-                format!("{:.1}", secs * 1_000.0)
+                format!("{:.1} ms", secs * 1_000.0)
             } else {
-                //format!("{:.2} μs", secs * 1_000_000.0)
-                format!("{:.6}", secs * 1_000.0)
+                format!("{:.2} μs", secs * 1_000_000.0)
+                //format!("{:.6}", secs * 1_000.0)
             }
         };
         println!("{}Accumulated timings (ms):{}", _CYAN, _RESET);
