@@ -4,11 +4,11 @@ use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use std::fs::create_dir_all;
 #[cfg(debug_assertions)]
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::{
     cell::RefCell,
     fs::File,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader},
     path::Path,
 };
 
