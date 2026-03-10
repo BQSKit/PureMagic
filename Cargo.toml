@@ -54,6 +54,10 @@ vergen = { version = "8", features = ["build", "git", "gitcl"] }
 name = "puremagic"
 path = "src/puremagic.rs"
 
+[[bin]]
+name = "gen_circuit"
+path = "src/gen_circuit.rs"
+
 [profile.release]
 opt-level = 3
 debug = false

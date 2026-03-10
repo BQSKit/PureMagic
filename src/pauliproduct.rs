@@ -1,4 +1,3 @@
-use rand::Rng;
 use std::error::Error;
 use std::fmt;
 
@@ -165,62 +164,6 @@ impl PauliProduct {
         self.operators.iter().map(|op| op.qubit).collect()
     }
 
-    /// Generates a random T-gate product with spatial locality.
-    /// Starts at a random qubit and spreads to neighbors with decaying probability.
-    pub fn gen_rnd_t(product_id: i32, num_qubits: usize, spread_probability: f64,
-                     decay_factor: f64)
-                     -> Self {
-        let mut rng = rand::thread_rng();
-        let mut operators = Vec::new();
-        let center_qubit = rng.gen_range(0..num_qubits);
-        let center_basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
-        operators.push(Operator { qubit: center_qubit, basis: center_basis });
-        let mut current_prob = spread_probability;
-        for distance in 1..=center_qubit {
-            if rng.gen_range(0.0..1.0) < current_prob {
-                let qubit = center_qubit - distance;
-                let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
-                operators.push(Operator { qubit, basis });
-            }
-            current_prob *= decay_factor;
-            if current_prob < 0.001 {
-                break;
-            }
-        }
-        current_prob = spread_probability;
-        for distance in 1..(num_qubits - center_qubit) {
-            if rng.gen_range(0.0..1.0) < current_prob {
-                let qubit = center_qubit + distance;
-                let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
-                operators.push(Operator { qubit, basis });
-            }
-            current_prob *= decay_factor;
-            if current_prob < 0.001 {
-                break;
-            }
-        }
-        operators.sort_by_key(|op| op.qubit);
-        let max_qubit = operators.iter().map(|op| op.qubit).max().unwrap_or(0);
-
-        PauliProduct { operators,
-                       parents: Vec::new(),
-                       children: Vec::new(),
-                       max_qubit,
-                       id: product_id,
-                       gate_type: GateType::T,
-                       weight: 0 }
-    }
-
-    /// Converts this product to circuit file format with random sign.
-    pub fn to_circuit_format(&self, num_qubits: usize) -> String {
-        let mut rng = rand::thread_rng();
-        let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
-        let mut pauli_string = vec!['_'; num_qubits];
-        for op in &self.operators {
-            pauli_string[op.qubit] = op.basis;
-        }
-        format!("{}{}<{:?}>", sign, pauli_string.iter().collect::<String>(), self.gate_type)
-    }
 }
 
 impl fmt::Display for PauliProduct {
