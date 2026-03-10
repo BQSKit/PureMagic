@@ -1,5 +1,5 @@
-//use crate::astar::AStarComputation;
 use crate::accum_start;
+use crate::astar::AStarComputation;
 use crate::circuit::Circuit;
 use crate::debug_sched;
 use crate::fn_timer;
@@ -137,8 +137,9 @@ pub struct Scheduler {
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Rc<TreeGraph>)>,
     stree_computation: SteinerTreeComputation,
     ready_magic_positions: Vec<(f32, f32)>,
-    //astar: AStarComputation,
+    astar: AStarComputation,
     greedypath: GreedyPathComputation,
+    use_greedypath: bool,
     cannot_schedule: Vec<i32>,
     terminals_scratch: Vec<usize>,
     scheduled_ids_scratch: Vec<i32>,
@@ -146,7 +147,8 @@ pub struct Scheduler {
     new_cultivation_times: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
     // Reusable scratch buffers for schedule_timestep (avoids per-timestep allocations).
-    products_with_dist_scratch: Vec<(i32, f32)>,
+    // Used for sorting with tree size estimates
+    //products_with_dist_scratch: Vec<(i32, f32)>,
     remaining_ids_scratch: Vec<i32>,
     timers: AccumTimers,
     loop_timer: usize,
@@ -157,7 +159,8 @@ impl Scheduler {
     /// Creates a new scheduler for a circuit on a topology.
     /// `magic_state_lambda` controls magic state cultivation timing (exponential distribution parameter).
     pub fn new(circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-               plot_option: String, rseed: u32, stree_termination_threshold: usize)
+               plot_option: String, rseed: u32, stree_termination_threshold: usize,
+               use_greedypath: bool)
                -> Self {
         if log_level != "none" {
             let circuit_stem = Path::new(&circuit.circuit_fname).file_stem()
@@ -193,15 +196,16 @@ impl Scheduler {
                     stree_computation: SteinerTreeComputation::new(num_nodes,
                                                                    stree_termination_threshold),
                     ready_magic_positions: Vec::new(),
-                    //astar: AStarComputation::new(num_nodes),
+                    astar: AStarComputation::new(num_nodes),
                     greedypath: GreedyPathComputation::new(num_nodes),
+                    use_greedypath: use_greedypath,
                     cannot_schedule: Vec::new(),
                     terminals_scratch: Vec::new(),
                     scheduled_ids_scratch: Vec::new(),
                     children_scratch: Vec::new(),
                     new_cultivation_times: Vec::new(),
                     precomputed_clifford_trees: HashMap::new(),
-                    products_with_dist_scratch: Vec::new(),
+                    //products_with_dist_scratch: Vec::new(),
                     remaining_ids_scratch: Vec::new(),
                     timers: timers,
                     loop_timer: loop_timer,
@@ -503,6 +507,8 @@ impl Scheduler {
             }
             pp_paths.push(((*pp).clone(), Rc::clone(pp_path)));
         }
+        /*
+        This actually doesn't improve routing at all and it takes time
         // Sort products by estimated routing cost (smallest tree first)
         // Reuse the scratch buffer to avoid per-timestep allocation.
         self.products_with_dist_scratch.clear();
@@ -521,7 +527,10 @@ impl Scheduler {
                 .iter()
                 .filter_map(|(id, _)| lookup.get(id).map(|&pp| (*id, pp)))
                 .collect()
-        };
+        }; */
+        let mut remaining: IndexMap<i32, &PauliProduct> =
+            to_schedule.iter().map(|pp| (pp.id, pp)).collect();
+
         info_sched!("  Remaining to schedule: {}", remaining.len());
         self.schedule_precomputed(&mut remaining, pp_paths);
         self.timers.stop(self.other_timer);
@@ -592,6 +601,7 @@ impl Scheduler {
         num_avail_magic
     }
 
+    /*
     /// Scheduling sort key for a product (used for greedy prioritization).
     /// - T gates:        Manhattan distance from terminal centroid to nearest ready magic node.
     ///                   Returns f32::MAX when no magic node is ready.
@@ -638,7 +648,7 @@ impl Scheduler {
             total
         }
     }
-
+    */
     /// First pass of `schedule_timestep`: schedule all multi-term Clifford products that have
     /// a precomputed tree and whose nodes are all currently free. Products whose tree is
     /// blocked are removed from `remaining` and their data qubits marked used (so no other
@@ -833,30 +843,29 @@ impl Scheduler {
             let g = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
                 // Single-qubit T gate (X, Z, or Y): use multi-source A*.
                 // For X/Z: one root, one terminal. For Y: two roots, two terminals.
-                /*
-                let g = self.astar.compute(&self.terminals_scratch[..],
-                                           &root_ids[..],
-                                           &self.topo,
-                                           &self.used,
-                                           &self.ready_magic_positions);
-                 */
-                let g = self.greedypath.compute(&self.terminals_scratch[..],
-                                                &root_ids[..],
-                                                &self.topo,
-                                                &self.used,
-                                                &self.ready_magic_positions);
-                g
+                if self.use_greedypath {
+                    self.greedypath.compute(&self.terminals_scratch[..],
+                                            &root_ids[..],
+                                            &self.topo,
+                                            &self.used,
+                                            &self.ready_magic_positions)
+                } else {
+                    self.astar.compute(&self.terminals_scratch[..],
+                                       &root_ids[..],
+                                       &self.topo,
+                                       &self.used,
+                                       &self.ready_magic_positions)
+                }
             } else {
                 debug_assert!(!Self::should_precompute(pauli_product),
                               "should_precompute product {:?} reached Steiner path",
                               pauli_product.id);
-                let g = self.stree_computation.compute(&self.topo,
-                                                       &self.used,
-                                                       &root_ids,
-                                                       &self.terminals_scratch,
-                                                       pauli_product.gate_type,
-                                                       num_scheduled);
-                g
+                self.stree_computation.compute(&self.topo,
+                                               &self.used,
+                                               &root_ids,
+                                               &self.terminals_scratch,
+                                               pauli_product.gate_type,
+                                               num_scheduled)
             };
             if let Some(g) = g {
                 return Some(g);

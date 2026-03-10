@@ -1,6 +1,6 @@
 use clap::Parser;
 
-//mod astar;
+mod astar;
 mod circuit;
 mod node;
 mod pauliproduct;
@@ -87,6 +87,9 @@ struct Args {
     /// Use only the sides of data qubits for edges, not the top and bottom
     #[arg(short = 'S', long = "sides_only")]
     sides_only: bool,
+    /// Use the faster, suboptimal greedy path algorithm
+    #[arg(short = 'g', long = "use_greedy")]
+    greedypath: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
@@ -201,7 +204,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        &args.log_scheduler,
                                        args.plot.join(" "),
                                        args.rseed,
-                                       args.stree_termination_threshold);
+                                       args.stree_termination_threshold,
+                                       args.greedypath);
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;
     assert_eq!(num_scheduled, num_products);
