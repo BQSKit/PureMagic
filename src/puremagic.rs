@@ -10,6 +10,7 @@ mod topograph;
 mod treegraph;
 #[macro_use]
 mod utils;
+mod greedypath;
 
 use circuit::Circuit;
 use scheduler::Scheduler;
