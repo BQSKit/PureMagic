@@ -123,7 +123,7 @@ impl AStarComputation {
     /// Lower-bound heuristic: Manhattan distance from `pos` to the nearest ready magic node,
     /// floored to a u32 so it is always admissible for unit-weight edges.
     /// Used to guide A* search towards available magic state sources.
-    fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
+    pub fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
         ready_magic_positions.iter()
                              .enumerate()
                              .map(|(idx, &mp)| (Self::manhattan_dist(mp, pos), idx))
@@ -133,7 +133,7 @@ impl AStarComputation {
                              .unwrap()
     }
 
-    fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
+    pub fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
         ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()).floor() as u32
     }
 }
