@@ -89,13 +89,10 @@ struct Args {
     sides_only: bool,
     /// Use the faster, suboptimal greedy path algorithm
     #[arg(short = 'g', long = "use_greedy")]
-    greedypath: bool,
+    greedy_path: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
-    /// Early termination threshold for Steiner Tree search - Multiple of max. Manhattan distance
-    #[arg(short, long, default_value = "10")]
-    stree_termination_threshold: usize,
     #[arg(
         short,
         long,
@@ -204,8 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        &args.log_scheduler,
                                        args.plot.join(" "),
                                        args.rseed,
-                                       args.stree_termination_threshold,
-                                       args.greedypath);
+                                       args.greedy_path);
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;
     assert_eq!(num_scheduled, num_products);

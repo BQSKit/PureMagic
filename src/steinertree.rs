@@ -16,20 +16,18 @@ pub struct SteinerTreeComputation {
     queue: VecDeque<usize>,
     early_terminations: usize,
     num_calls: usize,
-    termination_threshold: usize,
 }
 
 impl SteinerTreeComputation {
     /// Creates a new Steiner tree computation state.
     /// `termination_threshold` controls early exit to avoid long tail computations.
-    pub fn new(num_nodes: usize, termination_threshold: usize) -> Self {
+    pub fn new(num_nodes: usize) -> Self {
         SteinerTreeComputation { num_nodes: num_nodes,
                                  visited: vec![None; num_nodes],
                                  paths: vec![Vec::with_capacity(num_nodes); num_nodes],
                                  queue: VecDeque::with_capacity(num_nodes),
                                  early_terminations: 0,
-                                 num_calls: 0,
-                                 termination_threshold: termination_threshold }
+                                 num_calls: 0 }
     }
 
     /// Clears internal state for a fresh computation.
@@ -46,7 +44,7 @@ impl SteinerTreeComputation {
     /// identifying a magic node (for T gates) if available. Returns a tree with
     /// data and routing nodes, or None if no valid path exists.
     pub fn compute(&mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<usize>,
-                   terminal_nodes: &Vec<usize>, gate_type: GateType, num_scheduled: usize)
+                   terminal_nodes: &Vec<usize>, gate_type: GateType)
                    -> Option<TreeGraph> {
         debug_sched!("    BFS from root nodes {:?} to terminal nodes {:?}",
                      root_ids.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>(),
@@ -88,8 +86,6 @@ impl SteinerTreeComputation {
             }
         }
 
-        let max_dist = self.get_max_dist(topo, terminal_nodes) + 1;
-        let mut search_steps = 0;
         tree.remove_double_edges();
         while let Some(node_id) = self.queue.pop_front() {
             debug_sched!("      {}Visit neighbors of {}{}",
@@ -119,32 +115,8 @@ impl SteinerTreeComputation {
                 self.check_edges(topo, &tree);
                 return Some(tree);
             }
-            search_steps += 1;
-            if num_scheduled > 0 && search_steps > max_dist * self.termination_threshold {
-                self.early_terminations += 1;
-                break;
-            }
         }
         None
-    }
-
-    /// Computes maximum Manhattan distance between any pair of terminal nodes.
-    /// Used to estimate search depth for early termination heuristic.
-    fn get_max_dist(&self, topo: &TopoGraph, terminal_nodes: &Vec<usize>) -> usize {
-        let mut max_dist = 0;
-        for i in 0..terminal_nodes.len() {
-            let node_i = topo.get_node(terminal_nodes[i]);
-            for j in (i + 1)..terminal_nodes.len() {
-                let node_j = topo.get_node(terminal_nodes[j]);
-                let manhattan_dist = ((node_i.pos.0 - node_j.pos.0).abs()
-                                      + (node_i.pos.1 - node_j.pos.1).abs())
-                                     as usize;
-                if manhattan_dist > max_dist {
-                    max_dist = manhattan_dist;
-                }
-            }
-        }
-        max_dist
     }
 
     /// Explores neighbors of the current node during BFS, tracking path connections
