@@ -160,8 +160,7 @@ impl Scheduler {
     /// Creates a new scheduler for a circuit on a topology.
     /// `magic_state_lambda` controls magic state cultivation timing (exponential distribution parameter).
     pub fn new(circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-               plot_option: String, rseed: u32, stree_termination_threshold: usize,
-               use_greedypath: bool)
+               plot_option: String, rseed: u32, use_greedypath: bool)
                -> Self {
         if log_level != "none" {
             let circuit_stem = Path::new(&circuit.circuit_fname).file_stem()
@@ -194,8 +193,7 @@ impl Scheduler {
                     scheduled_products: IndexSet::new(),
                     used: vec![false; num_nodes],
                     clifford_paths: IndexMap::new(),
-                    stree_computation: SteinerTreeComputation::new(num_nodes,
-                                                                   stree_termination_threshold),
+                    stree_computation: SteinerTreeComputation::new(num_nodes),
                     ready_magic_positions: Vec::new(),
                     astar: AStarComputation::new(num_nodes),
                     greedypath: GreedyPathComputation::new(num_nodes),
@@ -349,8 +347,7 @@ impl Scheduler {
                                        &self.used,
                                        &root_ids,
                                        &self.terminals_scratch,
-                                       pp.gate_type,
-                                       0)
+                                       pp.gate_type)
     }
 
     /// Extracts the data qubit nodes that a product operates on (terminals for tree routing).
@@ -710,7 +707,7 @@ impl Scheduler {
                               num_avail_magic: &mut usize) {
         let _timer = accum_start!(self.timers);
         while !remaining.is_empty() {
-            let best = self.find_next_product(remaining, pp_paths.len(), *num_avail_magic);
+            let best = self.find_next_product(remaining, *num_avail_magic);
             if let Some((best_id, best_graph)) = best {
                 let pp: &PauliProduct = remaining.get(&best_id).unwrap();
                 info_sched!("  Scheduled product {} with {} nodes and {} edges",
@@ -740,7 +737,7 @@ impl Scheduler {
     /// Returns product ID and tree, or None if no schedulable product found.
     /// Products that cannot be scheduled this timestep are stored in self.cannot_schedule.
     fn find_next_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
-                         num_scheduled: usize, num_avail_magic: usize)
+                         num_avail_magic: usize)
                          -> Option<(i32, TreeGraph)> {
         let _timer = accum_start!(self.timers);
         self.cannot_schedule.clear();
@@ -754,7 +751,7 @@ impl Scheduler {
             let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
                 None
             } else {
-                let pp_graph = self.schedule_pauli_product(pp, num_scheduled);
+                let pp_graph = self.schedule_pauli_product(pp);
                 pp_graph
             };
             if let Some(pp_graph) = pp_graph {
@@ -782,8 +779,7 @@ impl Scheduler {
     /// Attempts to route a single Pauli product through the topology.
     /// Uses A* for single-qubit T gates, Steiner tree for others.
     /// Returns a routing tree or None if no valid routing exists.
-    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct, num_scheduled: usize)
-                              -> Option<TreeGraph> {
+    fn schedule_pauli_product(&mut self, pauli_product: &PauliProduct) -> Option<TreeGraph> {
         let _timer = accum_start!(self.timers);
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
@@ -869,8 +865,7 @@ impl Scheduler {
                                                &self.used,
                                                &root_ids,
                                                &self.terminals_scratch,
-                                               pauli_product.gate_type,
-                                               num_scheduled)
+                                               pauli_product.gate_type)
             };
             if let Some(g) = g {
                 return Some(g);
