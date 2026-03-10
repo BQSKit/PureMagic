@@ -11,6 +11,7 @@ pub struct AStarComputation {
     g_cost: Vec<u32>,
     closed: Vec<bool>,
     heap: BinaryHeap<(Reverse<u32>, usize)>,
+    pub num_calls: usize,
 }
 
 impl AStarComputation {
@@ -19,7 +20,8 @@ impl AStarComputation {
         AStarComputation { parent: vec![None; num_nodes],
                            g_cost: vec![u32::MAX; num_nodes],
                            closed: vec![false; num_nodes],
-                           heap: BinaryHeap::new() }
+                           heap: BinaryHeap::new(),
+                           num_calls: 0 }
     }
 
     /// A* from first root to the nearest ready, unused magic node.
@@ -32,6 +34,7 @@ impl AStarComputation {
     pub fn compute(&mut self, terminal_ids: &[usize], root_ids: &[usize], topo: &TopoGraph,
                    used: &[bool], ready_magic_positions: &[(f32, f32)])
                    -> Option<TreeGraph> {
+        self.num_calls += 1;
         self.parent.fill(None);
         self.g_cost.fill(u32::MAX);
         self.closed.fill(false);

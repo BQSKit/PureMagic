@@ -14,8 +14,7 @@ pub struct SteinerTreeComputation {
     visited: Vec<Option<usize>>,
     paths: Vec<Vec<usize>>,
     queue: VecDeque<usize>,
-    early_terminations: usize,
-    num_calls: usize,
+    pub num_calls: usize,
 }
 
 impl SteinerTreeComputation {
@@ -26,7 +25,6 @@ impl SteinerTreeComputation {
                                  visited: vec![None; num_nodes],
                                  paths: vec![Vec::with_capacity(num_nodes); num_nodes],
                                  queue: VecDeque::with_capacity(num_nodes),
-                                 early_terminations: 0,
                                  num_calls: 0 }
     }
 
@@ -230,11 +228,6 @@ impl SteinerTreeComputation {
             self.visited[*nb_id] = Some(curr_root_id);
         }
         (num_paths as usize, cultivator)
-    }
-
-    /// Returns the total number of compute calls and count of early terminations.
-    pub fn get_call_counts(&mut self) -> (usize, usize) {
-        (self.num_calls, self.early_terminations)
     }
 
     /// Validates tree structure in debug builds: ensures data nodes have exactly one edge,
