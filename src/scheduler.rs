@@ -140,7 +140,6 @@ pub struct Scheduler {
     astar: AStarComputation,
     greedypath: GreedyPathComputation,
     use_greedypath: bool,
-    cannot_schedule: Vec<i32>,
     terminals_scratch: Vec<usize>,
     scheduled_ids_scratch: Vec<i32>,
     children_scratch: Vec<i32>,
@@ -198,7 +197,6 @@ impl Scheduler {
                     astar: AStarComputation::new(num_nodes),
                     greedypath: GreedyPathComputation::new(num_nodes),
                     use_greedypath: use_greedypath,
-                    cannot_schedule: Vec::new(),
                     terminals_scratch: Vec::new(),
                     scheduled_ids_scratch: Vec::new(),
                     children_scratch: Vec::new(),
@@ -707,14 +705,18 @@ impl Scheduler {
                               num_avail_magic: &mut usize) {
         let _timer = accum_start!(self.timers);
         while !remaining.is_empty() {
-            let best = self.find_next_product(remaining, *num_avail_magic);
-            if let Some((best_id, best_graph)) = best {
-                let pp: &PauliProduct = remaining.get(&best_id).unwrap();
-                info_sched!("  Scheduled product {} with {} nodes and {} edges",
-                            pp,
-                            best_graph.num_nodes,
-                            best_graph.num_edges);
-                for node_id in best_graph.iter_nodes() {
+            let (&pp_i, &pp) = remaining.first().unwrap();
+            // Should-precompute products should all be scheduled via the precomputed-tree pass
+            debug_assert!(!Self::should_precompute(pp));
+
+            let pp_graph = if *num_avail_magic == 0 && pp.gate_type.is_t() {
+                None
+            } else {
+                self.schedule_pauli_product(pp)
+            };
+            if let Some(pp_graph) = pp_graph {
+                info_sched!("  Scheduled product {}", pp);
+                for node_id in pp_graph.iter_nodes() {
                     let node = self.topo.get_node(node_id);
                     self.stats.inc(node.node_type);
                     self.used[node.id] = true;
@@ -722,41 +724,8 @@ impl Scheduler {
                 if pp.gate_type.is_t() {
                     *num_avail_magic -= 1;
                 }
-                pp_paths.push(((*pp).clone(), Rc::new(best_graph)));
-                remaining.swap_remove(&best_id);
-            }
-            // Drain products that cannot be scheduled this timestep.
-            // find_next_product has already returned so self is no longer borrowed.
-            for i in 0..self.cannot_schedule.len() {
-                remaining.swap_remove(&self.cannot_schedule[i]);
-            }
-        }
-    }
-
-    /// Searches remaining products for the next schedulable one
-    /// Returns product ID and tree, or None if no schedulable product found.
-    /// Products that cannot be scheduled this timestep are stored in self.cannot_schedule.
-    fn find_next_product(&mut self, remaining_to_schedule: &IndexMap<i32, &PauliProduct>,
-                         num_avail_magic: usize)
-                         -> Option<(i32, TreeGraph)> {
-        let _timer = accum_start!(self.timers);
-        self.cannot_schedule.clear();
-        for (&pp_i, &pp) in remaining_to_schedule {
-            // Should-precompute products are only scheduled via the precomputed-tree pass.
-            // If one reaches here (e.g. precomputation failed), skip it this timestep.
-            if Self::should_precompute(pp) {
-                self.cannot_schedule.push(pp_i);
-                continue;
-            }
-            let pp_graph = if num_avail_magic == 0 && pp.gate_type.is_t() {
-                None
-            } else {
-                let pp_graph = self.schedule_pauli_product(pp);
-                pp_graph
-            };
-            if let Some(pp_graph) = pp_graph {
-                info_sched!("  Schedule {} on graph", pp.id);
-                return Some((pp_i, pp_graph));
+                pp_paths.push(((*pp).clone(), Rc::new(pp_graph)));
+                remaining.swap_remove(&pp_i);
             } else {
                 info_sched!("  Could not schedule {} on graph", pp.id);
                 // Mark dependent nodes as used
@@ -770,10 +739,9 @@ impl Scheduler {
                             true;
                     }
                 }
-                self.cannot_schedule.push(pp_i);
+                remaining.swap_remove(&pp_i);
             }
         }
-        None
     }
 
     /// Attempts to route a single Pauli product through the topology.
