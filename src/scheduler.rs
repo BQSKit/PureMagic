@@ -145,10 +145,6 @@ pub struct Scheduler {
     children_scratch: Vec<i32>,
     new_cultivation_times: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
-    // Reusable scratch buffers for schedule_timestep (avoids per-timestep allocations).
-    // Used for sorting with tree size estimates
-    #[cfg(feature = "sort_products")]
-    products_with_dist_scratch: Vec<(i32, f32)>,
     remaining_ids_scratch: Vec<i32>,
     timers: AccumTimers,
     loop_timer: usize,
@@ -202,8 +198,6 @@ impl Scheduler {
                     children_scratch: Vec::new(),
                     new_cultivation_times: Vec::new(),
                     precomputed_clifford_trees: HashMap::new(),
-                    #[cfg(feature = "sort_products")]
-                    products_with_dist_scratch: Vec::new(),
                     remaining_ids_scratch: Vec::new(),
                     timers: timers,
                     loop_timer: loop_timer,
@@ -259,7 +253,7 @@ impl Scheduler {
                                    .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
                                    .collect::<Vec<_>>(),
                         _RESET);
-            if self.schedule_timestep(num_steps, &to_schedule, &mut pp_paths, plotting) {
+            if self.schedule_timestep(num_steps, &mut to_schedule, &mut pp_paths, plotting) {
                 self.complete_timestep(&pp_paths,
                                        &mut to_schedule,
                                        &mut remaining_parents,
@@ -488,7 +482,7 @@ impl Scheduler {
     /// Schedules as many products as possible in a single timestep.
     /// Fills `pp_paths` with (product, routing tree) pairs; returns false if nothing scheduled.
     /// `pp_paths` is cleared on entry so the caller's buffer is reused across timesteps.
-    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &[PauliProduct],
+    fn schedule_timestep(&mut self, step_i: usize, to_schedule: &mut Vec<PauliProduct>,
                          pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>, plotting: bool)
                          -> bool {
         let _timer = accum_start!(self.timers);
@@ -504,37 +498,10 @@ impl Scheduler {
             }
             pp_paths.push(((*pp).clone(), Rc::clone(pp_path)));
         }
-        #[cfg(feature = "sort_products")]
-        let mut remaining: IndexMap<i32, &PauliProduct> = {
-            // This actually doesn't improve routing at all and it takes time
-            // Sort products by estimated routing cost (smallest tree first)
-            // Reuse the scratch buffer to avoid per-timestep allocation.
-            self.products_with_dist_scratch.clear();
-            for pp in to_schedule.iter() {
-                let est = self.tree_size_estimate(pp);
-                self.products_with_dist_scratch.push((pp.id, est));
-            }
-            self.products_with_dist_scratch
-                .sort_by(|(_, da), (_, db)| {
-                    da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
-                });
-            // Build remaining_to_schedule with refs tied to `to_schedule` (not to self), so that
-            // &mut self calls inside the two passes don't conflict with these refs.
-            let lookup: HashMap<i32, &PauliProduct> =
-                to_schedule.iter().map(|pp| (pp.id, pp)).collect();
-            self.products_with_dist_scratch
-                .iter()
-                .filter_map(|(id, _)| lookup.get(id).map(|&pp| (*id, pp)))
-                .collect()
-        };
-        #[cfg(not(feature = "sort_products"))]
-        let mut remaining: IndexMap<i32, &PauliProduct> =
-            to_schedule.iter().map(|pp| (pp.id, pp)).collect();
-
-        info_sched!("  Remaining to schedule: {}", remaining.len());
-        self.schedule_precomputed(&mut remaining, pp_paths);
+        info_sched!("  Remaining to schedule: {}", to_schedule.len());
+        self.schedule_precomputed(to_schedule, pp_paths);
         self.timers.stop(self.other_timer);
-        self.schedule_remaining(&mut remaining, pp_paths, &mut num_avail_magic);
+        self.schedule_remaining(to_schedule, pp_paths, &mut num_avail_magic);
         self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic, plotting);
         if pp_paths.is_empty() {
             if num_avail_magic > 0 {
@@ -601,76 +568,28 @@ impl Scheduler {
         num_avail_magic
     }
 
-    /// Scheduling sort key for a product (used for greedy prioritization).
-    /// - T gates:        Manhattan distance from terminal centroid to nearest ready magic node.
-    ///                   Returns f32::MAX when no magic node is ready.
-    /// - Clifford gates: sum of pairwise Manhattan distances between terminals (a proxy for
-    ///                   Steiner tree size; 0 for a single terminal).
-    #[cfg(feature = "sort_products")]
-    fn tree_size_estimate(&mut self, pp: &PauliProduct) -> f32 {
-        let _timer = accum_start!(self.timers);
-        // Collect terminal positions.
-        let mut positions: Vec<(f32, f32)> = Vec::new();
-        for op in &pp.operators {
-            if op.basis == 'Y' {
-                for basis in ['X', 'Z'] {
-                    let node = self.topo.get_node(self.topo.get_data_node_id(op.qubit, basis));
-                    positions.push(node.pos);
-                }
-            } else {
-                let node =
-                    self.topo.get_node(self.topo.get_data_node_id(op.qubit,
-                                                                  op.basis.to_ascii_uppercase()));
-                positions.push(node.pos);
-            }
-        }
-        if positions.is_empty() {
-            return f32::MAX;
-        }
-        if pp.gate_type.is_t() {
-            // Distance from centroid to nearest ready magic node.
-            let n = positions.len() as f32;
-            let cx = positions.iter().map(|p| p.0).sum::<f32>() / n;
-            let cy = positions.iter().map(|p| p.1).sum::<f32>() / n;
-            self.ready_magic_positions
-                .iter()
-                .map(|p| (p.0 - cx).abs() + (p.1 - cy).abs())
-                .fold(f32::MAX, f32::min)
-        } else {
-            // Sum of pairwise Manhattan distances between terminals.
-            let mut total = 0.0f32;
-            for i in 0..positions.len() {
-                for j in (i + 1)..positions.len() {
-                    total += (positions[i].0 - positions[j].0).abs()
-                             + (positions[i].1 - positions[j].1).abs();
-                }
-            }
-            total
-        }
-    }
-
     /// First pass of `schedule_timestep`: schedule all multi-term Clifford products that have
     /// a precomputed tree and whose nodes are all currently free. Products whose tree is
     /// blocked are removed from `remaining` and their data qubits marked used (so no other
     /// product occupies them this timestep). Products without a precomputed tree stay in
     /// `remaining` for the second pass.
-    fn schedule_precomputed<'a>(&mut self, remaining: &mut IndexMap<i32, &'a PauliProduct>,
-                                pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>) {
+    fn schedule_precomputed(&mut self, to_schedule: &mut Vec<PauliProduct>,
+                            pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>) {
         let _timer = accum_start!(self.timers);
         // Snapshot the keys so we can mutate `remaining` inside the loop.
         // Uses the reusable scratch buffer to avoid allocation.
         self.remaining_ids_scratch.clear();
-        self.remaining_ids_scratch.extend(remaining.keys().copied());
+        self.remaining_ids_scratch.extend(to_schedule.iter().map(|pp| pp.id));
+        let mut to_remove: Vec<i32> = Vec::new();
         for &pp_id in &self.remaining_ids_scratch {
             // Clone the Rc immediately to end the borrow on precomputed_clifford_trees.
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Rc::clone) else {
                 continue; // No precomputed tree; leave in remaining for the second pass.
             };
             let all_free = tree.iter_nodes().all(|nid| !self.used[nid]);
-            // Always remove from remaining: precomputed products never fall back to find_next_product.
-            remaining.swap_remove(&pp_id);
             let pp = self.circuit.get_product(pp_id).clone();
             if all_free {
+                to_remove.push(pp_id);
                 for node_id in tree.iter_nodes() {
                     self.stats.inc(self.topo.get_node(node_id).node_type);
                     self.used[node_id] = true;
@@ -682,7 +601,6 @@ impl Scheduler {
                 pp_paths.push((pp, tree));
             } else {
                 // Tree is blocked; mark data qubits as used so nothing else occupies them,
-                // mirroring the behaviour of find_next_product when routing fails.
                 for op in &pp.operators {
                     if op.basis == 'Y' {
                         self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
@@ -695,19 +613,20 @@ impl Scheduler {
                 }
             }
         }
+        to_schedule.retain(|pp| !to_remove.contains(&pp.id));
     }
 
     /// Second pass of `schedule_timestep`: greedily schedule T gates, measurements, and S/SX
     /// gates from `remaining` using A* or Steiner tree routing. Each call to `find_next_product`
     /// returns the best schedulable product, or None if nothing fits this timestep.
-    fn schedule_remaining<'a>(&mut self, remaining: &mut IndexMap<i32, &'a PauliProduct>,
-                              pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>,
-                              num_avail_magic: &mut usize) {
+    fn schedule_remaining(&mut self, to_schedule: &mut [PauliProduct],
+                          pp_paths: &mut Vec<(PauliProduct, Rc<TreeGraph>)>,
+                          num_avail_magic: &mut usize) {
         let _timer = accum_start!(self.timers);
-        while !remaining.is_empty() {
-            let (&pp_i, &pp) = remaining.first().unwrap();
-            // Should-precompute products should all be scheduled via the precomputed-tree pass
-            debug_assert!(!Self::should_precompute(pp));
+        for pp in to_schedule {
+            if Self::should_precompute(pp) {
+                continue;
+            }
             if *num_avail_magic > 0 || !pp.gate_type.is_t() {
                 if let Some(pp_graph) = self.schedule_pauli_product(pp) {
                     info_sched!("  Scheduled product {}", pp);
@@ -720,7 +639,6 @@ impl Scheduler {
                         *num_avail_magic -= 1;
                     }
                     pp_paths.push(((*pp).clone(), Rc::new(pp_graph)));
-                    remaining.swap_remove(&pp_i);
                     continue;
                 }
             }
@@ -736,7 +654,6 @@ impl Scheduler {
                         true;
                 }
             }
-            remaining.swap_remove(&pp_i);
         }
     }
 
