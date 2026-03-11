@@ -89,7 +89,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
 
 [features]
 default = []
-sort_products = []
 # to enable a feature. Use #[cfg(feature = "somefeature")] in the code before the function or line to enable
 #default = ["somefeature"]
 #somefeature = []
