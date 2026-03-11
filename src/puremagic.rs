@@ -10,6 +10,7 @@ mod topograph;
 mod treegraph;
 #[macro_use]
 mod utils;
+mod greedypath;
 
 use circuit::Circuit;
 use scheduler::Scheduler;
@@ -27,36 +28,12 @@ struct Args {
     /// Randomize data qubit numbering.
     #[arg(short = 'R', long)]
     randomize_data_qubits: bool,
-    /// Name of file containing input circuit .qasm format (required).
+    /// Name of file containing input circuit (required).
     #[arg(short, long = "circuit")]
-    circuit_fname: Option<String>,
-    /// Generate a random circuit instead of loading from file
-    #[arg(long, help = "Generate a random circuit instead of loading from file")]
-    generate_random: bool,
-    /// Number of qubits for random circuit generation
-    #[arg(long, default_value = "64", help = "Number of qubits for random circuit generation")]
-    random_qubits: usize,
-    /// Number of products for random circuit generation
-    #[arg(long, default_value = "1000", help = "Number of products for random circuit generation")]
-    random_products: usize,
-    /// Spread probability for random circuit generation (probability of adding operators to
-    /// adjacent qubits)
-    #[arg(long,
-          default_value = "0.4",
-          help = "Spread probability for random circuit generation (0.0-1.0)")]
-    spread_probability: f64,
-    /// Decay factor for random circuit generation (how much probability decreases with distance)
-    #[arg(long,
-          default_value = "0.7",
-          help = "Decay factor for random circuit generation (0.0-1.0)")]
-    decay_factor: f64,
-
+    circuit_fname: String,
     /// Name of file containing topology. If this is not set, it will be generated.
     #[arg(short, long = "topo", default_value = "")]
     topo_fname: String,
-    /// Verbose output.
-    #[arg(short, long)]
-    verbose: bool,
     /// Lambda parameter for exponential distribution of magic state cultivation timesteps.
     #[arg(short, long, default_value = "0.0387396")]
     magic_state_lambda: f64,
@@ -80,21 +57,18 @@ struct Args {
         help = "Log level for scheduler (none, info, or debug)"
     )]
     log_scheduler: String,
-    /// Use first fit to choose the next product to schedule.
-    #[arg(short = 'b', long)]
-    best_fit: bool,
     /// Use magic qubits for routing in addition to bus qubits
     #[arg(short = 'u', long)]
     use_magic_routing: bool,
     /// Use only the sides of data qubits for edges, not the top and bottom
     #[arg(short = 'S', long = "sides_only")]
     sides_only: bool,
+    /// Use the faster, suboptimal greedy path algorithm
+    #[arg(short = 'g', long = "use_greedy")]
+    greedy_path: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
-    /// Early termination threshold for Steiner Tree search - Multiple of max. Manhattan distance
-    #[arg(short, long, default_value = "10")]
-    stree_termination_threshold: usize,
     #[arg(
         short,
         long,
@@ -129,42 +103,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                           env!("VERGEN_BUILD_TIMESTAMP"));
     println!("{}\n{:#?}", hdr, args);
     hdr = format!("# {}\n# {:?}", &hdr, args);
-    // Validate arguments
-    if !args.generate_random && args.circuit_fname.is_none() {
-        eprintln!("Error: Either --circuit <filename> or --generate-random must be specified");
-        std::process::exit(1);
-    }
-    if args.generate_random && (args.spread_probability < 0.0 || args.spread_probability > 1.0) {
-        eprintln!("Error: spread_probability must be between 0.0 and 1.0");
-        std::process::exit(1);
-    }
-    if args.generate_random && (args.decay_factor < 0.0 || args.decay_factor > 1.0) {
-        eprintln!("Error: decay_factor must be between 0.0 and 1.0");
-        std::process::exit(1);
-    }
     // Initialize circuit
-    let (circuit, circuit_fname) = if args.generate_random {
-        println!("Generating random circuit with {} products on {} qubits",
-                 args.random_products, args.random_qubits);
-        println!("  spread_probability: {}", args.spread_probability);
-        println!("  decay_factor: {}", args.decay_factor);
-        let spread_str = args.spread_probability.to_string().replace(".", "_");
-        let decay_str = args.decay_factor.to_string().replace(".", "_");
-        let fname = format!("random_circuit-{}-{}_n{}", spread_str, decay_str, args.random_qubits);
-        let mut circuit = Circuit::new(&fname);
-        circuit.generate_random(args.random_products,
-                                args.random_qubits,
-                                args.spread_probability,
-                                args.decay_factor);
-        let save_fname = format!("{}.generated.txt", fname);
-        circuit.save_circuit_to_file(save_fname)?;
-        (circuit, fname)
-    } else {
-        let fname = args.circuit_fname.unwrap();
-        let mut circuit = Circuit::new(&fname.to_string());
-        circuit.load_circuit()?;
-        (circuit, fname)
-    };
+    let circuit_fname = args.circuit_fname;
+    let mut circuit = Circuit::new(&circuit_fname);
+    circuit.load_circuit()?;
     let num_products = circuit.num_products();
     let num_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
@@ -203,9 +145,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        &args.log_scheduler,
                                        args.plot.join(" "),
                                        args.rseed,
-                                       args.stree_termination_threshold);
+                                       args.greedy_path);
 
-    let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit(args.best_fit)?;
+    let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;
     assert_eq!(num_scheduled, num_products);
     // Calculate and print statistics
     let volume = num_qubits * tot_num_steps;

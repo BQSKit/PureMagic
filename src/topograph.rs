@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, BufRead};
 use std::path::Path;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents the topological layout of a surface code quantum processor.
@@ -586,7 +586,6 @@ impl TopoGraph {
         self.data_node_ids[qubit][basis_idx]
     }
 
-
     /// Writes topology grid to a text file (debug builds only).
     #[cfg(debug_assertions)]
     pub fn print(&self) -> io::Result<()> {
@@ -618,7 +617,7 @@ impl TopoGraph {
 
     /// Plots the topology with scheduled Pauli product paths highlighted.
     /// Generates PNG with nodes colored by type and edges colored by path.
-    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Arc<TreeGraph>)],
+    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
                 title_str: &str)
                 -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
