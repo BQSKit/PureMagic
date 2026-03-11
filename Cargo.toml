@@ -54,6 +54,10 @@ vergen = { version = "8", features = ["build", "git", "gitcl"] }
 name = "puremagic"
 path = "src/puremagic.rs"
 
+[[bin]]
+name = "gen_circuit"
+path = "src/gen_circuit.rs"
+
 [profile.release]
 opt-level = 3
 debug = false
@@ -85,6 +89,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
 
 [features]
 default = []
+sort_products = []
 # to enable a feature. Use #[cfg(feature = "somefeature")] in the code before the function or line to enable
 #default = ["somefeature"]
 #somefeature = []
