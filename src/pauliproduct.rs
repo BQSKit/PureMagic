@@ -65,7 +65,7 @@ impl fmt::Display for GateType {
 /// A single Pauli operator (X, Y, or Z) applied to a specific qubit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Operator {
-    pub qubit: usize,
+    pub qubit: u16,
     pub basis: char,
 }
 
@@ -82,10 +82,9 @@ pub struct PauliProduct {
     pub operators: Vec<Operator>,
     pub parents: Vec<i32>,
     pub children: Vec<i32>,
-    pub max_qubit: usize,
+    pub max_qubit: u16,
     pub id: i32,
     pub gate_type: GateType,
-    pub weight: usize,
 }
 
 impl Default for PauliProduct {
@@ -95,8 +94,7 @@ impl Default for PauliProduct {
                        parents: Vec::new(),
                        children: Vec::new(),
                        id: -1,
-                       gate_type: GateType::T,
-                       weight: 0 }
+                       gate_type: GateType::T }
     }
 }
 
@@ -119,7 +117,7 @@ impl PauliProduct {
             match c {
                 '_' => continue,
                 'X' | 'Z' | 'Y' => {
-                    self.operators.push(Operator { qubit: i - 1, basis: c });
+                    self.operators.push(Operator { qubit: (i - 1) as u16, basis: c });
                 }
                 '<' => {
                     let gate_type = &s[i..];
@@ -149,7 +147,6 @@ impl PauliProduct {
             assert_eq!(self.operators.len(), 1, "Should have max 1 qubit: {}", self);
         }
         self.max_qubit = self.operators.iter().map(|op| op.qubit).max().unwrap_or(0);
-        self.weight = self.operators.iter().map(|op| if op.basis == 'Y' { 2 } else { 1 }).sum();
         Ok(())
     }
 
@@ -160,10 +157,9 @@ impl PauliProduct {
     }
 
     /// Returns sorted list of qubits on which this product operates.
-    pub fn get_qubits(&self) -> Vec<usize> {
+    pub fn get_qubits(&self) -> Vec<u16> {
         self.operators.iter().map(|op| op.qubit).collect()
     }
-
 }
 
 impl fmt::Display for PauliProduct {

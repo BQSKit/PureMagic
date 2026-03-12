@@ -50,7 +50,8 @@ impl Circuit {
             self.products.push(product);
             product_id += 1;
         }
-        self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
+        self.num_qubits =
+            self.products.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
 
         println!("Loaded circuit with {} products and {} qubits",
                  self.products.len(),
@@ -68,11 +69,11 @@ impl Circuit {
 
         for pp in self.products.iter() {
             for op in &pp.operators {
-                let current_id = current_pps[op.qubit];
+                let current_id = current_pps[op.qubit as usize];
                 if current_id != -1 {
                     relationships.push((pp.id as i32, current_id));
                 }
-                current_pps[op.qubit] = pp.id as i32;
+                current_pps[op.qubit as usize] = pp.id as i32;
             }
         }
         for (child_id, parent_id) in relationships {
@@ -121,17 +122,6 @@ impl Circuit {
                 ),
             )
             .into_drawing_area();
-            /*
-             let plot_fname = format!("{}/{}-{}.svg", plot_dir, circuit_stem, chunk_start);
-             let root = SVGBackend::new(
-                 &plot_fname,
-                 (
-                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
-                     (self.num_qubits as f32 * 0.22 * 100.0) as u32,
-                 ),
-             )
-             .into_drawing_area();
-            */
             root.fill(&WHITE)?;
 
             let mut chart =
@@ -557,7 +547,7 @@ impl Circuit {
     fn build_coupling_matrix(&self) -> Vec<Vec<usize>> {
         let mut matrix = vec![vec![0; self.num_qubits]; self.num_qubits];
         for product in &self.products {
-            let qubits: Vec<usize> = product.get_qubits();
+            let qubits: Vec<u16> = product.get_qubits();
             for i in 0..qubits.len() {
                 for j in 0..qubits.len() {
                     let qubit_i = qubits[i] / 2;
@@ -565,8 +555,8 @@ impl Circuit {
                     if qubit_i == qubit_j {
                         continue;
                     }
-                    matrix[qubit_i * 2][qubit_j * 2] += 1;
-                    matrix[qubit_j * 2][qubit_i * 2] += 1;
+                    matrix[qubit_i as usize * 2][qubit_j as usize * 2] += 1;
+                    matrix[qubit_j as usize * 2][qubit_i as usize * 2] += 1;
                 }
             }
         }

@@ -20,9 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Supports both magic routing and bus routing architectures.
 pub struct TopoGraph {
     nodes: Vec<Node>,
-    node_ids_from_labels: IndexMap<String, usize>,
+    node_ids_from_labels: IndexMap<String, u16>,
     // Fast lookup for data nodes: indexed by qubit number, [0] = X node id, [1] = Z node id
-    data_node_ids: Vec<[usize; 2]>,
+    data_node_ids: Vec<[u16; 2]>,
     node_grid: Vec<Vec<Option<String>>>,
     num_cols: usize,
     num_rows: usize,
@@ -80,7 +80,7 @@ impl TopoGraph {
         } else {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
-        let node_ids: Vec<usize> = self.nodes.iter().map(|node| node.id).collect();
+        let node_ids: Vec<u16> = self.nodes.iter().map(|node| node.id).collect();
         for node_id in node_ids {
             let node = self.get_node(node_id);
             if node.node_type == NodeType::Data {
@@ -341,7 +341,7 @@ impl TopoGraph {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
         let label1 = format!("d{}{}", q, op);
-        let id1 = self.num_nodes;
+        let id1 = self.num_nodes as u16;
         let node1 = Node::new(id1,
                               None,
                               label1.to_string(),
@@ -353,7 +353,7 @@ impl TopoGraph {
         self.nodes.push(node1);
         self.node_ids_from_labels.insert(label1, id1);
         self.num_nodes += 1;
-        let id2 = self.num_nodes;
+        let id2 = self.num_nodes as u16;
         let label2 = format!("d{}{}", q + 1, op);
         let node2 = Node::new(id2,
                               None,
@@ -379,7 +379,7 @@ impl TopoGraph {
         };
 
         let label = format!("{}{}-{}", ch, col, row);
-        let node = Node::new(self.num_nodes,
+        let node = Node::new(self.num_nodes as u16,
                              None,
                              label.to_string(),
                              col as f32,
@@ -388,7 +388,7 @@ impl TopoGraph {
                              0,
                              0);
         self.nodes.push(node);
-        self.node_ids_from_labels.insert(label.clone(), self.num_nodes);
+        self.node_ids_from_labels.insert(label.clone(), self.num_nodes as u16);
         self.num_nodes += 1;
         label
     }
@@ -525,7 +525,7 @@ impl TopoGraph {
                 let qubit: usize = label[1..label.len() - 1].parse().unwrap();
                 let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
                 if qubit >= self.data_node_ids.len() {
-                    self.data_node_ids.resize(qubit + 1, [usize::MAX; 2]);
+                    self.data_node_ids.resize(qubit + 1, [u16::MAX; 2]);
                 }
                 self.data_node_ids[qubit][basis_idx] = node.id;
             }
@@ -554,13 +554,13 @@ impl TopoGraph {
     }
 
     /// Retrieves a node by its ID.
-    pub fn get_node(&self, id: usize) -> &Node {
-        &self.nodes[id]
+    pub fn get_node(&self, id: u16) -> &Node {
+        &self.nodes[id as usize]
     }
 
     /// Retrieves a mutable reference to a node by its ID.
-    pub fn get_node_mut(&mut self, id: usize) -> &mut Node {
-        &mut self.nodes[id]
+    pub fn get_node_mut(&mut self, id: u16) -> &mut Node {
+        &mut self.nodes[id as usize]
     }
 
     /// Returns an iterator over all nodes.
@@ -574,16 +574,16 @@ impl TopoGraph {
     }
 
     /// Creates a bidirectional edge between two nodes.
-    pub fn add_edge(&mut self, node_id1: usize, node_id2: usize) {
+    pub fn add_edge(&mut self, node_id1: u16, node_id2: u16) {
         self.get_node_mut(node_id1).add_neighbor(node_id2);
         self.get_node_mut(node_id2).add_neighbor(node_id1);
         self.num_edges += 1;
     }
 
     /// Fast lookup of a data node by qubit number and basis (X or Z).
-    pub fn get_data_node_id(&self, qubit: usize, basis: char) -> usize {
+    pub fn get_data_node_id(&self, qubit: u16, basis: char) -> u16 {
         let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
-        self.data_node_ids[qubit][basis_idx]
+        self.data_node_ids[qubit as usize][basis_idx]
     }
 
     /// Writes topology grid to a text file (debug builds only).
@@ -661,7 +661,7 @@ impl TopoGraph {
                            .collect();
         for node in &self.nodes {
             for nb_id in &node.nbors {
-                let nb = &self.nodes[*nb_id];
+                let nb = &self.nodes[*nb_id as usize];
                 let mut edge_color = &BLACK.mix(0.5).to_rgba();
                 let mut stroke_width = 1;
                 for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
@@ -746,10 +746,10 @@ impl TopoGraph {
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
             if let Some(first_data_node_id) =
                 path_graph.iter_nodes()
-                          .filter(|id| matches!(self.nodes[*id].node_type, NodeType::Data))
+                          .filter(|id| matches!(self.nodes[*id as usize].node_type, NodeType::Data))
                           .next()
             {
-                let (x, y) = self.nodes[first_data_node_id].pos;
+                let (x, y) = self.nodes[first_data_node_id as usize].pos;
                 let product_str = pp.to_operator_str();
                 let text_width = product_str.len() as f32 * 0.125;
                 chart.draw_series(std::iter::once(Rectangle::new([(x as f32 - 0.3,

@@ -7,10 +7,10 @@ use std::collections::BinaryHeap;
 /// State container for A* pathfinding computations.
 /// Maintains parent pointers, g-costs, and closed set for multi-source searches.
 pub struct AStarComputation {
-    parent: Vec<Option<usize>>,
+    parent: Vec<Option<u16>>,
     g_cost: Vec<u32>,
     closed: Vec<bool>,
-    heap: BinaryHeap<(Reverse<u32>, usize)>,
+    heap: BinaryHeap<(Reverse<u32>, u16)>,
     pub num_calls: usize,
 }
 
@@ -31,7 +31,7 @@ impl AStarComputation {
     /// After building the main path (magic → root), any remaining roots that are not
     /// on the path are stitched in by finding an adjacent node already in the tree.
     /// Returns a TreeGraph with `root_node_id` set to the magic node, or None if no path exists.
-    pub fn compute(&mut self, terminal_ids: &[usize], root_ids: &[usize], topo: &TopoGraph,
+    pub fn compute(&mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph,
                    used: &[bool], ready_magic_positions: &[(f32, f32)])
                    -> Option<TreeGraph> {
         self.num_calls += 1;
@@ -42,32 +42,32 @@ impl AStarComputation {
         self.heap.clear();
 
         let root_id = root_ids[0];
-        debug_assert!(!used[root_id]);
-        self.g_cost[root_id] = 0;
+        debug_assert!(!used[root_id as usize]);
+        self.g_cost[root_id as usize] = 0;
         let (h, ready_idx) = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
         self.heap.push((Reverse(h), root_id));
         // choose this magic node as the target
         let ready_pos = ready_magic_positions[ready_idx];
 
         while let Some((_, node_id)) = self.heap.pop() {
-            if self.closed[node_id] {
+            if self.closed[node_id as usize] {
                 continue;
             }
-            self.closed[node_id] = true;
+            self.closed[node_id as usize] = true;
 
             let (node_type, cultivation_time, num_nbors) = {
                 let node = topo.get_node(node_id);
                 (node.node_type, node.cultivation_time, node.nbors.len())
             };
 
-            if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id] {
+            if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
                 let mut tree = TreeGraph::new(topo.num_nodes);
                 tree.root_node_id = Some(node_id);
                 let mut curr = node_id;
                 if !tree.contains_node(curr) {
                     tree.add_node(topo.get_node(curr));
                 }
-                while let Some(prev_id) = self.parent[curr] {
+                while let Some(prev_id) = self.parent[curr as usize] {
                     if !tree.contains_node(prev_id) {
                         tree.add_node(topo.get_node(prev_id));
                     }
@@ -97,10 +97,10 @@ impl AStarComputation {
                 return Some(tree);
             }
 
-            let g = self.g_cost[node_id];
+            let g = self.g_cost[node_id as usize];
             for i in 0..num_nbors {
                 let nb_id = topo.get_node(node_id).nbors[i];
-                if used[nb_id] || self.closed[nb_id] {
+                if used[nb_id as usize] || self.closed[nb_id as usize] {
                     continue;
                 }
                 let (nb_is_data, nb_pos) = {
@@ -111,9 +111,9 @@ impl AStarComputation {
                     continue;
                 }
                 let new_g = g + 1;
-                if new_g < self.g_cost[nb_id] {
-                    self.g_cost[nb_id] = new_g;
-                    self.parent[nb_id] = Some(node_id);
+                if new_g < self.g_cost[nb_id as usize] {
+                    self.g_cost[nb_id as usize] = new_g;
+                    self.parent[nb_id as usize] = Some(node_id);
                     // always headed to the same target magic node
                     let h = Self::manhattan_dist(nb_pos, ready_pos);
                     self.heap.push((Reverse(new_g + h), nb_id));
