@@ -57,7 +57,7 @@ impl AStarComputation {
 
             let (node_type, cultivation_time, num_nbors) = {
                 let node = topo.get_node(node_id);
-                (node.node_type, node.cultivation_time, node.nbors.len())
+                (node.node_type, topo.cultivation_times[node_id as usize], node.nbors.len())
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {

@@ -129,7 +129,7 @@ pub struct Scheduler {
     rng_exp: Exponential,
     magic_state_lambda: f64,
     plot_option: String,
-    cultivation_times: Vec<i32>,
+    cultivation_times_log: Vec<i32>,
     stats: ScheduleStats,
     timestep_scheduled: Vec<(usize, Vec<PauliProduct>)>,
     scheduled_products: IndexSet<i32>,
@@ -182,7 +182,7 @@ impl Scheduler {
                     rng_exp: Exponential::new(rseed),
                     magic_state_lambda,
                     plot_option,
-                    cultivation_times: Vec::new(),
+                    cultivation_times_log: Vec::new(),
                     stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
                     timestep_scheduled: Vec::new(),
                     scheduled_products: IndexSet::new(),
@@ -287,7 +287,7 @@ impl Scheduler {
             } else {
                 debug_sched!("Could not schedule anything on timestep {}", num_steps);
                 // If no magic node is cultivating, nothing will ever become ready: fatal.
-                if !self.topo.iter_nodes().any(|node| node.is_cultivating()) {
+                if !(0..self.topo.num_nodes).any(|node_i| self.topo.is_cultivating(node_i as u16)) {
                     return Err(io::Error::new(io::ErrorKind::Other,
                                               format!("{}Cannot schedule on current layout{}",
                                                       _RED, _RESET)));
@@ -313,8 +313,8 @@ impl Scheduler {
                                       .map(|node| node.id)
                                       .collect();
         for id in magic_ids {
-            self.topo.get_node_mut(id).cultivation_time = self.gen_cultivation_time();
-            self.topo.get_node_mut(id).busy_count = 0;
+            self.topo.cultivation_times[id as usize] = self.gen_cultivation_time();
+            self.topo.busy_counts[id as usize] = 0;
         }
     }
 
@@ -537,33 +537,41 @@ impl Scheduler {
             let t = self.gen_cultivation_time();
             self.new_cultivation_times.push(t);
         }
+        let node_info: Vec<(u16, NodeType)> =
+            self.topo.iter_nodes().map(|node| (node.id, node.node_type)).collect();
         // Update busy counts and reset used flags
         let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
-        for node in self.topo.iter_nodes_mut() {
-            if self.used[node.id as usize] && node.node_type == NodeType::Magic {
-                node.cultivation_time = self.new_cultivation_times[cultivation_time_index];
-                node.busy_count = 0;
+        for (node_id, node_type) in &node_info {
+            let node_id = *node_id;
+            if self.used[node_id as usize] && *node_type == NodeType::Magic {
+                self.topo.cultivation_times[node_id as usize] =
+                    self.new_cultivation_times[cultivation_time_index];
+                self.topo.busy_counts[node_id as usize] = 0;
                 cultivation_time_index += 1;
-            } else if !self.used[node.id as usize] && node.is_cultivating() {
-                node.busy_count += 1;
-                if node.busy_count == node.cultivation_time {
-                    self.cultivation_times.push(node.cultivation_time);
-                    node.cultivation_time = 0;
-                    node.busy_count = 0;
+            } else if !self.used[node_id as usize] && self.topo.is_cultivating(node_id) {
+                self.topo.busy_counts[node_id as usize] += 1;
+                if self.topo.busy_counts[node_id as usize]
+                   == self.topo.cultivation_times[node_id as usize]
+                {
+                    self.cultivation_times_log.push(self.topo.cultivation_times[node_id as usize]);
+                    self.topo.cultivation_times[node_id as usize] = 0;
+                    self.topo.busy_counts[node_id as usize] = 0;
                 }
             }
-            if node.node_type == NodeType::Magic && node.cultivation_time == 0 {
+            if *node_type == NodeType::Magic && self.topo.cultivation_times[node_id as usize] == 0 {
                 num_avail_magic += 1;
             }
         }
         // Rebuild cache of ready magic positions used by tree_size_estimate.
-        self.ready_magic_positions =
-            self.topo
-                .iter_nodes()
-                .filter(|n| n.node_type == NodeType::Magic && n.cultivation_time == 0)
-                .map(|n| n.pos)
-                .collect();
+        self.ready_magic_positions = node_info.iter()
+                                              .filter(|(node_id, node_type)| {
+                                                  *node_type == NodeType::Magic
+                                                  && self.topo.cultivation_times[*node_id as usize]
+                                                     == 0
+                                              })
+                                              .map(|(node_id, _)| self.topo.get_node(*node_id).pos)
+                                              .collect();
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -835,11 +843,11 @@ impl Scheduler {
     fn print_scheduling_stats(&mut self, num_steps: usize) {
         self.stats.summarize(num_steps);
         println!("Magic state cultivation time:");
-        let mean =
-            self.cultivation_times.iter().sum::<i32>() as f64 / self.cultivation_times.len() as f64;
-        let min = self.cultivation_times.iter().min().copied().unwrap_or(0);
-        let max = self.cultivation_times.iter().max().copied().unwrap_or(0);
-        println!("  number:  {}", self.cultivation_times.len());
+        let mean = self.cultivation_times_log.iter().sum::<i32>() as f64
+                   / self.cultivation_times_log.len() as f64;
+        let min = self.cultivation_times_log.iter().min().copied().unwrap_or(0);
+        let max = self.cultivation_times_log.iter().max().copied().unwrap_or(0);
+        println!("  number:  {}", self.cultivation_times_log.len());
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
