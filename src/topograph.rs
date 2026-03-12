@@ -35,6 +35,8 @@ pub struct TopoGraph {
     pub num_qubits: usize,
     pub num_edges: usize,
     pub num_nodes: usize,
+    pub busy_counts: Vec<i32>,
+    pub cultivation_times: Vec<i32>,
 }
 
 impl TopoGraph {
@@ -54,7 +56,9 @@ impl TopoGraph {
                     num_nodes: 0,
                     circuit_fname: String::new(),
                     topo_fname: String::new(),
-                    use_magic_routing: true }
+                    use_magic_routing: true,
+                    busy_counts: Vec::new(),
+                    cultivation_times: Vec::new() }
     }
 
     /// Initializes topology from file or generates a synthetic layout.
@@ -347,10 +351,10 @@ impl TopoGraph {
                               label1.to_string(),
                               col as f32 - 0.25,
                               (self.num_rows - 1 - row) as f32,
-                              NodeType::Data,
-                              0,
-                              0);
+                              NodeType::Data);
         self.nodes.push(node1);
+        self.busy_counts.push(0);
+        self.cultivation_times.push(0);
         self.node_ids_from_labels.insert(label1, id1);
         self.num_nodes += 1;
         let id2 = self.num_nodes as u16;
@@ -360,10 +364,10 @@ impl TopoGraph {
                               label2.to_string(),
                               col as f32 + 0.25,
                               (self.num_rows - 1 - row) as f32,
-                              NodeType::Data,
-                              0,
-                              0);
+                              NodeType::Data);
         self.nodes.push(node2);
+        self.busy_counts.push(0);
+        self.cultivation_times.push(0);
         self.node_ids_from_labels.insert(label2, id2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label.clone());
@@ -384,10 +388,10 @@ impl TopoGraph {
                              label.to_string(),
                              col as f32,
                              (self.num_rows - 1 - row) as f32,
-                             node_type,
-                             0,
-                             0);
+                             node_type);
         self.nodes.push(node);
+        self.busy_counts.push(0);
+        self.cultivation_times.push(0);
         self.node_ids_from_labels.insert(label.clone(), self.num_nodes as u16);
         self.num_nodes += 1;
         label
@@ -569,9 +573,9 @@ impl TopoGraph {
     }
 
     /// Returns a mutable iterator over all nodes.
-    pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
-        self.nodes.iter_mut()
-    }
+    //pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Node> {
+    //    self.nodes.iter_mut()
+    //}
 
     /// Creates a bidirectional edge between two nodes.
     pub fn add_edge(&mut self, node_id1: u16, node_id2: u16) {
@@ -584,6 +588,12 @@ impl TopoGraph {
     pub fn get_data_node_id(&self, qubit: u16, basis: char) -> u16 {
         let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
         self.data_node_ids[qubit as usize][basis_idx]
+    }
+
+    /// Returns true if this magic node is currently cultivating (in progress).
+    pub fn is_cultivating(&self, node_id: u16) -> bool {
+        self.cultivation_times[node_id as usize] > 0
+        && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
     }
 
     /// Writes topology grid to a text file (debug builds only).
@@ -715,8 +725,10 @@ impl TopoGraph {
                 NodeType::Data => node.label.clone(),
                 NodeType::Magic => {
                     if border_color == None {
-                        if node.is_cultivating() {
-                            (node.cultivation_time - node.busy_count).to_string()
+                        if self.is_cultivating(node.id) {
+                            (self.cultivation_times[node.id as usize]
+                             - self.busy_counts[node.id as usize])
+                                                                  .to_string()
                         } else if pauli_product_paths.is_empty() {
                             node.label.clone()
                         } else {

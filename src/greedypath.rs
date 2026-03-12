@@ -48,7 +48,7 @@ impl GreedyPathComputation {
             let current_node = topo.get_node(current);
             // Check if we reached a ready magic node
             if current_node.node_type == NodeType::Magic
-               && current_node.cultivation_time == 0
+               && topo.cultivation_times[current_node.id as usize] == 0
                && !used[current as usize]
             {
                 return Some(build_tree(&path, terminal_ids, root_ids, topo));
@@ -101,7 +101,7 @@ impl GreedyPathComputation {
                                               && topo.get_node(nb_id).node_type != NodeType::Data
                                               && !(topo.get_node(nb_id).node_type
                                                    == NodeType::Magic
-                                                   && topo.get_node(nb_id).cultivation_time > 0)
+                                                   && topo.cultivation_times[nb_id as usize] > 0)
                                                                            });
                     if has_open_nb {
                         break;

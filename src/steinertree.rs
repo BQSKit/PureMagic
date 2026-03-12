@@ -64,7 +64,7 @@ impl SteinerTreeComputation {
             }
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
-               && root.cultivation_time == 0
+               && topo.cultivation_times[*root_id as usize] == 0
             {
                 cultivator = Some(*root_id);
                 debug_sched!("      {}found root cultivator {}{}",
@@ -234,7 +234,7 @@ impl SteinerTreeComputation {
             let nb_is_cultivator = gate_type.is_t()
                                    && cultivator.is_none()
                                    && nb.node_type == NodeType::Magic
-                                   && nb.cultivation_time == 0;
+                                   && topo.cultivation_times[nb.id as usize] == 0;
             if nb.is_routing() || nb_is_cultivator {
                 if !tree.contains_node(nb.id) {
                     tree.add_node(nb);
