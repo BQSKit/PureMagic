@@ -19,12 +19,16 @@ impl Circuit {
     pub fn generate_random(&mut self, num_products: usize, num_qubits: usize,
                            spread_probability: f64, decay_factor: f64) {
         self.products.extend((0..num_products).map(|product_id| {
-            PauliProduct::gen_rnd_t(product_id as i32, num_qubits, spread_probability,
-                                    decay_factor)
-        }));
-        self.num_qubits = self.products.iter().map(|pp| pp.max_qubit).max().unwrap_or(0) + 1;
+                                                  PauliProduct::gen_rnd_t(product_id as i32,
+                                                                          num_qubits,
+                                                                          spread_probability,
+                                                                          decay_factor)
+                                              }));
+        self.num_qubits =
+            self.products.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
         println!("Generated random circuit with {} products and {} qubits",
-                 self.products.len(), self.num_qubits);
+                 self.products.len(),
+                 self.num_qubits);
         self.generate_dependencies();
     }
 
@@ -51,11 +55,11 @@ impl PauliProduct {
         let mut operators = Vec::new();
         let center_qubit = rng.gen_range(0..num_qubits);
         let center_basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
-        operators.push(Operator { qubit: center_qubit, basis: center_basis });
+        operators.push(Operator { qubit: center_qubit as u16, basis: center_basis });
         let mut current_prob = spread_probability;
         for distance in 1..=center_qubit {
             if rng.gen_range(0.0..1.0) < current_prob {
-                let qubit = center_qubit - distance;
+                let qubit = (center_qubit - distance) as u16;
                 let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
                 operators.push(Operator { qubit, basis });
             }
@@ -67,7 +71,7 @@ impl PauliProduct {
         current_prob = spread_probability;
         for distance in 1..(num_qubits - center_qubit) {
             if rng.gen_range(0.0..1.0) < current_prob {
-                let qubit = center_qubit + distance;
+                let qubit = (center_qubit + distance) as u16;
                 let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
                 operators.push(Operator { qubit, basis });
             }
@@ -83,8 +87,7 @@ impl PauliProduct {
                        children: Vec::new(),
                        max_qubit,
                        id: product_id,
-                       gate_type: GateType::T,
-                       weight: 0 }
+                       gate_type: GateType::T }
     }
 
     /// Converts this product to circuit file format with random sign.
@@ -93,7 +96,7 @@ impl PauliProduct {
         let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
         let mut pauli_string = vec!['_'; num_qubits];
         for op in &self.operators {
-            pauli_string[op.qubit] = op.basis;
+            pauli_string[op.qubit as usize] = op.basis;
         }
         format!("{}{}<{:?}>", sign, pauli_string.iter().collect::<String>(), self.gate_type)
     }
@@ -141,8 +144,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decay_str = args.decay_factor.to_string().replace(".", "_");
     let fname = format!("random_circuit-{}-{}_n{}", spread_str, decay_str, args.random_qubits);
     let mut circuit = Circuit::new(&fname);
-    circuit.generate_random(args.random_products, args.random_qubits,
-                            args.spread_probability, args.decay_factor);
+    circuit.generate_random(args.random_products,
+                            args.random_qubits,
+                            args.spread_probability,
+                            args.decay_factor);
     let save_fname = args.output.unwrap_or_else(|| format!("{}.generated.txt", fname));
     circuit.save_circuit_to_file(save_fname)?;
     Ok(())

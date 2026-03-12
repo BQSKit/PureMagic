@@ -140,7 +140,7 @@ pub struct Scheduler {
     astar: AStarComputation,
     greedypath: GreedyPathComputation,
     use_greedypath: bool,
-    terminals_scratch: Vec<usize>,
+    terminals_scratch: Vec<u16>,
     scheduled_ids_scratch: Vec<i32>,
     children_scratch: Vec<i32>,
     new_cultivation_times: Vec<i32>,
@@ -307,11 +307,11 @@ impl Scheduler {
     fn init_magic_nodes(&mut self) {
         // Initialize magic nodes with busy counts
         // Collect magic node labels first to avoid borrow conflicts
-        let magic_ids: Vec<usize> = self.topo
-                                        .iter_nodes()
-                                        .filter(|node| node.node_type == NodeType::Magic)
-                                        .map(|node| node.id)
-                                        .collect();
+        let magic_ids: Vec<u16> = self.topo
+                                      .iter_nodes()
+                                      .filter(|node| node.node_type == NodeType::Magic)
+                                      .map(|node| node.id)
+                                      .collect();
         for id in magic_ids {
             self.topo.get_node_mut(id).cultivation_time = self.gen_cultivation_time();
             self.topo.get_node_mut(id).busy_count = 0;
@@ -354,14 +354,14 @@ impl Scheduler {
                     let node_id = self.topo.get_data_node_id(op.qubit, basis);
                     let node = self.topo.get_node(node_id);
                     // Check if node is already used
-                    if self.used[node.id] {
+                    if self.used[node.id as usize] {
                         info_sched!("  Node {} is already used", node.label);
                         return false;
                     }
                     // check for at least one unused magic or bus nb
                     if !node.nbors.iter().any(|nb_id| {
                                              let nb = self.topo.get_node(*nb_id);
-                                             !self.used[nb.id]
+                                             !self.used[nb.id as usize]
                                          })
                     {
                         info_sched!("  No unused neighbors for node {}", node.id);
@@ -373,14 +373,14 @@ impl Scheduler {
                 let node_id = self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase());
                 let node = self.topo.get_node(node_id);
                 // Check if node is already used
-                if self.used[node.id] {
+                if self.used[node.id as usize] {
                     info_sched!("  Node {} is already used", node.label);
                     return false;
                 }
                 // check for at least one unused magic or bus nb
                 if !node.nbors.iter().any(|nb_id| {
                                          let nb = self.topo.get_node(*nb_id);
-                                         !self.used[nb.id]
+                                         !self.used[nb.id as usize]
                                      })
                 {
                     info_sched!("  No unused neighbors for node {}", node.id);
@@ -394,8 +394,8 @@ impl Scheduler {
 
     /// Finds routing nodes adjacent to each terminal (roots for tree construction).
     /// Prefers vertical (top/bottom) roots for Y/paired operations; falls back to side roots.
-    fn get_root_nodes(&self, terminals: &[usize]) -> Vec<usize> {
-        let mut root_ids: Vec<usize> = Vec::new();
+    fn get_root_nodes(&self, terminals: &[u16]) -> Vec<u16> {
+        let mut root_ids: Vec<u16> = Vec::new();
         // need to get a root node for every terminal
         let mut unmatched_count: usize = terminals.len();
         for node_id in terminals.iter() {
@@ -412,7 +412,7 @@ impl Scheduler {
                              paired_node.label);
                 for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
-                    if self.used[nb.id] || !nb.is_routing() {
+                    if self.used[nb.id as usize] || !nb.is_routing() {
                         continue;
                     }
                     // If we are using top/bottom
@@ -432,7 +432,7 @@ impl Scheduler {
             if !pair_found {
                 for nb_id in node.nbors.iter() {
                     let nb = self.topo.get_node(*nb_id);
-                    if self.used[nb.id] || !nb.is_routing() {
+                    if self.used[nb.id as usize] || !nb.is_routing() {
                         continue;
                     }
                     // Only include neighbors on the side (same row, different column)
@@ -494,7 +494,7 @@ impl Scheduler {
         // mark their nodes used and add them to pp_paths for this round.
         for (_, (_, pp, pp_path)) in &self.clifford_paths {
             for node_id in pp_path.iter_nodes() {
-                self.used[node_id] = true;
+                self.used[node_id as usize] = true;
             }
             pp_paths.push(((*pp).clone(), Rc::clone(pp_path)));
         }
@@ -529,7 +529,7 @@ impl Scheduler {
         let num_used_magic_nodes =
             self.topo
                 .iter_nodes()
-                .filter(|node| self.used[node.id] && node.node_type == NodeType::Magic)
+                .filter(|node| self.used[node.id as usize] && node.node_type == NodeType::Magic)
                 .count();
         // Generate new cultivation times for magic nodes
         self.new_cultivation_times.clear();
@@ -541,11 +541,11 @@ impl Scheduler {
         let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
         for node in self.topo.iter_nodes_mut() {
-            if self.used[node.id] && node.node_type == NodeType::Magic {
+            if self.used[node.id as usize] && node.node_type == NodeType::Magic {
                 node.cultivation_time = self.new_cultivation_times[cultivation_time_index];
                 node.busy_count = 0;
                 cultivation_time_index += 1;
-            } else if !self.used[node.id] && node.is_cultivating() {
+            } else if !self.used[node.id as usize] && node.is_cultivating() {
                 node.busy_count += 1;
                 if node.busy_count == node.cultivation_time {
                     self.cultivation_times.push(node.cultivation_time);
@@ -586,13 +586,13 @@ impl Scheduler {
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Rc::clone) else {
                 continue; // No precomputed tree; leave in remaining for the second pass.
             };
-            let all_free = tree.iter_nodes().all(|nid| !self.used[nid]);
+            let all_free = tree.iter_nodes().all(|nid| !self.used[nid as usize]);
             let pp = self.circuit.get_product(pp_id).clone();
             if all_free {
                 to_remove.push(pp_id);
                 for node_id in tree.iter_nodes() {
                     self.stats.inc(self.topo.get_node(node_id).node_type);
-                    self.used[node_id] = true;
+                    self.used[node_id as usize] = true;
                 }
                 info_sched!("  Scheduled product {} (precomputed) with {} nodes and {} edges",
                             pp,
@@ -600,15 +600,16 @@ impl Scheduler {
                             tree.num_edges);
                 pp_paths.push((pp, tree));
             } else {
+                // FIXME: this should be a separate function because it's also used in schedule_remaining
                 // Tree is blocked; mark data qubits as used so nothing else occupies them,
                 for op in &pp.operators {
                     if op.basis == 'Y' {
-                        self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
-                        self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
+                        self.used[self.topo.get_data_node_id(op.qubit, 'X') as usize] = true;
+                        self.used[self.topo.get_data_node_id(op.qubit, 'Z') as usize] = true;
                     } else {
-                        self.used
-                            [self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())] =
-                            true;
+                        self.used[self.topo
+                                      .get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())
+                                  as usize] = true;
                     }
                 }
             }
@@ -633,7 +634,7 @@ impl Scheduler {
                     for node_id in pp_graph.iter_nodes() {
                         let node = self.topo.get_node(node_id);
                         self.stats.inc(node.node_type);
-                        self.used[node.id] = true;
+                        self.used[node.id as usize] = true;
                     }
                     if pp.gate_type.is_t() {
                         *num_avail_magic -= 1;
@@ -646,12 +647,11 @@ impl Scheduler {
             // Mark dependent nodes as used
             for op in &pp.operators {
                 if op.basis == 'Y' {
-                    self.used[self.topo.get_data_node_id(op.qubit, 'X')] = true;
-                    self.used[self.topo.get_data_node_id(op.qubit, 'Z')] = true;
+                    self.used[self.topo.get_data_node_id(op.qubit, 'X') as usize] = true;
+                    self.used[self.topo.get_data_node_id(op.qubit, 'Z') as usize] = true;
                 } else {
-                    self.used
-                        [self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())] =
-                        true;
+                    self.used[self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())
+                              as usize] = true;
                 }
             }
         }
@@ -673,7 +673,7 @@ impl Scheduler {
         if self.terminals_scratch.len() == 1 && pauli_product.gate_type.is_m() {
             let node_id = self.terminals_scratch[0];
             let node = self.topo.get_node(node_id);
-            if self.used[node.id] {
+            if self.used[node.id as usize] {
                 info_sched!("    Cannot schedule {}: node for M {} is used",
                             pauli_product.id,
                             node.label);
@@ -685,7 +685,7 @@ impl Scheduler {
         } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
             let node_id = self.terminals_scratch[0];
             let node = self.topo.get_node(node_id);
-            if self.used[node.id] {
+            if self.used[node.id as usize] {
                 info_sched!("    Cannot schedule {}: node for {:?} {} is used",
                             pauli_product.id,
                             pauli_product.gate_type,
@@ -699,7 +699,7 @@ impl Scheduler {
                                 pauli_product,
                                 node.label,
                                 nb.label);
-                    if !self.used[*nb_id] {
+                    if !self.used[*nb_id as usize] {
                         let mut g = TreeGraph::new(self.topo.num_nodes);
                         g.add_node(node);
                         g.add_node(nb);
@@ -712,7 +712,9 @@ impl Scheduler {
             return None;
         } else {
             // all terminals should be accessible
-            debug_assert!(!self.terminals_scratch.iter().any(|node_id| self.used[*node_id]));
+            debug_assert!(!self.terminals_scratch
+                               .iter()
+                               .any(|node_id| self.used[*node_id as usize]));
             // Get root nodes next to terminals
             let root_ids = self.get_root_nodes(&self.terminals_scratch[..]);
             if root_ids.is_empty() {
@@ -916,14 +918,14 @@ impl Scheduler {
             }
             // 5. No overlap with other products in this timestep?
             for node_id in tree.iter_nodes() {
-                if step_used[node_id] {
+                if step_used[node_id as usize] {
                     return Err(io::Error::new(io::ErrorKind::Other,
                                               format!("product {} shares node '{}' with another \
                                                        product in the same timestep",
                                                       pp.id,
                                                       self.topo.get_node(node_id).label)));
                 }
-                step_used[node_id] = true;
+                step_used[node_id as usize] = true;
             }
         }
         Ok(())
@@ -1020,21 +1022,20 @@ impl Scheduler {
         let colors = [_GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED,
                       _LYELLOW, _LBLUE, _LMAGENTA, _LCYAN, _LWHITE];
 
-        // FIXME: check that each CX is repeated 2x exactly, and each S/SX is repeated 3x
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
         for (step_i, step_products) in &self.timestep_scheduled {
             let mut sorted_products = step_products.clone();
             sorted_products.sort_by_key(|pp| {
-                               pp.operators.iter().map(|op| op.qubit).min().unwrap_or(usize::MAX)
+                               pp.operators.iter().map(|op| op.qubit).min().unwrap_or(u16::MAX)
                            });
             let mut combined_chars = vec!['_'; self.circuit.num_qubits];
             let mut combined_colors = vec![_RESET; self.circuit.num_qubits];
             for (idx, pp) in sorted_products.iter().enumerate() {
                 let color = colors[idx % colors.len()];
                 for op in &pp.operators {
-                    if op.qubit < self.circuit.num_qubits {
-                        combined_chars[op.qubit] = op.basis;
-                        combined_colors[op.qubit] = color;
+                    if op.qubit < self.circuit.num_qubits as u16 {
+                        combined_chars[op.qubit as usize] = op.basis;
+                        combined_colors[op.qubit as usize] = color;
                     }
                 }
                 if pp.gate_type.is_cx() {
@@ -1043,14 +1044,14 @@ impl Scheduler {
                         prev_cx.insert(pp.id);
                         // First round is qubit 0, clear qubit 1
                         let qubit = pp.operators[1].qubit;
-                        combined_colors[qubit] = _RESET;
-                        combined_chars[qubit] = '_';
+                        combined_colors[qubit as usize] = _RESET;
+                        combined_chars[qubit as usize] = '_';
                     } else {
                         debug_sched!("  second round of CX {} {}", pp.id, pp);
                         // Second round is qubit 1, clear qubit 0
                         let qubit = pp.operators[0].qubit;
-                        combined_colors[qubit] = _RESET;
-                        combined_chars[qubit] = '_';
+                        combined_colors[qubit as usize] = _RESET;
+                        combined_chars[qubit as usize] = '_';
                     }
                 }
             }

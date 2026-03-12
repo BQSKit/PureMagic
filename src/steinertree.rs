@@ -11,9 +11,9 @@ use std::collections::VecDeque;
 /// Tracks visited nodes, path connectivity, and early termination statistics.
 pub struct SteinerTreeComputation {
     num_nodes: usize,
-    visited: Vec<Option<usize>>,
-    paths: Vec<Vec<usize>>,
-    queue: VecDeque<usize>,
+    visited: Vec<Option<u16>>,
+    paths: Vec<Vec<u16>>,
+    queue: VecDeque<u16>,
     pub num_calls: usize,
 }
 
@@ -41,8 +41,8 @@ impl SteinerTreeComputation {
     /// Expands from roots using BFS to find paths between all root pairs while
     /// identifying a magic node (for T gates) if available. Returns a tree with
     /// data and routing nodes, or None if no valid path exists.
-    pub fn compute(&mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<usize>,
-                   terminal_nodes: &Vec<usize>, gate_type: GateType)
+    pub fn compute(&mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<u16>,
+                   terminal_nodes: &Vec<u16>, gate_type: GateType)
                    -> Option<TreeGraph> {
         debug_sched!("    BFS from root nodes {:?} to terminal nodes {:?}",
                      root_ids.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>(),
@@ -50,12 +50,12 @@ impl SteinerTreeComputation {
         self.num_calls += 1;
         self.clear();
         let mut tree = TreeGraph::new(self.num_nodes);
-        let mut cultivator: Option<usize> = None;
+        let mut cultivator: Option<u16> = None;
         let mut num_paths: usize = 0;
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
         for root_id in root_ids {
-            self.visited[*root_id] = Some(*root_id);
+            self.visited[*root_id as usize] = Some(*root_id);
             self.queue.push_back(*root_id);
             let root = topo.get_node(*root_id);
             debug_sched!("      {}root node {}{}", _GREEN, root.label, _RESET);
@@ -148,13 +148,12 @@ impl SteinerTreeComputation {
 
     /// Explores neighbors of the current node during BFS, tracking path connections
     /// and merging root groups when paths connect. Updates tree with new edges.
-    fn visit_neighbors(&mut self, node_id: usize, topo: &TopoGraph, used: &Vec<bool>,
-                       reqd_paths: usize, gate_type: GateType,
-                       starting_cultivator: Option<usize>, num_start_paths: usize,
-                       tree: &mut TreeGraph)
-                       -> (usize, Option<usize>) {
+    fn visit_neighbors(&mut self, node_id: u16, topo: &TopoGraph, used: &Vec<bool>,
+                       reqd_paths: usize, gate_type: GateType, starting_cultivator: Option<u16>,
+                       num_start_paths: usize, tree: &mut TreeGraph)
+                       -> (usize, Option<u16>) {
         let node = topo.get_node(node_id);
-        let curr_root_id = self.visited[node_id].unwrap();
+        let curr_root_id = self.visited[node_id as usize].unwrap();
         let mut num_paths = num_start_paths;
         #[cfg(debug_assertions)]
         {
@@ -164,36 +163,37 @@ impl SteinerTreeComputation {
         let mut cultivator = starting_cultivator;
         for nb_id in node.nbors.iter() {
             let nb = topo.get_node(*nb_id);
-            if used[nb.id] {
+            if used[nb.id as usize] {
                 continue;
             }
             if nb.node_type == NodeType::Data {
                 continue;
             }
-            if nb.is_routing() && node.is_routing() && self.visited[*nb_id].is_some() {
-                let nb_root_id = self.visited[*nb_id].unwrap();
+            if nb.is_routing() && node.is_routing() && self.visited[*nb_id as usize].is_some() {
+                let nb_root_id = self.visited[*nb_id as usize].unwrap();
                 if curr_root_id == nb_root_id {
                     continue;
                 }
-                let curr_root_paths = &self.paths[curr_root_id];
+                let curr_root_paths = &self.paths[curr_root_id as usize];
                 if !curr_root_paths.contains(&nb_root_id) {
-                    let nb_root_paths = self.paths[nb_root_id].clone();
+                    let nb_root_paths = self.paths[nb_root_id as usize].clone();
                     let mut merged_set = curr_root_paths.clone();
                     merged_set.push(nb_root_id.clone());
                     merged_set.extend(nb_root_paths.iter().cloned());
                     merged_set.push(curr_root_id.clone());
                     for root_id in merged_set.iter() {
-                        assert!(num_paths >= self.paths[*root_id].len());
-                        num_paths -= self.paths[*root_id].len();
-                        self.paths[*root_id] = merged_set.clone();
-                        let pos =
-                            self.paths[*root_id].iter().position(|&id| id == *root_id).unwrap();
-                        self.paths[*root_id].swap_remove(pos);
+                        assert!(num_paths >= self.paths[*root_id as usize].len());
+                        num_paths -= self.paths[*root_id as usize].len();
+                        self.paths[*root_id as usize] = merged_set.clone();
+                        let pos = self.paths[*root_id as usize].iter()
+                                                               .position(|&id| id == *root_id)
+                                                               .unwrap();
+                        self.paths[*root_id as usize].swap_remove(pos);
                         debug_sched!("      {}removing self for {}{}",
                                      _GREEN,
                                      topo.get_node(*root_id).label,
                                      _RESET);
-                        num_paths += self.paths[*root_id].len();
+                        num_paths += self.paths[*root_id as usize].len();
                     }
                     #[cfg(debug_assertions)]
                     {
@@ -212,7 +212,7 @@ impl SteinerTreeComputation {
                         debug_sched!("      {}paths:{}", _GREEN, _RESET);
                         for (root_id, path) in self.paths.iter().enumerate() {
                             if !path.is_empty() {
-                                let root_label = &topo.get_node(root_id).label;
+                                let root_label = &topo.get_node(root_id as u16).label;
                                 let path_labels: Vec<String> =
                                     path.iter()
                                         .map(|&id| topo.get_node(id).label.clone())
@@ -254,7 +254,7 @@ impl SteinerTreeComputation {
                     }
                 }
             }
-            self.visited[*nb_id] = Some(curr_root_id);
+            self.visited[*nb_id as usize] = Some(curr_root_id);
         }
         (num_paths as usize, cultivator)
     }
