@@ -65,11 +65,11 @@ impl AStarComputation {
                 tree.root_node_id = Some(node_id);
                 let mut curr = node_id;
                 if !tree.contains_node(curr) {
-                    tree.add_node(topo.get_node(curr));
+                    tree.add_node(topo.get_node(curr), topo.get_label(curr));
                 }
                 while let Some(prev_id) = self.parent[curr as usize] {
                     if !tree.contains_node(prev_id) {
-                        tree.add_node(topo.get_node(prev_id));
+                        tree.add_node(topo.get_node(prev_id), topo.get_label(prev_id));
                     }
                     tree.add_edge(prev_id, curr);
                     curr = prev_id;
@@ -82,7 +82,7 @@ impl AStarComputation {
                                        .copied()
                                        .find(|&nb_id| tree.contains_node(nb_id));
                         if let Some(conn_id) = conn {
-                            tree.add_node(topo.get_node(root_id));
+                            tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
                             tree.add_edge(conn_id, root_id);
                         } else {
                             return None;
@@ -90,7 +90,7 @@ impl AStarComputation {
                     }
                     if i < terminal_ids.len() {
                         let tid = terminal_ids[i];
-                        tree.add_node(topo.get_node(tid));
+                        tree.add_node(topo.get_node(tid), topo.get_label(tid));
                         tree.add_edge(root_id, tid);
                     }
                 }

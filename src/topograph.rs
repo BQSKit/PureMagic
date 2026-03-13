@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Supports both magic routing and bus routing architectures.
 pub struct TopoGraph {
     nodes: Vec<Node>,
+    pub labels: Vec<String>,
     node_ids_from_labels: IndexMap<String, u16>,
     // Fast lookup for data nodes: indexed by qubit number, [0] = X node id, [1] = Z node id
     data_node_ids: Vec<[u16; 2]>,
@@ -43,6 +44,7 @@ impl TopoGraph {
     /// Creates an empty topology graph.
     pub fn new() -> Self {
         TopoGraph { nodes: Vec::new(),
+                    labels: Vec::new(),
                     node_ids_from_labels: IndexMap::new(),
                     data_node_ids: Vec::new(),
                     node_grid: Vec::new(),
@@ -59,6 +61,10 @@ impl TopoGraph {
                     use_magic_routing: true,
                     busy_counts: Vec::new(),
                     cultivation_times: Vec::new() }
+    }
+
+    pub fn get_label(&self, id: u16) -> &str {
+        &self.labels[id as usize]
     }
 
     /// Initializes topology from file or generates a synthetic layout.
@@ -88,22 +94,35 @@ impl TopoGraph {
         for node_id in node_ids {
             let node = self.get_node(node_id);
             if node.node_type == NodeType::Data {
-                let qubit = node.label
-                                .chars()
-                                .skip(1)
-                                .take_while(|c| c.is_numeric())
-                                .collect::<String>()
-                                .parse::<usize>()
-                                .ok()
-                                .unwrap();
-                let term = node.label.chars().last().map(|c| c.to_string()).unwrap();
+                let label = self.get_label(node_id);
+                let qubit = label.chars()
+                                 .skip(1)
+                                 .take_while(|c| c.is_numeric())
+                                 .collect::<String>()
+                                 .parse::<usize>()
+                                 .ok()
+                                 .unwrap();
+                let term = label.chars().last().map(|c| c.to_string()).unwrap();
                 let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
                 let paired_node_label = format!("d{}{}", pair_qubit, term);
                 self.get_node_mut(node_id).paired_data_id =
                     self.node_ids_from_labels.get(&paired_node_label).copied();
             }
         }
-
+        // Build fast data-node lookup: label format is "d{qubit}{basis}" where basis is 'X' or 'Z'
+        self.data_node_ids.clear();
+        for node in &self.nodes {
+            if node.node_type == NodeType::Data {
+                let label = &self.labels[node.id as usize];
+                let basis: char = label.chars().last().unwrap();
+                let qubit: usize = label[1..label.len() - 1].parse().unwrap();
+                let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
+                if qubit >= self.data_node_ids.len() {
+                    self.data_node_ids.resize(qubit + 1, [u16::MAX; 2]);
+                }
+                self.data_node_ids[qubit][basis_idx] = node.id;
+            }
+        }
         self.update_statistics();
         self.print_statistics();
     }
@@ -348,11 +367,11 @@ impl TopoGraph {
         let id1 = self.num_nodes as u16;
         let node1 = Node::new(id1,
                               None,
-                              label1.to_string(),
                               col as f32 - 0.25,
                               (self.num_rows - 1 - row) as f32,
                               NodeType::Data);
         self.nodes.push(node1);
+        self.labels.push(label1.clone());
         self.busy_counts.push(0);
         self.cultivation_times.push(0);
         self.node_ids_from_labels.insert(label1, id1);
@@ -361,11 +380,11 @@ impl TopoGraph {
         let label2 = format!("d{}{}", q + 1, op);
         let node2 = Node::new(id2,
                               None,
-                              label2.to_string(),
                               col as f32 + 0.25,
                               (self.num_rows - 1 - row) as f32,
                               NodeType::Data);
         self.nodes.push(node2);
+        self.labels.push(label2.clone());
         self.busy_counts.push(0);
         self.cultivation_times.push(0);
         self.node_ids_from_labels.insert(label2, id2);
@@ -385,11 +404,11 @@ impl TopoGraph {
         let label = format!("{}{}-{}", ch, col, row);
         let node = Node::new(self.num_nodes as u16,
                              None,
-                             label.to_string(),
                              col as f32,
                              (self.num_rows - 1 - row) as f32,
                              node_type);
         self.nodes.push(node);
+        self.labels.push(label.clone());
         self.busy_counts.push(0);
         self.cultivation_times.push(0);
         self.node_ids_from_labels.insert(label.clone(), self.num_nodes as u16);
@@ -519,22 +538,6 @@ impl TopoGraph {
                 NodeType::Bus => bus_count += 1,
             }
         }
-
-        // Build fast data-node lookup: label format is "d{qubit}{basis}" where basis is 'X' or 'Z'
-        self.data_node_ids.clear();
-        for node in &self.nodes {
-            if node.node_type == NodeType::Data {
-                let label = &node.label;
-                let basis: char = label.chars().last().unwrap();
-                let qubit: usize = label[1..label.len() - 1].parse().unwrap();
-                let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
-                if qubit >= self.data_node_ids.len() {
-                    self.data_node_ids.resize(qubit + 1, [u16::MAX; 2]);
-                }
-                self.data_node_ids[qubit][basis_idx] = node.id;
-            }
-        }
-
         self.num_data_qubits = data_count / 2;
         self.num_magic_qubits = magic_count;
         self.num_bus_qubits = bus_count;
@@ -722,7 +725,7 @@ impl TopoGraph {
                                                               color.stroke_width(3))))?;
             }
             let label_text = match node.node_type {
-                NodeType::Data => node.label.clone(),
+                NodeType::Data => self.labels[node.id as usize].clone(),
                 NodeType::Magic => {
                     if border_color == None {
                         if self.is_cultivating(node.id) {
@@ -730,17 +733,17 @@ impl TopoGraph {
                              - self.busy_counts[node.id as usize])
                                                                   .to_string()
                         } else if pauli_product_paths.is_empty() {
-                            node.label.clone()
+                            self.labels[node.id as usize].clone()
                         } else {
                             "  R".to_string()
                         }
                     } else {
-                        node.label.clone()
+                        self.labels[node.id as usize].clone()
                     }
                 }
                 NodeType::Bus => {
                     if border_color == None {
-                        node.label.clone()
+                        self.labels[node.id as usize].clone()
                     } else {
                         "  B".to_string()
                     }

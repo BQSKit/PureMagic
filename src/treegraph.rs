@@ -18,13 +18,13 @@ struct TreeNode {
 
 impl TreeNode {
     /// Creates a tree node from a topology node.
-    pub fn new(node: &Node) -> Self {
+    pub fn new(node: &Node, #[cfg_attr(not(debug_assertions), allow(unused))] label: &str) -> Self {
         TreeNode { nbors: Vec::new(),
                    is_routing: node.is_routing(),
                    is_data: node.node_type == NodeType::Data,
                    pos: node.pos,
                    #[cfg(debug_assertions)]
-                   label: node.label.clone() }
+                   label: label.to_string() }
     }
 
     /// Removes an edge to a neighbor node.
@@ -84,11 +84,11 @@ impl TreeGraph {
     }
 
     /// Adds a node to the tree from topology node data.
-    pub fn add_node(&mut self, node: &Node) {
+    pub fn add_node(&mut self, node: &Node, label: &str) {
         assert!(self.nodes[node.id as usize].is_none());
-        self.nodes[node.id as usize] = Some(TreeNode::new(node));
+        self.nodes[node.id as usize] = Some(TreeNode::new(node, label));
         self.num_nodes += 1;
-        debug_sched!("      {}add node {}{}", _BLUE, node.label, _RESET);
+        debug_sched!("      {}add node {}{}", _BLUE, label, _RESET);
     }
 
     /// Adds an undirected edge between two existing nodes.

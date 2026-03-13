@@ -126,7 +126,7 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
     // Add all path nodes and edges
     for &node_id in path {
         if !tree.contains_node(node_id) {
-            tree.add_node(topo.get_node(node_id));
+            tree.add_node(topo.get_node(node_id), topo.get_label(node_id));
         }
     }
     for window in path.windows(2) {
@@ -141,7 +141,7 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
                            .copied()
                            .find(|&nb_id| tree.contains_node(nb_id));
             if let Some(conn_id) = conn {
-                tree.add_node(topo.get_node(root_id));
+                tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
                 tree.add_edge(conn_id, root_id);
             }
         }
@@ -149,7 +149,7 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
         if i < terminal_ids.len() {
             let tid = terminal_ids[i];
             if !tree.contains_node(tid) {
-                tree.add_node(topo.get_node(tid));
+                tree.add_node(topo.get_node(tid), topo.get_label(tid));
             }
             tree.add_edge(root_id, tid);
         }

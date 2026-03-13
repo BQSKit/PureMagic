@@ -45,8 +45,8 @@ impl SteinerTreeComputation {
                    terminal_nodes: &Vec<u16>, gate_type: GateType)
                    -> Option<TreeGraph> {
         debug_sched!("    BFS from root nodes {:?} to terminal nodes {:?}",
-                     root_ids.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>(),
-                     terminal_nodes.iter().map(|id| &topo.get_node(*id).label).collect::<Vec<_>>());
+                     root_ids.iter().map(|id| topo.get_label(*id)).collect::<Vec<_>>(),
+                     terminal_nodes.iter().map(|id| topo.get_label(*id)).collect::<Vec<_>>());
         self.num_calls += 1;
         self.clear();
         let mut tree = TreeGraph::new(self.num_nodes);
@@ -58,9 +58,9 @@ impl SteinerTreeComputation {
             self.visited[*root_id as usize] = Some(*root_id);
             self.queue.push_back(*root_id);
             let root = topo.get_node(*root_id);
-            debug_sched!("      {}root node {}{}", _GREEN, root.label, _RESET);
+            debug_sched!("      {}root node {}{}", _GREEN, topo.get_label(*root_id), _RESET);
             if !tree.contains_node(root.id) {
-                tree.add_node(root);
+                tree.add_node(root, topo.get_label(*root_id));
             }
             if cultivator.is_none()
                && root.node_type == NodeType::Magic
@@ -69,7 +69,7 @@ impl SteinerTreeComputation {
                 cultivator = Some(*root_id);
                 debug_sched!("      {}found root cultivator {}{}",
                              _GREEN,
-                             topo.get_node(cultivator.unwrap()).label,
+                             topo.get_label(cultivator.unwrap()),
                              _RESET);
             }
             let root_node = topo.get_node(*root_id);
@@ -77,7 +77,7 @@ impl SteinerTreeComputation {
                 let nb = topo.get_node(*nb_id);
                 if terminal_nodes.contains(&nb_id) {
                     if !tree.contains_node(nb.id) {
-                        tree.add_node(nb);
+                        tree.add_node(nb, topo.get_label(*nb_id));
                     }
                     tree.add_edge(*root_id, *nb_id);
                 }
@@ -88,7 +88,7 @@ impl SteinerTreeComputation {
         while let Some(node_id) = self.queue.pop_front() {
             debug_sched!("      {}Visit neighbors of {}{}",
                          _LGREEN,
-                         topo.get_node(node_id).label,
+                         topo.get_label(node_id),
                          _RESET);
             (num_paths, cultivator) = self.visit_neighbors(node_id, topo, used, reqd_paths,
                                                            gate_type, cultivator, num_paths,
@@ -100,7 +100,7 @@ impl SteinerTreeComputation {
                 tree.root_node_id = if gate_type.is_t() {
                     debug_sched!("      {}tree complete, cultivator {}{}",
                                  _GREEN,
-                                 topo.get_node(cultivator.unwrap()).label,
+                                 topo.get_label(cultivator.unwrap()),
                                  _RESET);
                     Some(cultivator.unwrap())
                 } else {
@@ -131,7 +131,7 @@ impl SteinerTreeComputation {
                                                                            < 0.01
                                                                     });
                         if let Some(conn_id) = conn {
-                            tree.add_node(topo.get_node(tid));
+                            tree.add_node(topo.get_node(tid), topo.get_label(tid));
                             tree.add_edge(conn_id, tid);
                         } else {
                             return None;
@@ -191,7 +191,7 @@ impl SteinerTreeComputation {
                         self.paths[*root_id as usize].swap_remove(pos);
                         debug_sched!("      {}removing self for {}{}",
                                      _GREEN,
-                                     topo.get_node(*root_id).label,
+                                     topo.get_label(*root_id),
                                      _RESET);
                         num_paths += self.paths[*root_id as usize].len();
                     }
@@ -204,18 +204,18 @@ impl SteinerTreeComputation {
                     {
                         debug_sched!("      {}path from {} to {} (total paths {}/{}){}",
                                      _GREEN,
-                                     topo.get_node(curr_root_id).label,
-                                     topo.get_node(nb_root_id).label,
+                                     topo.get_label(curr_root_id),
+                                     topo.get_label(nb_root_id),
                                      num_paths,
                                      reqd_paths,
                                      _RESET);
                         debug_sched!("      {}paths:{}", _GREEN, _RESET);
                         for (root_id, path) in self.paths.iter().enumerate() {
                             if !path.is_empty() {
-                                let root_label = &topo.get_node(root_id as u16).label;
+                                let root_label = topo.get_label(root_id as u16);
                                 let path_labels: Vec<String> =
                                     path.iter()
-                                        .map(|&id| topo.get_node(id).label.clone())
+                                        .map(|&id| topo.get_label(id).to_string())
                                         .collect();
                                 debug_sched!("        {} -> {:?}", root_label, path_labels);
                             }
@@ -237,7 +237,7 @@ impl SteinerTreeComputation {
                                    && topo.cultivation_times[nb.id as usize] == 0;
             if nb.is_routing() || nb_is_cultivator {
                 if !tree.contains_node(nb.id) {
-                    tree.add_node(nb);
+                    tree.add_node(nb, topo.get_label(*nb_id));
                 }
                 if !tree.contains_edge(node_id, *nb_id) {
                     tree.add_edge(node_id, *nb_id);
@@ -247,7 +247,7 @@ impl SteinerTreeComputation {
                     cultivator = Some(*nb_id);
                     debug_sched!("      {}found cultivator {}{}",
                                  _GREEN,
-                                 topo.get_node(cultivator.unwrap()).label,
+                                 topo.get_label(cultivator.unwrap()),
                                  _RESET);
                     if num_paths == reqd_paths {
                         break;
