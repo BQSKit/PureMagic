@@ -639,7 +639,8 @@ impl Scheduler {
                 num_avail_magic += 1;
             }
         }
-        // Rebuild cache of ready magic positions used by tree_size_estimate.
+        // Rebuild cache of ready magic positions used by A* heuristic.
+        // Sorted by x-coordinate so AStarComputation::heuristic can use binary-search pruning.
         self.ready_magic_positions = node_info
             .iter()
             .filter(|(node_id, node_type)| {
@@ -647,6 +648,8 @@ impl Scheduler {
             })
             .map(|(node_id, _)| self.topo.get_node(*node_id).pos)
             .collect();
+        self.ready_magic_positions
+            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -826,10 +829,9 @@ impl Scheduler {
             return None;
         } else {
             // all terminals should be accessible
-            debug_assert!(!self
-                .terminals_scratch
-                .iter()
-                .any(|node_id| self.used[*node_id as usize]));
+            debug_assert!(
+                !self.terminals_scratch.iter().any(|node_id| self.used[*node_id as usize])
+            );
             // Get root nodes next to terminals
             let root_ids =
                 self.get_root_nodes(pauli_product.id as usize, &self.terminals_scratch[..]);

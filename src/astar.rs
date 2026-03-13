@@ -145,15 +145,48 @@ impl AStarComputation {
         None
     }
 
-    /// Lower-bound heuristic: Manhattan distance from `pos` to the nearest ready magic node,
-    /// Used to guide A* search towards available magic state sources.
+    /// Lower-bound heuristic: Manhattan distance from `pos` to the nearest ready magic node.
+    /// `ready_magic_positions` must be **sorted by x-coordinate** (ascending).
+    /// Uses a binary-search anchor + bidirectional sweep with x-gap pruning to find the
+    /// nearest entry in O(√N) average time instead of O(N).
     fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
-        ready_magic_positions
-            .iter()
-            .enumerate()
-            .map(|(idx, &mp)| (Self::manhattan_dist(mp, pos), idx))
-            .min_by(|(da, _), (db, _)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap()
+        // Binary-search for the insertion point of pos.x in the sorted x-values.
+        let anchor = ready_magic_positions.partition_point(|&(mx, _)| mx < pos.0);
+
+        let mut best_dist = u32::MAX;
+        let mut best_idx = 0usize;
+
+        // Sweep right from anchor.
+        let mut r = anchor;
+        while r < ready_magic_positions.len() {
+            let dx = (ready_magic_positions[r].0 - pos.0).abs() as u32;
+            if dx >= best_dist {
+                break; // all further entries have dx ≥ best_dist, so Manhattan ≥ best_dist
+            }
+            let d = Self::manhattan_dist(ready_magic_positions[r], pos);
+            if d < best_dist {
+                best_dist = d;
+                best_idx = r;
+            }
+            r += 1;
+        }
+
+        // Sweep left from anchor - 1.
+        let mut l = anchor;
+        while l > 0 {
+            l -= 1;
+            let dx = (ready_magic_positions[l].0 - pos.0).abs() as u32;
+            if dx >= best_dist {
+                break;
+            }
+            let d = Self::manhattan_dist(ready_magic_positions[l], pos);
+            if d < best_dist {
+                best_dist = d;
+                best_idx = l;
+            }
+        }
+
+        (best_dist, best_idx)
     }
 
     fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
