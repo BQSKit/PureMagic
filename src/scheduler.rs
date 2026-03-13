@@ -146,6 +146,15 @@ pub struct Scheduler {
     new_cultivation_times: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
     remaining_ids_scratch: Vec<i32>,
+    /// Precomputed terminal node IDs for each product, indexed by pp.id.
+    /// Avoids topology lookups (get_data_node_id) in the hot scheduling path.
+    precomputed_terminals: Vec<Vec<u16>>,
+    /// Precomputed root candidates per terminal per product, indexed by pp.id.
+    /// Each entry is (is_paired, preferred_candidates, side_candidates):
+    ///   - is_paired: true if this terminal's paired data node is also a terminal for this product
+    ///   - preferred_candidates: routing neighbors in preferred direction (paired dir or side)
+    ///   - side_candidates: side routing neighbors (non-empty only for paired terminals as fallback)
+    precomputed_root_info: Vec<Vec<(bool, Vec<u16>, Vec<u16>)>>,
     timers: AccumTimers,
     loop_timer: usize,
     other_timer: usize,
@@ -199,6 +208,8 @@ impl Scheduler {
                     new_cultivation_times: Vec::new(),
                     precomputed_clifford_trees: HashMap::new(),
                     remaining_ids_scratch: Vec::new(),
+                    precomputed_terminals: Vec::new(),
+                    precomputed_root_info: Vec::new(),
                     timers: timers,
                     loop_timer: loop_timer,
                     other_timer: other_timer }
@@ -212,6 +223,7 @@ impl Scheduler {
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         self.init_magic_nodes();
+        self.precompute_terminals_and_roots();
         self.precompute_multi_term_clifford_trees();
         // Build the initial work queue and per-product parent-completion counters.
         let mut to_schedule: Vec<_> = self.circuit.initial_products().cloned().collect();
@@ -331,7 +343,7 @@ impl Scheduler {
         if !self.get_terminal_nodes(pp) {
             return None;
         }
-        let root_ids = self.get_root_nodes(&self.terminals_scratch[..]);
+        let root_ids = self.get_root_nodes(pp.id as usize, &self.terminals_scratch[..]);
         if root_ids.is_empty() {
             return None;
         }
@@ -342,107 +354,71 @@ impl Scheduler {
                                        pp.gate_type)
     }
 
-    /// Extracts the data qubit nodes that a product operates on (terminals for tree routing).
-    /// For Y operators, both X and Z bases are included. Returns false if any terminal is unavailable.
-    /// Results are stored in self.terminals_scratch.
+    /// Checks terminal availability and fills `terminals_scratch` using precomputed node IDs.
+    /// Replaces per-call `get_data_node_id` + `get_node` + neighbor iteration with `used[]` probes
+    /// against precomputed terminal IDs and root candidate lists.
+    /// Returns false if any terminal is used or has no free root candidates.
     fn get_terminal_nodes(&mut self, pauli_product: &PauliProduct) -> bool {
-        // Initially terminal nodes contain only the data qubits
+        let pp_id = pauli_product.id as usize;
         self.terminals_scratch.clear();
-        for op in &pauli_product.operators {
-            if op.basis == 'Y' {
-                for basis in ['X', 'Z'] {
-                    let node_id = self.topo.get_data_node_id(op.qubit, basis);
-                    let node = self.topo.get_node(node_id);
-                    // Check if node is already used
-                    if self.used[node.id as usize] {
-                        info_sched!("  Node {} is already used", node.label);
-                        return false;
-                    }
-                    // check for at least one unused magic or bus nb
-                    if !node.nbors.iter().any(|nb_id| {
-                                             let nb = self.topo.get_node(*nb_id);
-                                             !self.used[nb.id as usize]
-                                         })
-                    {
-                        info_sched!("  No unused neighbors for node {}", node.id);
-                        return false;
-                    }
-                    self.terminals_scratch.push(node.id);
-                }
-            } else {
-                let node_id = self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase());
-                let node = self.topo.get_node(node_id);
-                // Check if node is already used
-                if self.used[node.id as usize] {
-                    info_sched!("  Node {} is already used", node.label);
-                    return false;
-                }
-                // check for at least one unused magic or bus nb
-                if !node.nbors.iter().any(|nb_id| {
-                                         let nb = self.topo.get_node(*nb_id);
-                                         !self.used[nb.id as usize]
-                                     })
-                {
-                    info_sched!("  No unused neighbors for node {}", node.id);
-                    return false;
-                }
-                self.terminals_scratch.push(node.id);
+        let terminals = &self.precomputed_terminals[pp_id];
+        let root_info = &self.precomputed_root_info[pp_id];
+        for (i, &node_id) in terminals.iter().enumerate() {
+            if self.used[node_id as usize] {
+                info_sched!("  Node {} is already used", node_id);
+                return false;
             }
+            // Check if at least one root candidate is free (early exit before get_root_nodes).
+            let (_, preferred, side) = &root_info[i];
+            if preferred.iter().all(|&rid| self.used[rid as usize])
+               && side.iter().all(|&rid| self.used[rid as usize])
+            {
+                info_sched!("  No unused root candidates for node {}", node_id);
+                return false;
+            }
+            self.terminals_scratch.push(node_id);
         }
         true
     }
 
     /// Finds routing nodes adjacent to each terminal (roots for tree construction).
-    /// Prefers vertical (top/bottom) roots for Y/paired operations; falls back to side roots.
-    fn get_root_nodes(&self, terminals: &[u16]) -> Vec<u16> {
+    /// Uses precomputed candidate lists to avoid topology lookups and neighbor iteration.
+    /// Prefers paired-direction (top/bottom) roots for Y-basis pairs; falls back to side roots.
+    fn get_root_nodes(&self, pp_id: usize, terminals: &[u16]) -> Vec<u16> {
+        let root_info = &self.precomputed_root_info[pp_id];
         let mut root_ids: Vec<u16> = Vec::new();
-        // need to get a root node for every terminal
         let mut unmatched_count: usize = terminals.len();
-        for node_id in terminals.iter() {
-            let node = self.topo.get_node(*node_id);
-            let paired_node = self.topo.get_node(node.paired_data_id.unwrap());
+        for (i, _node_id) in terminals.iter().enumerate() {
+            let (is_paired, preferred, side) = &root_info[i];
             let mut pair_found = false;
-            // first look for paired nodes (top/bottom)
-            if terminals.contains(&paired_node.id) {
-                // we have already converted Ys into XZ in get_terminal_nodes
-                let pair = if node.label.contains("X") { Some("XX") } else { Some("ZZ") };
-                debug_sched!("    Found {} pair {},{} in terminals",
-                             pair.unwrap(),
-                             node.label,
-                             paired_node.label);
-                for nb_id in node.nbors.iter() {
-                    let nb = self.topo.get_node(*nb_id);
-                    if self.used[nb.id as usize] || !nb.is_routing() {
+            if *is_paired {
+                // Try preferred (paired-direction) candidates first.
+                for &nb_id in preferred {
+                    if self.used[nb_id as usize] {
                         continue;
                     }
-                    // If we are using top/bottom
-                    if (pair == Some("XX") && nb.pos.1 < node.pos.1)
-                       || (pair == Some("ZZ") && nb.pos.1 > node.pos.1)
-                    {
-                        if !root_ids.contains(nb_id) {
-                            root_ids.push(*nb_id);
-                        }
-                        // saturating_sub guards against the second iteration over a matched pair
-                        unmatched_count = unmatched_count.saturating_sub(2);
-                        pair_found = true;
-                        break;
+                    if !root_ids.contains(&nb_id) {
+                        root_ids.push(nb_id);
                     }
+                    // One paired-direction root covers both terminals in the pair.
+                    unmatched_count = unmatched_count.saturating_sub(2);
+                    pair_found = true;
+                    break;
                 }
-            };
+            }
             if !pair_found {
-                for nb_id in node.nbors.iter() {
-                    let nb = self.topo.get_node(*nb_id);
-                    if self.used[nb.id as usize] || !nb.is_routing() {
+                // For paired terminals: fall back to side candidates.
+                // For unpaired terminals: preferred already contains side candidates.
+                let fallback = if *is_paired { side.as_slice() } else { preferred.as_slice() };
+                for &nb_id in fallback {
+                    if self.used[nb_id as usize] {
                         continue;
                     }
-                    // Only include neighbors on the side (same row, different column)
-                    if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
-                        if !root_ids.contains(nb_id) {
-                            root_ids.push(*nb_id);
-                        }
-                        unmatched_count = unmatched_count.saturating_sub(1);
-                        break;
+                    if !root_ids.contains(&nb_id) {
+                        root_ids.push(nb_id);
                     }
+                    unmatched_count = unmatched_count.saturating_sub(1);
+                    break;
                 }
             }
         }
@@ -477,6 +453,73 @@ impl Scheduler {
             }
         }
         println!("Precomputed {} multi-term Clifford trees", num_precomputed);
+    }
+
+    /// Precomputes terminal node IDs and root candidates for every product in the circuit.
+    /// Terminal IDs replace per-call `get_data_node_id` + `get_node` topology lookups.
+    /// Root candidates replace per-call neighbor iteration and position comparisons in `get_root_nodes`.
+    /// Both are indexed by pp.id; the dynamic `used[]` checks remain at scheduling time.
+    fn precompute_terminals_and_roots(&mut self) {
+        let _timer = fn_timer!("precompute_terminals_and_roots");
+        let num_products = self.circuit.num_products();
+        self.precomputed_terminals = vec![Vec::new(); num_products];
+        self.precomputed_root_info = vec![Vec::new(); num_products];
+        for pp_id in 0..num_products {
+            let pp = self.circuit.get_product(pp_id as i32).clone();
+            // Compute terminal node IDs (static topology lookup, no used[] check).
+            let mut terminals: Vec<u16> = Vec::new();
+            for op in &pp.operators {
+                if op.basis == 'Y' {
+                    for basis in ['X', 'Z'] {
+                        terminals.push(self.topo.get_data_node_id(op.qubit, basis));
+                    }
+                } else {
+                    terminals.push(self.topo
+                                       .get_data_node_id(op.qubit, op.basis.to_ascii_uppercase()));
+                }
+            }
+            // Compute root candidates per terminal.
+            // preferred_candidates: routing neighbors in the preferred direction
+            //   (paired direction for Y-pairs, side direction for unpaired terminals).
+            // side_candidates: side routing neighbors, stored as fallback only for paired terminals.
+            let mut root_info: Vec<(bool, Vec<u16>, Vec<u16>)> =
+                Vec::with_capacity(terminals.len());
+            for &term_id in &terminals {
+                let node = self.topo.get_node(term_id);
+                let is_paired =
+                    node.paired_data_id.map(|pid| terminals.contains(&pid)).unwrap_or(false);
+                let mut preferred: Vec<u16> = Vec::new();
+                let mut side: Vec<u16> = Vec::new();
+                if is_paired {
+                    // Preferred: routing neighbors in the paired direction.
+                    // X nodes look downward (below their paired Z), Z nodes look upward.
+                    let is_x = self.topo.get_label(term_id).contains('X');
+                    for &nb_id in &node.nbors {
+                        let nb = self.topo.get_node(nb_id);
+                        if !nb.is_routing() {
+                            continue;
+                        }
+                        if (is_x && nb.pos.1 < node.pos.1) || (!is_x && nb.pos.1 > node.pos.1) {
+                            preferred.push(nb_id);
+                        } else if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                            side.push(nb_id);
+                        }
+                    }
+                } else {
+                    // Preferred (and only): routing neighbors on the same row (side).
+                    for &nb_id in &node.nbors {
+                        let nb = self.topo.get_node(nb_id);
+                        if nb.is_routing() && nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                            preferred.push(nb_id);
+                        }
+                    }
+                }
+                root_info.push((is_paired, preferred, side));
+            }
+            self.precomputed_terminals[pp_id] = terminals;
+            self.precomputed_root_info[pp_id] = root_info;
+        }
+        println!("Precomputed terminals and root candidates for {} products", num_products);
     }
 
     /// Schedules as many products as possible in a single timestep.
@@ -608,21 +651,25 @@ impl Scheduler {
                             tree.num_edges);
                 pp_paths.push((pp, tree));
             } else {
-                // FIXME: this should be a separate function because it's also used in schedule_remaining
-                // Tree is blocked; mark data qubits as used so nothing else occupies them,
-                for op in &pp.operators {
-                    if op.basis == 'Y' {
-                        self.used[self.topo.get_data_node_id(op.qubit, 'X') as usize] = true;
-                        self.used[self.topo.get_data_node_id(op.qubit, 'Z') as usize] = true;
-                    } else {
-                        self.used[self.topo
-                                      .get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())
-                                  as usize] = true;
-                    }
-                }
+                Self::mark_blocked_product_as_used(&mut self.used, &self.topo, &pp);
             }
         }
         to_schedule.retain(|pp| !to_remove.contains(&pp.id));
+    }
+
+    // this does not take &mut self as a parameter to avoid borrow conflicts in loops where
+    // self is borrowed immutably
+    fn mark_blocked_product_as_used(used: &mut Vec<bool>, topo: &TopoGraph, pp: &PauliProduct) {
+        // Tree is blocked; mark data qubits as used so nothing else occupies them,
+        for op in &pp.operators {
+            if op.basis == 'Y' {
+                used[topo.get_data_node_id(op.qubit, 'X') as usize] = true;
+                used[topo.get_data_node_id(op.qubit, 'Z') as usize] = true;
+            } else {
+                used[topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase()) as usize] =
+                    true;
+            }
+        }
     }
 
     /// Second pass of `schedule_timestep`: greedily schedule T gates, measurements, and S/SX
@@ -640,28 +687,18 @@ impl Scheduler {
                 if let Some(pp_graph) = self.schedule_pauli_product(pp) {
                     info_sched!("  Scheduled product {}", pp);
                     for node_id in pp_graph.iter_nodes() {
-                        let node = self.topo.get_node(node_id);
-                        self.stats.inc(node.node_type);
-                        self.used[node.id as usize] = true;
+                        self.stats.inc(self.topo.get_node(node_id).node_type);
+                        self.used[node_id as usize] = true;
                     }
+                    pp_paths.push(((*pp).clone(), Rc::new(pp_graph)));
                     if pp.gate_type.is_t() {
                         *num_avail_magic -= 1;
                     }
-                    pp_paths.push(((*pp).clone(), Rc::new(pp_graph)));
                     continue;
                 }
             }
             info_sched!("  Could not schedule {} on graph", pp.id);
-            // Mark dependent nodes as used
-            for op in &pp.operators {
-                if op.basis == 'Y' {
-                    self.used[self.topo.get_data_node_id(op.qubit, 'X') as usize] = true;
-                    self.used[self.topo.get_data_node_id(op.qubit, 'Z') as usize] = true;
-                } else {
-                    self.used[self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase())
-                              as usize] = true;
-                }
-            }
+            Self::mark_blocked_product_as_used(&mut self.used, &self.topo, &pp);
         }
     }
 
@@ -684,11 +721,11 @@ impl Scheduler {
             if self.used[node.id as usize] {
                 info_sched!("    Cannot schedule {}: node for M {} is used",
                             pauli_product.id,
-                            node.label);
+                            self.topo.get_label(node_id));
                 return None;
             }
             let mut g = TreeGraph::new(self.topo.num_nodes);
-            g.add_node(node);
+            g.add_node(node, self.topo.get_label(node_id));
             return Some(g);
         } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
             let node_id = self.terminals_scratch[0];
@@ -697,7 +734,7 @@ impl Scheduler {
                 info_sched!("    Cannot schedule {}: node for {:?} {} is used",
                             pauli_product.id,
                             pauli_product.gate_type,
-                            node.label);
+                            self.topo.get_label(node_id));
                 return None;
             }
             for nb_id in &node.nbors {
@@ -705,12 +742,12 @@ impl Scheduler {
                 if nb.pos.1 == node.pos.1 {
                     info_sched!("    product {} on node {} has available ancilla {}",
                                 pauli_product,
-                                node.label,
-                                nb.label);
+                                self.topo.get_label(node_id),
+                                self.topo.get_label(*nb_id));
                     if !self.used[*nb_id as usize] {
                         let mut g = TreeGraph::new(self.topo.num_nodes);
-                        g.add_node(node);
-                        g.add_node(nb);
+                        g.add_node(node, self.topo.get_label(node_id));
+                        g.add_node(nb, self.topo.get_label(*nb_id));
                         g.add_edge(node_id, *nb_id);
                         return Some(g);
                     }
@@ -724,7 +761,8 @@ impl Scheduler {
                                .iter()
                                .any(|node_id| self.used[*node_id as usize]));
             // Get root nodes next to terminals
-            let root_ids = self.get_root_nodes(&self.terminals_scratch[..]);
+            let root_ids =
+                self.get_root_nodes(pauli_product.id as usize, &self.terminals_scratch[..]);
             if root_ids.is_empty() {
                 info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
                 return None;
@@ -931,7 +969,7 @@ impl Scheduler {
                                               format!("product {} shares node '{}' with another \
                                                        product in the same timestep",
                                                       pp.id,
-                                                      self.topo.get_node(node_id).label)));
+                                                      self.topo.get_label(node_id))));
                 }
                 step_used[node_id as usize] = true;
             }

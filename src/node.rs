@@ -11,14 +11,12 @@ pub enum NodeType {
     Data,
 }
 
-// FIXME: try to reduce this to 64 bytes
 /// Represents a node in the topological graph.
 /// Contains metadata about node type, position, magic state cultivation tracking, and connectivity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub node_type: NodeType,
     pub id: u16,
-    pub label: String,
     pub paired_data_id: Option<u16>,
     pub pos: (f32, f32),
     pub nbors: Vec<u16>,
@@ -28,12 +26,11 @@ static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
     /// Creates a new node with the given properties and empty neighbor set.
-    pub fn new(id: u16, paired_data_id: Option<u16>, label: String, x: f32, y: f32,
+    pub fn new(id: u16, paired_data_id: Option<u16>, x: f32, y: f32,
                node_type: NodeType)
                -> Self {
         Node { node_type,
                id: id,
-               label: label,
                paired_data_id: paired_data_id,
                pos: (x, y),
                nbors: Vec::new() }
