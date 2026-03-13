@@ -17,11 +17,13 @@ pub struct AStarComputation {
 impl AStarComputation {
     /// Creates a new A* computation state for a graph with `num_nodes` nodes.
     pub fn new(num_nodes: usize) -> Self {
-        AStarComputation { parent: vec![None; num_nodes],
-                           g_cost: vec![u32::MAX; num_nodes],
-                           closed: vec![false; num_nodes],
-                           heap: BinaryHeap::new(),
-                           num_calls: 0 }
+        AStarComputation {
+            parent: vec![None; num_nodes],
+            g_cost: vec![u32::MAX; num_nodes],
+            closed: vec![false; num_nodes],
+            heap: BinaryHeap::new(),
+            num_calls: 0,
+        }
     }
 
     /// A* from first root to the nearest ready, unused magic node.
@@ -31,9 +33,10 @@ impl AStarComputation {
     /// After building the main path (magic → root), any remaining roots that are not
     /// on the path are stitched in by finding an adjacent node already in the tree.
     /// Returns a TreeGraph with `root_node_id` set to the magic node, or None if no path exists.
-    pub fn compute(&mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph,
-                   used: &[bool], ready_magic_positions: &[(f32, f32)])
-                   -> Option<TreeGraph> {
+    pub fn compute(
+        &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &[bool],
+        ready_magic_positions: &[(f32, f32)],
+    ) -> Option<TreeGraph> {
         self.num_calls += 1;
         self.parent.fill(None);
         self.g_cost.fill(u32::MAX);
@@ -76,11 +79,12 @@ impl AStarComputation {
                 }
                 for (i, &root_id) in root_ids.iter().enumerate() {
                     if !tree.contains_node(root_id) {
-                        let conn = topo.get_node(root_id)
-                                       .nbors
-                                       .iter()
-                                       .copied()
-                                       .find(|&nb_id| tree.contains_node(nb_id));
+                        let conn = topo
+                            .get_node(root_id)
+                            .nbors
+                            .iter()
+                            .copied()
+                            .find(|&nb_id| tree.contains_node(nb_id));
                         if let Some(conn_id) = conn {
                             tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
                             tree.add_edge(conn_id, root_id);
@@ -127,16 +131,15 @@ impl AStarComputation {
     /// floored to a u32 so it is always admissible for unit-weight edges.
     /// Used to guide A* search towards available magic state sources.
     fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
-        ready_magic_positions.iter()
-                             .enumerate()
-                             .map(|(idx, &mp)| (Self::manhattan_dist(mp, pos), idx))
-                             .min_by(|(da, _), (db, _)| {
-                                 da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
-                             })
-                             .unwrap()
+        ready_magic_positions
+            .iter()
+            .enumerate()
+            .map(|(idx, &mp)| (Self::manhattan_dist(mp, pos), idx))
+            .min_by(|(da, _), (db, _)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap()
     }
 
     fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
-        ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()).floor() as u32
+        ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()) as u32
     }
 }
