@@ -28,9 +28,12 @@ impl GreedyPathComputation {
     /// On dead-end, backtracks along the walked path (marking nodes as "revisited")
     /// until it finds a node with open neighbours, then resumes greedy walk.
     /// Terminates when it reaches a ready magic node or exhausts all options.
+    /// When `plotting` is false, marks `used[]` directly and returns `Some(None)` (no tree built).
+    /// When `plotting` is true, builds and returns `Some(Some(tree))`.
+    /// Returns outer `None` if no path exists.
     pub fn compute(&mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph,
-                   used: &[bool], ready_magic_positions: &[(f32, f32)])
-                   -> Option<TreeGraph> {
+                   used: &mut Vec<bool>, ready_magic_positions: &[(f32, f32)], plotting: bool)
+                   -> Option<Option<TreeGraph>> {
         self.num_calls += 1;
         self.visited.fill(false);
         self.backtracked.fill(false);
@@ -51,7 +54,17 @@ impl GreedyPathComputation {
                && topo.cultivation_times[current_node.id as usize] == 0
                && !used[current as usize]
             {
-                return Some(build_tree(&path, terminal_ids, root_ids, topo));
+                if !plotting {
+                    // Mark path nodes used directly; skip TreeGraph allocation.
+                    for &nid in &path {
+                        used[nid as usize] = true;
+                    }
+                    for &tid in terminal_ids {
+                        used[tid as usize] = true;
+                    }
+                    return Some(None);
+                }
+                return Some(Some(build_tree(&path, terminal_ids, root_ids, topo)));
             }
 
             // Find the best open neighbour: not used, not data, not visited, not revisited,
@@ -96,12 +109,11 @@ impl GreedyPathComputation {
                     let has_open_nb =
                         topo.get_node(backtrack_node).nbors.iter().copied().any(|nb_id| {
                                                                                !used[nb_id as usize]
-                                              && !self.visited[nb_id as usize]
-                                              && !self.backtracked[nb_id as usize]
-                                              && topo.get_node(nb_id).node_type != NodeType::Data
-                                              && !(topo.get_node(nb_id).node_type
-                                                   == NodeType::Magic
-                                                   && topo.cultivation_times[nb_id as usize] > 0)
+                                && !self.visited[nb_id as usize]
+                                && !self.backtracked[nb_id as usize]
+                                && topo.get_node(nb_id).node_type != NodeType::Data
+                                && !(topo.get_node(nb_id).node_type == NodeType::Magic
+                                    && topo.cultivation_times[nb_id as usize] > 0)
                                                                            });
                     if has_open_nb {
                         break;
@@ -168,5 +180,5 @@ fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, u16
 }
 
 fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
-    ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()).floor() as u32
+    ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()) as u32
 }

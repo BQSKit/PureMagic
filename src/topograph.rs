@@ -4,9 +4,9 @@ use crate::pauliproduct::PauliProduct;
 use crate::treegraph::TreeGraph;
 use indexmap::IndexMap;
 use plotters::prelude::*;
-use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use std::fs::File;
 #[cfg(debug_assertions)]
 use std::io::Write;
@@ -655,13 +655,13 @@ impl TopoGraph {
         for row in 0..=self.num_rows {
             chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
                                                    (self.num_cols as f32 - 0.5,
-                                                    row as f32 - 0.5),],
+                                                    row as f32 - 0.5)],
                                               WHITE.stroke_width(3)))?;
         }
         for col in 0..=self.num_cols {
             chart.draw_series(LineSeries::new(vec![(col as f32 - 0.5, -0.5),
                                                    (col as f32 - 0.5,
-                                                    self.num_rows as f32 - 0.5),],
+                                                    self.num_rows as f32 - 0.5)],
                                               WHITE.stroke_width(3)))?;
         }
         let num_colors = pauli_product_paths.len().max(1);

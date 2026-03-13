@@ -214,9 +214,7 @@ impl SteinerTreeComputation {
                             if !path.is_empty() {
                                 let root_label = topo.get_label(root_id as u16);
                                 let path_labels: Vec<String> =
-                                    path.iter()
-                                        .map(|&id| topo.get_label(id).to_string())
-                                        .collect();
+                                    path.iter().map(|&id| topo.get_label(id).to_string()).collect();
                                 debug_sched!("        {} -> {:?}", root_label, path_labels);
                             }
                         }
