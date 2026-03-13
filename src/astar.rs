@@ -3,40 +3,31 @@ use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 
 /// Number of buckets in the bucket-queue (Dial's algorithm).
-/// f_cost = g + h where g ≤ grid_diameter (~56) and h ≤ grid_diameter (~56),
-/// so f ≤ 112. 256 buckets gives ample headroom and keeps the modulo a cheap
-/// bitwise AND.
+/// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 buckets gives ample headroom.
 const BUCKET_COUNT: usize = 256;
 
 /// State container for A* pathfinding computations.
 /// Maintains parent pointers, g-costs, and closed set for multi-source searches.
 ///
-/// Uses two optimisations over the naive implementation:
-///
-/// 1. **Generation counter** (hotspot 1): `epoch` is bumped once per `compute`
-///    call instead of filling three O(N) arrays.  A node slot is "open" iff
-///    `node_epoch[id] == epoch`; "closed" iff `closed_epoch[id] == epoch`.
-///
-/// 2. **Bucket queue / Dial's algorithm** (hotspot 3): replaces `BinaryHeap`
-///    with a fixed array of `BUCKET_COUNT` `Vec<u16>` buckets indexed by
-///    `f_cost % BUCKET_COUNT`.  Push is O(1) (append to a Vec); pop is
-///    amortised O(1) (advance a cursor over at most BUCKET_COUNT empty slots).
-///    Eliminates all `sift_up` / `sift_down` / `PartialOrd` overhead.
+/// Uses a generation-counter to avoid O(N) array resets between calls: `epoch` is
+/// bumped once per `compute` call; a node slot is valid iff its stored epoch matches.
+/// The priority queue is a bucket queue (Dial's algorithm) over integer f-costs,
+/// giving O(1) push and amortised O(1) pop without comparison overhead.
 pub struct AStarComputation {
     /// Parent pointer; valid only when `node_epoch[id] == epoch`.
-    /// Stores `u16::MAX` when there is no parent (i.e. the node is the search root).
+    /// `u16::MAX` is the sentinel meaning "no parent" (search root).
     parent: Vec<u16>,
     /// Tentative g-cost; valid only when `node_epoch[id] == epoch`.
     g_cost: Vec<u32>,
-    /// Per-node epoch stamp: `node_epoch[id] == epoch` means the node has been opened.
+    /// Epoch when this node was last opened; `node_epoch[id] == epoch` means open.
     node_epoch: Vec<u32>,
-    /// Per-node closed stamp: `closed_epoch[id] == epoch` means the node has been closed.
+    /// Epoch when this node was last closed; `closed_epoch[id] == epoch` means closed.
     closed_epoch: Vec<u32>,
-    /// Current epoch counter; bumped once per `compute` call instead of filling arrays.
+    /// Bumped once per `compute` call to invalidate stale per-node state in O(1).
     epoch: u32,
-    /// Bucket queue: `buckets[f % BUCKET_COUNT]` holds node IDs with that f_cost.
+    /// Bucket queue: `buckets[f % BUCKET_COUNT]` holds node IDs with f-cost `f`.
     buckets: Vec<Vec<u16>>,
-    /// Cursor: the lowest bucket index that may be non-empty.
+    /// Lowest bucket index that may be non-empty.
     bucket_min: usize,
     pub num_calls: usize,
 }
@@ -56,7 +47,6 @@ impl AStarComputation {
         }
     }
 
-    /// Push `node_id` into the bucket for `f_cost`.
     #[inline(always)]
     fn bucket_push(&mut self, f_cost: u32, node_id: u16) {
         let idx = (f_cost as usize) % BUCKET_COUNT;
@@ -66,10 +56,8 @@ impl AStarComputation {
         }
     }
 
-    /// Pop the node with the smallest f_cost from the bucket queue.
+    /// Returns the next open node, skipping already-closed (stale) entries.
     /// Returns `None` when all buckets are empty.
-    /// Nodes that are already closed (stale entries) are skipped automatically
-    /// by the caller's closed-epoch check.
     #[inline(always)]
     fn bucket_pop(&mut self, epoch: u32) -> Option<u16> {
         loop {
@@ -77,22 +65,18 @@ impl AStarComputation {
                 return None;
             }
             if let Some(node_id) = self.buckets[self.bucket_min].pop() {
-                // Skip stale entries (already closed this epoch).
                 if self.closed_epoch[node_id as usize] != epoch {
                     return Some(node_id);
                 }
-                // stale — keep scanning this bucket
+                // stale duplicate — keep draining this bucket
             } else {
                 self.bucket_min += 1;
             }
         }
     }
 
-    /// Clear all buckets and reset the cursor. Called once per `compute` invocation.
     #[inline(always)]
     fn bucket_clear(&mut self) {
-        // Only clear buckets that were actually used (tracked by bucket_min).
-        // In practice almost all buckets are empty so this is fast.
         for b in &mut self.buckets {
             b.clear();
         }
@@ -113,8 +97,8 @@ impl AStarComputation {
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> Option<Option<TreeGraph>> {
         self.num_calls += 1;
-        // Advance epoch to invalidate all previous per-node state in O(1).
-        // Wrapping add: if epoch wraps to 0 we do a full reset to keep the invariant.
+        // Bump epoch to invalidate stale per-node state without filling arrays.
+        // On the rare u32 wrap-around, reset epoch arrays to restore the invariant.
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.epoch = 1;
@@ -127,13 +111,11 @@ impl AStarComputation {
 
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
-        // Open the root node.
         self.g_cost[root_id as usize] = 0;
-        self.parent[root_id as usize] = u16::MAX; // sentinel: no parent
+        self.parent[root_id as usize] = u16::MAX;
         self.node_epoch[root_id as usize] = epoch;
         let (h, ready_idx) = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
         self.bucket_push(h, root_id);
-        // choose this magic node as the target
         let ready_pos = ready_magic_positions[ready_idx];
 
         while let Some(node_id) = self.bucket_pop(epoch) {
@@ -146,7 +128,6 @@ impl AStarComputation {
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
                 if !plotting {
-                    // Mark path nodes used directly; skip TreeGraph allocation.
                     used[node_id as usize] = true;
                     let mut curr = node_id;
                     loop {
@@ -220,8 +201,7 @@ impl AStarComputation {
                     continue;
                 }
                 let new_g = g + 1;
-                // A node is "unvisited this epoch" when node_epoch[nb] != epoch,
-                // in which case its g_cost slot holds a stale value — treat as u32::MAX.
+                // Stale slot (different epoch) is treated as g = ∞.
                 let nb_g = if self.node_epoch[nb_id as usize] == epoch {
                     self.g_cost[nb_id as usize]
                 } else {
@@ -231,7 +211,6 @@ impl AStarComputation {
                     self.g_cost[nb_id as usize] = new_g;
                     self.parent[nb_id as usize] = node_id;
                     self.node_epoch[nb_id as usize] = epoch;
-                    // always headed to the same target magic node
                     let h = Self::manhattan_dist(nb_pos, ready_pos);
                     self.bucket_push(new_g + h, nb_id);
                 }
@@ -240,23 +219,21 @@ impl AStarComputation {
         None
     }
 
-    /// Lower-bound heuristic: Manhattan distance from `pos` to the nearest ready magic node.
-    /// `ready_magic_positions` must be **sorted by x-coordinate** (ascending).
-    /// Uses a binary-search anchor + bidirectional sweep with x-gap pruning to find the
-    /// nearest entry in O(√N) average time instead of O(N).
+    /// Returns (distance, index) of the nearest ready magic node to `pos`.
+    /// `ready_magic_positions` must be sorted by x-coordinate (ascending).
+    /// Binary-searches for the x-anchor then sweeps outward, pruning once the
+    /// x-gap alone exceeds the current best distance.
     fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
-        // Binary-search for the insertion point of pos.x in the sorted x-values.
         let anchor = ready_magic_positions.partition_point(|&(mx, _)| mx < pos.0);
 
         let mut best_dist = u32::MAX;
         let mut best_idx = 0usize;
 
-        // Sweep right from anchor.
         let mut r = anchor;
         while r < ready_magic_positions.len() {
             let dx = (ready_magic_positions[r].0 - pos.0).abs() as u32;
             if dx >= best_dist {
-                break; // all further entries have dx ≥ best_dist, so Manhattan ≥ best_dist
+                break;
             }
             let d = Self::manhattan_dist(ready_magic_positions[r], pos);
             if d < best_dist {
@@ -266,7 +243,6 @@ impl AStarComputation {
             r += 1;
         }
 
-        // Sweep left from anchor - 1.
         let mut l = anchor;
         while l > 0 {
             l -= 1;
