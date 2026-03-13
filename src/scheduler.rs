@@ -639,8 +639,7 @@ impl Scheduler {
                 num_avail_magic += 1;
             }
         }
-        // Rebuild cache of ready magic positions used by A* heuristic.
-        // Sorted by x-coordinate so AStarComputation::heuristic can use binary-search pruning.
+        // Collect ready magic positions sorted by x so AStarComputation::heuristic can prune with binary search.
         self.ready_magic_positions = node_info
             .iter()
             .filter(|(node_id, node_type)| {
