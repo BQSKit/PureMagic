@@ -18,9 +18,11 @@ pub struct GreedyPathComputation {
 
 impl GreedyPathComputation {
     pub fn new(num_nodes: usize) -> Self {
-        GreedyPathComputation { visited: vec![false; num_nodes],
-                                backtracked: vec![false; num_nodes],
-                                num_calls: 0 }
+        GreedyPathComputation {
+            visited: vec![false; num_nodes],
+            backtracked: vec![false; num_nodes],
+            num_calls: 0,
+        }
     }
 
     /// Greedy walk from root to the nearest ready magic node.
@@ -31,9 +33,10 @@ impl GreedyPathComputation {
     /// When `plotting` is false, marks `used[]` directly and returns `Some(None)` (no tree built).
     /// When `plotting` is true, builds and returns `Some(Some(tree))`.
     /// Returns outer `None` if no path exists.
-    pub fn compute(&mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph,
-                   used: &mut Vec<bool>, ready_magic_positions: &[(f32, f32)], plotting: bool)
-                   -> Option<Option<TreeGraph>> {
+    pub fn compute(
+        &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
+        ready_magic_positions: &[(f32, f32)], plotting: bool,
+    ) -> Option<Option<TreeGraph>> {
         self.num_calls += 1;
         self.visited.fill(false);
         self.backtracked.fill(false);
@@ -51,8 +54,8 @@ impl GreedyPathComputation {
             let current_node = topo.get_node(current);
             // Check if we reached a ready magic node
             if current_node.node_type == NodeType::Magic
-               && topo.cultivation_times[current_node.id as usize] == 0
-               && !used[current as usize]
+                && topo.cultivation_times[current_node.id as usize] == 0
+                && !used[current as usize]
             {
                 if !plotting {
                     // Mark path nodes used directly; skip TreeGraph allocation.
@@ -69,27 +72,24 @@ impl GreedyPathComputation {
 
             // Find the best open neighbour: not used, not data, not visited, not revisited,
             // closest manhattan distance to target
-            let best_nb =
-                current_node.nbors
-                            .iter()
-                            .copied()
-                            .filter(|&nb_id| {
-                                if used[nb_id as usize] {
-                                    return false;
-                                }
-                                if self.visited[nb_id as usize] || self.backtracked[nb_id as usize]
-                                {
-                                    return false;
-                                }
-                                let nb = topo.get_node(nb_id);
-                                if nb.node_type == NodeType::Data {
-                                    return false;
-                                }
-                                true
-                            })
-                            .min_by_key(|&nb_id| {
-                                manhattan_dist(topo.get_node(nb_id).pos, target_pos)
-                            });
+            let best_nb = current_node
+                .nbors
+                .iter()
+                .copied()
+                .filter(|&nb_id| {
+                    if used[nb_id as usize] {
+                        return false;
+                    }
+                    if self.visited[nb_id as usize] || self.backtracked[nb_id as usize] {
+                        return false;
+                    }
+                    let nb = topo.get_node(nb_id);
+                    if nb.node_type == NodeType::Data {
+                        return false;
+                    }
+                    true
+                })
+                .min_by_key(|&nb_id| manhattan_dist(topo.get_node(nb_id).pos, target_pos));
 
             if let Some(nb_id) = best_nb {
                 // Step forward
@@ -108,13 +108,13 @@ impl GreedyPathComputation {
                     let backtrack_node = *path.last().unwrap();
                     let has_open_nb =
                         topo.get_node(backtrack_node).nbors.iter().copied().any(|nb_id| {
-                                                                               !used[nb_id as usize]
+                            !used[nb_id as usize]
                                 && !self.visited[nb_id as usize]
                                 && !self.backtracked[nb_id as usize]
                                 && topo.get_node(nb_id).node_type != NodeType::Data
                                 && !(topo.get_node(nb_id).node_type == NodeType::Magic
                                     && topo.cultivation_times[nb_id as usize] > 0)
-                                                                           });
+                        });
                     if has_open_nb {
                         break;
                     } else {
@@ -147,11 +147,12 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
     // Attach any additional root nodes not already on the path
     for (i, &root_id) in root_ids.iter().enumerate() {
         if !tree.contains_node(root_id) {
-            let conn = topo.get_node(root_id)
-                           .nbors
-                           .iter()
-                           .copied()
-                           .find(|&nb_id| tree.contains_node(nb_id));
+            let conn = topo
+                .get_node(root_id)
+                .nbors
+                .iter()
+                .copied()
+                .find(|&nb_id| tree.contains_node(nb_id));
             if let Some(conn_id) = conn {
                 tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
                 tree.add_edge(conn_id, root_id);
@@ -170,13 +171,12 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
 }
 
 fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, u16) {
-    ready_magic_positions.iter()
-                         .enumerate()
-                         .map(|(idx, &mp)| (manhattan_dist(mp, pos), idx as u16))
-                         .min_by(|(da, _), (db, _)| {
-                             da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal)
-                         })
-                         .unwrap()
+    ready_magic_positions
+        .iter()
+        .enumerate()
+        .map(|(idx, &mp)| (manhattan_dist(mp, pos), idx as u16))
+        .min_by(|(da, _), (db, _)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap()
 }
 
 fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {

@@ -89,12 +89,14 @@ pub struct PauliProduct {
 
 impl Default for PauliProduct {
     fn default() -> Self {
-        PauliProduct { operators: Vec::new(),
-                       max_qubit: 0,
-                       parents: Vec::new(),
-                       children: Vec::new(),
-                       id: -1,
-                       gate_type: GateType::T }
+        PauliProduct {
+            operators: Vec::new(),
+            max_qubit: 0,
+            parents: Vec::new(),
+            children: Vec::new(),
+            id: -1,
+            gate_type: GateType::T,
+        }
     }
 }
 
@@ -136,8 +138,11 @@ impl PauliProduct {
                     break;
                 }
                 _ => {
-                    return Err(format!("Illegal character {} at position {} in product {}",
-                                       c, i, s).into());
+                    return Err(format!(
+                        "Illegal character {} at position {} in product {}",
+                        c, i, s
+                    )
+                    .into());
                 }
             }
         }
@@ -165,8 +170,10 @@ impl PauliProduct {
 impl fmt::Display for PauliProduct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
-        write!(f,
-               "{} {} <{:?}> children {:?} parents {:?}",
-               self.id, ops, self.gate_type, self.children, self.parents)
+        write!(
+            f,
+            "{} {} <{:?}> children {:?} parents {:?}",
+            self.id, ops, self.gate_type, self.children, self.parents
+        )
     }
 }

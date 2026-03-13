@@ -16,19 +16,20 @@ impl Circuit {
     /// Generates a random T-gate circuit with spatial locality.
     /// Each product is generated with Pauli operators spreading from a center qubit.
     /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
-    pub fn generate_random(&mut self, num_products: usize, num_qubits: usize,
-                           spread_probability: f64, decay_factor: f64) {
+    pub fn generate_random(
+        &mut self, num_products: usize, num_qubits: usize, spread_probability: f64,
+        decay_factor: f64,
+    ) {
         self.products.extend((0..num_products).map(|product_id| {
-                                                  PauliProduct::gen_rnd_t(product_id as i32,
-                                                                          num_qubits,
-                                                                          spread_probability,
-                                                                          decay_factor)
-                                              }));
+            PauliProduct::gen_rnd_t(product_id as i32, num_qubits, spread_probability, decay_factor)
+        }));
         self.num_qubits =
             self.products.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
-        println!("Generated random circuit with {} products and {} qubits",
-                 self.products.len(),
-                 self.num_qubits);
+        println!(
+            "Generated random circuit with {} products and {} qubits",
+            self.products.len(),
+            self.num_qubits
+        );
         self.generate_dependencies();
     }
 
@@ -48,9 +49,9 @@ impl Circuit {
 impl PauliProduct {
     /// Generates a random T-gate product with spatial locality.
     /// Starts at a random qubit and spreads to neighbors with decaying probability.
-    pub fn gen_rnd_t(product_id: i32, num_qubits: usize, spread_probability: f64,
-                     decay_factor: f64)
-                     -> Self {
+    pub fn gen_rnd_t(
+        product_id: i32, num_qubits: usize, spread_probability: f64, decay_factor: f64,
+    ) -> Self {
         let mut rng = rand::thread_rng();
         let mut operators = Vec::new();
         let center_qubit = rng.gen_range(0..num_qubits);
@@ -82,12 +83,14 @@ impl PauliProduct {
         }
         operators.sort_by_key(|op| op.qubit);
         let max_qubit = operators.iter().map(|op| op.qubit).max().unwrap_or(0);
-        PauliProduct { operators,
-                       parents: Vec::new(),
-                       children: Vec::new(),
-                       max_qubit,
-                       id: product_id,
-                       gate_type: GateType::T }
+        PauliProduct {
+            operators,
+            parents: Vec::new(),
+            children: Vec::new(),
+            max_qubit,
+            id: product_id,
+            gate_type: GateType::T,
+        }
     }
 
     /// Converts this product to circuit file format with random sign.
@@ -136,18 +139,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Error: decay_factor must be between 0.0 and 1.0");
         std::process::exit(1);
     }
-    println!("Generating random circuit with {} products on {} qubits",
-             args.random_products, args.random_qubits);
+    println!(
+        "Generating random circuit with {} products on {} qubits",
+        args.random_products, args.random_qubits
+    );
     println!("  spread_probability: {}", args.spread_probability);
     println!("  decay_factor: {}", args.decay_factor);
     let spread_str = args.spread_probability.to_string().replace(".", "_");
     let decay_str = args.decay_factor.to_string().replace(".", "_");
     let fname = format!("random_circuit-{}-{}_n{}", spread_str, decay_str, args.random_qubits);
     let mut circuit = Circuit::new(&fname);
-    circuit.generate_random(args.random_products,
-                            args.random_qubits,
-                            args.spread_probability,
-                            args.decay_factor);
+    circuit.generate_random(
+        args.random_products,
+        args.random_qubits,
+        args.spread_probability,
+        args.decay_factor,
+    );
     let save_fname = args.output.unwrap_or_else(|| format!("{}.generated.txt", fname));
     circuit.save_circuit_to_file(save_fname)?;
     Ok(())

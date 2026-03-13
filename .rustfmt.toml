@@ -1,7 +1,7 @@
 use_small_heuristics = "Max"
 max_width = 100
 fn_params_layout = "Compressed"
-indent_style = "Visual"
+#indent_style = "Visual"
 overflow_delimited_expr = true
 #single_line_if_else = true
 #tab_spaces = 2
