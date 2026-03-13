@@ -1,18 +1,27 @@
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+
+/// Number of buckets in the bucket-queue (Dial's algorithm).
+/// f_cost = g + h where g ≤ grid_diameter (~56) and h ≤ grid_diameter (~56),
+/// so f ≤ 112. 256 buckets gives ample headroom and keeps the modulo a cheap
+/// bitwise AND.
+const BUCKET_COUNT: usize = 256;
 
 /// State container for A* pathfinding computations.
 /// Maintains parent pointers, g-costs, and closed set for multi-source searches.
 ///
-/// Uses a generation-counter scheme to avoid resetting the arrays on every call:
-/// - `epoch` is incremented once per `compute` call.
-/// - A node slot is considered "initialised" (has a valid g_cost / parent) iff
-///   `node_epoch[id] == epoch`.
-/// - A node slot is considered "closed" iff `closed_epoch[id] == epoch`.
-/// This replaces the three O(N) `fill` calls that previously dominated the hot path.
+/// Uses two optimisations over the naive implementation:
+///
+/// 1. **Generation counter** (hotspot 1): `epoch` is bumped once per `compute`
+///    call instead of filling three O(N) arrays.  A node slot is "open" iff
+///    `node_epoch[id] == epoch`; "closed" iff `closed_epoch[id] == epoch`.
+///
+/// 2. **Bucket queue / Dial's algorithm** (hotspot 3): replaces `BinaryHeap`
+///    with a fixed array of `BUCKET_COUNT` `Vec<u16>` buckets indexed by
+///    `f_cost % BUCKET_COUNT`.  Push is O(1) (append to a Vec); pop is
+///    amortised O(1) (advance a cursor over at most BUCKET_COUNT empty slots).
+///    Eliminates all `sift_up` / `sift_down` / `PartialOrd` overhead.
 pub struct AStarComputation {
     /// Parent pointer; valid only when `node_epoch[id] == epoch`.
     /// Stores `u16::MAX` when there is no parent (i.e. the node is the search root).
@@ -25,7 +34,10 @@ pub struct AStarComputation {
     closed_epoch: Vec<u32>,
     /// Current epoch counter; bumped once per `compute` call instead of filling arrays.
     epoch: u32,
-    heap: BinaryHeap<(Reverse<u32>, u16)>,
+    /// Bucket queue: `buckets[f % BUCKET_COUNT]` holds node IDs with that f_cost.
+    buckets: Vec<Vec<u16>>,
+    /// Cursor: the lowest bucket index that may be non-empty.
+    bucket_min: usize,
     pub num_calls: usize,
 }
 
@@ -38,9 +50,53 @@ impl AStarComputation {
             node_epoch: vec![0; num_nodes],
             closed_epoch: vec![0; num_nodes],
             epoch: 0,
-            heap: BinaryHeap::new(),
+            buckets: vec![Vec::new(); BUCKET_COUNT],
+            bucket_min: 0,
             num_calls: 0,
         }
+    }
+
+    /// Push `node_id` into the bucket for `f_cost`.
+    #[inline(always)]
+    fn bucket_push(&mut self, f_cost: u32, node_id: u16) {
+        let idx = (f_cost as usize) % BUCKET_COUNT;
+        self.buckets[idx].push(node_id);
+        if idx < self.bucket_min {
+            self.bucket_min = idx;
+        }
+    }
+
+    /// Pop the node with the smallest f_cost from the bucket queue.
+    /// Returns `None` when all buckets are empty.
+    /// Nodes that are already closed (stale entries) are skipped automatically
+    /// by the caller's closed-epoch check.
+    #[inline(always)]
+    fn bucket_pop(&mut self, epoch: u32) -> Option<u16> {
+        loop {
+            if self.bucket_min >= BUCKET_COUNT {
+                return None;
+            }
+            if let Some(node_id) = self.buckets[self.bucket_min].pop() {
+                // Skip stale entries (already closed this epoch).
+                if self.closed_epoch[node_id as usize] != epoch {
+                    return Some(node_id);
+                }
+                // stale — keep scanning this bucket
+            } else {
+                self.bucket_min += 1;
+            }
+        }
+    }
+
+    /// Clear all buckets and reset the cursor. Called once per `compute` invocation.
+    #[inline(always)]
+    fn bucket_clear(&mut self) {
+        // Only clear buckets that were actually used (tracked by bucket_min).
+        // In practice almost all buckets are empty so this is fast.
+        for b in &mut self.buckets {
+            b.clear();
+        }
+        self.bucket_min = 0;
     }
 
     /// A* from first root to the nearest ready, unused magic node.
@@ -67,7 +123,7 @@ impl AStarComputation {
         }
         let epoch = self.epoch;
 
-        self.heap.clear();
+        self.bucket_clear();
 
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
@@ -76,14 +132,11 @@ impl AStarComputation {
         self.parent[root_id as usize] = u16::MAX; // sentinel: no parent
         self.node_epoch[root_id as usize] = epoch;
         let (h, ready_idx) = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
-        self.heap.push((Reverse(h), root_id));
+        self.bucket_push(h, root_id);
         // choose this magic node as the target
         let ready_pos = ready_magic_positions[ready_idx];
 
-        while let Some((_, node_id)) = self.heap.pop() {
-            if self.closed_epoch[node_id as usize] == epoch {
-                continue;
-            }
+        while let Some(node_id) = self.bucket_pop(epoch) {
             self.closed_epoch[node_id as usize] = epoch;
 
             let (node_type, cultivation_time, num_nbors) = {
@@ -180,7 +233,7 @@ impl AStarComputation {
                     self.node_epoch[nb_id as usize] = epoch;
                     // always headed to the same target magic node
                     let h = Self::manhattan_dist(nb_pos, ready_pos);
-                    self.heap.push((Reverse(new_g + h), nb_id));
+                    self.bucket_push(new_g + h, nb_id);
                 }
             }
         }
