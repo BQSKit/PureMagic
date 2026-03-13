@@ -24,10 +24,12 @@ pub struct Circuit {
 impl Circuit {
     /// Creates a new circuit from a filename (circuit is not loaded until `load_circuit()` is called).
     pub fn new(fname: &String) -> Self {
-        let circuit = Circuit { products: Vec::new(),
-                                circuit_fname: fname.to_string(),
-                                num_qubits: 0,
-                                layers: RefCell::new(None) };
+        let circuit = Circuit {
+            products: Vec::new(),
+            circuit_fname: fname.to_string(),
+            num_qubits: 0,
+            layers: RefCell::new(None),
+        };
         circuit
     }
 
@@ -42,8 +44,9 @@ impl Circuit {
         for line in reader.lines() {
             let product_string = line?.trim().to_string();
             let mut product = PauliProduct::new();
-            product.set_from_str(product_id, &product_string)
-                   .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            product
+                .set_from_str(product_id, &product_string)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
             if product.gate_type.is_x() || product.gate_type.is_z() {
                 continue;
             }
@@ -53,9 +56,11 @@ impl Circuit {
         self.num_qubits =
             self.products.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
 
-        println!("Loaded circuit with {} products and {} qubits",
-                 self.products.len(),
-                 self.num_qubits);
+        println!(
+            "Loaded circuit with {} products and {} qubits",
+            self.products.len(),
+            self.num_qubits
+        );
 
         self.generate_dependencies();
         Ok(())
@@ -124,25 +129,27 @@ impl Circuit {
             .into_drawing_area();
             root.fill(&WHITE)?;
 
-            let mut chart =
-                ChartBuilder::on(&root).margin(50)
-                                       .set_label_area_size(LabelAreaPosition::Left, 60)
-                                       .set_label_area_size(LabelAreaPosition::Bottom, 40)
-                                       .build_cartesian_2d(chunk_start as f32..chunk_end as f32,
-                                                           ((self.num_qubits - 1) as f32 + 0.5)
-                                                           ..(-0.5f32))?;
-            chart.configure_mesh()
-                 .x_labels(chunk_layers / 5)
-                 .x_label_formatter(&|x| format!("{}", x))
-                 .y_labels((self.num_qubits + 1) as usize)
-                 .y_label_formatter(&|y| format!("{}", y))
-                 .x_desc("Layers")
-                 .y_desc("Qubit Number")
-                 .x_label_style(("sans-serif", 14))
-                 .y_label_style(("sans-serif", 14))
-                 .axis_desc_style(("sans-serif", 16))
-                 .disable_mesh()
-                 .draw()?;
+            let mut chart = ChartBuilder::on(&root)
+                .margin(50)
+                .set_label_area_size(LabelAreaPosition::Left, 60)
+                .set_label_area_size(LabelAreaPosition::Bottom, 40)
+                .build_cartesian_2d(
+                    chunk_start as f32..chunk_end as f32,
+                    ((self.num_qubits - 1) as f32 + 0.5)..(-0.5f32),
+                )?;
+            chart
+                .configure_mesh()
+                .x_labels(chunk_layers / 5)
+                .x_label_formatter(&|x| format!("{}", x))
+                .y_labels((self.num_qubits + 1) as usize)
+                .y_label_formatter(&|y| format!("{}", y))
+                .x_desc("Layers")
+                .y_desc("Qubit Number")
+                .x_label_style(("sans-serif", 14))
+                .y_label_style(("sans-serif", 14))
+                .axis_desc_style(("sans-serif", 16))
+                .disable_mesh()
+                .draw()?;
             for (col, layer) in layers[chunk_start..chunk_end].iter().enumerate() {
                 let mut sorted_layer: Vec<&PauliProduct> = layer.clone();
                 sorted_layer.sort_by_key(|pp| pp.get_qubits()[0]);
@@ -234,23 +241,24 @@ impl Circuit {
         let plot_fname = format!("{}.layer_stats.svg", circuit_stem);
         let root = SVGBackend::new(&plot_fname, (1800, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
-        let mut chart = ChartBuilder::on(&root).margin(60)
-                                               .set_label_area_size(LabelAreaPosition::Left, 100)
-                                               .set_label_area_size(LabelAreaPosition::Bottom, 100)
-                                               .build_cartesian_2d(0..layers.len(),
-                                                                   0.0f64..self.num_qubits as f64)?;
-        chart.configure_mesh()
-             .x_labels(20)
-             .x_label_formatter(&|x| format!("{}", x))
-             .y_labels(10)
-             .y_label_formatter(&|y| format!("{}", y))
-             .x_desc("Layer")
-             .y_desc("Statistic")
-             .x_label_style(("sans-serif", 40))
-             .y_label_style(("sans-serif", 40))
-             .axis_desc_style(("sans-serif", 48))
-             .light_line_style(&TRANSPARENT)
-             .draw()?;
+        let mut chart = ChartBuilder::on(&root)
+            .margin(60)
+            .set_label_area_size(LabelAreaPosition::Left, 100)
+            .set_label_area_size(LabelAreaPosition::Bottom, 100)
+            .build_cartesian_2d(0..layers.len(), 0.0f64..self.num_qubits as f64)?;
+        chart
+            .configure_mesh()
+            .x_labels(20)
+            .x_label_formatter(&|x| format!("{}", x))
+            .y_labels(10)
+            .y_label_formatter(&|y| format!("{}", y))
+            .x_desc("Layer")
+            .y_desc("Statistic")
+            .x_label_style(("sans-serif", 40))
+            .y_label_style(("sans-serif", 40))
+            .axis_desc_style(("sans-serif", 48))
+            .light_line_style(&TRANSPARENT)
+            .draw()?;
 
         let mut window_size = 200;
         if layers.len() < 2000 {
@@ -263,130 +271,135 @@ impl Circuit {
             window_size = 150;
         }
 
-        self.plot_moving_average(&mut chart,
-                                 &layers,
-                                 window_size,
-                                 |window| {
-                                     let sum: usize = window.iter().map(|layer| layer.len()).sum();
-                                     sum as f64 / window.len() as f64
-                                 },
-                                 RGBColor(0, 0, 255), // Blue
-                                 "avg products/layer")?;
+        self.plot_moving_average(
+            &mut chart,
+            &layers,
+            window_size,
+            |window| {
+                let sum: usize = window.iter().map(|layer| layer.len()).sum();
+                sum as f64 / window.len() as f64
+            },
+            RGBColor(0, 0, 255), // Blue
+            "avg products/layer",
+        )?;
 
-        self.plot_moving_average(&mut chart,
-                                 &layers,
-                                 window_size,
-                                 |window| {
-                                     window.iter().map(|layer| layer.len()).max().unwrap_or(0)
-                                     as f64
-                                 },
-                                 RGBColor(255, 165, 0),
-                                 "max products/layer")?;
+        self.plot_moving_average(
+            &mut chart,
+            &layers,
+            window_size,
+            |window| window.iter().map(|layer| layer.len()).max().unwrap_or(0) as f64,
+            RGBColor(255, 165, 0),
+            "max products/layer",
+        )?;
 
-        self.plot_moving_average(&mut chart,
-                                 &layers,
-                                 window_size,
-                                 |window| {
-                                     let (total_ops, total_products): (usize, usize) =
-                                         window.iter()
-                                               .map(|layer| {
-                                                   let ops: usize =
-                                                       layer.iter()
-                                                            .map(|pp| pp.operators.len())
-                                                            .sum();
-                                                   (ops, layer.len())
-                                               })
-                                               .fold((0, 0),
-                                                     |(acc_ops, acc_prods), (ops, prods)| {
-                                                         (acc_ops + ops, acc_prods + prods)
-                                                     });
+        self.plot_moving_average(
+            &mut chart,
+            &layers,
+            window_size,
+            |window| {
+                let (total_ops, total_products): (usize, usize) = window
+                    .iter()
+                    .map(|layer| {
+                        let ops: usize = layer.iter().map(|pp| pp.operators.len()).sum();
+                        (ops, layer.len())
+                    })
+                    .fold((0, 0), |(acc_ops, acc_prods), (ops, prods)| {
+                        (acc_ops + ops, acc_prods + prods)
+                    });
 
-                                     if total_products > 0 {
-                                         total_ops as f64 / total_products as f64
-                                     } else {
-                                         0.0
-                                     }
-                                 },
-                                 RGBColor(255, 0, 0), // Red
-                                 "avg product size")?;
+                if total_products > 0 {
+                    total_ops as f64 / total_products as f64
+                } else {
+                    0.0
+                }
+            },
+            RGBColor(255, 0, 0), // Red
+            "avg product size",
+        )?;
 
-        self.plot_moving_average(&mut chart,
-                                 &layers,
-                                 window_size,
-                                 |window| {
-                                     window.iter()
-                                           .map(|layer| {
-                                               layer.iter()
-                                                    .map(|pp| pp.operators.len())
-                                                    .max()
-                                                    .unwrap_or(0)
-                                           })
-                                           .max()
-                                           .unwrap_or(0) as f64
-                                 },
-                                 RGBColor(0, 200, 200),
-                                 "max product size")?;
-        chart.configure_series_labels()
-             .margin(20)
-             .background_style(&WHITE)
-             .border_style(&TRANSPARENT)
-             .position(SeriesLabelPosition::UpperRight)
-             .label_font(("sans-serif", 40))
-             .draw()?;
+        self.plot_moving_average(
+            &mut chart,
+            &layers,
+            window_size,
+            |window| {
+                window
+                    .iter()
+                    .map(|layer| layer.iter().map(|pp| pp.operators.len()).max().unwrap_or(0))
+                    .max()
+                    .unwrap_or(0) as f64
+            },
+            RGBColor(0, 200, 200),
+            "max product size",
+        )?;
+        chart
+            .configure_series_labels()
+            .margin(20)
+            .background_style(&WHITE)
+            .border_style(&TRANSPARENT)
+            .position(SeriesLabelPosition::UpperRight)
+            .label_font(("sans-serif", 40))
+            .draw()?;
 
         println!("Plotted layer statistics to {}", plot_fname);
         Ok(())
     }
 
     /// Plots a metric computed over a moving window of layers.
-    fn plot_moving_average<F>(&self,
-                              //chart: &mut ChartContext<BitMapBackend,
-                              chart: &mut ChartContext<SVGBackend,
-                                                Cartesian2d<RangedCoordusize,
-                                                            RangedCoordf64>>,
-                              layers: &[Vec<&PauliProduct>],
-                              window_size: usize,
-                              value_fn: F,
-                              color: RGBColor,
-                              label: &str)
-                              -> Result<(), Box<dyn std::error::Error>>
-        where F: Fn(&[Vec<&PauliProduct>]) -> f64
+    fn plot_moving_average<F>(
+        &self,
+        //chart: &mut ChartContext<BitMapBackend,
+        chart: &mut ChartContext<SVGBackend, Cartesian2d<RangedCoordusize, RangedCoordf64>>,
+        layers: &[Vec<&PauliProduct>],
+        window_size: usize,
+        value_fn: F,
+        color: RGBColor,
+        label: &str,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: Fn(&[Vec<&PauliProduct>]) -> f64,
     {
         let data = self.compute_moving_average(layers, window_size, value_fn);
         // Assert that no y value exceeds num_qubits
         for (i, &y_value) in data.iter().enumerate() {
-            assert!(y_value <= self.num_qubits as f64,
-                    "Y value {} at index {} exceeds num_qubits {} for metric '{}'",
-                    y_value,
-                    i,
-                    self.num_qubits,
-                    label);
+            assert!(
+                y_value <= self.num_qubits as f64,
+                "Y value {} at index {} exceeds num_qubits {} for metric '{}'",
+                y_value,
+                i,
+                self.num_qubits,
+                label
+            );
         }
-        chart.draw_series(LineSeries::new(data.iter().enumerate().map(|(x, &y)| (x, y)),
-                                          color.mix(0.8).stroke_width(2)))?
-             .label(label)
-             .legend(move |(x, y)| {
-                 PathElement::new(vec![(x, y), (x + 20, y)], color.mix(0.8).stroke_width(2))
-             });
+        chart
+            .draw_series(LineSeries::new(
+                data.iter().enumerate().map(|(x, &y)| (x, y)),
+                color.mix(0.8).stroke_width(2),
+            ))?
+            .label(label)
+            .legend(move |(x, y)| {
+                PathElement::new(vec![(x, y), (x + 20, y)], color.mix(0.8).stroke_width(2))
+            });
 
         Ok(())
     }
 
     /// Computes moving average of a metric across layers using a sliding window.
-    fn compute_moving_average<F>(&self, layers: &[Vec<&PauliProduct>], window_size: usize,
-                                 value_fn: F)
-                                 -> Vec<f64>
-        where F: Fn(&[Vec<&PauliProduct>]) -> f64
+    fn compute_moving_average<F>(
+        &self, layers: &[Vec<&PauliProduct>], window_size: usize, value_fn: F,
+    ) -> Vec<f64>
+    where
+        F: Fn(&[Vec<&PauliProduct>]) -> f64,
     {
-        layers.iter()
-              .enumerate()
-              .map(|(i, _)| {
-                  let window_start = if i >= window_size { i - window_size } else { 0 };
-                  let window_end = i + 1;
-                  let window = &layers[window_start..window_end];
-                  value_fn(window)
-              })
-              .collect()
+        layers
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let window_start = if i >= window_size { i - window_size } else { 0 };
+                let window_end = i + 1;
+                let window = &layers[window_start..window_end];
+                value_fn(window)
+            })
+            .collect()
     }
 
     /// Prints circuit statistics (products, Cliffords, layers, avg/max products per layer).
@@ -397,8 +410,10 @@ impl Circuit {
         println!("  Number of products:               {}", self.products.len());
         println!("  Number of Cliffords:              {}", num_cliffords);
         println!("  Layers:                           {}", num_layers);
-        println!("  Products per layer:               {:.2} avg, {} max",
-                 avg_products, max_products);
+        println!(
+            "  Products per layer:               {:.2} avg, {} max",
+            avg_products, max_products
+        );
         num_layers
     }
 
@@ -450,16 +465,18 @@ impl Circuit {
     /// Returns products grouped by their topological level (layer).
     fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
         if let Some(cached) = self.layers.borrow().as_ref() {
-            return cached.iter()
-                         .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
-                         .collect();
+            return cached
+                .iter()
+                .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+                .collect();
         }
         let mut in_degrees: Vec<usize> = self.products.iter().map(|pp| pp.parents.len()).collect();
-        let mut ready: Vec<usize> = in_degrees.iter()
-                                              .enumerate()
-                                              .filter(|&(_, &degree)| degree == 0)
-                                              .map(|(idx, _)| idx)
-                                              .collect();
+        let mut ready: Vec<usize> = in_degrees
+            .iter()
+            .enumerate()
+            .filter(|&(_, &degree)| degree == 0)
+            .map(|(idx, _)| idx)
+            .collect();
 
         let mut index_layers = Vec::new();
         let mut processed = 0;
@@ -478,13 +495,16 @@ impl Circuit {
             }
             ready = next_ready;
         }
-        assert_eq!(processed,
-                   self.products.len(),
-                   "Circuit contains cycles or unreachable products");
+        assert_eq!(
+            processed,
+            self.products.len(),
+            "Circuit contains cycles or unreachable products"
+        );
         *self.layers.borrow_mut() = Some(index_layers.clone());
-        index_layers.iter()
-                    .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
-                    .collect()
+        index_layers
+            .iter()
+            .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+            .collect()
     }
 
     /// Plots a heatmap of qubit coupling frequency (which pairs of qubits interact).
@@ -499,23 +519,23 @@ impl Circuit {
         let root = SVGBackend::new(&plot_fname, (1200, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
         let max_count = coupling_matrix.iter().flat_map(|row| row.iter()).max().unwrap_or(&0);
-        let mut chart =
-            ChartBuilder::on(&root).margin(60)
-                                   .set_label_area_size(LabelAreaPosition::Left, 60)
-                                   .set_label_area_size(LabelAreaPosition::Bottom, 60)
-                                   .set_label_area_size(LabelAreaPosition::Right, 150)
-                                   .caption(format!("{} - Qubit Coupling Matrix", circuit_stem),
-                                            ("sans-serif", 24))
-                                   .build_cartesian_2d(0..dim, 0..dim)?;
-        chart.configure_mesh()
-             .x_labels(10)
-             .y_labels(10)
-             .x_desc("Qubit Index")
-             .y_desc("Qubit Index")
-             .x_label_style(("sans-serif", 16))
-             .y_label_style(("sans-serif", 16))
-             .axis_desc_style(("sans-serif", 18))
-             .draw()?;
+        let mut chart = ChartBuilder::on(&root)
+            .margin(60)
+            .set_label_area_size(LabelAreaPosition::Left, 60)
+            .set_label_area_size(LabelAreaPosition::Bottom, 60)
+            .set_label_area_size(LabelAreaPosition::Right, 150)
+            .caption(format!("{} - Qubit Coupling Matrix", circuit_stem), ("sans-serif", 24))
+            .build_cartesian_2d(0..dim, 0..dim)?;
+        chart
+            .configure_mesh()
+            .x_labels(10)
+            .y_labels(10)
+            .x_desc("Qubit Index")
+            .y_desc("Qubit Index")
+            .x_label_style(("sans-serif", 16))
+            .y_label_style(("sans-serif", 16))
+            .axis_desc_style(("sans-serif", 18))
+            .draw()?;
         for i in 0..dim {
             for j in 0..dim {
                 let count = coupling_matrix[i][j];
@@ -534,8 +554,10 @@ impl Circuit {
                         let green_intensity = (255.0 * (2.0 - 2.0 * intensity)) as u8;
                         RGBColor(red_intensity, green_intensity, 0)
                     };
-                    chart.draw_series(std::iter::once(Rectangle::new([(i, j), (i + 1, j + 1)],
-                                                                     color.filled())))?;
+                    chart.draw_series(std::iter::once(Rectangle::new(
+                        [(i, j), (i + 1, j + 1)],
+                        color.filled(),
+                    )))?;
                 }
             }
         }

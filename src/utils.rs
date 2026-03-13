@@ -35,11 +35,13 @@ impl Timer {
 impl Drop for Timer {
     /// Prints elapsed time in seconds on drop.
     fn drop(&mut self) {
-        println!("{}Timing: {} took {:.2} s{}",
-                 _CYAN,
-                 self.name,
-                 self.start.elapsed().as_secs_f64(),
-                 _RESET);
+        println!(
+            "{}Timing: {} took {:.2} s{}",
+            _CYAN,
+            self.name,
+            self.start.elapsed().as_secs_f64(),
+            _RESET
+        );
     }
 }
 
@@ -93,10 +95,12 @@ struct AccumTimer {
 
 impl AccumTimer {
     fn new() -> Self {
-        AccumTimer { start_time: None,
-                     total_elapsed: Duration::ZERO,
-                     max_interval: Duration::ZERO,
-                     num_intervals: 0 }
+        AccumTimer {
+            start_time: None,
+            total_elapsed: Duration::ZERO,
+            max_interval: Duration::ZERO,
+            num_intervals: 0,
+        }
     }
 
     fn start(&mut self) {
@@ -182,14 +186,16 @@ impl Drop for AccumTimers {
                 continue;
             }
             let avg = t.total_elapsed / t.num_intervals as u32;
-            println!("{}  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}{}",
-                     _CYAN,
-                     name,
-                     format_dur(t.total_elapsed),
-                     format_dur(avg),
-                     format_dur(t.max_interval),
-                     t.num_intervals,
-                     _RESET);
+            println!(
+                "{}  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}{}",
+                _CYAN,
+                name,
+                format_dur(t.total_elapsed),
+                format_dur(avg),
+                format_dur(t.max_interval),
+                t.num_intervals,
+                _RESET
+            );
         }
     }
 }

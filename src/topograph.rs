@@ -43,24 +43,26 @@ pub struct TopoGraph {
 impl TopoGraph {
     /// Creates an empty topology graph.
     pub fn new() -> Self {
-        TopoGraph { nodes: Vec::new(),
-                    labels: Vec::new(),
-                    node_ids_from_labels: IndexMap::new(),
-                    data_node_ids: Vec::new(),
-                    node_grid: Vec::new(),
-                    num_cols: 0,
-                    num_rows: 0,
-                    num_data_qubits: 0,
-                    num_bus_qubits: 0,
-                    num_magic_qubits: 0,
-                    num_qubits: 0,
-                    num_edges: 0,
-                    num_nodes: 0,
-                    circuit_fname: String::new(),
-                    topo_fname: String::new(),
-                    use_magic_routing: true,
-                    busy_counts: Vec::new(),
-                    cultivation_times: Vec::new() }
+        TopoGraph {
+            nodes: Vec::new(),
+            labels: Vec::new(),
+            node_ids_from_labels: IndexMap::new(),
+            data_node_ids: Vec::new(),
+            node_grid: Vec::new(),
+            num_cols: 0,
+            num_rows: 0,
+            num_data_qubits: 0,
+            num_bus_qubits: 0,
+            num_magic_qubits: 0,
+            num_qubits: 0,
+            num_edges: 0,
+            num_nodes: 0,
+            circuit_fname: String::new(),
+            topo_fname: String::new(),
+            use_magic_routing: true,
+            busy_counts: Vec::new(),
+            cultivation_times: Vec::new(),
+        }
     }
 
     pub fn get_label(&self, id: u16) -> &str {
@@ -69,9 +71,10 @@ impl TopoGraph {
 
     /// Initializes topology from file or generates a synthetic layout.
     /// Sets up node metadata, qubit pairings, and edge connectivity.
-    pub fn set_topo(&mut self, min_num_qubits: usize, circuit_fname: &String,
-                    topo_fname: &String, rseed: &u32, use_magic_routing: bool,
-                    ancilla_rows: usize, sides_only: bool) {
+    pub fn set_topo(
+        &mut self, min_num_qubits: usize, circuit_fname: &String, topo_fname: &String, rseed: &u32,
+        use_magic_routing: bool, ancilla_rows: usize, sides_only: bool,
+    ) {
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
         self.use_magic_routing = use_magic_routing;
@@ -95,13 +98,14 @@ impl TopoGraph {
             let node = self.get_node(node_id);
             if node.node_type == NodeType::Data {
                 let label = self.get_label(node_id);
-                let qubit = label.chars()
-                                 .skip(1)
-                                 .take_while(|c| c.is_numeric())
-                                 .collect::<String>()
-                                 .parse::<usize>()
-                                 .ok()
-                                 .unwrap();
+                let qubit = label
+                    .chars()
+                    .skip(1)
+                    .take_while(|c| c.is_numeric())
+                    .collect::<String>()
+                    .parse::<usize>()
+                    .ok()
+                    .unwrap();
                 let term = label.chars().last().map(|c| c.to_string()).unwrap();
                 let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
                 let paired_node_label = format!("d{}{}", pair_qubit, term);
@@ -315,8 +319,9 @@ impl TopoGraph {
 
     /// Generates a pure magic topology: all non-data qubits are magic nodes.
     /// `ancilla_rows` controls spacing between data qubit rows.
-    pub fn gen_pure_magic_topo(&mut self, min_num_qubits: usize, ancilla_rows: usize,
-                               sides_only: bool) {
+    pub fn gen_pure_magic_topo(
+        &mut self, min_num_qubits: usize, ancilla_rows: usize, sides_only: bool,
+    ) {
         let row_spacing = ancilla_rows + 1;
         let col_spacing = if ancilla_rows == 0 { 2 } else { ancilla_rows + 1 };
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -336,7 +341,7 @@ impl TopoGraph {
             for row in 0..self.num_rows {
                 if col % col_spacing == col_spacing - 1 {
                     if (row % row_gap == row_spacing || row % row_gap == row_spacing - 1)
-                       && !(ancilla_rows == 0 && row == self.num_rows - 1)
+                        && !(ancilla_rows == 0 && row == self.num_rows - 1)
                     {
                         if qi < max_qi {
                             let is_x = row % row_gap == row_spacing - 1;
@@ -365,11 +370,13 @@ impl TopoGraph {
         let op = if is_x { 'X' } else { 'Z' };
         let label1 = format!("d{}{}", q, op);
         let id1 = self.num_nodes as u16;
-        let node1 = Node::new(id1,
-                              None,
-                              col as f32 - 0.25,
-                              (self.num_rows - 1 - row) as f32,
-                              NodeType::Data);
+        let node1 = Node::new(
+            id1,
+            None,
+            col as f32 - 0.25,
+            (self.num_rows - 1 - row) as f32,
+            NodeType::Data,
+        );
         self.nodes.push(node1);
         self.labels.push(label1.clone());
         self.busy_counts.push(0);
@@ -378,11 +385,13 @@ impl TopoGraph {
         self.num_nodes += 1;
         let id2 = self.num_nodes as u16;
         let label2 = format!("d{}{}", q + 1, op);
-        let node2 = Node::new(id2,
-                              None,
-                              col as f32 + 0.25,
-                              (self.num_rows - 1 - row) as f32,
-                              NodeType::Data);
+        let node2 = Node::new(
+            id2,
+            None,
+            col as f32 + 0.25,
+            (self.num_rows - 1 - row) as f32,
+            NodeType::Data,
+        );
         self.nodes.push(node2);
         self.labels.push(label2.clone());
         self.busy_counts.push(0);
@@ -402,11 +411,13 @@ impl TopoGraph {
         };
 
         let label = format!("{}{}-{}", ch, col, row);
-        let node = Node::new(self.num_nodes as u16,
-                             None,
-                             col as f32,
-                             (self.num_rows - 1 - row) as f32,
-                             node_type);
+        let node = Node::new(
+            self.num_nodes as u16,
+            None,
+            col as f32,
+            (self.num_rows - 1 - row) as f32,
+            node_type,
+        );
         self.nodes.push(node);
         self.labels.push(label.clone());
         self.busy_counts.push(0);
@@ -434,8 +445,8 @@ impl TopoGraph {
                             if label.starts_with('d') && label.ends_with('Z') {
                                 if let Some(ref up_label) = self.node_grid[col][row - 2] {
                                     if up_label.starts_with('b') || up_label.starts_with('m') {
-                                        vert_data_edges_to_add.push((label.clone(),
-                                                                     up_label.clone()));
+                                        vert_data_edges_to_add
+                                            .push((label.clone(), up_label.clone()));
                                     }
                                 }
                             }
@@ -444,8 +455,8 @@ impl TopoGraph {
                             if label.starts_with('d') && label.ends_with('X') {
                                 if let Some(ref up_label) = self.node_grid[col][row + 2] {
                                     if up_label.starts_with('b') || up_label.starts_with('m') {
-                                        vert_data_edges_to_add.push((label.clone(),
-                                                                     up_label.clone()));
+                                        vert_data_edges_to_add
+                                            .push((label.clone(), up_label.clone()));
                                     }
                                 }
                             }
@@ -548,15 +559,21 @@ impl TopoGraph {
     fn print_statistics(&mut self) {
         let total = self.num_qubits as f64;
         println!("Number of qubits:");
-        println!("  data:         {} ({:.3})",
-                 self.num_data_qubits,
-                 self.num_data_qubits as f64 / total);
-        println!("  bus:          {} ({:.3})",
-                 self.num_bus_qubits,
-                 self.num_bus_qubits as f64 / total);
-        println!("  magic:        {} ({:.3})",
-                 self.num_magic_qubits,
-                 self.num_magic_qubits as f64 / total);
+        println!(
+            "  data:         {} ({:.3})",
+            self.num_data_qubits,
+            self.num_data_qubits as f64 / total
+        );
+        println!(
+            "  bus:          {} ({:.3})",
+            self.num_bus_qubits,
+            self.num_bus_qubits as f64 / total
+        );
+        println!(
+            "  magic:        {} ({:.3})",
+            self.num_magic_qubits,
+            self.num_magic_qubits as f64 / total
+        );
         println!("  total:        {}", self.num_qubits);
     }
 
@@ -596,7 +613,7 @@ impl TopoGraph {
     /// Returns true if this magic node is currently cultivating (in progress).
     pub fn is_cultivating(&self, node_id: u16) -> bool {
         self.cultivation_times[node_id as usize] > 0
-        && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
+            && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
     }
 
     /// Writes topology grid to a text file (debug builds only).
@@ -612,10 +629,12 @@ impl TopoGraph {
                 if let Some(ref label) = self.node_grid[col][row] {
                     //write!(file, "{:8}  ", label)?;
                     if label.starts_with('d') {
-                        write!(file,
-                               "{}{} ",
-                               label.chars().nth(0).unwrap_or(' '),
-                               label.chars().last().unwrap_or(' '))?;
+                        write!(
+                            file,
+                            "{}{} ",
+                            label.chars().nth(0).unwrap_or(' '),
+                            label.chars().last().unwrap_or(' ')
+                        )?;
                     } else {
                         write!(file, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
                     }
@@ -630,9 +649,10 @@ impl TopoGraph {
 
     /// Plots the topology with scheduled Pauli product paths highlighted.
     /// Generates PNG with nodes colored by type and edges colored by path.
-    pub fn plot(&self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
-                title_str: &str)
-                -> Result<(), Box<dyn std::error::Error>> {
+    pub fn plot(
+        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        title_str: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
@@ -644,34 +664,34 @@ impl TopoGraph {
         )
         .into_drawing_area();
         root.fill(&WHITE)?;
-        let mut chart = ChartBuilder::on(&root).margin(10)
-                                               .set_label_area_size(LabelAreaPosition::Bottom, 50)
-                                               .build_cartesian_2d(-1f32..self.num_cols as f32,
-                                                                   -1f32..self.num_rows as f32)?;
-        chart.draw_series(std::iter::once(Rectangle::new([(-0.5, -0.5),
-                                                          (self.num_cols as f32 - 0.5,
-                                                           self.num_rows as f32 - 0.5)],
-                                                         RGBColor(220, 220, 220).filled())))?;
+        let mut chart = ChartBuilder::on(&root)
+            .margin(10)
+            .set_label_area_size(LabelAreaPosition::Bottom, 50)
+            .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
+        chart.draw_series(std::iter::once(Rectangle::new(
+            [(-0.5, -0.5), (self.num_cols as f32 - 0.5, self.num_rows as f32 - 0.5)],
+            RGBColor(220, 220, 220).filled(),
+        )))?;
         for row in 0..=self.num_rows {
-            chart.draw_series(LineSeries::new(vec![(-0.5, row as f32 - 0.5),
-                                                   (self.num_cols as f32 - 0.5,
-                                                    row as f32 - 0.5)],
-                                              WHITE.stroke_width(3)))?;
+            chart.draw_series(LineSeries::new(
+                vec![(-0.5, row as f32 - 0.5), (self.num_cols as f32 - 0.5, row as f32 - 0.5)],
+                WHITE.stroke_width(3),
+            ))?;
         }
         for col in 0..=self.num_cols {
-            chart.draw_series(LineSeries::new(vec![(col as f32 - 0.5, -0.5),
-                                                   (col as f32 - 0.5,
-                                                    self.num_rows as f32 - 0.5)],
-                                              WHITE.stroke_width(3)))?;
+            chart.draw_series(LineSeries::new(
+                vec![(col as f32 - 0.5, -0.5), (col as f32 - 0.5, self.num_rows as f32 - 0.5)],
+                WHITE.stroke_width(3),
+            ))?;
         }
         let num_colors = pauli_product_paths.len().max(1);
-        let path_colors: Vec<RGBAColor> =
-            (0..num_colors).map(|i| {
-                               let hue = (i as f64) / (num_colors as f64);
-                               let (r, g, b) = hsv_to_rgb(hue, 0.8, 0.9);
-                               RGBColor(r, g, b).to_rgba()
-                           })
-                           .collect();
+        let path_colors: Vec<RGBAColor> = (0..num_colors)
+            .map(|i| {
+                let hue = (i as f64) / (num_colors as f64);
+                let (r, g, b) = hsv_to_rgb(hue, 0.8, 0.9);
+                RGBColor(r, g, b).to_rgba()
+            })
+            .collect();
         for node in &self.nodes {
             for nb_id in &node.nbors {
                 let nb = &self.nodes[*nb_id as usize];
@@ -685,15 +705,17 @@ impl TopoGraph {
                     }
                 }
                 if node.pos.0 != nb.pos.0
-                   && node.pos.1 != nb.pos.1
-                   && nb.node_type == NodeType::Data
+                    && node.pos.1 != nb.pos.1
+                    && nb.node_type == NodeType::Data
                 {
                     continue;
                 }
                 let edge_points = self.generate_edge_points(node.pos, nb.pos);
                 let mix = if node.pos.0 != nb.pos.0 && node.pos.1 < nb.pos.1 { 0.5 } else { 1.0 };
-                chart.draw_series(LineSeries::new(edge_points,
-                                                  edge_color.mix(mix).stroke_width(stroke_width)))?;
+                chart.draw_series(LineSeries::new(
+                    edge_points,
+                    edge_color.mix(mix).stroke_width(stroke_width),
+                ))?;
             }
         }
         for node in &self.nodes {
@@ -708,21 +730,28 @@ impl TopoGraph {
                 }
             }
             let node_color = match node.node_type {
-                                 NodeType::Magic => {
-                                     if border_color == None || Some(node.id.clone()) == root_node {
-                                         RGBColor(0xFF, 0xBB, 0x99)
-                                     } else {
-                                         RGBColor(0xAA, 0xAA, 0xAA)
-                                     }
-                                 }
-                                 NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
-                                 NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
-                             }.filled();
-            chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32), 22, node_color)))?;
+                NodeType::Magic => {
+                    if border_color == None || Some(node.id.clone()) == root_node {
+                        RGBColor(0xFF, 0xBB, 0x99)
+                    } else {
+                        RGBColor(0xAA, 0xAA, 0xAA)
+                    }
+                }
+                NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
+                NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
+            }
+            .filled();
+            chart.draw_series(std::iter::once(Circle::new(
+                (x as f32, y as f32),
+                22,
+                node_color,
+            )))?;
             if let Some(color) = border_color {
-                chart.draw_series(std::iter::once(Circle::new((x as f32, y as f32),
-                                                              22,
-                                                              color.stroke_width(3))))?;
+                chart.draw_series(std::iter::once(Circle::new(
+                    (x as f32, y as f32),
+                    22,
+                    color.stroke_width(3),
+                )))?;
             }
             let label_text = match node.node_type {
                 NodeType::Data => self.labels[node.id as usize].clone(),
@@ -730,8 +759,8 @@ impl TopoGraph {
                     if border_color == None {
                         if self.is_cultivating(node.id) {
                             (self.cultivation_times[node.id as usize]
-                             - self.busy_counts[node.id as usize])
-                                                                  .to_string()
+                                - self.busy_counts[node.id as usize])
+                                .to_string()
                         } else if pauli_product_paths.is_empty() {
                             self.labels[node.id as usize].clone()
                         } else {
@@ -754,40 +783,43 @@ impl TopoGraph {
             } else {
                 ("sans-serif", 18).into_font()
             };
-            chart.draw_series(std::iter::once(Text::new(label_text,
-                                                        (x as f32 - 0.17, y as f32 + 0.09),
-                                                        font_style)))?;
+            chart.draw_series(std::iter::once(Text::new(
+                label_text,
+                (x as f32 - 0.17, y as f32 + 0.09),
+                font_style,
+            )))?;
         }
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-            if let Some(first_data_node_id) =
-                path_graph.iter_nodes()
-                          .filter(|id| matches!(self.nodes[*id as usize].node_type, NodeType::Data))
-                          .next()
+            if let Some(first_data_node_id) = path_graph
+                .iter_nodes()
+                .filter(|id| matches!(self.nodes[*id as usize].node_type, NodeType::Data))
+                .next()
             {
                 let (x, y) = self.nodes[first_data_node_id as usize].pos;
                 let product_str = pp.to_operator_str();
                 let text_width = product_str.len() as f32 * 0.125;
-                chart.draw_series(std::iter::once(Rectangle::new([(x as f32 - 0.3,
-                                                                   y as f32 + 0.3),
-                                                                  (x as f32 - 0.3
-                                                                   + text_width,
-                                                                   y as f32 + 0.55)],
-                                                                 path_colors[i].mix(0.2)
-                                                                               .filled())))?;
-                chart.draw_series(std::iter::once(Text::new(product_str,
-                                                            (x as f32 - 0.2, y as f32 + 0.5),
-                                                            ("sans-serif", 22).into_font())))?;
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [
+                        (x as f32 - 0.3, y as f32 + 0.3),
+                        (x as f32 - 0.3 + text_width, y as f32 + 0.55),
+                    ],
+                    path_colors[i].mix(0.2).filled(),
+                )))?;
+                chart.draw_series(std::iter::once(Text::new(
+                    product_str,
+                    (x as f32 - 0.2, y as f32 + 0.5),
+                    ("sans-serif", 22).into_font(),
+                )))?;
             }
         }
         if !title_str.is_empty() {
             let lines: Vec<&str> = title_str.split('\n').collect();
             for (i, line) in lines.iter().enumerate() {
-                chart.draw_series(std::iter::once(Text::new(line.to_string(),
-                                                            (-0.5, -0.8 - (i as f32 * 0.33)),
-                                                            ("sans-serif",
-                                                             (6.0 * (self.num_rows as f64).sqrt())
-                                                             as u32)
-                                                                    .into_font())))?;
+                chart.draw_series(std::iter::once(Text::new(
+                    line.to_string(),
+                    (-0.5, -0.8 - (i as f32 * 0.33)),
+                    ("sans-serif", (6.0 * (self.num_rows as f64).sqrt()) as u32).into_font(),
+                )))?;
             }
         }
         root.present()?;
@@ -808,18 +840,19 @@ impl TopoGraph {
             let control_x = mid_x + curve_offset;
             let control_y = mid_y;
             let num_points = 10;
-            (0..=num_points).map(|i| {
-                                let t = i as f32 / num_points as f32;
-                                let one_minus_t = 1.0 - t;
-                                let x = one_minus_t.powi(2) * x1
-                                        + 2.0 * one_minus_t * t * control_x
-                                        + t.powi(2) * x2;
-                                let y = one_minus_t.powi(2) * y1
-                                        + 2.0 * one_minus_t * t * control_y
-                                        + t.powi(2) * y2;
-                                (x, y)
-                            })
-                            .collect()
+            (0..=num_points)
+                .map(|i| {
+                    let t = i as f32 / num_points as f32;
+                    let one_minus_t = 1.0 - t;
+                    let x = one_minus_t.powi(2) * x1
+                        + 2.0 * one_minus_t * t * control_x
+                        + t.powi(2) * x2;
+                    let y = one_minus_t.powi(2) * y1
+                        + 2.0 * one_minus_t * t * control_y
+                        + t.powi(2) * y2;
+                    (x, y)
+                })
+                .collect()
         }
     }
 }

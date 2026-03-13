@@ -97,10 +97,12 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
     let args = Args::parse();
-    let mut hdr = format!("PureMagic - Git branch: {} | Commit: {} | Built: {}",
-                          env!("VERGEN_GIT_BRANCH"),
-                          &(env!("VERGEN_GIT_SHA"))[0..8],
-                          env!("VERGEN_BUILD_TIMESTAMP"));
+    let mut hdr = format!(
+        "PureMagic - Git branch: {} | Commit: {} | Built: {}",
+        env!("VERGEN_GIT_BRANCH"),
+        &(env!("VERGEN_GIT_SHA"))[0..8],
+        env!("VERGEN_BUILD_TIMESTAMP")
+    );
     println!("{}\n{:#?}", hdr, args);
     hdr = format!("# {}\n# {:?}", &hdr, args);
     // Initialize circuit
@@ -125,13 +127,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut topo_graph = TopoGraph::new();
     let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
     let num_data_qubits = circuit.num_qubits;
-    topo_graph.set_topo(num_data_qubits,
-                        &circuit_fname.to_string(),
-                        &args.topo_fname,
-                        &rseed,
-                        args.use_magic_routing,
-                        args.ancilla_rows,
-                        args.sides_only);
+    topo_graph.set_topo(
+        num_data_qubits,
+        &circuit_fname.to_string(),
+        &args.topo_fname,
+        &rseed,
+        args.use_magic_routing,
+        args.ancilla_rows,
+        args.sides_only,
+    );
     #[cfg(debug_assertions)]
     topo_graph.print()?;
     if args.plot.contains(&"topo".to_string()) {
@@ -139,13 +143,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut num_qubits = topo_graph.num_qubits;
 
-    let mut scheduler = Scheduler::new(circuit,
-                                       topo_graph,
-                                       args.magic_state_lambda,
-                                       &args.log_scheduler,
-                                       args.plot.join(" "),
-                                       args.rseed,
-                                       args.greedy_path);
+    let mut scheduler = Scheduler::new(
+        circuit,
+        topo_graph,
+        args.magic_state_lambda,
+        &args.log_scheduler,
+        args.plot.join(" "),
+        args.rseed,
+        args.greedy_path,
+    );
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;
     assert_eq!(num_scheduled, num_products);
@@ -160,8 +166,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     num_qubits = best_magic_topo_graph.num_qubits;
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
     let optimal_volume = num_qubits * num_layers;
-    println!("Optimal timesteps {} ({:.3} speedup) volume {}",
-             num_layers, optimal_speedup, optimal_volume);
+    println!(
+        "Optimal timesteps {} ({:.3} speedup) volume {}",
+        num_layers, optimal_speedup, optimal_volume
+    );
     println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
     println!("Parallelism: {:.3}x", num_products as f64 / tot_num_steps as f64);
     Ok(())
