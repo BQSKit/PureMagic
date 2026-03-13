@@ -6,10 +6,25 @@ use std::collections::BinaryHeap;
 
 /// State container for A* pathfinding computations.
 /// Maintains parent pointers, g-costs, and closed set for multi-source searches.
+///
+/// Uses a generation-counter scheme to avoid resetting the arrays on every call:
+/// - `epoch` is incremented once per `compute` call.
+/// - A node slot is considered "initialised" (has a valid g_cost / parent) iff
+///   `node_epoch[id] == epoch`.
+/// - A node slot is considered "closed" iff `closed_epoch[id] == epoch`.
+/// This replaces the three O(N) `fill` calls that previously dominated the hot path.
 pub struct AStarComputation {
-    parent: Vec<Option<u16>>,
+    /// Parent pointer; valid only when `node_epoch[id] == epoch`.
+    /// Stores `u16::MAX` when there is no parent (i.e. the node is the search root).
+    parent: Vec<u16>,
+    /// Tentative g-cost; valid only when `node_epoch[id] == epoch`.
     g_cost: Vec<u32>,
-    closed: Vec<bool>,
+    /// Per-node epoch stamp: `node_epoch[id] == epoch` means the node has been opened.
+    node_epoch: Vec<u32>,
+    /// Per-node closed stamp: `closed_epoch[id] == epoch` means the node has been closed.
+    closed_epoch: Vec<u32>,
+    /// Current epoch counter; bumped once per `compute` call instead of filling arrays.
+    epoch: u32,
     heap: BinaryHeap<(Reverse<u32>, u16)>,
     pub num_calls: usize,
 }
@@ -18,9 +33,11 @@ impl AStarComputation {
     /// Creates a new A* computation state for a graph with `num_nodes` nodes.
     pub fn new(num_nodes: usize) -> Self {
         AStarComputation {
-            parent: vec![None; num_nodes],
+            parent: vec![u16::MAX; num_nodes],
             g_cost: vec![u32::MAX; num_nodes],
-            closed: vec![false; num_nodes],
+            node_epoch: vec![0; num_nodes],
+            closed_epoch: vec![0; num_nodes],
+            epoch: 0,
             heap: BinaryHeap::new(),
             num_calls: 0,
         }
@@ -40,25 +57,34 @@ impl AStarComputation {
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> Option<Option<TreeGraph>> {
         self.num_calls += 1;
-        self.parent.fill(None);
-        self.g_cost.fill(u32::MAX);
-        self.closed.fill(false);
+        // Advance epoch to invalidate all previous per-node state in O(1).
+        // Wrapping add: if epoch wraps to 0 we do a full reset to keep the invariant.
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.epoch = 1;
+            self.node_epoch.fill(0);
+            self.closed_epoch.fill(0);
+        }
+        let epoch = self.epoch;
 
         self.heap.clear();
 
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
+        // Open the root node.
         self.g_cost[root_id as usize] = 0;
+        self.parent[root_id as usize] = u16::MAX; // sentinel: no parent
+        self.node_epoch[root_id as usize] = epoch;
         let (h, ready_idx) = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
         self.heap.push((Reverse(h), root_id));
         // choose this magic node as the target
         let ready_pos = ready_magic_positions[ready_idx];
 
         while let Some((_, node_id)) = self.heap.pop() {
-            if self.closed[node_id as usize] {
+            if self.closed_epoch[node_id as usize] == epoch {
                 continue;
             }
-            self.closed[node_id as usize] = true;
+            self.closed_epoch[node_id as usize] = epoch;
 
             let (node_type, cultivation_time, num_nbors) = {
                 let node = topo.get_node(node_id);
@@ -70,7 +96,11 @@ impl AStarComputation {
                     // Mark path nodes used directly; skip TreeGraph allocation.
                     used[node_id as usize] = true;
                     let mut curr = node_id;
-                    while let Some(prev_id) = self.parent[curr as usize] {
+                    loop {
+                        let prev_id = self.parent[curr as usize];
+                        if prev_id == u16::MAX {
+                            break;
+                        }
                         used[prev_id as usize] = true;
                         curr = prev_id;
                     }
@@ -88,7 +118,11 @@ impl AStarComputation {
                 if !tree.contains_node(curr) {
                     tree.add_node(topo.get_node(curr), topo.get_label(curr));
                 }
-                while let Some(prev_id) = self.parent[curr as usize] {
+                loop {
+                    let prev_id = self.parent[curr as usize];
+                    if prev_id == u16::MAX {
+                        break;
+                    }
                     if !tree.contains_node(prev_id) {
                         tree.add_node(topo.get_node(prev_id), topo.get_label(prev_id));
                     }
@@ -122,7 +156,7 @@ impl AStarComputation {
             let g = self.g_cost[node_id as usize];
             for i in 0..num_nbors {
                 let nb_id = topo.get_node(node_id).nbors[i];
-                if used[nb_id as usize] || self.closed[nb_id as usize] {
+                if used[nb_id as usize] || self.closed_epoch[nb_id as usize] == epoch {
                     continue;
                 }
                 let (nb_is_data, nb_pos) = {
@@ -133,9 +167,17 @@ impl AStarComputation {
                     continue;
                 }
                 let new_g = g + 1;
-                if new_g < self.g_cost[nb_id as usize] {
+                // A node is "unvisited this epoch" when node_epoch[nb] != epoch,
+                // in which case its g_cost slot holds a stale value — treat as u32::MAX.
+                let nb_g = if self.node_epoch[nb_id as usize] == epoch {
+                    self.g_cost[nb_id as usize]
+                } else {
+                    u32::MAX
+                };
+                if new_g < nb_g {
                     self.g_cost[nb_id as usize] = new_g;
-                    self.parent[nb_id as usize] = Some(node_id);
+                    self.parent[nb_id as usize] = node_id;
+                    self.node_epoch[nb_id as usize] = epoch;
                     // always headed to the same target magic node
                     let h = Self::manhattan_dist(nb_pos, ready_pos);
                     self.heap.push((Reverse(new_g + h), nb_id));
