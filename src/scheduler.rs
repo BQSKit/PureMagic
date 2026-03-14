@@ -408,6 +408,7 @@ impl Scheduler {
     /// Replaces per-call `get_data_node_id` + `get_node` + neighbor iteration with `used[]` probes
     /// against precomputed terminal IDs and root candidate lists.
     /// Returns false if any terminal is used or has no free root candidates.
+    #[inline]
     fn get_terminal_nodes(&mut self, pauli_product: &PauliProduct) -> bool {
         let pp_id = pauli_product.id as usize;
         self.terminals_scratch.clear();
