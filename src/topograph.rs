@@ -8,7 +8,6 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use std::fs::File;
-#[cfg(debug_assertions)]
 use std::io::Write;
 use std::io::{self, BufRead};
 use std::path::Path;
@@ -619,8 +618,7 @@ impl TopoGraph {
             && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
     }
 
-    /// Writes topology grid to a text file (debug builds only).
-    #[cfg(debug_assertions)]
+    /// Writes topology grid to a text file
     pub fn print(&self) -> io::Result<()> {
         let topo_path = Path::new(&self.circuit_fname);
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
