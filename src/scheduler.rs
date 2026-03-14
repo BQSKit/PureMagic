@@ -159,6 +159,13 @@ pub struct Scheduler {
     magic_node_ids: Vec<u16>,
     /// Positions of all magic nodes in the same order as `magic_node_ids`, fixed for the topology lifetime.
     magic_node_positions: Vec<(f32, f32)>,
+    /// Pre-generated pool of cultivation times drawn from the exponential distribution.
+    /// Filled before the main scheduling loop so the hot path only does an array read.
+    cultivation_time_pool: Vec<i32>,
+    /// Next index to draw from `cultivation_time_pool`.
+    pool_index: usize,
+    /// Number of T-gate products not yet scheduled; used to size pool refills.
+    t_products_remaining: usize,
     /// Precomputed terminal node IDs for each product, indexed by pp.id.
     /// Avoids topology lookups (get_data_node_id) in the hot scheduling path.
     precomputed_terminals: Vec<Vec<u16>>,
@@ -226,6 +233,9 @@ impl Scheduler {
             remaining_ids_scratch: Vec::new(),
             magic_node_ids: Vec::new(),
             magic_node_positions: Vec::new(),
+            cultivation_time_pool: Vec::new(),
+            pool_index: 0,
+            t_products_remaining: 0,
             precomputed_terminals: Vec::new(),
             precomputed_root_info: Vec::new(),
             timers: timers,
@@ -242,6 +252,11 @@ impl Scheduler {
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         self.init_magic_nodes();
+        let num_t_products = (0..self.circuit.num_products())
+            .filter(|&id| self.circuit.get_product(id as i32).gate_type.is_t())
+            .count();
+        self.t_products_remaining = num_t_products;
+        self.fill_cultivation_pool(100 * num_t_products.max(1) + self.topo.num_nodes);
         self.precompute_terminals_and_roots();
         self.precompute_multi_term_clifford_trees();
         // Build the initial work queue and per-product parent-completion counters.
@@ -358,7 +373,7 @@ impl Scheduler {
             self.magic_node_ids.iter().map(|&id| self.topo.get_node(id).pos).collect();
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
-            self.topo.cultivation_times[id as usize] = self.gen_cultivation_time();
+            self.topo.cultivation_times[id as usize] = self.draw_cultivation_time();
             self.topo.busy_counts[id as usize] = 0;
         }
     }
@@ -614,7 +629,7 @@ impl Scheduler {
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
             if self.used[id as usize] {
-                let t = self.gen_cultivation_time();
+                let t = self.draw_cultivation_time();
                 self.new_cultivation_times.push(t);
             }
         }
@@ -881,10 +896,32 @@ impl Scheduler {
         }
     }
 
-    /// Generates a random magic state cultivation time from exponential distribution.
-    fn gen_cultivation_time(&mut self) -> i32 {
-        let cultivation_time = self.rng_exp.sample().round() as i32; // + 1;
-        cultivation_time
+    /// Fills the cultivation time pool with `n` pre-generated values from the exponential distribution.
+    fn fill_cultivation_pool(&mut self, n: usize) {
+        self.cultivation_time_pool.clear();
+        self.cultivation_time_pool.reserve(n);
+        for _ in 0..n {
+            self.cultivation_time_pool.push(self.rng_exp.sample().round() as i32);
+        }
+        self.pool_index = 0;
+    }
+
+    /// Draws the next pre-generated cultivation time from the pool.
+    /// If the pool is exhausted, refills it to cover remaining T-gate products and prints a warning.
+    #[inline]
+    fn draw_cultivation_time(&mut self) -> i32 {
+        if self.pool_index >= self.cultivation_time_pool.len() {
+            if self.pool_index > 0 {
+                eprintln!(
+                    "{}Warning: refilling cultivation poll for {} remaining T products{}",
+                    _RED, self.t_products_remaining, _RESET
+                );
+            }
+            self.fill_cultivation_pool(10 * self.t_products_remaining + self.topo.num_nodes);
+        }
+        let t = self.cultivation_time_pool[self.pool_index];
+        self.pool_index += 1;
+        t
     }
 
     /// Performs all bookkeeping after a successful timestep:
@@ -900,6 +937,9 @@ impl Scheduler {
         self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(pp, _)| pp.id));
         to_schedule.retain(|pp| !self.scheduled_ids_scratch.contains(&pp.id));
         debug_sched!("After purge, to_schedule len {}", to_schedule.len());
+        // Track remaining T-gate products for cultivation pool refill sizing.
+        let t_scheduled = pp_paths.iter().filter(|(pp, _)| pp.gate_type.is_t()).count();
+        self.t_products_remaining = self.t_products_remaining.saturating_sub(t_scheduled);
         // Identify children whose last unresolved parent was just scheduled.
         // Skip Cliffords that are still mid-sequence (not yet on their final round).
         self.children_scratch.clear();
