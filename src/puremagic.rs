@@ -136,10 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.ancilla_rows,
         args.sides_only,
     );
-    #[cfg(debug_assertions)]
-    topo_graph.print()?;
     if args.plot.contains(&"topo".to_string()) {
         topo_graph.plot(".topo", &[], "")?;
+        topo_graph.print()?;
     }
     let mut num_qubits = topo_graph.num_qubits;
 
