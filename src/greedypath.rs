@@ -79,7 +79,7 @@ impl GreedyPathComputation {
             // Find the best open neighbour: not used, not data, not visited, not revisited,
             // closest manhattan distance to target
             let best_nb = current_node
-                .nbors
+                .nbors_slice()
                 .iter()
                 .copied()
                 .filter(|&nb_id| {
@@ -113,7 +113,7 @@ impl GreedyPathComputation {
                 loop {
                     let backtrack_node = *path.last().unwrap();
                     let has_open_nb =
-                        topo.get_node(backtrack_node).nbors.iter().copied().any(|nb_id| {
+                        topo.get_node(backtrack_node).nbors_slice().iter().copied().any(|nb_id| {
                             !used[nb_id as usize]
                                 && !self.visited[nb_id as usize]
                                 && !self.backtracked[nb_id as usize]
@@ -155,7 +155,7 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
         if !tree.contains_node(root_id) {
             let conn = topo
                 .get_node(root_id)
-                .nbors
+                .nbors_slice()
                 .iter()
                 .copied()
                 .find(|&nb_id| tree.contains_node(nb_id));

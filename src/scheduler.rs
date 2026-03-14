@@ -547,7 +547,7 @@ impl Scheduler {
                     // Preferred: routing neighbors in the paired direction.
                     // X nodes look downward (below their paired Z), Z nodes look upward.
                     let is_x = self.topo.get_label(term_id).contains('X');
-                    for &nb_id in &node.nbors {
+                    for &nb_id in node.nbors_slice() {
                         let nb = self.topo.get_node(nb_id);
                         if !nb.is_routing() {
                             continue;
@@ -560,7 +560,7 @@ impl Scheduler {
                     }
                 } else {
                     // Preferred (and only): routing neighbors on the same row (side).
-                    for &nb_id in &node.nbors {
+                    for &nb_id in node.nbors_slice() {
                         let nb = self.topo.get_node(nb_id);
                         if nb.is_routing() && nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
                             preferred.push(nb_id);
@@ -810,8 +810,7 @@ impl Scheduler {
                 );
                 return PathResult::NoPath;
             }
-            let nb_ids: Vec<u16> = node.nbors.iter().copied().collect();
-            for nb_id in nb_ids {
+            for &nb_id in node.nbors_slice() {
                 let nb = self.topo.get_node(nb_id);
                 if nb.pos.1 == node.pos.1 {
                     info_sched!(
