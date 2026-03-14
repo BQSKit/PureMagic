@@ -28,7 +28,7 @@ pub struct TopoGraph {
     num_rows: usize,
     topo_fname: String,
     circuit_fname: String,
-    use_magic_routing: bool,
+    pub use_magic_routing: bool,
     pub num_data_qubits: usize,
     pub num_bus_qubits: usize,
     pub num_magic_qubits: usize,

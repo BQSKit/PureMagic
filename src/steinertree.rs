@@ -175,6 +175,17 @@ impl SteinerTreeComputation {
             if nb.node_type == NodeType::Data {
                 continue;
             }
+            // When not using magic routing, magic nodes may only be used as cultivators
+            // (the T-gate goal), not as routing intermediaries. Skip magic neighbors that
+            // are not ready cultivator candidates.
+            if !topo.use_magic_routing && nb.node_type == NodeType::Magic {
+                let is_cultivator_candidate = gate_type.is_t()
+                    && cultivator.is_none()
+                    && topo.cultivation_times[nb.id as usize] == 0;
+                if !is_cultivator_candidate {
+                    continue;
+                }
+            }
             if nb.is_routing() && node.is_routing() && self.visited[*nb_id as usize].is_some() {
                 let nb_root_id = self.visited[*nb_id as usize].unwrap();
                 if curr_root_id == nb_root_id {
