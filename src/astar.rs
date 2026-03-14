@@ -197,6 +197,12 @@ impl AStarComputation {
                 return PathResult::PathFound(Some(tree));
             }
 
+            // If this is a magic node that is not the goal (not ready/unused), skip expanding
+            // its neighbors — magic nodes must not be used as routing intermediaries unless
+            // use_magic_routing is enabled.
+            if !topo.use_magic_routing && node_type == NodeType::Magic {
+                continue;
+            }
             let g = self.g_cost[node_id as usize];
             for i in 0..num_nbors {
                 let nb_id = topo.get_node(node_id).nbors[i];

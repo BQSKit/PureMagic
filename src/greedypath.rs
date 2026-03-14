@@ -77,7 +77,9 @@ impl GreedyPathComputation {
             }
 
             // Find the best open neighbour: not used, not data, not visited, not revisited,
-            // closest manhattan distance to target
+            // closest manhattan distance to target.
+            // When use_magic_routing is false, magic nodes may only be stepped onto as the
+            // final goal (ready + unused); they must not be used as routing intermediaries.
             let best_nb = current_node
                 .nbors_slice()
                 .iter()
@@ -92,6 +94,13 @@ impl GreedyPathComputation {
                     let nb = topo.get_node(nb_id);
                     if nb.node_type == NodeType::Data {
                         return false;
+                    }
+                    if !topo.use_magic_routing && nb.node_type == NodeType::Magic {
+                        // Only allow stepping onto a magic node if it is the goal
+                        let is_goal = topo.cultivation_times[nb_id as usize] == 0;
+                        if !is_goal {
+                            return false;
+                        }
                     }
                     true
                 })
@@ -114,12 +123,28 @@ impl GreedyPathComputation {
                     let backtrack_node = *path.last().unwrap();
                     let has_open_nb =
                         topo.get_node(backtrack_node).nbors_slice().iter().copied().any(|nb_id| {
-                            !used[nb_id as usize]
-                                && !self.visited[nb_id as usize]
-                                && !self.backtracked[nb_id as usize]
-                                && topo.get_node(nb_id).node_type != NodeType::Data
-                                && !(topo.get_node(nb_id).node_type == NodeType::Magic
-                                    && topo.cultivation_times[nb_id as usize] > 0)
+                            if used[nb_id as usize]
+                                || self.visited[nb_id as usize]
+                                || self.backtracked[nb_id as usize]
+                            {
+                                return false;
+                            }
+                            let nb = topo.get_node(nb_id);
+                            if nb.node_type == NodeType::Data {
+                                return false;
+                            }
+                            if nb.node_type == NodeType::Magic {
+                                // Not-yet-ready magic nodes are never usable
+                                if topo.cultivation_times[nb_id as usize] > 0 {
+                                    return false;
+                                }
+                                // When not using magic routing, magic nodes are only valid
+                                // as the final goal, not as routing intermediaries
+                                if !topo.use_magic_routing {
+                                    return false;
+                                }
+                            }
+                            true
                         });
                     if has_open_nb {
                         break;
