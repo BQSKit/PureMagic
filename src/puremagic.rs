@@ -169,7 +169,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Optimal timesteps {} ({:.3} speedup) volume {}",
         num_layers, optimal_speedup, optimal_volume
     );
+    let speedup = num_products as f64 / tot_num_steps as f64;
+    println!("Parallelism: {:.3}x", speedup);
     println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
-    println!("Parallelism: {:.3}x", num_products as f64 / tot_num_steps as f64);
+    println!("Parallel efficiency: {:.3}", speedup / optimal_speedup);
     Ok(())
 }
