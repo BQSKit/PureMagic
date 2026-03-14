@@ -140,7 +140,7 @@ pub struct Scheduler {
     plot_option: String,
     cultivation_times_log: Vec<i32>,
     stats: ScheduleStats,
-    timestep_scheduled: Vec<(usize, Vec<PauliProduct>)>,
+    timestep_scheduled: Vec<(usize, Vec<i32>)>,
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
@@ -286,7 +286,7 @@ impl Scheduler {
             print!("Scheduling {} products:    ", total_to_schedule);
         }
         // Reuse pp_paths Vec across timesteps so the backing buffer is never freed/reallocated.
-        let mut pp_paths: Vec<(PauliProduct, Option<Rc<TreeGraph>>)> = Vec::new();
+        let mut pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)> = Vec::new();
         // main scheduling loop
         while !to_schedule.is_empty() || !self.clifford_paths.is_empty() {
             self.timers.start(self.loop_timer);
@@ -331,8 +331,10 @@ impl Scheduler {
                     std::env::set_current_dir(path_dir.as_ref().unwrap())?;
                     let plot_paths: Vec<(PauliProduct, Rc<TreeGraph>)> = pp_paths
                         .iter()
-                        .filter_map(|(pp, opt_tree)| {
-                            opt_tree.as_ref().map(|t| (pp.clone(), Rc::clone(t)))
+                        .filter_map(|(pp_id, opt_tree)| {
+                            opt_tree
+                                .as_ref()
+                                .map(|t| (self.circuit.get_product(*pp_id).clone(), Rc::clone(t)))
                         })
                         .collect();
                     self.topo
@@ -580,7 +582,7 @@ impl Scheduler {
     /// `pp_paths` is cleared on entry so the caller's buffer is reused across timesteps.
     fn schedule_timestep(
         &mut self, step_i: usize, to_schedule: &mut Vec<PauliProduct>,
-        pp_paths: &mut Vec<(PauliProduct, Option<Rc<TreeGraph>>)>, plotting: bool,
+        pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>, plotting: bool,
     ) -> bool {
         let _timer = accum_start!(self.timers);
         self.timers.start(self.other_timer);
@@ -593,7 +595,7 @@ impl Scheduler {
             for &node_id in node_ids {
                 self.used[node_id as usize] = true;
             }
-            pp_paths.push(((*pp).clone(), opt_tree.as_ref().map(Rc::clone)));
+            pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
         }
         info_sched!("  Remaining to schedule: {}", to_schedule.len());
         self.schedule_precomputed(to_schedule, pp_paths, plotting);
@@ -672,7 +674,7 @@ impl Scheduler {
     /// `remaining` for the second pass.
     fn schedule_precomputed(
         &mut self, to_schedule: &mut Vec<PauliProduct>,
-        pp_paths: &mut Vec<(PauliProduct, Option<Rc<TreeGraph>>)>, plotting: bool,
+        pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>, plotting: bool,
     ) {
         let _timer = accum_start!(self.timers);
         // Snapshot the keys so we can mutate `remaining` inside the loop.
@@ -686,7 +688,6 @@ impl Scheduler {
                 continue; // No precomputed tree; leave in remaining for the second pass.
             };
             let all_free = tree.iter_nodes().all(|nid| !self.used[nid as usize]);
-            let pp = self.circuit.get_product(pp_id).clone();
             if all_free {
                 to_remove.push(pp_id);
                 for node_id in tree.iter_nodes() {
@@ -695,14 +696,15 @@ impl Scheduler {
                 }
                 info_sched!(
                     "  Scheduled product {} (precomputed) with {} nodes and {} edges",
-                    pp,
+                    self.circuit.get_product(pp_id),
                     tree.num_nodes,
                     tree.num_edges
                 );
                 // When not plotting, skip storing the tree (save Rc clone overhead).
-                pp_paths.push((pp, if plotting { Some(tree) } else { None }));
+                pp_paths.push((pp_id, if plotting { Some(tree) } else { None }));
             } else {
-                Self::mark_blocked_product_as_used(&mut self.used, &self.topo, &pp);
+                let pp = self.circuit.get_product(pp_id);
+                Self::mark_blocked_product_as_used(&mut self.used, &self.topo, pp);
             }
         }
         to_schedule.retain(|pp| !to_remove.contains(&pp.id));
@@ -728,7 +730,7 @@ impl Scheduler {
     /// returns the best schedulable product, or None if nothing fits this timestep.
     fn schedule_remaining(
         &mut self, to_schedule: &mut [PauliProduct],
-        pp_paths: &mut Vec<(PauliProduct, Option<Rc<TreeGraph>>)>, num_avail_magic: &mut usize,
+        pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>, num_avail_magic: &mut usize,
         plotting: bool,
     ) {
         let _timer = accum_start!(self.timers);
@@ -748,7 +750,7 @@ impl Scheduler {
                             self.used[node_id as usize] = true;
                         }
                     }
-                    pp_paths.push(((*pp).clone(), opt_graph.map(Rc::new)));
+                    pp_paths.push((pp.id, opt_graph.map(Rc::new)));
                     if pp.gate_type.is_t() {
                         *num_avail_magic -= 1;
                     }
@@ -929,24 +931,28 @@ impl Scheduler {
     /// removes scheduled products from the work queue, unlocks children whose parents are all
     /// done, advances multi-round Clifford state, records the step, and runs debug checks.
     fn complete_timestep(
-        &mut self, pp_paths: &[(PauliProduct, Option<Rc<TreeGraph>>)],
-        to_schedule: &mut Vec<PauliProduct>, remaining_parents: &mut Vec<usize>, num_steps: usize,
+        &mut self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)], to_schedule: &mut Vec<PauliProduct>,
+        remaining_parents: &mut Vec<usize>, num_steps: usize,
     ) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
         // Remove freshly-scheduled products from the work queue.
         self.scheduled_ids_scratch.clear();
-        self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(pp, _)| pp.id));
+        self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(id, _)| *id));
         to_schedule.retain(|pp| !self.scheduled_ids_scratch.contains(&pp.id));
         debug_sched!("After purge, to_schedule len {}", to_schedule.len());
         // Track remaining T-gate products for cultivation pool refill sizing.
-        let t_scheduled = pp_paths.iter().filter(|(pp, _)| pp.gate_type.is_t()).count();
+        let t_scheduled = pp_paths
+            .iter()
+            .filter(|(id, _)| self.circuit.get_product(*id).gate_type.is_t())
+            .count();
         self.t_products_remaining = self.t_products_remaining.saturating_sub(t_scheduled);
         // Identify children whose last unresolved parent was just scheduled.
         // Skip Cliffords that are still mid-sequence (not yet on their final round).
         self.children_scratch.clear();
-        for (pp, _) in pp_paths.iter() {
+        for &(pp_id, _) in pp_paths.iter() {
+            let pp = self.circuit.get_product(pp_id);
             if pp.gate_type.is_clifford() {
-                match self.clifford_paths.get(&pp.id) {
+                match self.clifford_paths.get(&pp_id) {
                     Some((count, _, _, _)) if *count == 2 => {
                         debug_assert!(pp.gate_type.is_s() || pp.gate_type.is_sx());
                         continue; // second-of-three round: children not yet unlocked
@@ -965,14 +971,15 @@ impl Scheduler {
             }
         }
         // Advance or register each Clifford product's multi-round state.
-        for (pp, opt_pp_path) in pp_paths.iter() {
+        for &(pp_id, ref opt_pp_path) in pp_paths.iter() {
+            let pp = self.circuit.get_product(pp_id);
             if !pp.gate_type.is_clifford() {
                 continue;
             }
-            if let Some(clifford_path) = self.clifford_paths.get_mut(&pp.id) {
+            if let Some(clifford_path) = self.clifford_paths.get_mut(&pp_id) {
                 clifford_path.0 -= 1;
                 if clifford_path.0 == 0 {
-                    self.clifford_paths.swap_remove(&pp.id);
+                    self.clifford_paths.swap_remove(&pp_id);
                 }
             } else {
                 let count = if pp.gate_type.is_cx() { 1 } else { 2 };
@@ -986,13 +993,13 @@ impl Scheduler {
                     // Not plotting: opt_pp_path is None for precomputed Cliffords.
                     // Get node IDs from the precomputed tree.
                     self.precomputed_clifford_trees
-                        .get(&pp.id)
+                        .get(&pp_id)
                         .map(|t| t.iter_nodes().collect())
                         .unwrap_or_default()
                 };
                 self.clifford_paths.insert(
-                    pp.id,
-                    (count, (*pp).clone(), node_ids, opt_pp_path.as_ref().map(Rc::clone)),
+                    pp_id,
+                    (count, pp.clone(), node_ids, opt_pp_path.as_ref().map(Rc::clone)),
                 );
             }
         }
@@ -1008,13 +1015,11 @@ impl Scheduler {
             self.children_scratch.len(),
             to_schedule.len()
         );
-        // Record this step and update the global scheduled-products set.
-        let products_in_step: Vec<PauliProduct> =
-            pp_paths.iter().map(|(pp, _)| pp.clone()).collect();
-        self.timestep_scheduled.push((num_steps, products_in_step));
+        // Record this step (store IDs only — no clone of PauliProduct).
+        self.timestep_scheduled.push((num_steps, pp_paths.iter().map(|(id, _)| *id).collect()));
         #[cfg(debug_assertions)]
         self.check_timestep(pp_paths)?;
-        self.scheduled_products.extend(pp_paths.iter().map(|(pp, _)| pp.id));
+        self.scheduled_products.extend(pp_paths.iter().map(|(id, _)| *id));
         Ok(())
     }
 
@@ -1046,17 +1051,18 @@ impl Scheduler {
     /// 4. T-gate trees have a magic root node.
     /// 5. No two products in this timestep share a topology node.
     #[cfg(debug_assertions)]
-    fn check_timestep(&self, pp_paths: &[(PauliProduct, Option<Rc<TreeGraph>>)]) -> io::Result<()> {
+    fn check_timestep(&self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)]) -> io::Result<()> {
         let mut step_used = vec![false; self.topo.num_nodes];
-        for (pp, opt_tree) in pp_paths {
+        for &(pp_id, ref opt_tree) in pp_paths {
             // When not plotting, trees are None — skip structural checks.
             let Some(tree) = opt_tree else { continue };
             let tree = tree.as_ref();
+            let pp = self.circuit.get_product(pp_id);
             // 1. Already scheduled?
-            if self.scheduled_products.contains(&pp.id) && !pp.gate_type.is_clifford() {
+            if self.scheduled_products.contains(&pp_id) && !pp.gate_type.is_clifford() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("product {} scheduled twice", pp.id),
+                    format!("product {} scheduled twice", pp_id),
                 ));
             }
             // 2. All parents scheduled in a prior timestep?
@@ -1064,7 +1070,7 @@ impl Scheduler {
                 if !self.scheduled_products.contains(&parent_id) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("product {} scheduled before parent {}", pp.id, parent_id),
+                        format!("product {} scheduled before parent {}", pp_id, parent_id),
                     ));
                 }
             }
@@ -1079,7 +1085,7 @@ impl Scheduler {
                                 format!(
                                     "product {} (step 3): terminal \
                                                                qubit {} basis {} missing from tree",
-                                    pp.id, op.qubit, basis
+                                    pp_id, op.qubit, basis
                                 ),
                             ));
                         }
@@ -1092,7 +1098,7 @@ impl Scheduler {
                             format!(
                                 "product {} terminal qubit {} basis \
                                                            {} missing from tree",
-                                pp.id, op.qubit, op.basis
+                                pp_id, op.qubit, op.basis
                             ),
                         ));
                     }
@@ -1107,7 +1113,7 @@ impl Scheduler {
                             format!(
                                 "product {}: T gate has no magic root \
                                                            node",
-                                pp.id
+                                pp_id
                             ),
                         ));
                     }
@@ -1118,7 +1124,7 @@ impl Scheduler {
                                 format!(
                                     "product {}: root node {} is not \
                                                                a Magic node",
-                                    pp.id, magic_id
+                                    pp_id, magic_id
                                 ),
                             ));
                         }
@@ -1133,7 +1139,7 @@ impl Scheduler {
                         format!(
                             "product {} shares node '{}' with another \
                                                        product in the same timestep",
-                            pp.id,
+                            pp_id,
                             self.topo.get_label(node_id)
                         ),
                     ));
@@ -1151,13 +1157,14 @@ impl Scheduler {
         // map the product id to a vector containing the timesteps on which the product was found
         let mut cx_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
         let mut s_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
-        for (step_i, step_products) in &self.timestep_scheduled {
-            for pp in step_products {
+        for (step_i, step_ids) in &self.timestep_scheduled {
+            for &pp_id in step_ids {
+                let pp = self.circuit.get_product(pp_id);
                 if pp.gate_type.is_cx() {
-                    let steps = cx_counts.entry(pp.id).or_insert(Vec::new());
+                    let steps = cx_counts.entry(pp_id).or_insert(Vec::new());
                     steps.push(*step_i);
                 } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
-                    let steps = s_counts.entry(pp.id).or_insert(Vec::new());
+                    let steps = s_counts.entry(pp_id).or_insert(Vec::new());
                     steps.push(*step_i);
                 }
             }
@@ -1244,13 +1251,21 @@ impl Scheduler {
         ];
 
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
-        for (step_i, step_products) in &self.timestep_scheduled {
-            let mut sorted_products = step_products.clone();
-            sorted_products
-                .sort_by_key(|pp| pp.operators.iter().map(|op| op.qubit).min().unwrap_or(u16::MAX));
+        for (step_i, step_ids) in &self.timestep_scheduled {
+            let mut sorted_ids = step_ids.clone();
+            sorted_ids.sort_by_key(|&id| {
+                self.circuit
+                    .get_product(id)
+                    .operators
+                    .iter()
+                    .map(|op| op.qubit)
+                    .min()
+                    .unwrap_or(u16::MAX)
+            });
             let mut combined_chars = vec!['_'; self.circuit.num_qubits];
             let mut combined_colors = vec![_RESET; self.circuit.num_qubits];
-            for (idx, pp) in sorted_products.iter().enumerate() {
+            for (idx, &pp_id) in sorted_ids.iter().enumerate() {
+                let pp = self.circuit.get_product(pp_id);
                 let color = colors[idx % colors.len()];
                 for op in &pp.operators {
                     if op.qubit < self.circuit.num_qubits as u16 {
@@ -1259,15 +1274,15 @@ impl Scheduler {
                     }
                 }
                 if pp.gate_type.is_cx() {
-                    if !prev_cx.swap_remove(&pp.id) {
-                        debug_sched!("  first round of CX {} {}", pp.id, pp);
-                        prev_cx.insert(pp.id);
+                    if !prev_cx.swap_remove(&pp_id) {
+                        debug_sched!("  first round of CX {} {}", pp_id, pp);
+                        prev_cx.insert(pp_id);
                         // First round is qubit 0, clear qubit 1
                         let qubit = pp.operators[1].qubit;
                         combined_colors[qubit as usize] = _RESET;
                         combined_chars[qubit as usize] = '_';
                     } else {
-                        debug_sched!("  second round of CX {} {}", pp.id, pp);
+                        debug_sched!("  second round of CX {} {}", pp_id, pp);
                         // Second round is qubit 1, clear qubit 0
                         let qubit = pp.operators[0].qubit;
                         combined_colors[qubit as usize] = _RESET;
@@ -1280,9 +1295,10 @@ impl Scheduler {
                 write!(buf_file, "{}{}", combined_colors[i], combined_chars[i])?;
             }
             let mut id_string = String::new();
-            for (idx, pp) in sorted_products.iter().enumerate() {
+            for (idx, &pp_id) in sorted_ids.iter().enumerate() {
+                let pp = self.circuit.get_product(pp_id);
                 let color = colors[idx % colors.len()];
-                id_string.push_str(&format!(" {}{}<{:?}>", color, pp.id, pp.gate_type));
+                id_string.push_str(&format!(" {}{}<{:?}>", color, pp_id, pp.gate_type));
             }
             writeln!(buf_file, "{}{}", id_string, _RESET)?;
         }
