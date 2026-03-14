@@ -155,6 +155,10 @@ pub struct Scheduler {
     new_cultivation_times: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
     remaining_ids_scratch: Vec<i32>,
+    /// IDs of all magic nodes, built once at init to avoid scanning all nodes each timestep.
+    magic_node_ids: Vec<u16>,
+    /// Positions of all magic nodes in the same order as `magic_node_ids`, fixed for the topology lifetime.
+    magic_node_positions: Vec<(f32, f32)>,
     /// Precomputed terminal node IDs for each product, indexed by pp.id.
     /// Avoids topology lookups (get_data_node_id) in the hot scheduling path.
     precomputed_terminals: Vec<Vec<u16>>,
@@ -220,6 +224,8 @@ impl Scheduler {
             new_cultivation_times: Vec::new(),
             precomputed_clifford_trees: HashMap::new(),
             remaining_ids_scratch: Vec::new(),
+            magic_node_ids: Vec::new(),
+            magic_node_positions: Vec::new(),
             precomputed_terminals: Vec::new(),
             precomputed_root_info: Vec::new(),
             timers: timers,
@@ -340,16 +346,18 @@ impl Scheduler {
     }
 
     /// Initializes all magic nodes with random cultivation times (exponential distribution).
+    /// Also builds `magic_node_ids` and `magic_node_positions` for use in the scheduling hot path.
     fn init_magic_nodes(&mut self) {
-        // Initialize magic nodes with busy counts
-        // Collect magic node labels first to avoid borrow conflicts
-        let magic_ids: Vec<u16> = self
+        self.magic_node_ids = self
             .topo
             .iter_nodes()
             .filter(|node| node.node_type == NodeType::Magic)
             .map(|node| node.id)
             .collect();
-        for id in magic_ids {
+        self.magic_node_positions =
+            self.magic_node_ids.iter().map(|&id| self.topo.get_node(id).pos).collect();
+        for i in 0..self.magic_node_ids.len() {
+            let id = self.magic_node_ids[i];
             self.topo.cultivation_times[id as usize] = self.gen_cultivation_time();
             self.topo.busy_counts[id as usize] = 0;
         }
@@ -601,52 +609,40 @@ impl Scheduler {
     /// times for nodes just scheduled. Returns count of ready (cultivation_time=0) magic nodes.
     fn update_cultivators(&mut self) -> usize {
         let _timer = accum_start!(self.timers);
-        // Collect magic nodes that need new busy counts
-        let num_used_magic_nodes = self
-            .topo
-            .iter_nodes()
-            .filter(|node| self.used[node.id as usize] && node.node_type == NodeType::Magic)
-            .count();
-        // Generate new cultivation times for magic nodes
+        // Pre-generate cultivation times for used magic nodes to avoid borrow conflicts.
         self.new_cultivation_times.clear();
-        for _ in 0..num_used_magic_nodes {
-            let t = self.gen_cultivation_time();
-            self.new_cultivation_times.push(t);
+        for i in 0..self.magic_node_ids.len() {
+            let id = self.magic_node_ids[i];
+            if self.used[id as usize] {
+                let t = self.gen_cultivation_time();
+                self.new_cultivation_times.push(t);
+            }
         }
-        let node_info: Vec<(u16, NodeType)> =
-            self.topo.iter_nodes().map(|node| (node.id, node.node_type)).collect();
-        // Update busy counts and reset used flags
+        // Single pass over magic nodes only: update cultivation state and collect ready positions.
         let mut num_avail_magic = 0;
         let mut cultivation_time_index = 0;
-        for (node_id, node_type) in &node_info {
-            let node_id = *node_id;
-            if self.used[node_id as usize] && *node_type == NodeType::Magic {
-                self.topo.cultivation_times[node_id as usize] =
+        self.ready_magic_positions.clear();
+        for i in 0..self.magic_node_ids.len() {
+            let id = self.magic_node_ids[i];
+            if self.used[id as usize] {
+                self.topo.cultivation_times[id as usize] =
                     self.new_cultivation_times[cultivation_time_index];
-                self.topo.busy_counts[node_id as usize] = 0;
+                self.topo.busy_counts[id as usize] = 0;
                 cultivation_time_index += 1;
-            } else if !self.used[node_id as usize] && self.topo.is_cultivating(node_id) {
-                self.topo.busy_counts[node_id as usize] += 1;
-                if self.topo.busy_counts[node_id as usize]
-                    == self.topo.cultivation_times[node_id as usize]
-                {
-                    self.cultivation_times_log.push(self.topo.cultivation_times[node_id as usize]);
-                    self.topo.cultivation_times[node_id as usize] = 0;
-                    self.topo.busy_counts[node_id as usize] = 0;
+            } else if self.topo.is_cultivating(id) {
+                self.topo.busy_counts[id as usize] += 1;
+                if self.topo.busy_counts[id as usize] == self.topo.cultivation_times[id as usize] {
+                    self.cultivation_times_log.push(self.topo.cultivation_times[id as usize]);
+                    self.topo.cultivation_times[id as usize] = 0;
+                    self.topo.busy_counts[id as usize] = 0;
                 }
             }
-            if *node_type == NodeType::Magic && self.topo.cultivation_times[node_id as usize] == 0 {
+            if self.topo.cultivation_times[id as usize] == 0 {
                 num_avail_magic += 1;
+                self.ready_magic_positions.push(self.magic_node_positions[i]);
             }
         }
-        // Collect ready magic positions sorted by x so AStarComputation::heuristic can prune with binary search.
-        self.ready_magic_positions = node_info
-            .iter()
-            .filter(|(node_id, node_type)| {
-                *node_type == NodeType::Magic && self.topo.cultivation_times[*node_id as usize] == 0
-            })
-            .map(|(node_id, _)| self.topo.get_node(*node_id).pos)
-            .collect();
+        // Sort by x so AStarComputation::heuristic can prune with binary search.
         self.ready_magic_positions
             .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         info_sched!("  Available magic {}", num_avail_magic);
