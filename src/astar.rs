@@ -133,7 +133,7 @@ impl AStarComputation {
 
             let (node_type, cultivation_time, num_nbors) = {
                 let node = topo.get_node(node_id);
-                (node.node_type, topo.cultivation_times[node_id as usize], node.nbors.len())
+                (node.node_type, topo.cultivation_times[node_id as usize], node.num_nbors as usize)
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
@@ -177,7 +177,7 @@ impl AStarComputation {
                     if !tree.contains_node(root_id) {
                         let conn = topo
                             .get_node(root_id)
-                            .nbors
+                            .nbors_slice()
                             .iter()
                             .copied()
                             .find(|&nb_id| tree.contains_node(nb_id));

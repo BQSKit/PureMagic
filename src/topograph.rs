@@ -4,9 +4,9 @@ use crate::pauliproduct::PauliProduct;
 use crate::treegraph::TreeGraph;
 use indexmap::IndexMap;
 use plotters::prelude::*;
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
 use std::fs::File;
 #[cfg(debug_assertions)]
 use std::io::Write;
@@ -693,7 +693,7 @@ impl TopoGraph {
             })
             .collect();
         for node in &self.nodes {
-            for nb_id in &node.nbors {
+            for nb_id in node.nbors_slice() {
                 let nb = &self.nodes[*nb_id as usize];
                 let mut edge_color = &BLACK.mix(0.5).to_rgba();
                 let mut stroke_width = 1;

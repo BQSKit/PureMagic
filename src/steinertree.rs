@@ -80,7 +80,7 @@ impl SteinerTreeComputation {
                 );
             }
             let root_node = topo.get_node(*root_id);
-            for nb_id in root_node.nbors.iter() {
+            for nb_id in root_node.nbors_slice().iter() {
                 let nb = topo.get_node(*nb_id);
                 if terminal_nodes.contains(&nb_id) {
                     if !tree.contains_node(nb.id) {
@@ -129,11 +129,12 @@ impl SteinerTreeComputation {
                 for &tid in terminal_nodes.iter() {
                     if !tree.contains_node(tid) {
                         let tid_pos = topo.get_node(tid).pos;
-                        let conn = topo.get_node(tid).nbors.iter().copied().find(|&nb_id| {
-                            tree.contains_node(nb_id)
-                                && topo.get_node(nb_id).is_routing()
-                                && (topo.get_node(nb_id).pos.1 - tid_pos.1).abs() < 0.01
-                        });
+                        let conn =
+                            topo.get_node(tid).nbors_slice().iter().copied().find(|&nb_id| {
+                                tree.contains_node(nb_id)
+                                    && topo.get_node(nb_id).is_routing()
+                                    && (topo.get_node(nb_id).pos.1 - tid_pos.1).abs() < 0.01
+                            });
                         if let Some(conn_id) = conn {
                             tree.add_node(topo.get_node(tid), topo.get_label(tid));
                             tree.add_edge(conn_id, tid);
@@ -166,7 +167,7 @@ impl SteinerTreeComputation {
             assert_eq!(num_paths, curr_num_paths);
         }
         let mut cultivator = starting_cultivator;
-        for nb_id in node.nbors.iter() {
+        for nb_id in node.nbors_slice().iter() {
             let nb = topo.get_node(*nb_id);
             if used[nb.id as usize] {
                 continue;
@@ -279,7 +280,7 @@ impl SteinerTreeComputation {
                 let num_edges = tree.get_num_node_edges(node_id);
                 assert_eq!(num_edges, 1);
             }
-            for nb_id in node.nbors.iter() {
+            for nb_id in node.nbors_slice().iter() {
                 let n1n2 = tree.contains_edge(node_id, *nb_id);
                 let n2n1 = tree.contains_edge(*nb_id, node_id);
                 assert_eq!(n1n2, n2n1);
