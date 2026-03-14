@@ -151,6 +151,9 @@ impl TopoGraph {
         for (row_i, row) in rows.iter().enumerate() {
             for (col_i, col) in row.iter().enumerate() {
                 self.node_grid[col_i][row_i] = Some(col.clone());
+                if self.use_magic_routing && col == "b" {
+                    self.node_grid[col_i][row_i] = Some("m".to_string());
+                }
             }
         }
         let mut pair_indices = Vec::new();
