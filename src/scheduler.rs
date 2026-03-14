@@ -1,5 +1,5 @@
 use crate::accum_start;
-use crate::astar::AStarComputation;
+use crate::astar::{AStarComputation, PathResult};
 use crate::circuit::Circuit;
 use crate::debug_sched;
 use crate::fn_timer;
@@ -737,7 +737,8 @@ impl Scheduler {
                 continue;
             }
             if *num_avail_magic > 0 || !pp.gate_type.is_t() {
-                if let Some(opt_graph) = self.schedule_pauli_product(pp, plotting) {
+                if let PathResult::PathFound(opt_graph) = self.schedule_pauli_product(pp, plotting)
+                {
                     info_sched!("  Scheduled product {}", pp);
                     // When plotting, mark used[] from tree nodes and record stats.
                     // When not plotting, used[] was already marked inside schedule_pauli_product.
@@ -761,13 +762,12 @@ impl Scheduler {
 
     /// Attempts to route a single Pauli product through the topology.
     /// Uses A* for single-qubit T gates, Steiner tree for others.
-    /// Returns a routing tree or None if no valid routing exists.
-    /// Returns `Some(opt_tree)` on success, `None` on failure.
+    /// Returns `PathFound(opt_tree)` on success, `NoPath` on failure.
     /// `opt_tree` is `Some(tree)` when plotting, `None` when not plotting.
     /// When not plotting, `used[]` is marked directly inside the compute methods.
     fn schedule_pauli_product(
         &mut self, pauli_product: &PauliProduct, plotting: bool,
-    ) -> Option<Option<TreeGraph>> {
+    ) -> PathResult {
         let _timer = accum_start!(self.timers);
         info_sched!("  Trying to schedule product {}", pauli_product);
         // Terminal nodes contain only the data qubits
@@ -776,7 +776,7 @@ impl Scheduler {
                 "    Cannot schedule {}: no data nodes found in working graph",
                 pauli_product.id
             );
-            return None;
+            return PathResult::NoPath;
         }
         // Handle single data node case
         if self.terminals_scratch.len() == 1 && pauli_product.gate_type.is_m() {
@@ -788,16 +788,16 @@ impl Scheduler {
                     pauli_product.id,
                     self.topo.get_label(node_id)
                 );
-                return None;
+                return PathResult::NoPath;
             }
             if !plotting {
                 self.used[node_id as usize] = true;
                 self.stats.inc(node.node_type);
-                return Some(None);
+                return PathResult::PathFound(None);
             }
             let mut g = TreeGraph::new(self.topo.num_nodes);
             g.add_node(node, self.topo.get_label(node_id));
-            return Some(Some(g));
+            return PathResult::PathFound(Some(g));
         } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
             let node_id = self.terminals_scratch[0];
             let node = self.topo.get_node(node_id);
@@ -808,7 +808,7 @@ impl Scheduler {
                     pauli_product.gate_type,
                     self.topo.get_label(node_id)
                 );
-                return None;
+                return PathResult::NoPath;
             }
             let nb_ids: Vec<u16> = node.nbors.iter().copied().collect();
             for nb_id in nb_ids {
@@ -826,18 +826,18 @@ impl Scheduler {
                             self.used[nb_id as usize] = true;
                             self.stats.inc(node.node_type);
                             self.stats.inc(nb.node_type);
-                            return Some(None);
+                            return PathResult::PathFound(None);
                         }
                         let mut g = TreeGraph::new(self.topo.num_nodes);
                         g.add_node(node, self.topo.get_label(node_id));
                         g.add_node(nb, self.topo.get_label(nb_id));
                         g.add_edge(node_id, nb_id);
-                        return Some(Some(g));
+                        return PathResult::PathFound(Some(g));
                     }
                 }
             }
             info_sched!("    Cannot schedule S/SX {}: no available ancilla", pauli_product.id);
-            return None;
+            return PathResult::NoPath;
         } else {
             // all terminals should be accessible
             debug_assert!(
@@ -848,7 +848,7 @@ impl Scheduler {
                 self.get_root_nodes(pauli_product.id as usize, &self.terminals_scratch[..]);
             if root_ids.is_empty() {
                 info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
-                return None;
+                return PathResult::NoPath;
             }
             let g = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
                 // Single-qubit T gate (X, Z, or Y): use multi-source A*.
@@ -879,21 +879,22 @@ impl Scheduler {
                     pauli_product.id
                 );
                 // Steiner always builds a tree (needed for Clifford carry-forward node IDs).
-                self.stree_computation
-                    .compute(
-                        &self.topo,
-                        &self.used,
-                        &root_ids,
-                        &self.terminals_scratch,
-                        pauli_product.gate_type,
-                    )
-                    .map(Some)
+                match self.stree_computation.compute(
+                    &self.topo,
+                    &self.used,
+                    &root_ids,
+                    &self.terminals_scratch,
+                    pauli_product.gate_type,
+                ) {
+                    Some(tree) => PathResult::PathFound(Some(tree)),
+                    None => PathResult::NoPath,
+                }
             };
-            if let Some(opt_g) = g {
-                return Some(opt_g);
+            if let PathResult::PathFound(opt_g) = g {
+                return PathResult::PathFound(opt_g);
             }
             info_sched!("    Cannot schedule {}: no steiner tree found", pauli_product.id);
-            None
+            PathResult::NoPath
         }
     }
 

@@ -2,6 +2,16 @@ use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 
+/// Result of a pathfinding computation.
+/// `NoPath` means no valid route exists.
+/// `PathFound(None)` means a route was found and `used[]` marked, but no tree was built (non-plotting mode).
+/// `PathFound(Some(tree))` means a route was found and a full routing tree was built (plotting mode).
+#[derive(Debug)]
+pub enum PathResult {
+    NoPath,
+    PathFound(Option<TreeGraph>),
+}
+
 /// Number of buckets in the bucket-queue (Dial's algorithm).
 /// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 buckets gives ample headroom.
 const BUCKET_COUNT: usize = 256;
@@ -89,13 +99,13 @@ impl AStarComputation {
     /// For single-Y T gates: two roots (one above X-data, one below Z-data), two terminals.
     /// After building the main path (magic → root), any remaining roots that are not
     /// on the path are stitched in by finding an adjacent node already in the tree.
-    /// When `plotting` is false, marks `used[]` directly and returns `Some(None)` (no tree built).
-    /// When `plotting` is true, builds and returns `Some(Some(tree))`.
-    /// Returns outer `None` if no path exists.
+    /// When `plotting` is false, marks `used[]` directly and returns `PathFound(None)`.
+    /// When `plotting` is true, builds and returns `PathFound(Some(tree))`.
+    /// Returns `NoPath` if no path exists.
     pub fn compute(
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
-    ) -> Option<Option<TreeGraph>> {
+    ) -> PathResult {
         self.num_calls += 1;
         // Bump epoch to invalidate stale per-node state without filling arrays.
         // On the rare u32 wrap-around, reset epoch arrays to restore the invariant.
@@ -144,7 +154,7 @@ impl AStarComputation {
                     for &tid in terminal_ids {
                         used[tid as usize] = true;
                     }
-                    return Some(None);
+                    return PathResult::PathFound(None);
                 }
                 let mut tree = TreeGraph::new(topo.num_nodes);
                 tree.root_node_id = Some(node_id);
@@ -175,7 +185,7 @@ impl AStarComputation {
                             tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
                             tree.add_edge(conn_id, root_id);
                         } else {
-                            return None;
+                            return PathResult::NoPath;
                         }
                     }
                     if i < terminal_ids.len() {
@@ -184,7 +194,7 @@ impl AStarComputation {
                         tree.add_edge(root_id, tid);
                     }
                 }
-                return Some(Some(tree));
+                return PathResult::PathFound(Some(tree));
             }
 
             let g = self.g_cost[node_id as usize];
@@ -216,7 +226,7 @@ impl AStarComputation {
                 }
             }
         }
-        None
+        PathResult::NoPath
     }
 
     /// Returns (distance, index) of the nearest ready magic node to `pos`.

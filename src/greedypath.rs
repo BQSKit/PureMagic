@@ -1,3 +1,4 @@
+use crate::astar::PathResult;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
@@ -30,13 +31,13 @@ impl GreedyPathComputation {
     /// On dead-end, backtracks along the walked path (marking nodes as "revisited")
     /// until it finds a node with open neighbours, then resumes greedy walk.
     /// Terminates when it reaches a ready magic node or exhausts all options.
-    /// When `plotting` is false, marks `used[]` directly and returns `Some(None)` (no tree built).
-    /// When `plotting` is true, builds and returns `Some(Some(tree))`.
-    /// Returns outer `None` if no path exists.
+    /// When `plotting` is false, marks `used[]` directly and returns `PathFound(None)`.
+    /// When `plotting` is true, builds and returns `PathFound(Some(tree))`.
+    /// Returns `NoPath` if no path exists.
     pub fn compute(
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
-    ) -> Option<Option<TreeGraph>> {
+    ) -> PathResult {
         self.num_calls += 1;
         self.visited.fill(false);
         self.backtracked.fill(false);
@@ -65,9 +66,14 @@ impl GreedyPathComputation {
                     for &tid in terminal_ids {
                         used[tid as usize] = true;
                     }
-                    return Some(None);
+                    return PathResult::PathFound(None);
                 }
-                return Some(Some(build_tree(&path, terminal_ids, root_ids, topo)));
+                return PathResult::PathFound(Some(build_tree(
+                    &path,
+                    terminal_ids,
+                    root_ids,
+                    topo,
+                )));
             }
 
             // Find the best open neighbour: not used, not data, not visited, not revisited,
@@ -101,7 +107,7 @@ impl GreedyPathComputation {
                 self.backtracked[current as usize] = true;
                 path.pop();
                 if path.is_empty() {
-                    return None;
+                    return PathResult::NoPath;
                 }
                 // Walk back further until we find a node with open neighbours
                 loop {
@@ -122,7 +128,7 @@ impl GreedyPathComputation {
                         self.backtracked[backtrack_node as usize] = true;
                         path.pop();
                         if path.is_empty() {
-                            return None;
+                            return PathResult::NoPath;
                         }
                     }
                 }
