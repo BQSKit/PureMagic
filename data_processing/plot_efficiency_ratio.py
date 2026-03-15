@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Plot the ratio of scheduling efficiencies between two PureMagic output files.
+Plot the ratio of scheduling efficiencies between PureMagic output files.
 
-Usage:
-    python plot_efficiency_ratio.py -f1 <file1>[:<label1>] -f2 <file2>[:<label2>]
+Usage (one series):
+    python plot_efficiency_ratio.py -f1 <file>[:<label>] -f2 <file>[:<label>]
 
-The bar plot shows efficiency(file1) / efficiency(file2) for each circuit.
-An optional label can be appended after a colon, e.g. "results/out:PureMagic".
-The labels are used in the y-axis title and plot title.
+Usage (two series, grouped bars):
+    python plot_efficiency_ratio.py -f1 <file>[:<label>] -f2 <file>[:<label>] \\
+                                    -f3 <file>[:<label>] -f4 <file>[:<label>]
+
+Each series plots efficiency(numerator) / efficiency(denominator).
+Append :<label> to any file argument to set a display label,
+e.g. "results/out:PureMagic".
 """
 
 import argparse
 import re
 import sys
+import numpy as np
 import matplotlib.pyplot as plt
 
 
@@ -54,80 +59,171 @@ def prettify_circuit_name(name):
 
 
 def split_file_label(arg, default_label):
-    """Split 'path:label' into (path, label). Colon inside the path is not supported."""
+    """Split 'path:label' into (path, label). Uses the last colon as separator."""
     if ":" in arg:
-        # Split on the LAST colon so Windows drive letters (C:\...) still work
         idx = arg.rfind(":")
         return arg[:idx], arg[idx + 1 :] or default_label
     return arg, default_label
 
 
+def compute_series(file_num, file_den, label_num, label_den, circuit_order=None):
+    """
+    Load two files, compute ratios, and return (circuits, ratios, series_label).
+    If circuit_order is given, use that ordering (and only those circuits).
+    """
+    data_num = parse_output_file(file_num)
+    data_den = parse_output_file(file_den)
+
+    if circuit_order is None:
+        circuits = [c for c in data_num if c in data_den]
+    else:
+        circuits = [c for c in circuit_order if c in data_num and c in data_den]
+
+    if not circuits:
+        print(
+            f"No common circuits found for series {label_num}/{label_den}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    ratios = [data_num[c] / data_den[c] for c in circuits]
+    series_label = f"{label_num} / {label_den}"
+    return circuits, ratios, series_label
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Plot the ratio of scheduling efficiencies between two PureMagic output files. "
-            "Append :<label> to a file argument to set a custom label, e.g. results/out:PureMagic."
+            "Plot scheduling efficiency ratios from PureMagic output files. "
+            "Append :<label> to any file argument, e.g. results/out:PureMagic. "
+            "Add -f3/-f4 for a second series plotted as grouped bars."
         )
     )
     parser.add_argument(
         "-f1",
         "--file1",
         required=True,
-        help="First PureMagic output file (numerator), optionally as path:label",
+        help="Numerator file for series 1, optionally as path:label",
     )
     parser.add_argument(
         "-f2",
         "--file2",
         required=True,
-        help="Second PureMagic output file (denominator), optionally as path:label",
+        help="Denominator file for series 1, optionally as path:label",
+    )
+    parser.add_argument(
+        "-f3",
+        "--file3",
+        default=None,
+        help="Numerator file for series 2, optionally as path:label",
+    )
+    parser.add_argument(
+        "-f4",
+        "--file4",
+        default=None,
+        help="Denominator file for series 2, optionally as path:label",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="efficiency_ratio.png",
+        help="Output image file name (default: efficiency_ratio.png)",
     )
     args = parser.parse_args()
+
+    if (args.file3 is None) != (args.file4 is None):
+        parser.error("Both -f3 and -f4 must be provided together for a second series.")
 
     file1, label1 = split_file_label(args.file1, "file1")
     file2, label2 = split_file_label(args.file2, "file2")
 
-    data1 = parse_output_file(file1)
-    data2 = parse_output_file(file2)
+    # Series 1 — defines circuit order
+    circuits1, ratios1, series_label1 = compute_series(file1, file2, label1, label2)
 
-    # Only plot circuits present in both files, preserving file1 order
-    common_circuits = [c for c in data1 if c in data2]
-    if not common_circuits:
-        print("No common circuits found between the two files.", file=sys.stderr)
-        sys.exit(1)
+    two_series = args.file3 is not None
+    ratios2, series_label2 = None, None  # set below when two_series is True
+    if two_series:
+        file3, label3 = split_file_label(args.file3, "file3")
+        file4, label4 = split_file_label(args.file4, "file4")
+        # Series 2 — use series-1 circuit order
+        circuits2, ratios2, series_label2 = compute_series(
+            file3, file4, label3, label4, circuit_order=circuits1
+        )
+        # Restrict to circuits present in both series
+        common = [c for c in circuits1 if c in circuits2]
+        idx1 = [circuits1.index(c) for c in common]
+        idx2 = [circuits2.index(c) for c in common]
+        ratios1 = [ratios1[i] for i in idx1]
+        ratios2 = [ratios2[i] for i in idx2]
+        circuits = common
+    else:
+        circuits = circuits1
 
-    ratios = [data1[c] / data2[c] for c in common_circuits]
+    display_names = [prettify_circuit_name(c) for c in circuits]
+    n = len(circuits)
+    x = np.arange(n)
 
     # --- Plot ---
-    # fig, ax = plt.subplots(figsize=(max(8, len(common_circuits) * 0.9), 6))
-    _, ax = plt.subplots(figsize=(12, 6))
-
-    x = range(len(common_circuits))
-    bars = ax.bar(x, ratios, color="steelblue", edgecolor="black", linewidth=0.7)
+    _, ax = plt.subplots(figsize=(max(12, n * 0.5), 6))
 
     # Draw a horizontal reference line at ratio = 1
-    ax.axhline(y=1.0, color="red", linestyle="--", linewidth=1.2, label="ratio = 1")
+    ax.axhline(y=1.0, color="red", linestyle="--", linewidth=1.2, label="_nolegend_")
 
-    display_names = [prettify_circuit_name(c) for c in common_circuits]
-    ax.set_xticks(list(x))
+    if two_series:
+        assert ratios2 is not None and series_label2 is not None
+        width = 0.4
+        bars1 = ax.bar(
+            x - width / 2,
+            ratios1,
+            width,
+            label=series_label1,
+            color="steelblue",
+            edgecolor="black",
+            linewidth=0.7,
+        )
+        bars2 = ax.bar(
+            x + width / 2,
+            ratios2,
+            width,
+            label=series_label2,
+            color="darkorange",
+            edgecolor="black",
+            linewidth=0.7,
+        )
+        for bar, ratio in list(zip(bars1, ratios1)) + list(zip(bars2, ratios2)):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height() + 0.005,
+                f"{ratio:.1f}",
+                ha="center",
+                va="bottom",
+                fontsize=6,
+            )
+        ax.set_ylabel("Scheduling Efficiency Ratio")
+    else:
+        bars = ax.bar(
+            x, ratios1, color="steelblue", edgecolor="black", linewidth=0.7, label=series_label1
+        )
+        for bar, ratio in zip(bars, ratios1):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height() + 0.005,
+                f"{ratio:.1f}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
+        ax.set_ylabel(f"Scheduling Efficiency Ratio ({series_label1})")
+
+    ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
+    ax.set_xticks(x)
     ax.set_xticklabels(display_names, rotation=45, ha="right", fontsize=9)
-    ax.set_ylabel(f"Scheduling Efficiency Ratio ({label1} / {label2})")
     ax.set_xlabel("Circuit")
     ax.legend()
 
-    # Annotate each bar with its value
-    for bar, ratio in zip(bars, ratios):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2.0,
-            bar.get_height() + 0.005,
-            f"{ratio:.1f}",
-            ha="center",
-            va="bottom",
-            fontsize=7,
-        )
-
     plt.tight_layout()
-    plt.savefig("efficiency_ratio.png", dpi=150)
-    print("Plot saved to efficiency_ratio.png")
+    plt.savefig(args.output, dpi=150)
+    print(f"Plot saved to {args.output}")
     plt.show()
 
 
