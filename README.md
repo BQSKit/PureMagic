@@ -119,10 +119,12 @@ After scheduling, the following files are produced:
 Topologies can be provided as a text file with node labels, grid positions, and types, with m for magic, b for bus, and d for data. The data qubits are double, and marked with X and Z. For example, here is an 8-data qubit topology:
 
 ```
-m  m  m  m  m  m  m  m  m
-m  dX m  dX m  dX m  dX m
-m  dZ m  dZ m  dZ m  dZ m
-m  m  m  m  m  m  m  m  m
+b  m  m  m  m  m  m  m  m  m  b
+m  b  b  b  b  b  b  b  b  b  m
+m  b  dX b  dX b  dX b  dX b  m
+m  b  dZ b  dZ b  dZ b  dZ b  m
+m  b  b  b  b  b  b  b  b  b  m
+b  m  m  m  m  m  m  m  m  m  b
 ```
 
 If no topology file is provided, one is auto-generated based on the circuit's qubit count and the `ancilla_rows` option.
