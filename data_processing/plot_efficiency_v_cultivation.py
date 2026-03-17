@@ -1,11 +1,29 @@
 #!/usr/bin/env python3
 """
 Scatter plot of scheduling Efficiency (y) vs 1/magic_state_lambda (x) from
-PureMagic output files.  Each input file becomes one series on the plot.
+PureMagic output files.  Each -f input becomes one series on the plot.
 
 A single file may contain multiple concatenated runs (one per lambda value),
 which is the typical output when sweeping over lambda values for one circuit.
 
+Two forms for -f:
+  -f file:label          Plain efficiency plot for that file.
+  -f file1,file2:label   Ratio mode: plots efficiency(file1) / efficiency(file2)
+                         for each matching inv_lambda value.
+
+If any series uses the comma form, the y-axis label changes to "Efficiency ratio".
+Series can mix plain and ratio forms freely.
+
+Usage:
+    # Plain efficiency plot
+    python plot_efficiency_v_cultivation.py \\
+        -f results/out-N25:N25 -f results/out-N49:N49 -o out.png
+
+    # Ratio plot
+    python plot_efficiency_v_cultivation.py \\
+        -f results/puremagic/out-N25,results/bus/out-N25:PureMagic/Bus \\
+        -f results/puremagic/out-N49,results/bus/out-N49:PureMagic/Bus \\
+        -o ratio.png
 """
 
 import argparse
@@ -76,8 +94,6 @@ def parse_output_file(filepath):
                 and current_lambda is not None
                 and current_efficiency is not None
             ):
-                assert current_efficiency is not None
-                assert current_lambda is not None
                 results.append(
                     {
                         "circuit": current_circuit,
@@ -91,26 +107,45 @@ def parse_output_file(filepath):
     return results
 
 
-def node_count_label(name):
-    """Return the node count (number after N or n) as a string, or the full name if not found."""
-    m = re.search(r"[Nn](\d+)", name)
-    return m.group(1) if m else name
+def build_lookup(data):
+    """Return a dict mapping inv_lambda -> efficiency for fast ratio lookup."""
+    return {d["inv_lambda"]: d["efficiency"] for d in data}
 
 
-def split_file_label(arg, default_label):
-    """Split 'path:label' into (path, label). Uses the last colon as separator."""
+def parse_file_arg(arg, default_label):
+    """
+    Parse a -f argument into (path1, path2_or_None, label).
+
+    Accepted forms:
+      file:label           -> (file, None, label)
+      file1,file2:label    -> (file1, file2, label)
+      file                 -> (file, None, default_label)
+      file1,file2          -> (file1, file2, default_label)
+
+    The label is always the part after the last colon.
+    The file part (before the last colon) may contain a comma separating two paths.
+    """
     if ":" in arg:
         idx = arg.rfind(":")
-        return arg[:idx], arg[idx + 1 :] or default_label
-    return arg, default_label
+        file_part = arg[:idx]
+        label = arg[idx + 1 :] or default_label
+    else:
+        file_part = arg
+        label = default_label
+
+    if "," in file_part:
+        parts = file_part.split(",", 1)
+        return parts[0].strip(), parts[1].strip(), label
+    return file_part, None, label
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Scatter plot of Efficiency vs 1/magic_state_lambda from "
-            "PureMagic output files.  Each -f argument is one series.  Append "
-            ":<label> to set a display label, e.g. results/out:PureMagic."
+            "Scatter plot of Efficiency (or efficiency ratio) vs "
+            "1/magic_state_lambda from PureMagic output files.  Each -f "
+            "argument is one series.  Use 'file:label' for plain efficiency or "
+            "'file1,file2:label' for the ratio file1/file2."
         )
     )
     parser.add_argument(
@@ -119,8 +154,13 @@ def main():
         dest="files",
         action="append",
         required=True,
-        metavar="FILE[:LABEL]",
-        help="PureMagic output file, optionally as path:label.  Repeat for multiple series.",
+        metavar="FILE[:LABEL] or FILE1,FILE2[:LABEL]",
+        help=(
+            "PureMagic output file(s) for one series.  "
+            "Use 'file:label' for plain efficiency, or "
+            "'file1,file2:label' to plot the ratio file1/file2.  "
+            "Repeat for multiple series."
+        ),
     )
     parser.add_argument(
         "-o",
@@ -140,26 +180,54 @@ def main():
     n = len(args.files)
     _, ax = plt.subplots(figsize=(max(8, n * 2), 6))
 
+    any_ratio = False
+
     for i, file_arg in enumerate(args.files):
-        filepath, label = split_file_label(file_arg, f"file{i + 1}")
-        data = parse_output_file(filepath)
-        if not data:
-            print(f"Warning: no data found in {filepath}", file=sys.stderr)
+        path1, path2, label = parse_file_arg(file_arg, f"file{i + 1}")
+        is_ratio = path2 is not None
+        if is_ratio:
+            any_ratio = True
+
+        data1 = parse_output_file(path1)
+        if not data1:
+            print(f"Warning: no data found in {path1}", file=sys.stderr)
             continue
 
         if args.select:
-            data = [d for d in data if args.select in d["circuit"]]
-        if not data:
-            print(f"Warning: no matching circuits in {filepath}", file=sys.stderr)
+            data1 = [d for d in data1 if args.select in d["circuit"]]
+        if not data1:
+            print(f"Warning: no matching circuits in {path1}", file=sys.stderr)
             continue
 
-        inv_lambdas = [d["inv_lambda"] for d in data]
-        efficiencies = [d["efficiency"] for d in data]
+        if is_ratio:
+            data2 = parse_output_file(path2)
+            if not data2:
+                print(f"Warning: no data found in {path2}", file=sys.stderr)
+                continue
+            denom = build_lookup(data2)
+            paired = [
+                (d["inv_lambda"], d["efficiency"] / denom[d["inv_lambda"]])
+                for d in data1
+                if d["inv_lambda"] in denom and denom[d["inv_lambda"]] != 0.0
+            ]
+            if not paired:
+                print(
+                    f"Warning: no matching inv_lambda values between {path1} and {path2}",
+                    file=sys.stderr,
+                )
+                continue
+            inv_lambdas, y_values = zip(*paired)
+            inv_lambdas = list(inv_lambdas)
+            y_values = list(y_values)
+        else:
+            inv_lambdas = [d["inv_lambda"] for d in data1]
+            y_values = [d["efficiency"] for d in data1]
+
         colour = _COLOURS[i % len(_COLOURS)]
 
         ax.scatter(
             inv_lambdas,
-            efficiencies,
+            y_values,
             label=label,
             color=colour,
             edgecolors="black",
@@ -169,11 +237,12 @@ def main():
         )
 
         # Connect points with a line (sorted by x) to show the trend
-        sorted_pairs = sorted(zip(inv_lambdas, efficiencies))
+        sorted_pairs = sorted(zip(inv_lambdas, y_values))
         xs, ys = zip(*sorted_pairs)
         ax.plot(xs, ys, color=colour, linewidth=0.8, alpha=0.6, zorder=2)
 
-    ax.set_ylim(0, 1)
+    if not any_ratio:
+        ax.set_ylim(0, 1)
     ax.set_xscale("log", base=2)
     # Label every power-of-2 tick as "2^k"
     ax.xaxis.set_major_formatter(
@@ -181,7 +250,7 @@ def main():
     )
     ax.xaxis.set_minor_formatter(ticker.NullFormatter())
     ax.set_xlabel("Expected cultivation time (cycles)")
-    ax.set_ylabel("Efficiency")
+    ax.set_ylabel("Efficiency ratio" if any_ratio else "Efficiency")
     ax.legend()
 
     plt.tight_layout()
