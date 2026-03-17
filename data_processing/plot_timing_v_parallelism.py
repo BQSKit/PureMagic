@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Scatter plot of average schedule_timestep timing (y, in μs) vs Parallelism (x)
-from PureMagic output files.  Each -f input file becomes one series on the plot.
+Scatter plot of average schedule_timestep timing (y, in μs) vs Parallelism or
+number of data qubits (x) from PureMagic output files.  Each -f input file
+becomes one series on the plot.
 
 A single file may contain multiple concatenated runs (one per circuit), which
 is the typical output when running PureMagic over a benchmark suite.
@@ -11,6 +12,12 @@ Usage:
         -f results/cliffordt/puremagic/out:PureMagic \\
         -f results/cliffordt/bus/out:Bus \\
         -o timing_v_parallelism.png
+
+    # Use data qubit count on x-axis
+    python plot_timing_v_parallelism.py \\
+        -f results/cliffordt/puremagic/out:PureMagic \\
+        --x-axis qubits \\
+        -o timing_v_qubits.png
 """
 
 import argparse
@@ -46,10 +53,14 @@ def parse_avg_timing(value_str, unit_str):
 def parse_output_file(filepath):
     """
     Parse a PureMagic output file and return a list of dicts, one per run:
-        {"circuit": str, "parallelism": float, "avg_timestep_us": float}
+        {"circuit": str, "parallelism": float, "data_qubits": int,
+         "avg_timestep_us": float}
 
     Parallelism is read from:
         Parallelism: <value>x
+
+    Data qubit count is read from the Number of qubits block:
+        data:         8 (0.222)
 
     Average schedule_timestep timing is read from the accumulated timings block:
         schedule_timestep         total: ...  avg:  <value> <unit>  max: ...
@@ -57,11 +68,26 @@ def parse_output_file(filepath):
     results = []
     current_circuit = None
     current_parallelism = None
+    current_data_qubits = None
+    in_qubit_block = False
 
     with open(filepath, "r") as f:
         for line in f:
             # Strip ANSI escape codes
             line_clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+
+            # Start of qubit block
+            if line_clean == "Number of qubits:":
+                in_qubit_block = True
+                continue
+
+            if in_qubit_block:
+                m = re.match(r"data:\s+(\d+)", line_clean)
+                if m:
+                    current_data_qubits = int(m.group(1))
+                # End of qubit block at "total:" line
+                if re.match(r"total:\s+\d+", line_clean):
+                    in_qubit_block = False
 
             # Circuit name
             m = re.match(r"Scheduled products written to (.+)\.schedule", line_clean)
@@ -86,6 +112,7 @@ def parse_output_file(filepath):
                     {
                         "circuit": current_circuit,
                         "parallelism": current_parallelism,
+                        "data_qubits": current_data_qubits,
                         "avg_timestep_us": avg_us,
                     }
                 )
@@ -113,8 +140,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Scatter plot of average schedule_timestep timing vs Parallelism "
-            "from PureMagic output files.  Each -f argument is one series.  "
-            "Append :<label> to set a display label."
+            "or data qubit count from PureMagic output files.  Each -f "
+            "argument is one series.  Append :<label> to set a display label."
         )
     )
     parser.add_argument(
@@ -124,7 +151,7 @@ def main():
         action="append",
         required=True,
         metavar="FILE[:LABEL]",
-        help=("PureMagic output file, optionally as path:label.  " "Repeat for multiple series."),
+        help="PureMagic output file, optionally as path:label.  Repeat for multiple series.",
     )
     parser.add_argument(
         "-o",
@@ -139,7 +166,17 @@ def main():
         metavar="SUBSTRING",
         help="Only plot circuits whose name contains this substring.",
     )
+    parser.add_argument(
+        "-x",
+        "--x-axis",
+        dest="x_axis",
+        choices=["parallelism", "qubits"],
+        default="parallelism",
+        help="Variable to use on the x-axis: 'parallelism' (default) or 'qubits' (data qubit count).",
+    )
     args = parser.parse_args()
+
+    use_qubits = args.x_axis == "qubits"
 
     n = len(args.files)
     _, ax = plt.subplots(figsize=(max(8, n * 2), 6))
@@ -157,12 +194,20 @@ def main():
             print(f"Warning: no matching circuits in {filepath}", file=sys.stderr)
             continue
 
-        parallelisms = [d["parallelism"] for d in data]
+        if use_qubits:
+            data = [d for d in data if d["data_qubits"] is not None]
+            if not data:
+                print(f"Warning: no data qubit counts found in {filepath}", file=sys.stderr)
+                continue
+            x_values = [d["data_qubits"] for d in data]
+        else:
+            x_values = [d["parallelism"] for d in data]
+
         avg_timings = [d["avg_timestep_us"] for d in data]
         colour = _COLOURS[i % len(_COLOURS)]
 
         ax.scatter(
-            parallelisms,
+            x_values,
             avg_timings,
             label=label,
             color=colour,
@@ -173,11 +218,11 @@ def main():
         )
 
         # Power-law trendline: fit log(y) = a*log(x) + b in log-log space
-        if len(parallelisms) >= 2:
-            log_x = np.log(parallelisms)
+        if len(x_values) >= 2:
+            log_x = np.log(x_values)
             log_y = np.log(avg_timings)
             a, b = np.polyfit(log_x, log_y, 1)
-            x_fit = np.linspace(min(parallelisms), max(parallelisms), 200)
+            x_fit = np.linspace(min(x_values), max(x_values), 200)
             y_fit = np.exp(b) * x_fit**a
             ax.plot(
                 x_fit,
@@ -200,7 +245,7 @@ def main():
         axis.set_major_formatter(decimal_fmt)
         axis.set_minor_locator(ticker.NullLocator())
 
-    ax.set_xlabel("Parallelism")
+    ax.set_xlabel("Data qubits" if use_qubits else "Parallelism")
     ax.set_ylabel("Avg schedule_timestep (μs)")
     ax.legend()
 
