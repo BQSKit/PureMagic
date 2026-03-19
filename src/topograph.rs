@@ -37,6 +37,7 @@ pub struct TopoGraph {
     pub num_nodes: usize,
     pub busy_counts: Vec<i32>,
     pub cultivation_times: Vec<i32>,
+    pub sides_only: bool,
 }
 
 impl TopoGraph {
@@ -61,6 +62,7 @@ impl TopoGraph {
             use_magic_routing: true,
             busy_counts: Vec::new(),
             cultivation_times: Vec::new(),
+            sides_only: false,
         }
     }
 
@@ -77,6 +79,7 @@ impl TopoGraph {
         self.circuit_fname = circuit_fname.to_string();
         self.topo_fname = topo_fname.to_string();
         self.use_magic_routing = use_magic_routing;
+        self.sides_only = sides_only;
         Node::set_magic_routing(use_magic_routing);
 
         if !self.topo_fname.is_empty() {
@@ -683,11 +686,150 @@ impl TopoGraph {
             y: f32,
             half_x: f32,
             half_y: f32,
+            #[allow(dead_code)]
             is_data_x: bool,
             border_color_idx: Option<usize>,
+            #[allow(dead_code)]
             is_root: bool,
             label_text: String,
         }
+
+        // Build a map from (x*10 rounded, y*10 rounded) → node id for data nodes,
+        // so we can find the partner nodes in a double-data-qubit group.
+        // A double data qubit group has 4 nodes:
+        //   X-left  (col-0.25, row_x),  X-right (col+0.25, row_x)  — X row (dashed)
+        //   Z-left  (col-0.25, row_z),  Z-right (col+0.25, row_z)  — Z row (solid)
+        // where row_x and row_z are adjacent (differ by 1.0 in plot y).
+        // We identify groups by the column center (col) and the pair of rows.
+        // For each data node, we store which group it belongs to and its role.
+        // group_id is (col*10 as i32, min_row*10 as i32) — unique per group.
+        let data_pos_map: std::collections::HashMap<(i32, i32), u16> = self
+            .nodes
+            .iter()
+            .filter(|n| n.node_type == NodeType::Data)
+            .map(|n| {
+                let (px, py) = n.pos;
+                ((px * 10.0).round() as i32, (py * 10.0).round() as i32, n.id)
+            })
+            .map(|(xi, yi, id)| ((xi, yi), id))
+            .collect();
+
+        // For each data node, find its group: the 4 nodes sharing the same column center.
+        // col_center = round(x) (the integer column), x is col±0.25.
+        // The X-left and Z-left share x=col-0.25; X-right and Z-right share x=col+0.25.
+        // X and Z rows are adjacent: one has label ending 'X', other 'Z'.
+        // We identify the group by (col_center*10, min_y*10).
+        // For each data node, compute group_id and role (x_left, x_right, z_left, z_right).
+        // We'll store: group_id → (x_left_id, x_right_id, z_left_id, z_right_id, col_x, col_y_x, col_y_z)
+        // where col_y_x is the y of the X row and col_y_z is the y of the Z row.
+        // Build groups: key = (col_center*10, min_y*10)
+        struct DataGroup {
+            col: f32, // integer column center
+            y_x: f32, // y of X row (dashed, higher y = visually upper)
+            y_z: f32, // y of Z row (solid, lower y = visually lower)
+            x_left_id: u16,
+            x_right_id: u16,
+            z_left_id: u16,
+            z_right_id: u16,
+        }
+        let mut data_groups: Vec<DataGroup> = Vec::new();
+        // Track which node ids have been assigned to a group
+        let mut grouped_data_ids: std::collections::HashSet<u16> = std::collections::HashSet::new();
+        for node in &self.nodes {
+            if node.node_type != NodeType::Data {
+                continue;
+            }
+            if grouped_data_ids.contains(&node.id) {
+                continue;
+            }
+            let label = &self.labels[node.id as usize];
+            if !label.ends_with('X') {
+                continue;
+            } // process X nodes as group anchors
+            let (x, y) = node.pos;
+            let xi = (x * 10.0).round() as i32;
+            let yi = (y * 10.0).round() as i32;
+            // This is an X node. Find its X partner (same y, x differs by 0.5 = 5 in *10 units)
+            // X-left has x = col-0.25, X-right has x = col+0.25
+            // The partner is at xi ± 5 (same yi)
+            // Find partner: try both xi+5 and xi-5
+            let partner_xi = if data_pos_map.contains_key(&(xi + 5, yi)) {
+                xi + 5
+            } else if data_pos_map.contains_key(&(xi - 5, yi)) {
+                xi - 5
+            } else {
+                continue;
+            }; // no partner found, skip
+            let (x_left_id, x_right_id) = if xi < partner_xi {
+                (
+                    node.id,
+                    *match data_pos_map.get(&(partner_xi, yi)) {
+                        Some(id) => id,
+                        None => continue,
+                    },
+                )
+            } else {
+                (
+                    *match data_pos_map.get(&(partner_xi, yi)) {
+                        Some(id) => id,
+                        None => continue,
+                    },
+                    node.id,
+                )
+            };
+            // Find Z partners: same x positions, adjacent y (yi ± 10)
+            let z_yi_candidates = [yi - 10, yi + 10];
+            let mut z_yi = None;
+            for &zy in &z_yi_candidates {
+                let left_xi = xi.min(partner_xi);
+                let right_xi = xi.max(partner_xi);
+                if let (Some(&zl), Some(&zr)) =
+                    (data_pos_map.get(&(left_xi, zy)), data_pos_map.get(&(right_xi, zy)))
+                {
+                    let zl_label = &self.labels[zl as usize];
+                    let zr_label = &self.labels[zr as usize];
+                    if zl_label.ends_with('Z') && zr_label.ends_with('Z') {
+                        z_yi = Some((zy, zl, zr));
+                        break;
+                    }
+                }
+            }
+            let (zy, z_left_id, z_right_id) = match z_yi {
+                Some(v) => v,
+                None => continue,
+            };
+            // Compute col_center from actual node x position to avoid rounding drift.
+            // The two X nodes are at col±0.25, so col = x + 0.25 (for left node) or x - 0.25 (for right).
+            // Equivalently, col = (x_left + x_right) / 2 where x_left < x_right.
+            // We know this node's x; the partner's x is at xi±5 in *10 units = ±0.5 in actual coords.
+            // But we already have the actual x of this node, so:
+            let partner_x = if xi < partner_xi { x + 0.5 } else { x - 0.5 };
+            let col_center = if x < partner_x { x + 0.25 } else { x - 0.25 };
+            let y_x = yi as f32 / 10.0;
+            let y_z = zy as f32 / 10.0;
+            grouped_data_ids.insert(x_left_id);
+            grouped_data_ids.insert(x_right_id);
+            grouped_data_ids.insert(z_left_id);
+            grouped_data_ids.insert(z_right_id);
+            data_groups.push(DataGroup {
+                col: col_center,
+                y_x,
+                y_z,
+                x_left_id,
+                x_right_id,
+                z_left_id,
+                z_right_id,
+            });
+        }
+        // Map from node id → group index (for suppressing internal borders and labels)
+        let _node_to_group: std::collections::HashMap<u16, usize> = data_groups
+            .iter()
+            .enumerate()
+            .flat_map(|(gi, g)| {
+                vec![(g.x_left_id, gi), (g.x_right_id, gi), (g.z_left_id, gi), (g.z_right_id, gi)]
+            })
+            .collect();
+
         let node_infos: Vec<NodeDrawInfo> = self
             .nodes
             .iter()
@@ -714,8 +856,10 @@ impl TopoGraph {
                         break;
                     }
                 }
+                // Data node labels are handled at the group level (drawn once per row-pair),
+                // so suppress per-node labels for data nodes in a group.
                 let label_text = match node.node_type {
-                    NodeType::Data => label.clone(),
+                    NodeType::Data => String::new(), // labels drawn per-group below
                     NodeType::Magic => {
                         if let Some(_) = border_color_idx {
                             // On a path: show "T" only if this is the magic root of a T product
@@ -756,6 +900,21 @@ impl TopoGraph {
             })
             .collect();
 
+        // Build a map from rounded position → border_color_idx for non-data nodes.
+        // Used to check if a routing node adjacent to a data group edge is in the same product path.
+        let routing_pos_color: std::collections::HashMap<(i32, i32), usize> = self
+            .nodes
+            .iter()
+            .zip(node_infos.iter())
+            .filter(|(n, _)| n.node_type != NodeType::Data)
+            .filter_map(|(n, info)| {
+                info.border_color_idx.map(|ci| {
+                    let (px, py) = n.pos;
+                    (((px * 10.0).round() as i32, (py * 10.0).round() as i32), ci)
+                })
+            })
+            .collect();
+
         // Pass 1: draw all node fills.
         for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
             let node_color = match node.node_type {
@@ -786,32 +945,19 @@ impl TopoGraph {
         }
 
         // Pass 2: draw solid borders.
-        // - X-basis data nodes: no solid border (all 4 sides drawn dashed in Pass 3)
-        // - Z-basis data nodes: 3 sides only (bottom, top, right); left edge is shared with
-        //   the X node and will be drawn dashed in Pass 3, so we leave it clear here
+        // - Data nodes: borders drawn per-group (outer only) below
         // - All other nodes: full solid rectangle border
-        for info in &node_infos {
+        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
+            if node.node_type == NodeType::Data {
+                continue;
+            } // handled per-group
             let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
-            if info.is_data_x {
-                // no solid border — handled entirely by dashes in Pass 3
-            } else if hx < 0.5 {
-                // Z-basis data node: draw 3 outer edges (bottom, top, right), skip left (shared with X)
-                let segs: &[((f32, f32), (f32, f32))] = &[
-                    ((x - hx, y - hy), (x + hx, y - hy)), // bottom
-                    ((x - hx, y + hy), (x + hx, y + hy)), // top
-                    ((x + hx, y - hy), (x + hx, y + hy)), // right
-                ];
-                for &(p1, p2) in segs {
-                    chart.draw_series(LineSeries::new(vec![p1, p2], BLACK.stroke_width(2)))?;
-                }
-            } else {
-                // non-data node: black border for idle nodes, black border for path nodes
-                let border_style = BLACK.stroke_width(1);
-                chart.draw_series(std::iter::once(Rectangle::new(
-                    [(x - hx, y - hy), (x + hx, y + hy)],
-                    border_style,
-                )))?;
-            }
+            // non-data node: black border
+            let border_style = BLACK.stroke_width(1);
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [(x - hx, y - hy), (x + hx, y + hy)],
+                border_style,
+            )))?;
         }
         // Pass 2b: draw black outer border around each path as a group.
         // We draw a black rectangle for each path node, but use a faint separator
@@ -820,7 +966,10 @@ impl TopoGraph {
         // inner shared edges get drawn twice and appear as faint lines).
         // Strategy: draw faint grey per-node borders for path nodes (internal separators),
         // then draw the outer group border by finding the bounding box per path.
-        for info in &node_infos {
+        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
+            if node.node_type == NodeType::Data {
+                continue;
+            } // data borders handled per-group
             if info.border_color_idx.is_some() {
                 let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
                 // Faint separator lines between path nodes
@@ -843,6 +992,10 @@ impl TopoGraph {
                 })
                 .collect();
             for id in path_graph.iter_nodes() {
+                let node = &self.nodes[id as usize];
+                if node.node_type == NodeType::Data {
+                    continue;
+                } // data borders handled per-group
                 let info = &node_infos[id as usize];
                 let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
                 let xi = (x * 10.0).round() as i32;
@@ -873,54 +1026,181 @@ impl TopoGraph {
             }
         }
 
-        // Pass 3: draw dashed borders for X-basis data qubits on top of everything.
-        // We draw white gaps first (to erase any solid border underneath), then black dashes,
-        // so the dashes are visible even where they overlap a solid black border line.
-        for info in &node_infos {
-            if info.is_data_x {
-                let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
-                let dash = 0.08f32;
-                let gap = 0.06f32;
-                let sides: &[(f32, f32, f32, f32, f32)] = &[
-                    (x - hx, y - hy, 1.0, 0.0, 2.0 * hx),  // bottom
-                    (x + hx, y - hy, 0.0, 1.0, 2.0 * hy),  // right
-                    (x + hx, y + hy, -1.0, 0.0, 2.0 * hx), // top
-                    (x - hx, y + hy, 0.0, -1.0, 2.0 * hy), // left
-                ];
-                // First sub-pass: draw white over the entire border line to clear it
-                for &(px0, py0, dx, dy, length) in sides {
-                    let ex = px0 + dx * length;
-                    let ey = py0 + dy * length;
-                    chart.draw_series(LineSeries::new(
-                        vec![(px0, py0), (ex, ey)],
-                        WHITE.stroke_width(3),
-                    ))?;
-                }
-                // Second sub-pass: draw black dashes on top of the cleared line
-                for &(px0, py0, dx, dy, length) in sides {
-                    let mut px = px0;
-                    let mut py = py0;
-                    let mut dist = 0.0f32;
-                    let mut on = true;
-                    while dist < length {
-                        let seg = if on { dash } else { gap }.min(length - dist);
-                        if on {
-                            chart.draw_series(LineSeries::new(
-                                vec![(px, py), (px + dx * seg, py + dy * seg)],
-                                BLACK.stroke_width(2),
-                            ))?;
-                        }
-                        px += dx * seg;
-                        py += dy * seg;
-                        dist += seg;
-                        on = !on;
+        // Pass 2c: draw colored solid borders for data node groups.
+        // Done AFTER Pass 2b so colored lines overwrite any black outer-border lines
+        // that routing nodes may have drawn over the data group edges.
+        //
+        // Node → solid outer sides:
+        //   x_left/x_right: top edge (shared, spans full group width)
+        //   z_left:  left side of Z row
+        //   z_right: right side of Z row
+        for group in &data_groups {
+            let hy = 0.5f32;
+            let left = group.col - 0.5;
+            let right = group.col + 0.5;
+            let (y_top, _y_bot) =
+                if group.y_x > group.y_z { (group.y_x, group.y_z) } else { (group.y_z, group.y_x) };
+            let top = y_top + hy;
+            let z_row_top = group.y_z + hy;
+            let z_row_bot = group.y_z - hy;
+            let xl_ci = node_infos[group.x_left_id as usize].border_color_idx;
+            let xr_ci = node_infos[group.x_right_id as usize].border_color_idx;
+            let zl_ci = node_infos[group.z_left_id as usize].border_color_idx;
+            let zr_ci = node_infos[group.z_right_id as usize].border_color_idx;
+            let color = |ci: Option<usize>| -> RGBAColor {
+                if let Some(i) = ci { path_colors[i] } else { BLACK.to_rgba() }
+            };
+            // Top solid edge: only color if a routing node above the X row is in the same path,
+            // and sides_only is not set.
+            let top_adj_key =
+                ((group.col * 10.0).round() as i32, ((y_top + 1.0) * 10.0).round() as i32);
+            let top_edge_ci = if self.sides_only {
+                None
+            } else {
+                xl_ci.or(xr_ci).filter(|&ci| {
+                    routing_pos_color.get(&top_adj_key).map_or(false, |&rci| rci == ci)
+                })
+            };
+            let top_color = color(top_edge_ci);
+            chart.draw_series(LineSeries::new(
+                vec![(left, top), (right, top)],
+                top_color.stroke_width(2),
+            ))?;
+            // Left solid side of Z row: color from z_left
+            chart.draw_series(LineSeries::new(
+                vec![(left, z_row_bot), (left, z_row_top)],
+                color(zl_ci).stroke_width(2),
+            ))?;
+            // Right solid side of Z row: color from z_right
+            chart.draw_series(LineSeries::new(
+                vec![(right, z_row_bot), (right, z_row_top)],
+                color(zr_ci).stroke_width(2),
+            ))?;
+            let _ = hy;
+        }
+
+        // Pass 3: draw dashed borders for X-basis data qubit rows.
+        // For each group, draw dashed lines on the outer edges of the X row:
+        // top (if X is top row) or bottom (if X is bottom row), plus the mid line gets dashed too.
+        // We draw white gaps first (to erase any solid border underneath), then black dashes.
+        for group in &data_groups {
+            let hy = 0.5f32;
+            let left = group.col - 0.5;
+            let right = group.col + 0.5;
+            let width = right - left;
+            let (y_top, y_bot) =
+                if group.y_x > group.y_z { (group.y_x, group.y_z) } else { (group.y_z, group.y_x) };
+            let bot = y_bot - hy;
+            let x_row_bot = group.y_x - hy;
+            // Per-node path colors
+            let xl_ci = node_infos[group.x_left_id as usize].border_color_idx;
+            let xr_ci = node_infos[group.x_right_id as usize].border_color_idx;
+            let zl_ci = node_infos[group.z_left_id as usize].border_color_idx;
+            let zr_ci = node_infos[group.z_right_id as usize].border_color_idx;
+            let color = |ci: Option<usize>| -> RGBAColor {
+                if let Some(i) = ci { path_colors[i] } else { BLACK.to_rgba() }
+            };
+            let dash = 0.08f32;
+            let gap = 0.06f32;
+            // Inline dashed horizontal line helper
+            let draw_h_dash_colored = |chart: &mut plotters::prelude::ChartContext<
+                '_,
+                BitMapBackend<'_>,
+                plotters::prelude::Cartesian2d<
+                    plotters::coord::types::RangedCoordf32,
+                    plotters::coord::types::RangedCoordf32,
+                >,
+            >,
+                                       y: f32,
+                                       x0: f32,
+                                       len: f32,
+                                       c: RGBAColor|
+             -> Result<(), Box<dyn std::error::Error>> {
+                chart.draw_series(LineSeries::new(
+                    vec![(x0, y), (x0 + len, y)],
+                    WHITE.stroke_width(3),
+                ))?;
+                let mut x = x0;
+                let mut dist = 0.0f32;
+                let mut on = true;
+                while dist < len {
+                    let seg = if on { dash } else { gap }.min(len - dist);
+                    if on {
+                        chart.draw_series(LineSeries::new(
+                            vec![(x, y), (x + seg, y)],
+                            c.stroke_width(2),
+                        ))?;
                     }
+                    x += seg;
+                    dist += seg;
+                    on = !on;
                 }
-            }
+                Ok(())
+            };
+            // Inline dashed vertical line helper
+            let draw_v_dash_colored = |chart: &mut plotters::prelude::ChartContext<
+                '_,
+                BitMapBackend<'_>,
+                plotters::prelude::Cartesian2d<
+                    plotters::coord::types::RangedCoordf32,
+                    plotters::coord::types::RangedCoordf32,
+                >,
+            >,
+                                       x: f32,
+                                       y0: f32,
+                                       len: f32,
+                                       c: RGBAColor|
+             -> Result<(), Box<dyn std::error::Error>> {
+                chart.draw_series(LineSeries::new(
+                    vec![(x, y0), (x, y0 + len)],
+                    WHITE.stroke_width(3),
+                ))?;
+                let mut y = y0;
+                let mut dist = 0.0f32;
+                let mut on = true;
+                while dist < len {
+                    let seg = if on { dash } else { gap }.min(len - dist);
+                    if on {
+                        chart.draw_series(LineSeries::new(
+                            vec![(x, y), (x, y + seg)],
+                            c.stroke_width(2),
+                        ))?;
+                    }
+                    y += seg;
+                    dist += seg;
+                    on = !on;
+                }
+                Ok(())
+            };
+            // Bottom outer edge: dashed, only color if a routing node below the Z row is in the same path,
+            // and sides_only is not set.
+            let bot_adj_key =
+                ((group.col * 10.0).round() as i32, ((y_bot - 1.0) * 10.0).round() as i32);
+            let bot_edge_ci = if self.sides_only {
+                None
+            } else {
+                zl_ci.or(zr_ci).filter(|&ci| {
+                    routing_pos_color.get(&bot_adj_key).map_or(false, |&rci| rci == ci)
+                })
+            };
+            let bot_color = color(bot_edge_ci);
+            draw_h_dash_colored(&mut chart, bot, left, width, bot_color)?;
+            // Left side of X row (half-height): dashed, color from x_left
+            draw_v_dash_colored(&mut chart, left, x_row_bot, hy * 2.0, color(xl_ci))?;
+            // Right side of X row (half-height): dashed, color from x_right
+            draw_v_dash_colored(&mut chart, right, x_row_bot, hy * 2.0, color(xr_ci))?;
+            let _ = (y_top, y_bot);
         }
 
         // Pass 4: draw all labels on top.
-        for info in &node_infos {
+        // Non-data node labels
+        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
+            if node.node_type == NodeType::Data {
+                continue;
+            }
+            if info.label_text.is_empty() {
+                continue;
+            }
             let font_style = if info.label_text == "T" {
                 ("sans-serif", 20, FontStyle::Bold).into_font()
             } else {
@@ -931,6 +1211,119 @@ impl TopoGraph {
                 (info.x - 0.17, info.y + 0.09),
                 font_style,
             )))?;
+        }
+        // Data node group labels: one label per row-pair, centered across both nodes.
+        // X row: label = qubit number only (strip 'd' prefix and 'X' suffix, e.g. "d0X" → "0")
+        // Z row: label = qubit number only (strip 'd' prefix and 'Z' suffix, e.g. "d1Z" → "1")
+        for group in &data_groups {
+            let hy = 0.5f32;
+            let (y_top, y_bot) =
+                if group.y_x > group.y_z { (group.y_x, group.y_z) } else { (group.y_z, group.y_x) };
+            let x_is_top = group.y_x > group.y_z;
+            // X row label: strip 'X' suffix and leading 'd' (e.g. "d0X" → "0")
+            let x_left_label = &self.labels[group.x_left_id as usize];
+            let x_label = x_left_label.trim_end_matches('X').trim_start_matches('d').to_string();
+            // Z row label: strip 'Z' suffix and leading 'd' (e.g. "d1Z" → "1")
+            let z_right_label = &self.labels[group.z_right_id as usize];
+            let z_label = z_right_label.trim_end_matches('Z').trim_start_matches('d').to_string();
+            let (x_row_y, z_row_y) = if x_is_top { (y_top, y_bot) } else { (y_bot, y_top) };
+            // Center x across the full group width
+            let label_x = group.col - 0.17;
+            chart.draw_series(std::iter::once(Text::new(
+                x_label,
+                (label_x, x_row_y + 0.09),
+                ("sans-serif", 24).into_font(),
+            )))?;
+            chart.draw_series(std::iter::once(Text::new(
+                z_label,
+                (label_x, z_row_y + 0.09),
+                ("sans-serif", 24).into_font(),
+            )))?;
+
+            // Side labels: "X" on dashed sides, "Z" on solid sides — only on colored (in-product) sides.
+            // Each label is drawn as: white-filled box outlined in product color, letter in product color.
+            let xl_ci = node_infos[group.x_left_id as usize].border_color_idx;
+            let xr_ci = node_infos[group.x_right_id as usize].border_color_idx;
+            let zl_ci = node_infos[group.z_left_id as usize].border_color_idx;
+            let zr_ci = node_infos[group.z_right_id as usize].border_color_idx;
+            let left = group.col - 0.5;
+            let right = group.col + 0.5;
+            let top = y_top + hy;
+            let bot = y_bot - hy;
+            let side_font_size = 28u32;
+            // Half-size of the label box in plot coordinates
+            let bh = 0.18f32; // half-height of box
+            let bw = 0.13f32; // half-width of box
+            // Helper: draw a boxed letter at (cx, cy) with given color index
+            let draw_boxed_label = |chart: &mut plotters::prelude::ChartContext<
+                '_,
+                BitMapBackend<'_>,
+                plotters::prelude::Cartesian2d<
+                    plotters::coord::types::RangedCoordf32,
+                    plotters::coord::types::RangedCoordf32,
+                >,
+            >,
+                                    letter: &str,
+                                    cx: f32,
+                                    cy: f32,
+                                    ci: usize|
+             -> Result<(), Box<dyn std::error::Error>> {
+                let c = path_colors[ci];
+                // White fill
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [(cx - bw, cy - bh), (cx + bw, cy + bh)],
+                    WHITE.filled(),
+                )))?;
+                // Colored outline
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [(cx - bw, cy - bh), (cx + bw, cy + bh)],
+                    Into::<ShapeStyle>::into(c).stroke_width(2),
+                )))?;
+                // Colored letter centered in box.
+                // plotters text anchor is at the bottom-left (baseline).
+                // Letter is too low → move baseline up by using a positive offset above center.
+                let char_hw = bw * 0.45; // half char width estimate
+                chart.draw_series(std::iter::once(Text::new(
+                    letter.to_string(),
+                    (cx - char_hw, cy + bh * 0.35),
+                    ("sans-serif", side_font_size).into_font().color(&c),
+                )))?;
+                Ok(())
+            };
+            // Top solid edge → "Z" label: only if path runs through top edge and sides_only is not set
+            if !self.sides_only {
+                let top_adj_key =
+                    ((group.col * 10.0).round() as i32, ((top + 0.5) * 10.0).round() as i32);
+                if let Some(ci) = xl_ci.or(xr_ci).filter(|&ci| {
+                    routing_pos_color.get(&top_adj_key).map_or(false, |&rci| rci == ci)
+                }) {
+                    draw_boxed_label(&mut chart, "Z", group.col, top, ci)?;
+                }
+                // Bottom dashed edge → "X" label: only if path runs through bottom edge
+                let bot_adj_key2 =
+                    ((group.col * 10.0).round() as i32, ((bot - 0.5) * 10.0).round() as i32);
+                if let Some(ci) = zl_ci.or(zr_ci).filter(|&ci| {
+                    routing_pos_color.get(&bot_adj_key2).map_or(false, |&rci| rci == ci)
+                }) {
+                    draw_boxed_label(&mut chart, "X", group.col, bot, ci)?;
+                }
+            }
+            // Left dashed side of X row → "X" label on left edge, vertically centered in X row
+            if let Some(ci) = xl_ci {
+                draw_boxed_label(&mut chart, "X", left, x_row_y, ci)?;
+            }
+            // Right dashed side of X row → "X" label on right edge, vertically centered in X row
+            if let Some(ci) = xr_ci {
+                draw_boxed_label(&mut chart, "X", right, x_row_y, ci)?;
+            }
+            // Left solid side of Z row → "Z" label on left edge, vertically centered in Z row
+            if let Some(ci) = zl_ci {
+                draw_boxed_label(&mut chart, "Z", left, z_row_y, ci)?;
+            }
+            // Right solid side of Z row → "Z" label on right edge, vertically centered in Z row
+            if let Some(ci) = zr_ci {
+                draw_boxed_label(&mut chart, "Z", right, z_row_y, ci)?;
+            }
         }
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
             // Find the widest non-data row: group non-data path nodes by y-coordinate,
@@ -971,6 +1364,14 @@ impl TopoGraph {
                     product_str,
                     (center_x - text_width / 2.0, row_y + 0.09),
                     ("sans-serif", 22).into_font(),
+                )))?;
+                // Product ID below the operator label
+                let id_str = pp.id.to_string();
+                let id_width = id_str.len() as f32 * 0.10;
+                chart.draw_series(std::iter::once(Text::new(
+                    id_str,
+                    (center_x - id_width / 2.0, row_y - 0.12),
+                    ("sans-serif", 14).into_font(),
                 )))?;
             }
         }
