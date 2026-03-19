@@ -669,22 +669,6 @@ impl TopoGraph {
             .margin(10)
             .set_label_area_size(LabelAreaPosition::Bottom, 50)
             .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
-        chart.draw_series(std::iter::once(Rectangle::new(
-            [(-0.5, -0.5), (self.num_cols as f32 - 0.5, self.num_rows as f32 - 0.5)],
-            RGBColor(220, 220, 220).filled(),
-        )))?;
-        for row in 0..=self.num_rows {
-            chart.draw_series(LineSeries::new(
-                vec![(-0.5, row as f32 - 0.5), (self.num_cols as f32 - 0.5, row as f32 - 0.5)],
-                WHITE.stroke_width(3),
-            ))?;
-        }
-        for col in 0..=self.num_cols {
-            chart.draw_series(LineSeries::new(
-                vec![(col as f32 - 0.5, -0.5), (col as f32 - 0.5, self.num_rows as f32 - 0.5)],
-                WHITE.stroke_width(3),
-            ))?;
-        }
         let num_colors = pauli_product_paths.len().max(1);
         let path_colors: Vec<RGBAColor> = (0..num_colors)
             .map(|i| {
@@ -693,122 +677,299 @@ impl TopoGraph {
                 RGBColor(r, g, b).to_rgba()
             })
             .collect();
-        for node in &self.nodes {
-            for nb_id in node.nbors_slice() {
-                let nb = &self.nodes[*nb_id as usize];
-                let mut edge_color = &BLACK.mix(0.5).to_rgba();
-                let mut stroke_width = 1;
-                for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                    if path_graph.contains_edge(node.id, *nb_id) {
-                        edge_color = &path_colors[i];
-                        stroke_width = 6;
+        // Collect per-node metadata needed across multiple draw passes.
+        struct NodeDrawInfo {
+            x: f32,
+            y: f32,
+            half_x: f32,
+            half_y: f32,
+            is_data_x: bool,
+            border_color_idx: Option<usize>,
+            is_root: bool,
+            label_text: String,
+        }
+        let node_infos: Vec<NodeDrawInfo> = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let (x, y) = node.pos;
+                // Data nodes are offset ±0.25 horizontally within their column,
+                // so they are 0.25 wide (half=0.25) but still full height (half_y=0.5).
+                // Non-data nodes fill a full cell in both dimensions.
+                let (half_x, half_y) = if node.node_type == NodeType::Data {
+                    (0.25f32, 0.5f32)
+                } else {
+                    (0.5f32, 0.5f32)
+                };
+                let label = &self.labels[node.id as usize];
+                let is_data_x = node.node_type == NodeType::Data && label.ends_with('X');
+                let mut border_color_idx = None;
+                let mut is_root = false;
+                let mut path_is_t = false;
+                for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
+                    if path_graph.contains_node(node.id) {
+                        border_color_idx = Some(i);
+                        is_root = path_graph.root_node_id == Some(node.id);
+                        path_is_t = pp.gate_type.is_t();
                         break;
                     }
                 }
-                if node.pos.0 != nb.pos.0
-                    && node.pos.1 != nb.pos.1
-                    && nb.node_type == NodeType::Data
-                {
-                    continue;
+                let label_text = match node.node_type {
+                    NodeType::Data => label.clone(),
+                    NodeType::Magic => {
+                        if let Some(_) = border_color_idx {
+                            // On a path: show "T" only if this is the magic root of a T product
+                            if is_root && path_is_t { "T".to_string() } else { String::new() }
+                        } else {
+                            // Idle magic: always show cultivation countdown if cultivating
+                            if self.is_cultivating(node.id) {
+                                (self.cultivation_times[node.id as usize]
+                                    - self.busy_counts[node.id as usize])
+                                    .to_string()
+                            } else if pauli_product_paths.is_empty() {
+                                label.clone()
+                            } else {
+                                // Ready magic node while paths are shown: show "T"
+                                "T".to_string()
+                            }
+                        }
+                    }
+                    NodeType::Bus => {
+                        // When paths are being plotted, suppress all bus labels
+                        if pauli_product_paths.is_empty() && border_color_idx.is_none() {
+                            label.clone()
+                        } else {
+                            String::new()
+                        }
+                    }
+                };
+                NodeDrawInfo {
+                    x,
+                    y,
+                    half_x,
+                    half_y,
+                    is_data_x,
+                    border_color_idx,
+                    is_root,
+                    label_text,
                 }
-                let edge_points = self.generate_edge_points(node.pos, nb.pos);
-                let mix = if node.pos.0 != nb.pos.0 && node.pos.1 < nb.pos.1 { 0.5 } else { 1.0 };
-                chart.draw_series(LineSeries::new(
-                    edge_points,
-                    edge_color.mix(mix).stroke_width(stroke_width),
-                ))?;
-            }
-        }
-        for node in &self.nodes {
-            let (x, y) = node.pos;
-            let mut border_color = None;
-            let mut root_node = None;
-            for (i, (_, path_graph)) in pauli_product_paths.iter().enumerate() {
-                if path_graph.contains_node(node.id) {
-                    border_color = Some(&path_colors[i]);
-                    root_node = path_graph.root_node_id.clone();
-                    break;
-                }
-            }
+            })
+            .collect();
+
+        // Pass 1: draw all node fills.
+        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
             let node_color = match node.node_type {
                 NodeType::Magic => {
-                    if border_color == None || Some(node.id.clone()) == root_node {
-                        RGBColor(0xFF, 0xBB, 0x99)
+                    if let Some(ci) = info.border_color_idx {
+                        // Both root and routing magic nodes on a path: fill with path color tint
+                        path_colors[ci].mix(0.35).filled()
                     } else {
-                        RGBColor(0xAA, 0xAA, 0xAA)
-                    }
-                }
-                NodeType::Bus => RGBColor(0xAA, 0xAA, 0xAA),
-                NodeType::Data => RGBColor(0x99, 0x99, 0xFF),
-            }
-            .filled();
-            chart.draw_series(std::iter::once(Circle::new(
-                (x as f32, y as f32),
-                22,
-                node_color,
-            )))?;
-            if let Some(color) = border_color {
-                chart.draw_series(std::iter::once(Circle::new(
-                    (x as f32, y as f32),
-                    22,
-                    color.stroke_width(3),
-                )))?;
-            }
-            let label_text = match node.node_type {
-                NodeType::Data => self.labels[node.id as usize].clone(),
-                NodeType::Magic => {
-                    if border_color == None {
-                        if self.is_cultivating(node.id) {
-                            (self.cultivation_times[node.id as usize]
-                                - self.busy_counts[node.id as usize])
-                                .to_string()
-                        } else if pauli_product_paths.is_empty() {
-                            self.labels[node.id as usize].clone()
-                        } else {
-                            "  R".to_string()
-                        }
-                    } else {
-                        self.labels[node.id as usize].clone()
+                        RGBColor(0xFF, 0xDD, 0x44).mix(0.25).filled() // low-alpha yellow for idle/ready
                     }
                 }
                 NodeType::Bus => {
-                    if border_color == None {
-                        self.labels[node.id as usize].clone()
+                    if let Some(ci) = info.border_color_idx {
+                        path_colors[ci].mix(0.35).filled() // fill with path color tint
                     } else {
-                        "  B".to_string()
+                        RGBColor(0x88, 0x88, 0x88).mix(0.15).filled() // low-alpha grey
                     }
                 }
+                NodeType::Data => RGBColor(0x44, 0x88, 0xFF).mix(0.25).filled(), // low-alpha blue
             };
-            let font_style = if label_text.contains('R') {
-                ("sans-serif", 18, FontStyle::Bold).into_font()
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [
+                    (info.x - info.half_x, info.y - info.half_y),
+                    (info.x + info.half_x, info.y + info.half_y),
+                ],
+                node_color,
+            )))?;
+        }
+
+        // Pass 2: draw solid borders.
+        // - X-basis data nodes: no solid border (all 4 sides drawn dashed in Pass 3)
+        // - Z-basis data nodes: 3 sides only (bottom, top, right); left edge is shared with
+        //   the X node and will be drawn dashed in Pass 3, so we leave it clear here
+        // - All other nodes: full solid rectangle border
+        for info in &node_infos {
+            let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
+            if info.is_data_x {
+                // no solid border — handled entirely by dashes in Pass 3
+            } else if hx < 0.5 {
+                // Z-basis data node: draw 3 outer edges (bottom, top, right), skip left (shared with X)
+                let segs: &[((f32, f32), (f32, f32))] = &[
+                    ((x - hx, y - hy), (x + hx, y - hy)), // bottom
+                    ((x - hx, y + hy), (x + hx, y + hy)), // top
+                    ((x + hx, y - hy), (x + hx, y + hy)), // right
+                ];
+                for &(p1, p2) in segs {
+                    chart.draw_series(LineSeries::new(vec![p1, p2], BLACK.stroke_width(2)))?;
+                }
+            } else {
+                // non-data node: black border for idle nodes, black border for path nodes
+                let border_style = BLACK.stroke_width(1);
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [(x - hx, y - hy), (x + hx, y + hy)],
+                    border_style,
+                )))?;
+            }
+        }
+        // Pass 2b: draw black outer border around each path as a group.
+        // We draw a black rectangle for each path node, but use a faint separator
+        // for internal edges (the per-node black border gives the outer group outline
+        // because adjacent path nodes share edges — the outer edges get drawn once,
+        // inner shared edges get drawn twice and appear as faint lines).
+        // Strategy: draw faint grey per-node borders for path nodes (internal separators),
+        // then draw the outer group border by finding the bounding box per path.
+        for info in &node_infos {
+            if info.border_color_idx.is_some() {
+                let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
+                // Faint separator lines between path nodes
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [(x - hx, y - hy), (x + hx, y + hy)],
+                    RGBColor(0xAA, 0xAA, 0xAA).stroke_width(1),
+                )))?;
+            }
+        }
+        // Draw black outer border for each path.
+        // For each path node, draw only the 4 sides that are NOT shared with another path node.
+        // This correctly handles L-shaped and non-rectangular paths.
+        for (_, path_graph) in pauli_product_paths.iter() {
+            // Build a set of (rounded x*10, rounded y*10) for fast lookup
+            let path_positions: std::collections::HashSet<(i32, i32)> = path_graph
+                .iter_nodes()
+                .map(|id| {
+                    let (px, py) = self.nodes[id as usize].pos;
+                    ((px * 10.0).round() as i32, (py * 10.0).round() as i32)
+                })
+                .collect();
+            for id in path_graph.iter_nodes() {
+                let info = &node_infos[id as usize];
+                let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
+                let xi = (x * 10.0).round() as i32;
+                let yi = (y * 10.0).round() as i32;
+                // For non-data nodes (hx==0.5), neighbors are 1 unit away in x or y.
+                // For data nodes (hx==0.25), the pair partner is 0.5 units away in x.
+                // We check each of the 4 sides: if the neighbor cell in that direction
+                // is also in the path, skip that side (it's internal).
+                let step_x = (hx * 2.0 * 10.0).round() as i32; // 10 for non-data, 5 for data
+                let step_y = (hy * 2.0 * 10.0).round() as i32; // always 10
+                // Sides: (start, end, neighbor key offset)
+                // bottom: y - hy edge, neighbor is below (yi - step_y)
+                // top:    y + hy edge, neighbor is above (yi + step_y)
+                // left:   x - hx edge, neighbor is left  (xi - step_x)
+                // right:  x + hx edge, neighbor is right (xi + step_x)
+                let sides: &[((f32, f32), (f32, f32), i32, i32)] = &[
+                    ((x - hx, y - hy), (x + hx, y - hy), 0, -step_y), // bottom
+                    ((x - hx, y + hy), (x + hx, y + hy), 0, step_y),  // top
+                    ((x - hx, y - hy), (x - hx, y + hy), -step_x, 0), // left
+                    ((x + hx, y - hy), (x + hx, y + hy), step_x, 0),  // right
+                ];
+                for &(p1, p2, dx, dy) in sides {
+                    let neighbor = (xi + dx, yi + dy);
+                    if !path_positions.contains(&neighbor) {
+                        chart.draw_series(LineSeries::new(vec![p1, p2], BLACK.stroke_width(2)))?;
+                    }
+                }
+            }
+        }
+
+        // Pass 3: draw dashed borders for X-basis data qubits on top of everything.
+        // We draw white gaps first (to erase any solid border underneath), then black dashes,
+        // so the dashes are visible even where they overlap a solid black border line.
+        for info in &node_infos {
+            if info.is_data_x {
+                let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
+                let dash = 0.08f32;
+                let gap = 0.06f32;
+                let sides: &[(f32, f32, f32, f32, f32)] = &[
+                    (x - hx, y - hy, 1.0, 0.0, 2.0 * hx),  // bottom
+                    (x + hx, y - hy, 0.0, 1.0, 2.0 * hy),  // right
+                    (x + hx, y + hy, -1.0, 0.0, 2.0 * hx), // top
+                    (x - hx, y + hy, 0.0, -1.0, 2.0 * hy), // left
+                ];
+                // First sub-pass: draw white over the entire border line to clear it
+                for &(px0, py0, dx, dy, length) in sides {
+                    let ex = px0 + dx * length;
+                    let ey = py0 + dy * length;
+                    chart.draw_series(LineSeries::new(
+                        vec![(px0, py0), (ex, ey)],
+                        WHITE.stroke_width(3),
+                    ))?;
+                }
+                // Second sub-pass: draw black dashes on top of the cleared line
+                for &(px0, py0, dx, dy, length) in sides {
+                    let mut px = px0;
+                    let mut py = py0;
+                    let mut dist = 0.0f32;
+                    let mut on = true;
+                    while dist < length {
+                        let seg = if on { dash } else { gap }.min(length - dist);
+                        if on {
+                            chart.draw_series(LineSeries::new(
+                                vec![(px, py), (px + dx * seg, py + dy * seg)],
+                                BLACK.stroke_width(2),
+                            ))?;
+                        }
+                        px += dx * seg;
+                        py += dy * seg;
+                        dist += seg;
+                        on = !on;
+                    }
+                }
+            }
+        }
+
+        // Pass 4: draw all labels on top.
+        for info in &node_infos {
+            let font_style = if info.label_text == "T" {
+                ("sans-serif", 20, FontStyle::Bold).into_font()
             } else {
                 ("sans-serif", 18).into_font()
             };
             chart.draw_series(std::iter::once(Text::new(
-                label_text,
-                (x as f32 - 0.17, y as f32 + 0.09),
+                info.label_text.clone(),
+                (info.x - 0.17, info.y + 0.09),
                 font_style,
             )))?;
         }
         for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-            if let Some(first_data_node_id) = path_graph
-                .iter_nodes()
-                .filter(|id| matches!(self.nodes[*id as usize].node_type, NodeType::Data))
-                .next()
-            {
-                let (x, y) = self.nodes[first_data_node_id as usize].pos;
+            // Find the widest non-data row: group non-data path nodes by y-coordinate,
+            // pick the row with the most nodes, and center the label on that row.
+            // We exclude data nodes so the label never overlaps a data qubit cell.
+            let mut row_map: std::collections::HashMap<i32, Vec<f32>> =
+                std::collections::HashMap::new();
+            for id in path_graph.iter_nodes() {
+                let node = &self.nodes[id as usize];
+                if node.node_type == NodeType::Data {
+                    continue; // skip data nodes
+                }
+                let (px, py) = node.pos;
+                // Use rounded y*10 as integer key to group by row
+                let row_key = (py * 10.0).round() as i32;
+                row_map.entry(row_key).or_default().push(px);
+            }
+            if let Some((_, xs)) = row_map.iter().max_by_key(|(_, xs)| xs.len()) {
+                let row_y = {
+                    // recover the actual y from the key
+                    let key =
+                        row_map.iter().max_by_key(|(_, xs)| xs.len()).map(|(k, _)| *k).unwrap();
+                    key as f32 / 10.0
+                };
+                let min_x = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+                let max_x = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let center_x = (min_x + max_x) / 2.0;
                 let product_str = pp.to_operator_str();
                 let text_width = product_str.len() as f32 * 0.125;
                 chart.draw_series(std::iter::once(Rectangle::new(
                     [
-                        (x as f32 - 0.3, y as f32 + 0.3),
-                        (x as f32 - 0.3 + text_width, y as f32 + 0.55),
+                        (center_x - text_width / 2.0 - 0.05, row_y - 0.15),
+                        (center_x + text_width / 2.0 + 0.05, row_y + 0.15),
                     ],
                     path_colors[i].mix(0.2).filled(),
                 )))?;
                 chart.draw_series(std::iter::once(Text::new(
                     product_str,
-                    (x as f32 - 0.2, y as f32 + 0.5),
+                    (center_x - text_width / 2.0, row_y + 0.09),
                     ("sans-serif", 22).into_font(),
                 )))?;
             }
@@ -826,35 +987,6 @@ impl TopoGraph {
         root.present()?;
         println!("Plotted topology to {}", plot_fname);
         Ok(())
-    }
-
-    /// Generates edge path points for drawing (straight for aligned nodes, curved for diagonal).
-    fn generate_edge_points(&self, pos1: (f32, f32), pos2: (f32, f32)) -> Vec<(f32, f32)> {
-        let (x1, y1) = pos1;
-        let (x2, y2) = pos2;
-        if x1 == x2 || y1 == y2 {
-            vec![(x1, y1), (x2, y2)]
-        } else {
-            let mid_x = (x1 + x2) / 2.0;
-            let mid_y = (y1 + y2) / 2.0;
-            let curve_offset = if x1 < x2 { 0.2 } else { -0.2 };
-            let control_x = mid_x + curve_offset;
-            let control_y = mid_y;
-            let num_points = 10;
-            (0..=num_points)
-                .map(|i| {
-                    let t = i as f32 / num_points as f32;
-                    let one_minus_t = 1.0 - t;
-                    let x = one_minus_t.powi(2) * x1
-                        + 2.0 * one_minus_t * t * control_x
-                        + t.powi(2) * x2;
-                    let y = one_minus_t.powi(2) * y1
-                        + 2.0 * one_minus_t * t * control_y
-                        + t.powi(2) * y2;
-                    (x, y)
-                })
-                .collect()
-        }
     }
 }
 
