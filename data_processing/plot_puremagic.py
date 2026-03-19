@@ -99,6 +99,7 @@ def parse_output_file(filepath):
     current_timesteps = None
     current_data_qubits = None
     current_total_qubits = None
+    current_loaded_qubits = None
     current_parallelism = None
     current_optimal_speedup = None
     current_parallel_efficiency = None
@@ -110,7 +111,7 @@ def parse_output_file(filepath):
         """Emit a record if we have at least a circuit name."""
         nonlocal current_circuit, current_parallelism, current_optimal_speedup
         nonlocal current_parallel_efficiency, current_scheduling_efficiency
-        nonlocal current_timesteps, current_cliffords, current_avg_timestep_us
+        nonlocal current_timesteps, current_cliffords, current_avg_timestep_us, current_loaded_qubits
         if current_circuit is None:
             return
         pe = current_parallel_efficiency
@@ -132,6 +133,7 @@ def parse_output_file(filepath):
                 "data_qubits": current_data_qubits,
                 "total_qubits": current_total_qubits,
                 "ancilla_qubits": anc,
+                "loaded_qubits": current_loaded_qubits,
                 "timing": current_avg_timestep_us,
             }
         )
@@ -143,6 +145,7 @@ def parse_output_file(filepath):
         current_timesteps = None
         current_cliffords = None
         current_avg_timestep_us = None
+        current_loaded_qubits = None
 
     with open(filepath, "r") as f:
         for line in f:
@@ -191,6 +194,11 @@ def parse_output_file(filepath):
                 if current_circuit is not None:
                     _flush()
                 current_circuit = m.group(1)
+
+            # Loaded circuit qubit count
+            m = re.match(r"Loaded circuit with \d+ products and (\d+) qubits", line_clean)
+            if m:
+                current_loaded_qubits = int(m.group(1))
 
             # Scheduled timesteps (appears before "written to" in some output formats)
             m = re.match(r"Scheduled \d+ in (\d+) timesteps", line_clean)
@@ -468,6 +476,13 @@ def main():
         default=False,
         help="Draw a solid black horizontal reference line at y=1 (useful for ratio plots).",
     )
+    parser.add_argument(
+        "--label-data-qubits",
+        dest="label_data_qubits",
+        action="store_true",
+        default=False,
+        help=("When x=parallelism, annotate each data point with its number of data qubits."),
+    )
     args = parser.parse_args()
 
     x_key = args.x_axis
@@ -507,10 +522,13 @@ def main():
     # -----------------------------------------------------------------------
     # Helper: load series for one y-key
     # -----------------------------------------------------------------------
+    is_parallelism_x = x_key == "parallelism"
+
     def load_series(y_key, label_suffix=None):
         """
         Returns (series_list, any_ratio, ratio_labels) for the given y_key.
-        series_list entries: (label, xs, ys, is_ratio, ratio_label)
+        series_list entries: (label, xs, ys, is_ratio, ratio_label, point_labels)
+          point_labels is a list of strings (one per point) or None.
 
         If label_suffix is given, each series label is appended with " (label_suffix)".
         """
@@ -583,7 +601,7 @@ def main():
                     )
                     continue
                 xs, ys = zip(*pairs)
-                series_list.append((label, list(xs), list(ys), True, ratio_label))
+                series_list.append((label, list(xs), list(ys), True, ratio_label, None))
             else:
                 pairs = [
                     (d[x_field], d[y_field])
@@ -594,7 +612,14 @@ def main():
                     print(f"Warning: no usable ({x_key}, {y_key}) data in {path1}", file=sys.stderr)
                     continue
                 xs, ys = zip(*pairs)
-                series_list.append((label, list(xs), list(ys), False, None))
+                # Optionally annotate each point with loaded_qubits for parallelism x-axis
+                point_labels = None
+                if args.label_data_qubits and is_parallelism_x:
+                    pt_map = {
+                        d[x_field]: d.get("loaded_qubits") for d in data1 if d[x_field] is not None
+                    }
+                    point_labels = [str(pt_map[x]) if pt_map.get(x) is not None else "" for x in xs]
+                series_list.append((label, list(xs), list(ys), False, None, point_labels))
 
         if not series_list:
             print(f"Error: no data to plot for y={y_key}.", file=sys.stderr)
@@ -626,7 +651,7 @@ def main():
         is_timing_y = y_key == "timing"
         colour_idx = colour_offset
 
-        for i, (label, xs, ys, is_ratio_series, _) in enumerate(series_list):
+        for i, (label, xs, ys, is_ratio_series, _, point_labels) in enumerate(series_list):
             colour = _COLOURS[colour_idx % len(_COLOURS)]
             colour_idx += 1
 
@@ -664,6 +689,19 @@ def main():
                     s=60,
                     zorder=3,
                 )
+
+            # Annotate each point with its data_qubits label if requested
+            if point_labels is not None:
+                for xv, yv, lbl in zip(xs, ys, point_labels):
+                    if lbl:
+                        ax.annotate(
+                            lbl,
+                            (xv, yv),
+                            textcoords="offset points",
+                            xytext=(4, 4),
+                            fontsize=7,
+                            color=colour,
+                        )
 
             # Power-law trendline for timing y-axis
             if is_timing_y and len(xs) >= 2:
@@ -725,7 +763,7 @@ def main():
 
             # Collect union of circuit names across all series for this axis
             seen = {}
-            for _, xs, _, _, _ in series_list:
+            for _, xs, _, _, _, _ in series_list:
                 for name in xs:
                     if name not in seen:
                         seen[name] = len(seen)
@@ -748,7 +786,7 @@ def main():
                 offsets = all_offsets[left_count:]
                 colour_start = left_count
 
-            for j, (label, xs, ys, _, _) in enumerate(series_list):
+            for j, (label, xs, ys, _, _, _) in enumerate(series_list):
                 colour = _COLOURS[(colour_start + j) % len(_COLOURS)]
                 lookup = dict(zip(xs, ys))
                 heights = [lookup.get(c, 0.0) for c in all_circuits]
