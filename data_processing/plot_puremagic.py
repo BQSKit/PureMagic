@@ -5,7 +5,13 @@ Unified PureMagic results plotter.
 Specify what to plot on each axis:
 
   -x  circuit | cultivation | parallelism | ancilla_qubits | data_qubits | weight
-  -y  scheduling_efficiency | parallel_efficiency | cliffords | timesteps
+  -y  KEY  or  KEY_LEFT,KEY_RIGHT
+      where KEY is one of: scheduling_efficiency | parallel_efficiency | cliffords
+                           | timesteps | parallelism | timing
+
+When two comma-separated y-keys are given, the first is plotted on the left
+y-axis and the second on the right y-axis (twin axes).  Each -f file
+contributes one series per y-axis.
 
 Each -f argument is one series.  Forms accepted:
 
@@ -31,6 +37,10 @@ Usage examples:
     # Parallel efficiency vs cultivation time (line+scatter)
     python plot_puremagic.py -x cultivation -y parallel_efficiency \\
         -f results/cliffordt/puremagic-vary-cultivation/out-N25:N25 -o out.png
+
+    # Dual y-axes: weight (left) and cliffords (right) vs circuit
+    python plot_puremagic.py -x circuit -y weight,cliffords \\
+        -f results/cliffordt/puremagic/out:PureMagic -o out.png
 """
 
 import argparse
@@ -187,7 +197,7 @@ def parse_output_file(filepath):
             if m:
                 current_timesteps = int(m.group(1))
 
-            # Optimal speedup
+            # Optimal speedup (still needed for parallel_efficiency computation)
             m = re.match(r"Optimal timesteps \d+ \(([0-9.eE+\-]+) speedup\)", line_clean)
             if m and current_circuit is not None:
                 current_optimal_speedup = float(m.group(1))
@@ -410,9 +420,13 @@ def main():
         "-y",
         "--yaxis",
         dest="y_axis",
-        choices=list(_Y_FIELD),
         required=True,
-        help="Variable for the y-axis.",
+        metavar=f"{'|'.join(_Y_FIELD)} [,{'|'.join(_Y_FIELD)}]",
+        help=(
+            "Variable(s) for the y-axis.  Supply one key for a single y-axis, "
+            "or two comma-separated keys (e.g. 'weight,cliffords') to plot the "
+            "first on the left axis and the second on the right axis."
+        ),
     )
     parser.add_argument(
         "-f",
@@ -439,7 +453,14 @@ def main():
         "--lines",
         action="store_true",
         default=False,
-        help="Connect scatter-plot data points with a line (sorted by x value).",
+        help="Connect scatter-plot data points with a line (sorted by x value), no markers.",
+    )
+    parser.add_argument(
+        "--lines-with-markers",
+        dest="lines_with_markers",
+        action="store_true",
+        default=False,
+        help="Connect scatter-plot data points with a line and also show markers.",
     )
     parser.add_argument(
         "--hline",
@@ -450,146 +471,187 @@ def main():
     args = parser.parse_args()
 
     x_key = args.x_axis
-    y_key = args.y_axis
+
+    # Parse y-axis: single key or "key_left,key_right"
+    y_raw = args.y_axis.strip()
+    if "," in y_raw:
+        y_parts = [p.strip() for p in y_raw.split(",", 1)]
+        if len(y_parts) != 2:
+            print("Error: -y accepts at most two comma-separated keys.", file=sys.stderr)
+            sys.exit(1)
+        for p in y_parts:
+            if p not in _Y_FIELD:
+                print(
+                    f"Error: unknown y-axis key '{p}'. Choose from: {', '.join(_Y_FIELD)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        y_keys = y_parts  # [left_key, right_key]
+        dual_y = True
+    else:
+        if y_raw not in _Y_FIELD:
+            print(
+                f"Error: unknown y-axis key '{y_raw}'. Choose from: {', '.join(_Y_FIELD)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        y_keys = [y_raw]
+        dual_y = False
+
     x_field = _X_FIELD[x_key]
-    y_field = _Y_FIELD[y_key]
     is_circuit_x = x_key == "circuit"
     is_cultivation_x = x_key == "cultivation"
     is_weight_x = x_key == "weight"
+    is_ancilla_x = x_key == "ancilla_qubits"
 
     # -----------------------------------------------------------------------
-    # Load all series
+    # Helper: load series for one y-key
     # -----------------------------------------------------------------------
-    series_list = []  # list of (label, x_values, y_values, is_ratio, ratio_label)
-    any_ratio = False
-    ratio_labels = []  # collect ratio_label strings for y-axis annotation
+    def load_series(y_key, label_suffix=None):
+        """
+        Returns (series_list, any_ratio, ratio_labels) for the given y_key.
+        series_list entries: (label, xs, ys, is_ratio, ratio_label)
 
-    for i, file_arg in enumerate(args.files):
-        path1, path2, label, ratio_label = split_file_arg(file_arg, f"file{i + 1}")
-        is_ratio = path2 is not None
+        If label_suffix is given, each series label is appended with " (label_suffix)".
+        """
+        y_field = _Y_FIELD[y_key]
+        series_list = []
+        any_ratio = False
+        ratio_labels = []
 
-        data1 = parse_output_file(path1)
-        if not data1:
-            print(f"Warning: no data found in {path1}", file=sys.stderr)
-            continue
-        if args.select:
-            data1 = [d for d in data1 if d.get("circuit") and args.select in d["circuit"]]
-        if not data1:
-            print(f"Warning: no matching records in {path1}", file=sys.stderr)
-            continue
+        for i, file_arg in enumerate(args.files):
+            path1, path2, label, ratio_label = split_file_arg(file_arg, f"file{i + 1}")
+            if label_suffix:
+                label = f"{label} ({label_suffix})"
+            is_ratio = path2 is not None
 
-        if is_ratio:
-            any_ratio = True
-            if ratio_label:
-                ratio_labels.append(ratio_label)
-            data2 = parse_output_file(path2)
-            if not data2:
-                print(f"Warning: no data found in {path2}", file=sys.stderr)
+            data1 = parse_output_file(path1)
+            if not data1:
+                print(f"Warning: no data found in {path1}", file=sys.stderr)
                 continue
             if args.select:
-                data2 = [d for d in data2 if d.get("circuit") and args.select in d["circuit"]]
-            lookup2 = build_lookup(data2, x_field, y_field)
-            pairs = [
-                (d[x_field], d[y_field] / lookup2[d[x_field]])
-                for d in data1
-                if d[x_field] is not None
-                and d[y_field] is not None
-                and d[x_field] in lookup2
-                and lookup2[d[x_field]] != 0.0
-            ]
-            if not pairs:
-                print(f"Warning: no matching x values between {path1} and {path2}", file=sys.stderr)
+                data1 = [d for d in data1 if d.get("circuit") and args.select in d["circuit"]]
+            if not data1:
+                print(f"Warning: no matching records in {path1}", file=sys.stderr)
                 continue
-            xs, ys = zip(*pairs)
-            series_list.append((label, list(xs), list(ys), True, ratio_label))
-        else:
-            pairs = [
-                (d[x_field], d[y_field])
-                for d in data1
-                if d[x_field] is not None and d[y_field] is not None
-            ]
-            if not pairs:
-                print(f"Warning: no usable ({x_key}, {y_key}) data in {path1}", file=sys.stderr)
-                continue
-            xs, ys = zip(*pairs)
-            series_list.append((label, list(xs), list(ys), False, None))
 
-    if not series_list:
-        print("Error: no data to plot.", file=sys.stderr)
-        sys.exit(1)
+            if is_ratio:
+                any_ratio = True
+                if ratio_label:
+                    ratio_labels.append(ratio_label)
+                data2 = parse_output_file(path2)
+                if not data2:
+                    print(f"Warning: no data found in {path2}", file=sys.stderr)
+                    continue
+                if args.select:
+                    data2 = [d for d in data2 if d.get("circuit") and args.select in d["circuit"]]
+                if is_circuit_x:
+                    # Match by circuit name (one record per circuit per file)
+                    lookup2 = {
+                        d["circuit"]: d[y_field]
+                        for d in data2
+                        if d.get("circuit") is not None and d[y_field] is not None
+                    }
+                    pairs = [
+                        (d[x_field], d[y_field] / lookup2[d["circuit"]])
+                        for d in data1
+                        if d[x_field] is not None
+                        and d[y_field] is not None
+                        and d.get("circuit") in lookup2
+                        and lookup2[d["circuit"]] != 0.0
+                    ]
+                else:
+                    # Match by x-value (e.g. cultivation time, weight) —
+                    # the same circuit appears multiple times with different x-values.
+                    lookup2 = {
+                        d[x_field]: d[y_field]
+                        for d in data2
+                        if d[x_field] is not None and d[y_field] is not None
+                    }
+                    pairs = [
+                        (d[x_field], d[y_field] / lookup2[d[x_field]])
+                        for d in data1
+                        if d[x_field] is not None
+                        and d[y_field] is not None
+                        and d[x_field] in lookup2
+                        and lookup2[d[x_field]] != 0.0
+                    ]
+                if not pairs:
+                    print(
+                        f"Warning: no matching data points between {path1} and {path2}",
+                        file=sys.stderr,
+                    )
+                    continue
+                xs, ys = zip(*pairs)
+                series_list.append((label, list(xs), list(ys), True, ratio_label))
+            else:
+                pairs = [
+                    (d[x_field], d[y_field])
+                    for d in data1
+                    if d[x_field] is not None and d[y_field] is not None
+                ]
+                if not pairs:
+                    print(f"Warning: no usable ({x_key}, {y_key}) data in {path1}", file=sys.stderr)
+                    continue
+                xs, ys = zip(*pairs)
+                series_list.append((label, list(xs), list(ys), False, None))
 
-    # Ensure all series are consistently ratio or non-ratio
-    ratio_flags = [s[3] for s in series_list]
-    if any(ratio_flags) and not all(ratio_flags):
-        print("Error: mix of ratio and non-ratio -f arguments is not allowed.", file=sys.stderr)
-        sys.exit(1)
+        if not series_list:
+            print(f"Error: no data to plot for y={y_key}.", file=sys.stderr)
+            sys.exit(1)
+
+        ratio_flags = [s[3] for s in series_list]
+        if any(ratio_flags) and not all(ratio_flags):
+            print("Error: mix of ratio and non-ratio -f arguments is not allowed.", file=sys.stderr)
+            sys.exit(1)
+
+        return series_list, any_ratio, ratio_labels
 
     # -----------------------------------------------------------------------
-    # Plot
+    # Helper: draw series onto an axes object
     # -----------------------------------------------------------------------
-    n_series = len(series_list)
-    fig, ax = plt.subplots(figsize=(8, 6))
-
-    if is_circuit_x:
-        # --- Grouped bar chart ---
-        # Collect union of all circuit names, preserving first-seen order
-        seen = {}
-        for _, xs, _, _, _ in series_list:
-            for name in xs:
-                if name not in seen:
-                    seen[name] = len(seen)
-        all_circuits = list(seen.keys())
-        n_circuits = len(all_circuits)
-        bar_width = 0.8 / max(n_series, 1)
-        offsets = np.linspace(-(n_series - 1) / 2, (n_series - 1) / 2, n_series) * bar_width
-
-        for i, (label, xs, ys, _, _) in enumerate(series_list):
-            colour = _COLOURS[i % len(_COLOURS)]
-            lookup = dict(zip(xs, ys))
-            heights = [lookup.get(c, 0.0) for c in all_circuits]
-            positions = np.arange(n_circuits) + offsets[i]
-            ax.bar(
-                positions,
-                heights,
-                width=bar_width * 0.9,
-                label=label,
-                color=colour,
-                edgecolor="black",
-                linewidth=0.4,
-            )
-
-        x_pos = np.arange(n_circuits)
-        ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(
-            [prettify_circuit_name(c) for c in all_circuits],
-            rotation=45,
-            ha="right",
-            fontsize=8,
+    def draw_series(ax, series_list, y_key, colour_offset=0):
+        """
+        Draw all series in series_list onto ax.
+        colour_offset shifts the colour palette so left/right axes use different colours.
+        Returns the colour_idx after drawing (for twinx colour continuity).
+        """
+        # Determine line/marker drawing mode:
+        #   draw_lines=True  → connect points with a line
+        #   show_markers     → also show scatter markers on top of the line
+        draw_lines = args.lines or args.lines_with_markers or is_cultivation_x or is_weight_x
+        show_markers = args.lines_with_markers or (
+            not args.lines and (is_cultivation_x or is_weight_x)
         )
-        ax.set_xlabel(_X_LABEL[x_key])
-
-    else:
-        # --- Scatter / line plot ---
-        draw_lines = args.lines or is_cultivation_x or is_weight_x
         is_timing_y = y_key == "timing"
+        colour_idx = colour_offset
+
         for i, (label, xs, ys, is_ratio_series, _) in enumerate(series_list):
-            colour = _COLOURS[i % len(_COLOURS)]
+            colour = _COLOURS[colour_idx % len(_COLOURS)]
+            colour_idx += 1
 
             if draw_lines:
                 pairs_sorted = sorted(zip(xs, ys))
                 xs_plot, ys_plot = zip(*pairs_sorted)
-                ax.scatter(
+                if show_markers:
+                    ax.scatter(
+                        xs_plot,
+                        ys_plot,
+                        color=colour,
+                        edgecolors="black",
+                        linewidths=0.5,
+                        s=60,
+                        zorder=3,
+                    )
+                ax.plot(
                     xs_plot,
                     ys_plot,
                     color=colour,
-                    edgecolors="black",
-                    linewidths=0.5,
-                    s=60,
-                    zorder=3,
-                )
-                ax.plot(
-                    xs_plot, ys_plot, color=colour, linewidth=0.8, alpha=0.6, zorder=2, label=label
+                    linewidth=1.8,
+                    alpha=0.8,
+                    linestyle="-",
+                    zorder=2,
+                    label=label,
                 )
             else:
                 ax.scatter(
@@ -607,13 +669,11 @@ def main():
             if is_timing_y and len(xs) >= 2:
                 xs_arr = np.array(xs, dtype=float)
                 ys_arr = np.array(ys, dtype=float)
-                # Filter out non-positive values (log requires > 0)
                 mask = (xs_arr > 0) & (ys_arr > 0)
                 if mask.sum() >= 2:
                     log_x = np.log(xs_arr[mask])
                     log_y = np.log(ys_arr[mask])
                     a, b = np.polyfit(log_x, log_y, 1)
-                    # R² in log-log space
                     log_y_pred = a * log_x + b
                     ss_res = np.sum((log_y - log_y_pred) ** 2)
                     ss_tot = np.sum((log_y - np.mean(log_y)) ** 2)
@@ -631,30 +691,158 @@ def main():
                         label=f"{label} fit ($x^{{{a:.2f}}}$, R²={r2:.3f})",
                     )
 
+        return colour_idx
+
+    # -----------------------------------------------------------------------
+    # Load data for each y-axis
+    # -----------------------------------------------------------------------
+    all_series = []  # list of (series_list, any_ratio, ratio_labels) per y-key
+    for yk in y_keys:
+        suffix = _Y_LABEL[yk] if dual_y else None
+        all_series.append(load_series(yk, label_suffix=suffix))
+
+    # -----------------------------------------------------------------------
+    # Plot
+    # -----------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax2 = None  # second y-axis (twinx), created only in dual_y mode
+
+    if is_circuit_x:
+        # --- Grouped bar chart ---
+        # For dual y-axes on a bar chart, we use twinx and alternate bar groups
+        axes = [ax]
+        if dual_y:
+            ax2 = ax.twinx()
+            axes.append(ax2)
+        all_circuits: list = []
+        n_circuits: int = 0
+
+        for axis_idx, (yk, (series_list, any_ratio, ratio_labels)) in enumerate(
+            zip(y_keys, all_series)
+        ):
+            cur_ax = axes[axis_idx]
+            n_series = len(series_list)
+
+            # Collect union of circuit names across all series for this axis
+            seen = {}
+            for _, xs, _, _, _ in series_list:
+                for name in xs:
+                    if name not in seen:
+                        seen[name] = len(seen)
+            all_circuits = list(seen.keys())
+            n_circuits = len(all_circuits)
+
+            # In dual mode, offset bars so left/right don't overlap
+            total_series = sum(len(s[0]) for s in all_series)
+            bar_width = 0.8 / max(total_series, 1)
+            left_count = len(all_series[0][0]) if dual_y else n_series
+            right_count = len(all_series[1][0]) if dual_y else 0
+            total_count = left_count + right_count
+            all_offsets = (
+                np.linspace(-(total_count - 1) / 2, (total_count - 1) / 2, total_count) * bar_width
+            )
+            if axis_idx == 0:
+                offsets = all_offsets[:left_count]
+                colour_start = 0
+            else:
+                offsets = all_offsets[left_count:]
+                colour_start = left_count
+
+            for j, (label, xs, ys, _, _) in enumerate(series_list):
+                colour = _COLOURS[(colour_start + j) % len(_COLOURS)]
+                lookup = dict(zip(xs, ys))
+                heights = [lookup.get(c, 0.0) for c in all_circuits]
+                positions = np.arange(n_circuits) + offsets[j]
+                cur_ax.bar(
+                    positions,
+                    heights,
+                    width=bar_width * 0.9,
+                    label=label,
+                    color=colour,
+                    edgecolor="black",
+                    linewidth=0.4,
+                )
+
+            # y-axis label
+            y_label = _Y_LABEL[yk]
+            if any_ratio:
+                unique_ratio_labels = list(dict.fromkeys(ratio_labels))
+                if len(unique_ratio_labels) == 1:
+                    y_label += f" Ratio ({unique_ratio_labels[0]})"
+                else:
+                    y_label += " Ratio"
+            cur_ax.set_ylabel(y_label)
+
+        x_pos = np.arange(n_circuits)
+        ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(
+            [prettify_circuit_name(c) for c in all_circuits],
+            rotation=45,
+            ha="right",
+            fontsize=8,
+        )
+        ax.set_xlabel(_X_LABEL[x_key])
+
+        # Combined legend
+        handles, labels_leg = ax.get_legend_handles_labels()
+        if dual_y and ax2 is not None:
+            h2, l2 = ax2.get_legend_handles_labels()
+            handles += h2
+            labels_leg += l2
+        ax.legend(handles, labels_leg)
+
+    else:
+        # --- Scatter / line plot ---
+        axes = [ax]
+        if dual_y:
+            ax2 = ax.twinx()
+            axes.append(ax2)
+
+        colour_offset = 0
+        for axis_idx, (yk, (series_list, any_ratio, ratio_labels)) in enumerate(
+            zip(y_keys, all_series)
+        ):
+            cur_ax = axes[axis_idx]
+            colour_offset = draw_series(cur_ax, series_list, yk, colour_offset)
+
+            # y-axis label
+            y_label = _Y_LABEL[yk]
+            if any_ratio:
+                unique_ratio_labels = list(dict.fromkeys(ratio_labels))
+                if len(unique_ratio_labels) == 1:
+                    y_label += f" Ratio ({unique_ratio_labels[0]})"
+                else:
+                    y_label += " Ratio"
+            cur_ax.set_ylabel(y_label)
+
         # x-axis scale for cultivation (log base-2, plain integer labels)
         if is_cultivation_x:
             ax.set_xscale("log", base=2)
             ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
             ax.xaxis.set_minor_formatter(ticker.NullFormatter())
 
+        # x-axis scale for ancilla_qubits (log base-10, plain integer labels)
+        # if is_ancilla_x:
+        #    ax.set_xscale("log")
+        #    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
+        #    ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+        #    ax.xaxis.set_major_locator(ticker.LogLocator(base=10, numticks=8))
+
         ax.set_xlabel(_X_LABEL[x_key])
 
-    # Optional reference line at y=1
-    if args.hline:
-        ax.axhline(y=1.0, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
+        # Optional reference line at y=1
+        if args.hline:
+            ax.axhline(y=1.0, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
 
-    # y-axis label
-    y_label = _Y_LABEL[y_key]
-    if any_ratio:
-        # If all ratio series share the same ratio_label, include it
-        unique_ratio_labels = list(dict.fromkeys(ratio_labels))  # deduplicated, order-preserving
-        if len(unique_ratio_labels) == 1:
-            y_label += f" Ratio ({unique_ratio_labels[0]})"
-        else:
-            y_label += " Ratio"
-    ax.set_ylabel(y_label)
+        # Combined legend from all axes
+        handles, labels_leg = ax.get_legend_handles_labels()
+        if dual_y and ax2 is not None:
+            h2, l2 = ax2.get_legend_handles_labels()
+            handles += h2
+            labels_leg += l2
+        ax.legend(handles, labels_leg)
 
-    ax.legend()
     plt.tight_layout()
     plt.savefig(args.output, dpi=150)
     print(f"Plot saved to {args.output}")
