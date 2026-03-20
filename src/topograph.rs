@@ -27,18 +27,13 @@ struct DataGroup {
     z_right_id: u16,
 }
 
-/// Per-node metadata computed once and reused across draw passes.
-struct NodeDrawInfo {
-    x: f32,
-    y: f32,
-    half_x: f32,
-    half_y: f32,
-    #[allow(dead_code)]
-    is_data_x: bool,
-    border_color_idx: Option<usize>,
-    #[allow(dead_code)]
-    is_root: bool,
-    label_text: String,
+/// Which side of a data node a routing neighbor is on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DataSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 // ── TopoGraph ─────────────────────────────────────────────────────────────────
@@ -699,28 +694,54 @@ impl TopoGraph {
 
         let path_colors = self.make_path_colors(pauli_product_paths.len());
         let data_groups = self.build_data_groups();
-        let node_infos = self.build_node_infos(pauli_product_paths);
-        let routing_pos_color = self.build_routing_pos_color(&node_infos);
 
-        self.draw_node_fills(&mut chart, &node_infos, &path_colors)?;
+        // Pre-compute product label positions so we can suppress node labels underneath them.
+        let product_label_positions = self.compute_product_label_positions(pauli_product_paths);
+        // Build set of (x*10, y*10) positions covered by a product label background rect.
+        // For each label, find all routing nodes on that row whose x falls within the rect.
+        let mut product_label_covered: std::collections::HashSet<(i32, i32)> =
+            std::collections::HashSet::new();
+        for opt in &product_label_positions {
+            if let Some((cx, cy, tw, _)) = *opt {
+                let x_min = cx - tw / 2.0 - 0.05;
+                let x_max = cx + tw / 2.0 + 0.05;
+                let row_key = (cy * 10.0).round() as i32;
+                for node in &self.nodes {
+                    if node.node_type == NodeType::Data {
+                        continue;
+                    }
+                    let (nx, ny) = node.pos;
+                    if (ny * 10.0).round() as i32 == row_key && nx >= x_min && nx <= x_max {
+                        product_label_covered.insert(((nx * 10.0).round() as i32, row_key));
+                    }
+                }
+            }
+        }
 
-        self.draw_node_borders(&mut chart, &node_infos, pauli_product_paths)?;
+        // Step 1: draw all node squares (fills + borders) with no path coloring.
+        self.draw_all_nodes_plain(&mut chart, pauli_product_paths, &product_label_covered)?;
 
-        self.draw_data_borders(
+        // Step 1b: draw outer group borders for data groups (no internal edges).
+        self.draw_data_group_borders_plain(&mut chart, &data_groups)?;
+
+        // Step 2: for each path, walk the treegraph and overlay colors.
+        self.draw_path_overlays(
             &mut chart,
-            &data_groups,
-            &node_infos,
-            &path_colors,
-            &routing_pos_color,
-        )?;
-        self.draw_labels(
-            &mut chart,
-            &data_groups,
-            &node_infos,
-            &path_colors,
-            &routing_pos_color,
             pauli_product_paths,
+            &path_colors,
+            &data_groups,
+            &product_label_covered,
         )?;
+
+        // Step 3: draw data group qubit-number labels and product operator labels.
+        self.draw_data_group_labels(&mut chart, &data_groups)?;
+        self.draw_product_labels(
+            &mut chart,
+            pauli_product_paths,
+            &path_colors,
+            &product_label_positions,
+        )?;
+
         if !title_str.is_empty() {
             let font_size = (6.0 * (self.num_rows as f64).sqrt()) as u32;
             for (i, line) in title_str.split('\n').enumerate() {
@@ -851,255 +872,340 @@ impl TopoGraph {
         groups
     }
 
-    /// Builds per-node draw metadata (position, color index, label text).
-    fn build_node_infos(
-        &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
-    ) -> Vec<NodeDrawInfo> {
-        self.nodes
-            .iter()
-            .map(|node| {
-                let (x, y) = node.pos;
-                let (half_x, half_y) = if node.node_type == NodeType::Data {
-                    (0.25f32, 0.5f32)
-                } else {
-                    (0.5f32, 0.5f32)
-                };
-                let label = &self.labels[node.id as usize];
-                let is_data_x = node.node_type == NodeType::Data && label.ends_with('X');
-                let mut border_color_idx = None;
-                let mut is_root = false;
-                let mut path_is_t = false;
-                for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-                    if path_graph.contains_node(node.id) {
-                        border_color_idx = Some(i);
-                        is_root = path_graph.root_node_id == Some(node.id);
-                        path_is_t = pp.gate_type.is_t();
-                        break;
-                    }
+    /// Step 1: draw all node fills and routing node borders with no path coloring.
+    /// Data nodes get only a plain blue fill here; their borders are drawn per-group
+    /// in `draw_data_group_borders_plain` to avoid internal edges.
+    /// Routing nodes get their default fill and a black border.
+    /// `product_label_covered` is a set of (x*10, y*10) positions where a product label
+    /// background rect will be drawn — node labels at those positions are suppressed.
+    fn draw_all_nodes_plain(
+        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        product_label_covered: &std::collections::HashSet<(i32, i32)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for node in &self.nodes {
+            let (x, y) = node.pos;
+            let (hx, hy) =
+                if node.node_type == NodeType::Data { (0.25f32, 0.5f32) } else { (0.5f32, 0.5f32) };
+
+            // Fill only for data nodes; routing nodes get fill + border here.
+            let fill = match node.node_type {
+                NodeType::Magic => RGBColor(0xFF, 0xDD, 0x44).mix(0.25).filled(),
+                NodeType::Bus => RGBColor(0x88, 0x88, 0x88).mix(0.15).filled(),
+                NodeType::Data => RGBColor(0x44, 0x88, 0xFF).mix(0.25).filled(),
+            };
+            draw_rect(chart, x, y, hx, hy, fill)?;
+
+            if node.node_type != NodeType::Data {
+                draw_rect(chart, x, y, hx, hy, BLACK.stroke_width(1))?;
+                // Skip label if a product label background rect covers this node position.
+                let pos_key = ((x * 10.0).round() as i32, (y * 10.0).round() as i32);
+                if product_label_covered.contains(&pos_key) {
+                    continue;
                 }
+                // Label for routing nodes
+                let label = &self.labels[node.id as usize];
                 let label_text = match node.node_type {
-                    NodeType::Data => String::new(),
                     NodeType::Magic => {
-                        if border_color_idx.is_some() {
-                            if is_root && path_is_t { "T".to_string() } else { String::new() }
+                        if pauli_product_paths.is_empty() {
+                            label.clone()
                         } else if self.is_cultivating(node.id) {
                             (self.cultivation_times[node.id as usize]
                                 - self.busy_counts[node.id as usize])
                                 .to_string()
-                        } else if pauli_product_paths.is_empty() {
-                            label.clone()
                         } else {
                             "T".to_string()
                         }
                     }
                     NodeType::Bus => {
-                        if pauli_product_paths.is_empty() && border_color_idx.is_none() {
+                        if pauli_product_paths.is_empty() {
                             label.clone()
                         } else {
                             String::new()
                         }
                     }
+                    NodeType::Data => String::new(),
                 };
-                NodeDrawInfo {
-                    x,
-                    y,
-                    half_x,
-                    half_y,
-                    is_data_x,
-                    border_color_idx,
-                    is_root,
-                    label_text,
-                }
-            })
-            .collect()
-    }
-
-    /// Builds a map from rounded node position → color index for non-data path nodes.
-    /// Used to check if a routing node adjacent to a data group edge is in the same product.
-    fn build_routing_pos_color(
-        &self, node_infos: &[NodeDrawInfo],
-    ) -> std::collections::HashMap<(i32, i32), usize> {
-        self.nodes
-            .iter()
-            .zip(node_infos.iter())
-            .filter(|(n, _)| n.node_type != NodeType::Data)
-            .filter_map(|(n, info)| {
-                info.border_color_idx.map(|ci| {
-                    let (px, py) = n.pos;
-                    (((px * 10.0).round() as i32, (py * 10.0).round() as i32), ci)
-                })
-            })
-            .collect()
-    }
-
-    /// Pass 1: draw filled rectangles for all nodes.
-    fn draw_node_fills(
-        &self, chart: &mut PlotChart, node_infos: &[NodeDrawInfo], path_colors: &[RGBAColor],
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
-            let fill = match node.node_type {
-                NodeType::Magic => {
-                    if let Some(ci) = info.border_color_idx {
-                        path_colors[ci].mix(0.35).filled()
+                if !label_text.is_empty() {
+                    let font = if label_text == "T" {
+                        ("sans-serif", 20, FontStyle::Bold).into_font()
                     } else {
-                        RGBColor(0xFF, 0xDD, 0x44).mix(0.25).filled()
-                    }
+                        ("sans-serif", 18).into_font()
+                    };
+                    draw_text(chart, &label_text, x - 0.17, y + 0.09, font)?;
                 }
-                NodeType::Bus => {
-                    if let Some(ci) = info.border_color_idx {
-                        path_colors[ci].mix(0.35).filled()
-                    } else {
-                        RGBColor(0x88, 0x88, 0x88).mix(0.15).filled()
-                    }
-                }
-                NodeType::Data => RGBColor(0x44, 0x88, 0xFF).mix(0.25).filled(),
-            };
-            draw_rect(chart, info.x, info.y, info.half_x, info.half_y, fill)?;
+            }
         }
         Ok(())
     }
 
-    /// Pass 2 + 2b + 2c: draw solid borders for all nodes and path outlines.
-    fn draw_node_borders(
-        &self, chart: &mut PlotChart, node_infos: &[NodeDrawInfo],
-        pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+    /// Step 1b: draw the outer boundary of each data group (4 nodes treated as one block).
+    /// Only the exterior edges are drawn — no internal edges between the 4 nodes.
+    /// The X-row (top or bottom) gets dashed borders; the Z-row gets thick solid borders.
+    fn draw_data_group_borders_plain(
+        &self, chart: &mut PlotChart, data_groups: &[DataGroup],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Pass 2 + 2b: black border for all non-data nodes; grey separator for path nodes.
-        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
-            if node.node_type == NodeType::Data {
-                continue;
+        for group in data_groups {
+            // The group spans x ∈ [col-0.5, col+0.5], y ∈ [min_y-0.5, max_y+0.5].
+            let left = group.col - 0.5;
+            let right = group.col + 0.5;
+            let y_top = group.y_x.max(group.y_z);
+            let y_bot = group.y_x.min(group.y_z);
+            let top = y_top + 0.5;
+            let bot = y_bot - 0.5;
+            let x_is_top = group.y_x > group.y_z;
+
+            // Top outer edge: belongs to whichever row is on top.
+            if x_is_top {
+                // X row on top → dashed top edge
+                draw_dashed(chart, false, left, top, right - left, BLACK.to_rgba())?;
+            } else {
+                // Z row on top → thick solid top edge
+                draw_line(chart, (left, top), (right, top), BLACK.stroke_width(2))?;
             }
-            let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
-            draw_rect(chart, x, y, hx, hy, BLACK.stroke_width(1))?;
-            if info.border_color_idx.is_some() {
-                draw_rect(chart, x, y, hx, hy, RGBColor(0xAA, 0xAA, 0xAA).stroke_width(1))?;
+
+            // Bottom outer edge: belongs to whichever row is on the bottom.
+            if x_is_top {
+                // Z row on bottom → thick solid bottom edge
+                draw_line(chart, (left, bot), (right, bot), BLACK.stroke_width(2))?;
+            } else {
+                // X row on bottom → dashed bottom edge
+                draw_dashed(chart, false, left, bot, right - left, BLACK.to_rgba())?;
+            }
+
+            // Left outer edge: spans the full height of the group.
+            // Style is determined by which row the left nodes belong to.
+            // Left side of X-left node → dashed; left side of Z-left node → solid.
+            // Both left nodes share the same x, so we draw one combined edge.
+            // Use dashed for the X portion and solid for the Z portion.
+            let (x_left_y, z_left_y) = (group.y_x, group.y_z);
+            // X-left node left edge (dashed)
+            draw_dashed(chart, true, left, x_left_y - 0.5, 1.0, BLACK.to_rgba())?;
+            // Z-left node left edge (thick solid)
+            draw_line(
+                chart,
+                (left, z_left_y - 0.5),
+                (left, z_left_y + 0.5),
+                BLACK.stroke_width(2),
+            )?;
+
+            // Right outer edge: same logic for right nodes.
+            draw_dashed(chart, true, right, x_left_y - 0.5, 1.0, BLACK.to_rgba())?;
+            draw_line(
+                chart,
+                (right, z_left_y - 0.5),
+                (right, z_left_y + 0.5),
+                BLACK.stroke_width(2),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Determines which side of a data node a routing neighbor is on.
+    /// Returns `None` if the neighbor is not adjacent or not at the expected offset.
+    fn data_side_of_neighbor(data_pos: (f32, f32), nbor_pos: (f32, f32)) -> Option<DataSide> {
+        let dx = nbor_pos.0 - data_pos.0;
+        let dy = nbor_pos.1 - data_pos.1;
+        // Data nodes are 0.5 wide (hx=0.25) and 1.0 tall (hy=0.5).
+        // A side neighbor sits at dx ≈ ±0.75 (0.25 + 0.5) or dy ≈ ±1.0 (0.5 + 0.5).
+        if dx.abs() > dy.abs() {
+            if dx > 0.0 { Some(DataSide::Right) } else { Some(DataSide::Left) }
+        } else if dy.abs() > 0.0 {
+            if dy > 0.0 { Some(DataSide::Top) } else { Some(DataSide::Bottom) }
+        } else {
+            None
+        }
+    }
+
+    /// Draws the colored border segment on one side of a data node.
+    /// `group_outer_y` is used for Top/Bottom sides: the horizontal border is drawn at
+    /// the outer boundary of the four-node group rather than the individual node's edge.
+    /// X nodes use dashed style; Z nodes use thick solid style.
+    fn draw_data_node_side_highlight(
+        chart: &mut PlotChart, data_pos: (f32, f32), side: DataSide, color: RGBAColor,
+        is_x_node: bool, group_outer_y: f32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (x, y) = data_pos;
+        let (hx, hy) = (0.25f32, 0.5f32);
+        let style = color.stroke_width(3);
+        match side {
+            DataSide::Left => {
+                let p1 = (x - hx, y - hy);
+                let p2 = (x - hx, y + hy);
+                if is_x_node {
+                    draw_dashed(chart, true, p1.0, p1.1, hy * 2.0, color)?;
+                } else {
+                    draw_line(chart, p1, p2, style)?;
+                }
+            }
+            DataSide::Right => {
+                let p1 = (x + hx, y - hy);
+                let p2 = (x + hx, y + hy);
+                if is_x_node {
+                    draw_dashed(chart, true, p1.0, p1.1, hy * 2.0, color)?;
+                } else {
+                    draw_line(chart, p1, p2, style)?;
+                }
+            }
+            DataSide::Top => {
+                // Always draw at the outer top of the four-node group.
+                if is_x_node {
+                    draw_dashed(chart, false, x - hx, group_outer_y, hx * 2.0, color)?;
+                } else {
+                    draw_line(chart, (x - hx, group_outer_y), (x + hx, group_outer_y), style)?;
+                }
+            }
+            DataSide::Bottom => {
+                // Always draw at the outer bottom of the four-node group.
+                if is_x_node {
+                    draw_dashed(chart, false, x - hx, group_outer_y, hx * 2.0, color)?;
+                } else {
+                    draw_line(chart, (x - hx, group_outer_y), (x + hx, group_outer_y), style)?;
+                }
             }
         }
-        for (_, path_graph) in pauli_product_paths.iter() {
-            let path_positions: std::collections::HashSet<(i32, i32)> = path_graph
+        Ok(())
+    }
+
+    /// Step 2: for each product path, walk the treegraph starting at the root node.
+    /// For each routing node on the path, color its fill with the path color.
+    /// For each data-node neighbor of a routing node, highlight the border on the
+    /// side facing that routing node in the path color (and do not expand the path).
+    fn draw_path_overlays(
+        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        path_colors: &[RGBAColor], data_groups: &[DataGroup],
+        product_label_covered: &std::collections::HashSet<(i32, i32)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Build a lookup: data node id → reference to its DataGroup.
+        // Used to find the outer boundary of the four-node group for horizontal X borders.
+        let mut node_to_group: std::collections::HashMap<u16, usize> =
+            std::collections::HashMap::new();
+        for (gi, group) in data_groups.iter().enumerate() {
+            node_to_group.insert(group.x_left_id, gi);
+            node_to_group.insert(group.x_right_id, gi);
+            node_to_group.insert(group.z_left_id, gi);
+            node_to_group.insert(group.z_right_id, gi);
+        }
+
+        for (path_idx, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
+            let color = path_colors[path_idx];
+            let is_t = pp.gate_type.is_t();
+
+            // Collect all routing node IDs in this path (for outline drawing).
+            let routing_ids: Vec<u16> = path_graph
                 .iter_nodes()
-                .map(|id| {
+                .filter(|&id| self.nodes[id as usize].node_type != NodeType::Data)
+                .collect();
+
+            // Build set of routing positions for outline (shared-edge suppression).
+            let routing_pos_set: std::collections::HashSet<(i32, i32)> = routing_ids
+                .iter()
+                .map(|&id| {
                     let (px, py) = self.nodes[id as usize].pos;
                     ((px * 10.0).round() as i32, (py * 10.0).round() as i32)
                 })
                 .collect();
-            for id in path_graph.iter_nodes() {
+
+            // Color each routing node's fill and draw its outline.
+            for &id in &routing_ids {
                 let node = &self.nodes[id as usize];
-                if node.node_type == NodeType::Data {
-                    continue;
+                let (x, y) = node.pos;
+                let (hx, hy) = (0.5f32, 0.5f32);
+
+                // Colored fill overlay.
+                draw_rect(chart, x, y, hx, hy, color.mix(0.35).filled())?;
+
+                // Draw "T" label on root node if this is a T gate,
+                // but only if the product label rect does not cover this node.
+                let is_root = path_graph.root_node_id == Some(id);
+                let pos_key = ((x * 10.0).round() as i32, (y * 10.0).round() as i32);
+                if is_root && is_t && !product_label_covered.contains(&pos_key) {
+                    draw_text(
+                        chart,
+                        "T",
+                        x - 0.17,
+                        y + 0.09,
+                        ("sans-serif", 20, FontStyle::Bold).into_font(),
+                    )?;
                 }
-                let info = &node_infos[id as usize];
-                let (x, y, hx, hy) = (info.x, info.y, info.half_x, info.half_y);
+
+                // Draw outline: suppress edges shared with adjacent routing nodes in same path.
                 let xi = (x * 10.0).round() as i32;
                 let yi = (y * 10.0).round() as i32;
                 let step_x = (hx * 2.0 * 10.0).round() as i32;
                 let step_y = (hy * 2.0 * 10.0).round() as i32;
                 for &(p1, p2, dx, dy) in &[
-                    ((x - hx, y - hy), (x + hx, y - hy), 0, -step_y),
-                    ((x - hx, y + hy), (x + hx, y + hy), 0, step_y),
-                    ((x - hx, y - hy), (x - hx, y + hy), -step_x, 0),
-                    ((x + hx, y - hy), (x + hx, y + hy), step_x, 0),
+                    ((x - hx, y - hy), (x + hx, y - hy), 0i32, -step_y),
+                    ((x - hx, y + hy), (x + hx, y + hy), 0i32, step_y),
+                    ((x - hx, y - hy), (x - hx, y + hy), -step_x, 0i32),
+                    ((x + hx, y - hy), (x + hx, y + hy), step_x, 0i32),
                 ] {
-                    if !path_positions.contains(&(xi + dx, yi + dy)) {
+                    if !routing_pos_set.contains(&(xi + dx, yi + dy)) {
                         draw_line(chart, p1, p2, BLACK.stroke_width(2))?;
                     }
                 }
+
+                // For each neighbor of this routing node in the treegraph (path only):
+                // if it is a data node, highlight the border on the side facing this routing node.
+                for &nbor_id in path_graph.neighbors(id) {
+                    let nbor = &self.nodes[nbor_id as usize];
+                    if nbor.node_type != NodeType::Data {
+                        continue;
+                    }
+                    let nbor_label = &self.labels[nbor_id as usize];
+                    let is_x_node = nbor_label.ends_with('X');
+                    if let Some(side) = Self::data_side_of_neighbor(nbor.pos, node.pos) {
+                        // For Top/Bottom sides, always use the outer boundary of the
+                        // four-node group so the border/label appears at the rectangle edge.
+                        let group_outer_y = if side == DataSide::Top || side == DataSide::Bottom {
+                            if let Some(&gi) = node_to_group.get(&nbor_id) {
+                                let group = &data_groups[gi];
+                                let y_top = group.y_x.max(group.y_z) + 0.5;
+                                let y_bot = group.y_x.min(group.y_z) - 0.5;
+                                if side == DataSide::Top { y_top } else { y_bot }
+                            } else {
+                                // Fallback: use the node's own edge.
+                                if side == DataSide::Top {
+                                    nbor.pos.1 + 0.5
+                                } else {
+                                    nbor.pos.1 - 0.5
+                                }
+                            }
+                        } else {
+                            // Left/Right sides: not used for horizontal placement.
+                            if side == DataSide::Top { nbor.pos.1 + 0.5 } else { nbor.pos.1 - 0.5 }
+                        };
+                        Self::draw_data_node_side_highlight(
+                            chart,
+                            nbor.pos,
+                            side,
+                            color,
+                            is_x_node,
+                            group_outer_y,
+                        )?;
+                        // Draw boxed X/Z label on the highlighted side.
+                        let letter = if is_x_node { "X" } else { "Z" };
+                        let (lx, ly) = match side {
+                            DataSide::Left => (nbor.pos.0 - 0.25, nbor.pos.1),
+                            DataSide::Right => (nbor.pos.0 + 0.25, nbor.pos.1),
+                            DataSide::Top | DataSide::Bottom => (nbor.pos.0, group_outer_y),
+                        };
+                        draw_boxed_label(chart, letter, lx, ly, color)?;
+                    }
+                }
             }
+
+            // Product operator + ID label for this path.
+            // (drawn here so it appears on top of the colored fills)
+            let _ = (pp, data_groups); // suppress unused warnings; labels drawn in separate pass
         }
         Ok(())
     }
 
-    /// Pass 2c + 3: draw colored solid borders (Z-row) and dashed borders (X-row) for data groups.
-    fn draw_data_borders(
-        &self, chart: &mut PlotChart, data_groups: &[DataGroup], node_infos: &[NodeDrawInfo],
-        path_colors: &[RGBAColor],
-        routing_pos_color: &std::collections::HashMap<(i32, i32), usize>,
+    /// Step 3a: draw data group qubit-number labels.
+    fn draw_data_group_labels(
+        &self, chart: &mut PlotChart, data_groups: &[DataGroup],
     ) -> Result<(), Box<dyn std::error::Error>> {
         for group in data_groups {
-            let (left, right) = (group.col - 0.5, group.col + 0.5);
-            let (y_top, y_bot) = (group.y_x.max(group.y_z), group.y_x.min(group.y_z));
-            let xl_ci = node_infos[group.x_left_id as usize].border_color_idx;
-            let xr_ci = node_infos[group.x_right_id as usize].border_color_idx;
-            let zl_ci = node_infos[group.z_left_id as usize].border_color_idx;
-            let zr_ci = node_infos[group.z_right_id as usize].border_color_idx;
-
-            // Solid: top edge (if routing node above is in same path and !sides_only).
-            let top_ci = (!self.sides_only)
-                .then(|| {
-                    let key =
-                        ((group.col * 10.0).round() as i32, ((y_top + 1.0) * 10.0).round() as i32);
-                    xl_ci
-                        .or(xr_ci)
-                        .filter(|&ci| routing_pos_color.get(&key).map_or(false, |&r| r == ci))
-                })
-                .flatten();
-            draw_line(
-                chart,
-                (left, y_top + 0.5),
-                (right, y_top + 0.5),
-                ci_color(top_ci, path_colors).stroke_width(2),
-            )?;
-            // Solid: Z-row left and right sides.
-            draw_line(
-                chart,
-                (left, group.y_z - 0.5),
-                (left, group.y_z + 0.5),
-                ci_color(zl_ci, path_colors).stroke_width(2),
-            )?;
-            draw_line(
-                chart,
-                (right, group.y_z - 0.5),
-                (right, group.y_z + 0.5),
-                ci_color(zr_ci, path_colors).stroke_width(2),
-            )?;
-
-            // Dashed: bottom edge (if routing node below is in same path and !sides_only).
-            let bot_ci = (!self.sides_only)
-                .then(|| {
-                    let key =
-                        ((group.col * 10.0).round() as i32, ((y_bot - 1.0) * 10.0).round() as i32);
-                    zl_ci
-                        .or(zr_ci)
-                        .filter(|&ci| routing_pos_color.get(&key).map_or(false, |&r| r == ci))
-                })
-                .flatten();
-            draw_dashed(
-                chart,
-                false,
-                left,
-                y_bot - 0.5,
-                right - left,
-                ci_color(bot_ci, path_colors),
-            )?;
-            // Dashed: X-row left and right sides.
-            draw_dashed(chart, true, left, group.y_x - 0.5, 1.0, ci_color(xl_ci, path_colors))?;
-            draw_dashed(chart, true, right, group.y_x - 0.5, 1.0, ci_color(xr_ci, path_colors))?;
-        }
-        Ok(())
-    }
-
-    /// Pass 4: draw all text labels (node labels, data group labels, side labels, product labels).
-    fn draw_labels(
-        &self, chart: &mut PlotChart, data_groups: &[DataGroup], node_infos: &[NodeDrawInfo],
-        path_colors: &[RGBAColor],
-        routing_pos_color: &std::collections::HashMap<(i32, i32), usize>,
-        pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Non-data node labels.
-        for (node, info) in self.nodes.iter().zip(node_infos.iter()) {
-            if node.node_type == NodeType::Data || info.label_text.is_empty() {
-                continue;
-            }
-            let font = if info.label_text == "T" {
-                ("sans-serif", 20, FontStyle::Bold).into_font()
-            } else {
-                ("sans-serif", 18).into_font()
-            };
-            draw_text(chart, &info.label_text, info.x - 0.17, info.y + 0.09, font)?;
-        }
-        // Data group qubit-number labels.
-        for group in data_groups {
-            let hy = 0.5f32;
             let y_top = group.y_x.max(group.y_z);
             let y_bot = group.y_x.min(group.y_z);
             let x_is_top = group.y_x > group.y_z;
@@ -1115,65 +1221,86 @@ impl TopoGraph {
             let label_x = group.col - 0.17;
             draw_text(chart, &x_label, label_x, x_row_y + 0.09, ("sans-serif", 24).into_font())?;
             draw_text(chart, &z_label, label_x, z_row_y + 0.09, ("sans-serif", 24).into_font())?;
+        }
+        Ok(())
+    }
 
-            // Side labels (boxed X/Z letters on colored edges).
-            let xl_ci = node_infos[group.x_left_id as usize].border_color_idx;
-            let xr_ci = node_infos[group.x_right_id as usize].border_color_idx;
-            let zl_ci = node_infos[group.z_left_id as usize].border_color_idx;
-            let zr_ci = node_infos[group.z_right_id as usize].border_color_idx;
-            let (left, right) = (group.col - 0.5, group.col + 0.5);
-            let (top, bot) = (y_top + hy, y_bot - hy);
-
-            // Top/bottom labels suppressed when sides_only.
-            if !self.sides_only {
-                let top_key =
-                    ((group.col * 10.0).round() as i32, ((top + 0.5) * 10.0).round() as i32);
-                if let Some(ci) = xl_ci
-                    .or(xr_ci)
-                    .filter(|&ci| routing_pos_color.get(&top_key).map_or(false, |&r| r == ci))
-                {
-                    draw_boxed_label(chart, "Z", group.col, top, path_colors[ci])?;
-                }
-                let bot_key =
-                    ((group.col * 10.0).round() as i32, ((bot - 0.5) * 10.0).round() as i32);
-                if let Some(ci) = zl_ci
-                    .or(zr_ci)
-                    .filter(|&ci| routing_pos_color.get(&bot_key).map_or(false, |&r| r == ci))
-                {
-                    draw_boxed_label(chart, "X", group.col, bot, path_colors[ci])?;
-                }
-            }
-            // Side labels always shown (X on dashed X-row sides, Z on solid Z-row sides).
-            for &(letter, x, y, ci) in &[
-                ("X", left, x_row_y, xl_ci),
-                ("X", right, x_row_y, xr_ci),
-                ("Z", left, z_row_y, zl_ci),
-                ("Z", right, z_row_y, zr_ci),
-            ] {
-                if let Some(ci) = ci {
-                    draw_boxed_label(chart, letter, x, y, path_colors[ci])?;
+    /// Pre-computes the (center_x, row_y, half_width, path_index) for each product label.
+    /// Returns one `Option` per path: `None` if no suitable row was found.
+    /// Rows containing any node with a non-empty label (root T nodes, cultivation nodes)
+    /// are excluded so the product label never overlaps a "T" or countdown.
+    fn compute_product_label_positions(
+        &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+    ) -> Vec<Option<(f32, f32, f32, usize)>> {
+        // Build a set of (x*10, y*10) positions that have a non-empty node label.
+        // These are: root nodes of any path (T label) and cultivating magic nodes.
+        let mut labeled_positions: std::collections::HashSet<(i32, i32)> =
+            std::collections::HashSet::new();
+        for (pp, path_graph) in pauli_product_paths.iter() {
+            if let Some(root_id) = path_graph.root_node_id {
+                if pp.gate_type.is_t() {
+                    let (px, py) = self.nodes[root_id as usize].pos;
+                    labeled_positions
+                        .insert(((px * 10.0).round() as i32, (py * 10.0).round() as i32));
                 }
             }
         }
-        // Product operator + ID labels.
-        for (i, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-            // Find the widest non-data row to place the label.
-            let mut row_map: std::collections::HashMap<i32, Vec<f32>> =
-                std::collections::HashMap::new();
-            for id in path_graph.iter_nodes() {
-                let node = &self.nodes[id as usize];
-                if node.node_type != NodeType::Data {
-                    let (px, py) = node.pos;
-                    row_map.entry((py * 10.0).round() as i32).or_default().push(px);
-                }
+        for node in &self.nodes {
+            if self.is_cultivating(node.id) {
+                let (px, py) = node.pos;
+                labeled_positions.insert(((px * 10.0).round() as i32, (py * 10.0).round() as i32));
             }
-            if let Some((&row_key, xs)) = row_map.iter().max_by_key(|(_, xs)| xs.len()) {
-                let row_y = row_key as f32 / 10.0;
-                let center_x = (xs.iter().cloned().fold(f32::INFINITY, f32::min)
-                    + xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
-                    / 2.0;
-                let product_str = pp.to_operator_str();
-                let tw = product_str.len() as f32 * 0.125;
+        }
+
+        pauli_product_paths
+            .iter()
+            .enumerate()
+            .map(|(i, (pp, path_graph))| {
+                // Build row_map: row_key → list of x positions of non-data nodes.
+                let mut row_map: std::collections::HashMap<i32, Vec<f32>> =
+                    std::collections::HashMap::new();
+                for id in path_graph.iter_nodes() {
+                    let node = &self.nodes[id as usize];
+                    if node.node_type != NodeType::Data {
+                        let (px, py) = node.pos;
+                        row_map.entry((py * 10.0).round() as i32).or_default().push(px);
+                    }
+                }
+                // Filter out rows that contain any labeled node position.
+                let eligible: Vec<(&i32, &Vec<f32>)> = row_map
+                    .iter()
+                    .filter(|(row_key, xs)| {
+                        let ry = **row_key;
+                        !xs.iter().any(|&px| {
+                            labeled_positions.contains(&((px * 10.0).round() as i32, ry))
+                        })
+                    })
+                    .collect();
+                // Pick the widest eligible row; fall back to any row if none eligible.
+                let best = if !eligible.is_empty() {
+                    eligible.iter().max_by_key(|(_, xs)| xs.len()).copied()
+                } else {
+                    row_map.iter().max_by_key(|(_, xs)| xs.len()).map(|(k, v)| (k, v))
+                };
+                best.map(|(&row_key, xs)| {
+                    let row_y = row_key as f32 / 10.0;
+                    let center_x = (xs.iter().cloned().fold(f32::INFINITY, f32::min)
+                        + xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
+                        / 2.0;
+                    let tw = pp.to_operator_str().len() as f32 * 0.125;
+                    (center_x, row_y, tw, i)
+                })
+            })
+            .collect()
+    }
+
+    /// Step 3b: draw product operator + ID labels using pre-computed positions.
+    fn draw_product_labels(
+        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        path_colors: &[RGBAColor], positions: &[Option<(f32, f32, f32, usize)>],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (pos_opt, (pp, _path_graph)) in positions.iter().zip(pauli_product_paths.iter()) {
+            if let Some(&(center_x, row_y, tw, i)) = pos_opt.as_ref() {
                 draw_rect_coords(
                     chart,
                     center_x - tw / 2.0 - 0.05,
@@ -1182,6 +1309,7 @@ impl TopoGraph {
                     row_y + 0.15,
                     path_colors[i].mix(0.2).filled(),
                 )?;
+                let product_str = pp.to_operator_str();
                 draw_text(
                     chart,
                     &product_str,
@@ -1215,11 +1343,6 @@ type PlotChart<'a> = plotters::prelude::ChartContext<
         plotters::coord::types::RangedCoordf32,
     >,
 >;
-
-/// Returns the path color for index `ci`, or black if `None`.
-fn ci_color(ci: Option<usize>, path_colors: &[RGBAColor]) -> RGBAColor {
-    ci.map_or_else(|| BLACK.to_rgba(), |i| path_colors[i])
-}
 
 /// Draws a single filled/stroked rectangle centered at (cx, cy) with half-extents (hx, hy).
 fn draw_rect(

@@ -67,6 +67,12 @@ impl TreeGraph {
             .filter_map(|(i, node_opt)| node_opt.as_ref().map(|_| i as u16))
     }
 
+    /// Returns a slice of neighbor IDs for a node that is in the tree.
+    /// Panics if the node is not present.
+    pub fn neighbors(&self, node_id: u16) -> &[u16] {
+        self.nodes[node_id as usize].as_ref().unwrap().nbors.as_slice()
+    }
+
     /// Checks if a node exists in the tree.
     pub fn contains_node(&self, id: u16) -> bool {
         self.nodes[id as usize].is_some()
