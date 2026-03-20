@@ -1,46 +1,6 @@
 #!/usr/bin/env python3
 """
 Unified PureMagic results plotter.
-
-Specify what to plot on each axis:
-
-  -x  circuit | cultivation | parallelism | ancilla_qubits | data_qubits | weight
-  -y  KEY  or  KEY_LEFT,KEY_RIGHT
-      where KEY is one of: scheduling_efficiency | parallel_efficiency | cliffords
-                           | timesteps | parallelism | timing
-
-When two comma-separated y-keys are given, the first is plotted on the left
-y-axis and the second on the right y-axis (twin axes).  Each -f file
-contributes one series per y-axis.
-
-Each -f argument is one series.  Forms accepted:
-
-  file:label               plain value plot, series labelled 'label'
-  file1:l1,file2:l2        ratio file1/file2; y-axis shows 'l1/l2'; series label 'l1/l2'
-  file1,file2:label        ratio file1/file2; series labelled 'label'
-  file1:l1,file2:l2:label  ratio with per-file labels and explicit series label
-
-When x=circuit a grouped bar chart is produced; all other x choices produce a
-scatter plot with a connecting line (cultivation/weight) or plain scatter
-(parallelism/ancilla_qubits/data_qubits).
-
-Usage examples:
-    # Scheduling efficiency vs circuit name (bar chart)
-    python plot_puremagic.py -x circuit -y scheduling_efficiency \\
-        -f results/cliffordt/puremagic/out:PureMagic \\
-        -f results/cliffordt/bus/out:Bus -o out.png
-
-    # Ratio of scheduling efficiency vs circuit (bar chart)
-    python plot_puremagic.py -x circuit -y scheduling_efficiency \\
-        -f "results/puremagic/out:PureMagic,results/bus/out:Bus" -o ratio.png
-
-    # Parallel efficiency vs cultivation time (line+scatter)
-    python plot_puremagic.py -x cultivation -y parallel_efficiency \\
-        -f results/cliffordt/puremagic-vary-cultivation/out-N25:N25 -o out.png
-
-    # Dual y-axes: weight (left) and cliffords (right) vs circuit
-    python plot_puremagic.py -x circuit -y weight,cliffords \\
-        -f results/cliffordt/puremagic/out:PureMagic -o out.png
 """
 
 import argparse
