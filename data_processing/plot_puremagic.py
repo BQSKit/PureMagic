@@ -6,7 +6,7 @@ Unified PureMagic results plotter.
 import argparse
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -79,8 +79,8 @@ def parse_output_file(filepath):
     Columns (NaN where missing):
         circuit, weight, magic_state_lambda, scheduling_efficiency,
         parallel_efficiency, parallelism, cliffords, timesteps,
-        data_qubits, total_qubits, loaded_qubits, timing,
-        inv_lambda, ancilla_qubits, volume
+        data_qubits, total_qubits, magic_qubits, loaded_qubits, timing,
+        inv_lambda, ancilla_qubits, volume, max_parallelism
     """
     rows = []
     cur = {}  # mutable state for the current run
@@ -195,7 +195,6 @@ def parse_output_file(filepath):
     df["ancilla_qubits"] = df["total_qubits"] - df["data_qubits"]
     df["volume"] = df["timesteps"] * df["total_qubits"]
     df["max_parallelism"] = df["magic_qubits"] * df["magic_state_lambda"]
-    print(df)
     return df
 
 
@@ -266,8 +265,6 @@ def _y_axis_label(y_key, any_ratio, ratio_labels):
     label = _Y_AXES[y_key]
     if any_ratio:
         label += " Ratio"
-        # unique = list(dict.fromkeys(ratio_labels))
-        # label += f" Ratio ({unique[0]})" if len(unique) == 1 else " Ratio"
     return label
 
 
@@ -354,15 +351,9 @@ def main():
     is_weight_x = x_key == "weight"
     is_parallelism_x = x_key == "parallelism"
 
-    # Parse y-axis keys.
-    # Three forms:
-    #   "key"              -> single key, single axis
-    #   "key1/key2[/...]"  -> multiple keys, all on the same (left) axis
-    #   "key1,key2"        -> dual-y: key1 left, key2 right
     y_raw = args.y_axis.strip()
     dual_y = False
     if "," in y_raw:
-        # dual-y mode: exactly two keys separated by comma
         y_keys = [p.strip() for p in y_raw.split(",", 1)]
         if len(y_keys) != 2 or any(k not in _Y_AXES for k in y_keys):
             print(
@@ -370,8 +361,6 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        # Each element of y_keys is a single key; wrap in list for uniform handling below
-        # y_keys[i] is the key for axis i; multi_y_keys[i] is the list of keys for axis i
         multi_y_keys = [[y_keys[0]], [y_keys[1]]]
         dual_y = True
     elif "/" in y_raw:
@@ -384,20 +373,15 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        y_keys = parts  # all on left axis
-        multi_y_keys = [parts]  # single axis, multiple keys
+        multi_y_keys = [parts]
     else:
         if y_raw not in _Y_AXES:
             print(
                 f"Error: unknown y-axis key '{y_raw}'. Valid: {', '.join(_Y_AXES)}", file=sys.stderr
             )
             sys.exit(1)
-        y_keys = [y_raw]
         multi_y_keys = [[y_raw]]
 
-    # -----------------------------------------------------------------------
-    # load_series: build Series objects for one y-key
-    # -----------------------------------------------------------------------
     def _load_df(path):
         df = parse_output_file(path)
         if df.empty:
@@ -447,10 +431,12 @@ def main():
                 d1 = df1.dropna(subset=[x_field, y_key])
 
                 if is_ratio:
-                    assert df2 is not None  # guaranteed by the continue above
                     any_ratio = True
                     if ratio_label and ratio_label not in ratio_labels:
                         ratio_labels.append(ratio_label)
+                    assert (
+                        df2 is not None
+                    )  # guaranteed: is_ratio=True and _load_df returned non-None (else continued)
                     d2 = df2.dropna(subset=[x_field, y_key])
                     merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
                     merged = d1.merge(
@@ -507,9 +493,6 @@ def main():
             sys.exit(1)
         return series_list, any_ratio, ratio_labels
 
-    # -----------------------------------------------------------------------
-    # draw_series: scatter/line plot onto an axes object
-    # -----------------------------------------------------------------------
     def draw_series(ax, series_list, y_key, colour_offset=0):
         draw_lines = args.lines or args.lines_with_markers or is_cultivation_x or is_weight_x
         show_markers = args.lines_with_markers or (
@@ -630,24 +613,14 @@ def main():
 
         return colour_idx
 
-    # -----------------------------------------------------------------------
-    # Load all series  (one entry per axis)
-    # -----------------------------------------------------------------------
-    # multi_y_keys[axis_idx] = list of y-keys for that axis
-    # For dual-y each list has one key; for multi-key same-axis the single list has many keys.
+    # multi_y_keys[axis_idx] = list of y-keys for that axis;
+    # for dual-y each list has one key; for multi-key same-axis the list has many keys.
     all_series = [
         load_series(yk_list, label_suffix=_Y_AXES[yk_list[0]] if dual_y else None)
         for yk_list in multi_y_keys
     ]
-    # Flat list of (y_key, series) pairs for table printing and draw_series calls
-    # For each axis we need to know which y_key each Series was built from.
-    # We reconstruct this by re-iterating multi_y_keys × files.
-    # Simpler: store (axis_idx, y_key) alongside each series via a parallel structure.
-    # We'll use the existing all_series structure and pass the whole key-list to draw_series.
 
-    # -----------------------------------------------------------------------
     # Print data table
-    # -----------------------------------------------------------------------
     table_frames, col_names = [], []
     for yk_list, (series_list, any_ratio, ratio_labels) in zip(multi_y_keys, all_series):
         # Use a combined label for the axis when multiple keys share it
@@ -684,9 +657,6 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    # -----------------------------------------------------------------------
-    # Plot
-    # -----------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(8, 6))
     ax2 = ax.twinx() if dual_y else None
     axes = [ax, ax2] if dual_y else [ax]
