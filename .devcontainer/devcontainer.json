@@ -20,7 +20,7 @@
 				"spencerwmiles.vscode-task-buttons"
 			]
 		}
-	},
+	}
 	// ...existing code...
 	// Use 'mounts' to make the cargo cache persistent in a Docker Volume.
 	// "mounts": [
