@@ -21,13 +21,15 @@
 ./plot_puremagic.py -x ancilla_qubits -y scheduling_efficiency --lines-with-markers \
     -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N25:heisenberg_N25 \
     -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N100:heisenberg_N100 \
-    -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N225:heisenberg_N225 -o scheduling_efficiency_v_qubits_puremagic.png
+    -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N225:heisenberg_N225 \
+    --ylim 0,0.7 -o scheduling_efficiency_v_qubits_puremagic.png
 
 # relation between parallel efficiency and ancilla qubits for PureMagic with max weight 1 for varying topologies
 ./plot_puremagic.py -x ancilla_qubits -y parallel_efficiency --lines-with-markers \
     -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N25:heisenberg_N25 \
     -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N100:heisenberg_N100 \
-    -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N225:heisenberg_N225 -o parallel_efficiency_v_qubits_puremagic.png
+    -f ../results/max-weight-1/puremagic-vary-topo/out-square_heisenberg_N225:heisenberg_N225 \
+    --ylim 0,1 -o parallel_efficiency_v_qubits_puremagic.png
 
 # relation between scheduling/parallel efficiency and ancilla qubits for PureMagic with max weight 1 for varying topologies
 #./plot_puremagic.py -x ancilla_qubits -y parallel_efficiency,scheduling_efficiency --lines-with-markers \
@@ -39,18 +41,18 @@
     -f ../results/max-weight-1/puremagic-vary-cultivation/out-square_heisenberg_N25:PureMagic,../results/max-weight-1/bus-vary-cultivation/out-square_heisenberg_N25:"Bus heisenberg_N25" \
     -f ../results/max-weight-1/puremagic-vary-cultivation/out-square_heisenberg_N100:PureMagic,../results/max-weight-1/bus-vary-cultivation/out-square_heisenberg_N100:"Bus heisenberg_N100" \
     -f ../results/max-weight-1/puremagic-vary-cultivation/out-square_heisenberg_N225:PureMagic,../results/max-weight-1/bus-vary-cultivation/out-square_heisenberg_N225:"Bus heisenberg_N225" \
-    -o efficiency_v_cultivation_puremagic_bus_ct.png
+    --ylim 0,5 -o efficiency_v_cultivation_puremagic_bus_ct.png --hline
 
 # relation between transpilation max weight and timesteps and number of cliffords for PureMagic
-#./plot_puremagic.py -x weight -y timesteps,cliffords --lines -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N64:heisenberg_N64 -o timesteps_v_weight.png
-./plot_puremagic.py -x weight -y timesteps --lines \
-    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N25:heisenberg_N25 \
-    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N100:heisenberg_N100 \
-    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N225:heisenberg_N225 \
-    -o timesteps_v_weight.png
+./plot_puremagic.py -x weight -y timesteps,cliffords --lines -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N25:heisenberg_N25 -o timesteps_v_weight.png --xlim 0,15
+#./plot_puremagic.py -x weight -y timesteps --lines \
+#    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N25:heisenberg_N25 \
+#    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N100:heisenberg_N100 \
+#    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N225:heisenberg_N225 \
+#    -o timesteps_v_weight.png
 
 # relation beween computation timing and parallelism for PureMagic with max weight 1
-./plot_puremagic.py -x parallelism -y timing -f ../results/max-weight-1/puremagic/out:PureMagic -o timing_v_parallelism.png
+./plot_puremagic.py -x parallelism -y timing -f ../results/max-weight-1/puremagic/out:PureMagic -o timing_v_parallelism.png --ylim 0,14
 
 # ratio of timesteps for given data qubits comparing bus to puremagic -
 #./plot_puremagic.py -x data_qubits -y timesteps --hline \
