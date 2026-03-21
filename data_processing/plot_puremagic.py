@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
@@ -34,10 +35,9 @@ _TO_US = {"μs": 1.0, "us": 1.0, "ms": 1e3, "s": 1e6}
 
 def parse_output_file(filepath):
     """
-    Parse a PureMagic output file and return a list of dicts, one per run.
+    Parse a PureMagic output file and return a DataFrame, one row per run.
 
-    Each dict contains all fields that could be extracted; missing fields are
-    None.  Fields:
+    Columns (missing values are NaN / None):
         circuit              str   – circuit name (stem of .schedule file)
         weight               int   – from bare "weight N" line
         inv_lambda           float – 1 / magic_state_lambda from Args block
@@ -49,8 +49,11 @@ def parse_output_file(filepath):
         data_qubits          int   – from "Number of qubits: / data: N"
         total_qubits         int   – from "Number of qubits: / total: N"
         ancilla_qubits       int   – total_qubits - data_qubits
+        loaded_qubits        int   – from "Loaded circuit with N qubits"
+        timing               float – avg schedule_timestep time in μs
+        volume               float – timesteps * total_qubits
     """
-    results = []
+    rows = []
 
     current_weight = None
     current_lambda = None
@@ -77,17 +80,11 @@ def parse_output_file(filepath):
         pe = current_parallel_efficiency
         if pe is None and current_parallelism is not None and current_optimal_speedup is not None:
             pe = current_parallelism / current_optimal_speedup
-        anc = None
-        if current_data_qubits is not None and current_total_qubits is not None:
-            anc = current_total_qubits - current_data_qubits
-        vol = None
-        if current_timesteps is not None and current_total_qubits is not None:
-            vol = current_timesteps * current_total_qubits
-        results.append(
+        rows.append(
             {
                 "circuit": current_circuit,
                 "weight": current_weight,
-                "inv_lambda": (1.0 / current_lambda) if current_lambda is not None else None,
+                "magic_state_lambda": current_lambda,
                 "scheduling_efficiency": current_scheduling_efficiency,
                 "parallel_efficiency": pe,
                 "parallelism": current_parallelism,
@@ -95,10 +92,8 @@ def parse_output_file(filepath):
                 "timesteps": current_timesteps,
                 "data_qubits": current_data_qubits,
                 "total_qubits": current_total_qubits,
-                "ancilla_qubits": anc,
                 "loaded_qubits": current_loaded_qubits,
                 "timing": current_avg_timestep_us,
-                "volume": vol,
             }
         )
         current_circuit = None
@@ -205,19 +200,41 @@ def parse_output_file(filepath):
                 _flush()
 
     _flush()  # catch last run if no "Timing: main" line
-    return results
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "circuit",
+                "weight",
+                "magic_state_lambda",
+                "scheduling_efficiency",
+                "parallel_efficiency",
+                "parallelism",
+                "cliffords",
+                "timesteps",
+                "data_qubits",
+                "total_qubits",
+                "loaded_qubits",
+                "timing",
+                "inv_lambda",
+                "ancilla_qubits",
+                "volume",
+            ]
+        )
+
+    df = pd.DataFrame(rows)
+
+    # Computed columns
+    df["inv_lambda"] = 1.0 / df["magic_state_lambda"]
+    df["ancilla_qubits"] = df["total_qubits"] - df["data_qubits"]
+    df["volume"] = df["timesteps"] * df["total_qubits"]
+
+    return df
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def build_lookup(data, x_field, y_field):
-    """Return dict mapping x_value -> y_value."""
-    return {
-        d[x_field]: d[y_field] for d in data if d[x_field] is not None and d[y_field] is not None
-    }
 
 
 def split_file_arg(arg, default_label):
@@ -498,11 +515,11 @@ def main():
     is_cultivation_x = x_key == "cultivation"
     is_weight_x = x_key == "weight"
     is_ancilla_x = x_key == "ancilla_qubits"
+    is_parallelism_x = x_key == "parallelism"
 
     # -----------------------------------------------------------------------
     # Helper: load series for one y-key
     # -----------------------------------------------------------------------
-    is_parallelism_x = x_key == "parallelism"
 
     def load_series(y_key, label_suffix=None):
         """
@@ -524,94 +541,76 @@ def main():
                 label = f"{label} ({label_suffix})"
             is_ratio = path2 is not None
 
-            data1 = parse_output_file(path1)
-            if not data1:
+            df1 = parse_output_file(path1)
+            if df1.empty:
                 print(f"Warning: no data found in {path1}", file=sys.stderr)
                 continue
             if args.select:
-                data1 = [d for d in data1 if d.get("circuit") and args.select in d["circuit"]]
-            if not data1:
+                df1 = df1[df1["circuit"].str.contains(args.select, na=False)]
+            if df1.empty:
                 print(f"Warning: no matching records in {path1}", file=sys.stderr)
                 continue
+
+            # Drop rows missing x or y
+            df1 = df1.dropna(subset=[x_field, y_field])
 
             if is_ratio:
                 any_ratio = True
                 if ratio_label:
                     ratio_labels.append(ratio_label)
-                data2 = parse_output_file(path2)
-                if not data2:
+
+                df2 = parse_output_file(path2)
+                if df2.empty:
                     print(f"Warning: no data found in {path2}", file=sys.stderr)
                     continue
                 if args.select:
-                    data2 = [d for d in data2 if d.get("circuit") and args.select in d["circuit"]]
+                    df2 = df2[df2["circuit"].str.contains(args.select, na=False)]
+                df2 = df2.dropna(subset=[x_field, y_field])
+
                 if is_circuit_x:
-                    # Match by circuit name (one record per circuit per file)
-                    lookup2 = {
-                        d["circuit"]: d[y_field]
-                        for d in data2
-                        if d.get("circuit") is not None and d[y_field] is not None
-                    }
-                    pairs = [
-                        (d[x_field], d[y_field] / lookup2[d["circuit"]], d.get("circuit") or "")
-                        for d in data1
-                        if d[x_field] is not None
-                        and d[y_field] is not None
-                        and d.get("circuit") in lookup2
-                        and lookup2[d["circuit"]] != 0.0
-                    ]
+                    # Match by circuit name
+                    merge_keys = ["circuit"]
                 else:
-                    # Match by (circuit, x_value) so that:
-                    # - multiple circuits with the same x-value each get their own point, and
-                    # - multiple x-values for the same circuit are matched correctly.
-                    lookup2 = {
-                        (d["circuit"], d[x_field]): d[y_field]
-                        for d in data2
-                        if d.get("circuit") is not None
-                        and d[x_field] is not None
-                        and d[y_field] is not None
-                    }
-                    pairs = [
-                        (
-                            d[x_field],
-                            d[y_field] / lookup2[(d["circuit"], d[x_field])],
-                            d.get("circuit") or "",
-                        )
-                        for d in data1
-                        if d[x_field] is not None
-                        and d[y_field] is not None
-                        and (d.get("circuit"), d[x_field]) in lookup2
-                        and lookup2[(d.get("circuit"), d[x_field])] != 0.0
-                    ]
-                if not pairs:
+                    # Match by (circuit, x_value)
+                    merge_keys = ["circuit", x_field]
+
+                merged = df1.merge(
+                    df2[merge_keys + [y_field]],
+                    on=merge_keys,
+                    suffixes=("_1", "_2"),
+                )
+                merged = merged[merged[f"{y_field}_2"] != 0.0]
+
+                if merged.empty:
                     print(
                         f"Warning: no matching data points between {path1} and {path2}",
                         file=sys.stderr,
                     )
                     continue
-                xs, ys, circs = zip(*pairs)
-                series_list.append(
-                    (label, list(xs), list(ys), True, ratio_label, None, list(circs))
-                )
+
+                merged["_ratio"] = merged[f"{y_field}_1"] / merged[f"{y_field}_2"]
+                xs = merged[x_field].tolist()
+                ys = merged["_ratio"].tolist()
+                circs = merged["circuit"].tolist()
+                series_list.append((label, xs, ys, True, ratio_label, None, circs))
             else:
-                triples = [
-                    (d[x_field], d[y_field], d.get("circuit") or "")
-                    for d in data1
-                    if d[x_field] is not None and d[y_field] is not None
-                ]
-                if not triples:
+                if df1.empty:
                     print(f"Warning: no usable ({x_key}, {y_key}) data in {path1}", file=sys.stderr)
                     continue
-                xs, ys, circs = zip(*triples)
+
+                xs = df1[x_field].tolist()
+                ys = df1[y_field].tolist()
+                circs = df1["circuit"].fillna("").tolist()
+
                 # Optionally annotate each point with loaded_qubits for parallelism x-axis
                 point_labels = None
                 if args.label_data_qubits and is_parallelism_x:
-                    pt_map = {
-                        d[x_field]: d.get("loaded_qubits") for d in data1 if d[x_field] is not None
-                    }
-                    point_labels = [str(pt_map[x]) if pt_map.get(x) is not None else "" for x in xs]
-                series_list.append(
-                    (label, list(xs), list(ys), False, None, point_labels, list(circs))
-                )
+                    pt_map = df1.set_index(x_field)["loaded_qubits"].to_dict()
+                    point_labels = [
+                        str(int(pt_map[x])) if x in pt_map and pd.notna(pt_map[x]) else ""
+                        for x in xs
+                    ]
+                series_list.append((label, xs, ys, False, None, point_labels, circs))
 
         if not series_list:
             print(f"Error: no data to plot for y={y_key}.", file=sys.stderr)
@@ -633,9 +632,6 @@ def main():
         colour_offset shifts the colour palette so left/right axes use different colours.
         Returns the colour_idx after drawing (for twinx colour continuity).
         """
-        # Determine line/marker drawing mode:
-        #   draw_lines=True  → connect points with a line
-        #   show_markers     → also show scatter markers on top of the line
         draw_lines = args.lines or args.lines_with_markers or is_cultivation_x or is_weight_x
         show_markers = args.lines_with_markers or (
             not args.lines and (is_cultivation_x or is_weight_x)
@@ -724,31 +720,21 @@ def main():
                     )
 
         # Power-law fit on the ratio (data_qubits x total_qubits only).
-        # Two cases:
-        #   1. Single ratio series (file1,file2): ys already ARE the ratio.
-        #   2. Two non-ratio series: compute ratio from their y-values.
         if is_data_qubits_x and is_total_qubits_y:
             rx = ry = None
             if len(series_list) == 1 and series_list[0][3]:
-                # Case 1: single ratio series
                 s0 = series_list[0]
                 rx = np.array(s0[1], dtype=float)
                 ry = np.array(s0[2], dtype=float)
             elif len(series_list) >= 2 and not series_list[0][3] and not series_list[1][3]:
-                # Case 2: two plain series — compute ratio
                 s0, s1 = series_list[0], series_list[1]
-                xs0, ys0 = np.array(s0[1], dtype=float), np.array(s0[2], dtype=float)
-                xs1, ys1 = np.array(s1[1], dtype=float), np.array(s1[2], dtype=float)
-                lookup1 = dict(zip(xs0.tolist(), ys0.tolist()))
-                lookup2 = dict(zip(xs1.tolist(), ys1.tolist()))
-                common_x = sorted(set(xs0.tolist()) & set(xs1.tolist()))
-                if len(common_x) >= 2:
-                    rx = np.array(common_x, dtype=float)
-                    ry = np.array(
-                        [lookup1[x] / lookup2[x] for x in common_x if lookup2[x] != 0.0],
-                        dtype=float,
-                    )
-                    rx = rx[: len(ry)]
+                df_s0 = pd.DataFrame({"x": s0[1], "y": s0[2]})
+                df_s1 = pd.DataFrame({"x": s1[1], "y": s1[2]})
+                merged_fit = df_s0.merge(df_s1, on="x", suffixes=("_0", "_1"))
+                merged_fit = merged_fit[merged_fit["y_1"] != 0.0]
+                if len(merged_fit) >= 2:
+                    rx = merged_fit["x"].to_numpy(dtype=float)
+                    ry = (merged_fit["y_0"] / merged_fit["y_1"]).to_numpy(dtype=float)
             if rx is not None and ry is not None and len(rx) >= 2:
                 mask = (rx > 0) & (ry > 0)
                 if mask.sum() >= 2:
@@ -779,16 +765,11 @@ def main():
         all_series.append(load_series(yk, label_suffix=suffix))
 
     # -----------------------------------------------------------------------
-    # Print data table
+    # Print data table using pandas
     # -----------------------------------------------------------------------
-    # Build table directly from all_series (same data the plot uses).
-    # Series tuples: (label, xs, ys, is_ratio, ratio_label, point_labels, circuits)
-    # where circuits[i] is the circuit name for point i.
-    # Rows are keyed by (circuit, x_value) so every data point gets its own row.
-
-    col_headers: list[str] = []
-    # col_data[col_idx] = list of (circuit, x_value, y_value) for that series
-    col_data: list[list] = []
+    # Build a tidy DataFrame: one row per (circuit, x_value), one column per series.
+    table_frames = []
+    col_names = []
 
     for yk, (series_list, any_ratio, ratio_labels) in zip(y_keys, all_series):
         y_label_base = _Y_LABEL[yk]
@@ -799,70 +780,48 @@ def main():
         for s_tuple in series_list:
             label, xs, ys = s_tuple[0], s_tuple[1], s_tuple[2]
             circuits = s_tuple[6] if len(s_tuple) > 6 else [""] * len(xs)
-            header = f"{y_label_base} [{label}]" if len(args.files) > 1 or dual_y else y_label_base
-            col_headers.append(header)
-            col_data.append(list(zip(circuits, xs, ys)))
+            col_name = (
+                f"{y_label_base} [{label}]" if len(args.files) > 1 or dual_y else y_label_base
+            )
+            col_names.append(col_name)
+            table_frames.append(pd.DataFrame({"circuit": circuits, x_field: xs, col_name: ys}))
 
-    # Collect all (circuit, x_value) row keys in order, then sort
-    seen_row_keys: set = set()
-    row_key_order: list = []
-    for points in col_data:
-        for circ, xv, _ in points:
-            key = (circ, xv)
-            if key not in seen_row_keys:
-                seen_row_keys.add(key)
-                row_key_order.append(key)
+    # Merge all series columns on (circuit, x_field)
+    if table_frames:
+        df_table = table_frames[0]
+        for tf in table_frames[1:]:
+            df_table = df_table.merge(tf, on=["circuit", x_field], how="outer")
 
-    def _row_sort_key(k):
-        circ, xv = k
-        return (float(xv) if not isinstance(xv, str) else xv, circ)
+        # Sort: numeric x first, then by circuit name
+        def _sort_key(col):
+            try:
+                return pd.to_numeric(col)
+            except (ValueError, TypeError):
+                return col
 
-    row_key_order.sort(key=_row_sort_key)
+        df_table = df_table.sort_values(
+            by=[x_field, "circuit"],
+            key=lambda col: (
+                pd.to_numeric(col, errors="coerce").fillna(col.astype(str))
+                if col.name == x_field
+                else col
+            ),
+        )
 
-    # Build per-column lookup: (circuit, x_value) -> y_value
-    col_lookups: list[dict] = [{(circ, xv): yv for circ, xv, yv in points} for points in col_data]
+        # Format y-value columns to 6 significant figures
+        for cn in col_names:
+            df_table[cn] = df_table[cn].apply(lambda v: f"{v:.6g}" if pd.notna(v) else "N/A")
 
-    # Determine column widths
-    show_circuit_col = not is_circuit_x
-    x_col_header = _X_LABEL[x_key]
-    circ_col_header = "Circuit"
+        # Rename x column for display
+        df_display = df_table.rename(columns={x_field: _X_LABEL[x_key]})
+        if is_circuit_x:
+            df_display = df_display.drop(columns=["circuit"], errors="ignore")
+        else:
+            df_display = df_display.rename(columns={"circuit": "Circuit"})
 
-    all_x_strs = [str(xv) for _, xv in row_key_order]
-    all_circ_strs = [circ for circ, _ in row_key_order]
-
-    x_col_width = max(len(x_col_header), max((len(s) for s in all_x_strs), default=0))
-    circ_col_width = (
-        max(len(circ_col_header), max((len(s) for s in all_circ_strs), default=0))
-        if show_circuit_col
-        else 0
-    )
-    col_widths = [max(len(h), 12) for h in col_headers]
-
-    # Print table header
-    print("\nData table:")
-    header_row = f"  {x_col_header:<{x_col_width}}"
-    if show_circuit_col:
-        header_row += f"  {circ_col_header:<{circ_col_width}}"
-    for h, w in zip(col_headers, col_widths):
-        header_row += f"  {h:>{w}}"
-    print(header_row)
-    sep_row = f"  {'-' * x_col_width}"
-    if show_circuit_col:
-        sep_row += f"  {'-' * circ_col_width}"
-    for w in col_widths:
-        sep_row += f"  {'-' * w}"
-    print(sep_row)
-
-    for circ, xv in row_key_order:
-        row = f"  {str(xv):<{x_col_width}}"
-        if show_circuit_col:
-            row += f"  {circ:<{circ_col_width}}"
-        for lookup, w in zip(col_lookups, col_widths):
-            val = lookup.get((circ, xv))
-            cell = f"{val:.6g}" if val is not None else "N/A"
-            row += f"  {cell:>{w}}"
-        print(row)
-    print()
+        print("\nData table:")
+        print(df_display.to_string(index=False))
+        print()
 
     # -----------------------------------------------------------------------
     # Plot
@@ -872,7 +831,6 @@ def main():
 
     if is_circuit_x:
         # --- Grouped bar chart ---
-        # For dual y-axes on a bar chart, we use twinx and alternate bar groups
         axes = [ax]
         if dual_y:
             ax2 = ax.twinx()
@@ -988,13 +946,6 @@ def main():
             ax.set_xscale("log", base=2)
             ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
             ax.xaxis.set_minor_formatter(ticker.NullFormatter())
-
-        # x-axis scale for ancilla_qubits (log base-10, plain integer labels)
-        # if is_ancilla_x:
-        #    ax.set_xscale("log")
-        #    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
-        #    ax.xaxis.set_minor_formatter(ticker.NullFormatter())
-        #    ax.xaxis.set_major_locator(ticker.LogLocator(base=10, numticks=8))
 
         ax.set_xlabel(_X_LABEL[x_key])
 
