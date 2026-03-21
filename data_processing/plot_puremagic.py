@@ -303,6 +303,18 @@ def main():
         "--lines-with-markers", dest="lines_with_markers", action="store_true", default=False
     )
     parser.add_argument("--hline", action="store_true", default=False)
+    parser.add_argument(
+        "--logx", action="store_true", default=False, help="Use a log scale on the x-axis."
+    )
+    parser.add_argument(
+        "--logy",
+        action="store_true",
+        default=False,
+        help="Use a log scale on the left y-axis (and right y-axis in dual mode).",
+    )
+    parser.add_argument(
+        "--xlim", default=None, metavar="MIN,MAX", help="Set the x-axis range, e.g. --xlim 0,100."
+    )
     parser.add_argument("--ylim", default=None, metavar="MIN,MAX")
     parser.add_argument("--y2lim", default=None, metavar="MIN,MAX")
     parser.add_argument(
@@ -656,13 +668,22 @@ def main():
             ax.set_xscale("log", base=2)
             ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
             ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+        elif args.logx:
+            ax.set_xscale("log")
+
+        if args.logy:
+            ax.set_yscale("log")
+            if ax2 is not None:
+                ax2.set_yscale("log")
 
         ax.set_xlabel(x_label)
         if args.hline:
-            ax.axhline(y=1.0, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
+            ax.axhline(y=1.0, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_")
         _combine_legend(ax, ax2)
 
     # Y-axis limits
+    if args.xlim:
+        ax.set_xlim(*map(float, args.xlim.split(",", 1)))
     if args.ylim:
         ax.set_ylim(*map(float, args.ylim.split(",", 1)))
     if ax2 is not None and args.y2lim:
