@@ -331,6 +331,15 @@ def main():
     parser.add_argument(
         "--label-data-qubits", dest="label_data_qubits", action="store_true", default=False
     )
+    parser.add_argument(
+        "--stackedbar",
+        action="store_true",
+        default=False,
+        help=(
+            "When -y is slash-separated and -f uses ratio (file1,file2) form, "
+            "render a stacked bar chart instead of a scatter/line plot."
+        ),
+    )
     args = parser.parse_args()
 
     x_key = args.x_axis
@@ -735,38 +744,134 @@ def main():
         _combine_legend(ax, ax2)
 
     else:
-        # --- Scatter / line plot ---
-        colour_offset = 0
-        for axis_idx, (yk_list, (series_list, any_ratio, ratio_labels)) in enumerate(
-            zip(multi_y_keys, all_series)
-        ):
-            cur_ax = axes[axis_idx]
-            # draw_series uses y_key only for special trendline logic; pass the first key
-            # (trendlines are per-series and keyed by the series' own y_key name)
-            colour_offset = draw_series(cur_ax, series_list, yk_list[0], colour_offset)
+        # Check whether to use a stacked bar chart:
+        # condition: slash-separated y-keys (multi-key, single axis, not dual-y) + ratio mode.
+        _yk_list_0 = multi_y_keys[0]
+        _series_0, _any_ratio_0, _ratio_labels_0 = all_series[0]
+        is_stacked_ratio = args.stackedbar and (not dual_y) and len(_yk_list_0) > 1 and _any_ratio_0
+
+        if is_stacked_ratio:
+            # --- Stacked bar chart for multi-key ratio, non-circuit x-axis ---
+            # series_list is ordered [file0_key0, file0_key1, ..., file1_key0, ...].
+            # Each Series has xs = x-axis values, ys = ratio values.
+            # We draw one group of stacked bars per unique x value.
+            series_list = _series_0
+            yk_list = _yk_list_0
+            any_ratio = _any_ratio_0
+            ratio_labels = _ratio_labels_0
+
+            n_files = len(args.files)
+            n_keys = len(yk_list)
+
+            # Collect union of x values in encounter order.
+            seen_x: dict = {}
+            for s in series_list:
+                for xv in s.xs:
+                    seen_x.setdefault(xv, len(seen_x))
+            all_x_vals = list(seen_x.keys())
+            n_x = len(all_x_vals)
+
+            bar_width = 0.8 / max(n_files, 1)
+            file_offsets = (
+                np.linspace(-(n_files - 1) / 2, (n_files - 1) / 2, n_files) * bar_width
+                if n_files > 1
+                else np.array([0.0])
+            )
+            _HATCHES = ["", "//", "xx", ".."]
+
+            for fi in range(n_files):
+                bottoms = np.zeros(n_x)
+                prev_heights = np.zeros(n_x)
+                for ki, y_key in enumerate(yk_list):
+                    si = fi * n_keys + ki
+                    if si >= len(series_list):
+                        break
+                    s = series_list[si]
+                    colour = _COLOURS[ki % len(_COLOURS)]
+                    lookup = dict(zip(s.xs, s.ys))
+                    heights = np.array([lookup.get(xv, 0.0) for xv in all_x_vals])
+                    # Each segment's drawn height = this key's value minus the previous key's
+                    # value, so the total bar top equals the last key's ratio value.
+                    seg_heights = heights - prev_heights
+                    seg_label = (
+                        _y_axis_label(y_key, any_ratio, ratio_labels) if fi == 0 else "_nolegend_"
+                    )
+                    ax.bar(
+                        np.arange(n_x) + file_offsets[fi],
+                        seg_heights,
+                        bottom=bottoms,
+                        width=bar_width * 0.9,
+                        label=seg_label,
+                        color=colour,
+                        edgecolor="black",
+                        linewidth=0.4,
+                        hatch=_HATCHES[fi % len(_HATCHES)],
+                    )
+                    bottoms += seg_heights
+                    prev_heights = heights
+
+                if n_files > 1:
+                    file_label = split_file_arg(args.files[fi], f"file{fi + 1}")[2]
+                    ax.bar(
+                        [],
+                        [],
+                        color="white",
+                        edgecolor="black",
+                        linewidth=0.4,
+                        hatch=_HATCHES[fi % len(_HATCHES)],
+                        label=file_label,
+                    )
+
             y_axis_lbl = (
                 args.ylabel
-                if (axis_idx == 0 and args.ylabel)
+                if args.ylabel
                 else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
             )
-            cur_ax.set_ylabel(y_axis_lbl)
+            ax.set_ylabel(y_axis_lbl)
 
-        if is_cultivation_x:
-            ax.set_xscale("log", base=2)
-            ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
-            ax.xaxis.set_minor_formatter(ticker.NullFormatter())
-        elif args.logx:
-            ax.set_xscale("log")
+            # X-axis: use the actual x values as tick labels.
+            ax.set_xticks(np.arange(n_x))
+            x_tick_labels = [str(xv) for xv in all_x_vals]
+            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right", fontsize=8)
+            ax.set_xlim(-0.6, n_x - 0.4)
+            ax.set_xlabel(x_label)
+            if args.hline:
+                ax.axhline(y=1.0, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_")
+            _combine_legend(ax, ax2)
 
-        if args.logy:
-            ax.set_yscale("log")
-            if ax2 is not None:
-                ax2.set_yscale("log")
+        else:
+            # --- Scatter / line plot ---
+            colour_offset = 0
+            for axis_idx, (yk_list, (series_list, any_ratio, ratio_labels)) in enumerate(
+                zip(multi_y_keys, all_series)
+            ):
+                cur_ax = axes[axis_idx]
+                # draw_series uses y_key only for special trendline logic; pass the first key
+                # (trendlines are per-series and keyed by the series' own y_key name)
+                colour_offset = draw_series(cur_ax, series_list, yk_list[0], colour_offset)
+                y_axis_lbl = (
+                    args.ylabel
+                    if (axis_idx == 0 and args.ylabel)
+                    else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
+                )
+                cur_ax.set_ylabel(y_axis_lbl)
 
-        ax.set_xlabel(x_label)
-        if args.hline:
-            ax.axhline(y=1.0, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_")
-        _combine_legend(ax, ax2)
+            if is_cultivation_x:
+                ax.set_xscale("log", base=2)
+                ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(round(x))}"))
+                ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+            elif args.logx:
+                ax.set_xscale("log")
+
+            if args.logy:
+                ax.set_yscale("log")
+                if ax2 is not None:
+                    ax2.set_yscale("log")
+
+            ax.set_xlabel(x_label)
+            if args.hline:
+                ax.axhline(y=1.0, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_")
+            _combine_legend(ax, ax2)
 
     # Y-axis limits
     if args.xlim:
