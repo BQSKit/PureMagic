@@ -44,7 +44,7 @@
     --ylim 0,5 -o efficiency_v_cultivation_puremagic_bus_ct.png --hline
 
 # relation between transpilation max weight and timesteps and number of cliffords for PureMagic
-./plot_puremagic.py -x weight -y timesteps,cliffords --lines -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N25:heisenberg_N25 -o timesteps_v_weight.png --xlim 0,15
+./plot_puremagic.py -x weight -y timesteps,cliffords --lines -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N64:heisenberg_N64 -o timesteps_v_weight.png
 #./plot_puremagic.py -x weight -y timesteps --lines \
 #    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N25:heisenberg_N25 \
 #    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N100:heisenberg_N100 \
