@@ -916,7 +916,7 @@ impl Scheduler {
         if self.pool_index >= self.cultivation_time_pool.len() {
             if self.pool_index > 0 {
                 eprintln!(
-                    "{}Warning: refilling cultivation poll for {} remaining T products{}",
+                    "{}Warning: refilling cultivation pool for {} remaining T products{}",
                     _RED, self.t_products_remaining, _RESET
                 );
             }
