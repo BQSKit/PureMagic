@@ -260,12 +260,24 @@ def prettify_circuit_name(name):
     return name
 
 
-def _y_axis_label(y_key, any_ratio, ratio_labels):
-    """Return the y-axis display label, appending a ratio suffix when needed."""
+def _y_axis_label(y_key, any_ratio):
     label = _Y_AXES[y_key]
     if any_ratio:
         label += " Ratio"
     return label
+
+
+def _axis_label(yk_list, any_ratio):
+    return " / ".join(_y_axis_label(yk, any_ratio) for yk in yk_list)
+
+
+def _ordered_union_xs(series_list):
+    """Return the union of all xs across series, in first-encounter order."""
+    seen = {}
+    for s in series_list:
+        for xv in s.xs:
+            seen.setdefault(xv, len(seen))
+    return list(seen.keys())
 
 
 def _combine_legend(ax, ax2=None):
@@ -624,7 +636,7 @@ def main():
     table_frames, col_names = [], []
     for yk_list, (series_list, any_ratio, ratio_labels) in zip(multi_y_keys, all_series):
         # Use a combined label for the axis when multiple keys share it
-        y_label_base = " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
+        y_label_base = _axis_label(yk_list, any_ratio)
         for s in series_list:
             col_name = (
                 f"{y_label_base} [{s.label}]"
@@ -669,11 +681,7 @@ def main():
         ):
             cur_ax = axes[axis_idx]
 
-            seen: dict = {}
-            for s in series_list:
-                for name in s.xs:
-                    seen.setdefault(name, len(seen))
-            all_circuits = list(seen.keys())
+            all_circuits = _ordered_union_xs(series_list)
             n_circuits = len(all_circuits)
 
             left_count = len(all_series[0][0]) if dual_y else len(series_list)
@@ -700,12 +708,9 @@ def main():
                     linewidth=0.4,
                 )
 
-            y_axis_lbl = (
-                args.ylabel
-                if (axis_idx == 0 and args.ylabel)
-                else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
+            cur_ax.set_ylabel(
+                args.ylabel if (axis_idx == 0 and args.ylabel) else _axis_label(yk_list, any_ratio)
             )
-            cur_ax.set_ylabel(y_axis_lbl)
 
         x_pos = np.arange(len(all_circuits))
         ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
@@ -738,12 +743,7 @@ def main():
             n_files = len(args.files)
             n_keys = len(yk_list)
 
-            # Collect union of x values in encounter order.
-            seen_x: dict = {}
-            for s in series_list:
-                for xv in s.xs:
-                    seen_x.setdefault(xv, len(seen_x))
-            all_x_vals = list(seen_x.keys())
+            all_x_vals = _ordered_union_xs(series_list)
             n_x = len(all_x_vals)
 
             bar_width = 0.8 / max(n_files, 1)
@@ -768,9 +768,7 @@ def main():
                     # Each segment's drawn height = this key's value minus the previous key's
                     # value, so the total bar top equals the last key's ratio value.
                     seg_heights = heights - prev_heights
-                    seg_label = (
-                        _y_axis_label(y_key, any_ratio, ratio_labels) if fi == 0 else "_nolegend_"
-                    )
+                    seg_label = _y_axis_label(y_key, any_ratio) if fi == 0 else "_nolegend_"
                     ax.bar(
                         np.arange(n_x) + file_offsets[fi],
                         seg_heights,
@@ -797,12 +795,7 @@ def main():
                         label=file_label,
                     )
 
-            y_axis_lbl = (
-                args.ylabel
-                if args.ylabel
-                else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
-            )
-            ax.set_ylabel(y_axis_lbl)
+            ax.set_ylabel(args.ylabel if args.ylabel else _axis_label(yk_list, any_ratio))
 
             # X-axis: use the actual x values as tick labels.
             ax.set_xticks(np.arange(n_x))
@@ -824,12 +817,11 @@ def main():
                 # draw_series uses y_key only for special trendline logic; pass the first key
                 # (trendlines are per-series and keyed by the series' own y_key name)
                 colour_offset = draw_series(cur_ax, series_list, yk_list[0], colour_offset)
-                y_axis_lbl = (
+                cur_ax.set_ylabel(
                     args.ylabel
                     if (axis_idx == 0 and args.ylabel)
-                    else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
+                    else _axis_label(yk_list, any_ratio)
                 )
-                cur_ax.set_ylabel(y_axis_lbl)
 
             if is_cultivation_x:
                 ax.set_xscale("log", base=2)
