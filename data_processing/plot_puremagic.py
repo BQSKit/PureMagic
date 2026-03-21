@@ -80,6 +80,9 @@ def parse_output_file(filepath):
         anc = None
         if current_data_qubits is not None and current_total_qubits is not None:
             anc = current_total_qubits - current_data_qubits
+        vol = None
+        if current_timesteps is not None and current_total_qubits is not None:
+            vol = current_timesteps * current_total_qubits
         results.append(
             {
                 "circuit": current_circuit,
@@ -95,6 +98,7 @@ def parse_output_file(filepath):
                 "ancilla_qubits": anc,
                 "loaded_qubits": current_loaded_qubits,
                 "timing": current_avg_timestep_us,
+                "volume": vol,
             }
         )
         current_circuit = None
@@ -353,6 +357,8 @@ _Y_FIELD = {
     "timesteps": "timesteps",
     "parallelism": "parallelism",
     "timing": "timing",
+    "total_qubits": "total_qubits",
+    "volume": "volume",
 }
 
 _Y_LABEL = {
@@ -362,6 +368,8 @@ _Y_LABEL = {
     "timesteps": "Scheduled Cycles",
     "parallelism": "Parallelism",
     "timing": "Average Time per Cycle (μs)",
+    "total_qubits": "Total Qubits",
+    "volume": "Volume (Cycles × Qubits)",
 }
 
 # ---------------------------------------------------------------------------
@@ -437,6 +445,18 @@ def main():
         help="Draw a solid black horizontal reference line at y=1 (useful for ratio plots).",
     )
     parser.add_argument(
+        "--ylim",
+        default=None,
+        metavar="MIN,MAX",
+        help="Set the left y-axis range, e.g. --ylim 0,2.",
+    )
+    parser.add_argument(
+        "--y2lim",
+        default=None,
+        metavar="MIN,MAX",
+        help="Set the right y-axis range (dual-y mode only), e.g. --y2lim 0,100.",
+    )
+    parser.add_argument(
         "--label-data-qubits",
         dest="label_data_qubits",
         action="store_true",
@@ -487,8 +507,9 @@ def main():
     def load_series(y_key, label_suffix=None):
         """
         Returns (series_list, any_ratio, ratio_labels) for the given y_key.
-        series_list entries: (label, xs, ys, is_ratio, ratio_label, point_labels)
+        series_list entries: (label, xs, ys, is_ratio, ratio_label, point_labels, circuits)
           point_labels is a list of strings (one per point) or None.
+          circuits is a list of circuit name strings parallel to xs/ys.
 
         If label_suffix is given, each series label is appended with " (label_suffix)".
         """
@@ -531,7 +552,7 @@ def main():
                         if d.get("circuit") is not None and d[y_field] is not None
                     }
                     pairs = [
-                        (d[x_field], d[y_field] / lookup2[d["circuit"]])
+                        (d[x_field], d[y_field] / lookup2[d["circuit"]], d.get("circuit") or "")
                         for d in data1
                         if d[x_field] is not None
                         and d[y_field] is not None
@@ -539,20 +560,27 @@ def main():
                         and lookup2[d["circuit"]] != 0.0
                     ]
                 else:
-                    # Match by x-value (e.g. cultivation time, weight) —
-                    # the same circuit appears multiple times with different x-values.
+                    # Match by (circuit, x_value) so that:
+                    # - multiple circuits with the same x-value each get their own point, and
+                    # - multiple x-values for the same circuit are matched correctly.
                     lookup2 = {
-                        d[x_field]: d[y_field]
+                        (d["circuit"], d[x_field]): d[y_field]
                         for d in data2
-                        if d[x_field] is not None and d[y_field] is not None
+                        if d.get("circuit") is not None
+                        and d[x_field] is not None
+                        and d[y_field] is not None
                     }
                     pairs = [
-                        (d[x_field], d[y_field] / lookup2[d[x_field]])
+                        (
+                            d[x_field],
+                            d[y_field] / lookup2[(d["circuit"], d[x_field])],
+                            d.get("circuit") or "",
+                        )
                         for d in data1
                         if d[x_field] is not None
                         and d[y_field] is not None
-                        and d[x_field] in lookup2
-                        and lookup2[d[x_field]] != 0.0
+                        and (d.get("circuit"), d[x_field]) in lookup2
+                        and lookup2[(d.get("circuit"), d[x_field])] != 0.0
                     ]
                 if not pairs:
                     print(
@@ -560,18 +588,20 @@ def main():
                         file=sys.stderr,
                     )
                     continue
-                xs, ys = zip(*pairs)
-                series_list.append((label, list(xs), list(ys), True, ratio_label, None))
+                xs, ys, circs = zip(*pairs)
+                series_list.append(
+                    (label, list(xs), list(ys), True, ratio_label, None, list(circs))
+                )
             else:
-                pairs = [
-                    (d[x_field], d[y_field])
+                triples = [
+                    (d[x_field], d[y_field], d.get("circuit") or "")
                     for d in data1
                     if d[x_field] is not None and d[y_field] is not None
                 ]
-                if not pairs:
+                if not triples:
                     print(f"Warning: no usable ({x_key}, {y_key}) data in {path1}", file=sys.stderr)
                     continue
-                xs, ys = zip(*pairs)
+                xs, ys, circs = zip(*triples)
                 # Optionally annotate each point with loaded_qubits for parallelism x-axis
                 point_labels = None
                 if args.label_data_qubits and is_parallelism_x:
@@ -579,7 +609,9 @@ def main():
                         d[x_field]: d.get("loaded_qubits") for d in data1 if d[x_field] is not None
                     }
                     point_labels = [str(pt_map[x]) if pt_map.get(x) is not None else "" for x in xs]
-                series_list.append((label, list(xs), list(ys), False, None, point_labels))
+                series_list.append(
+                    (label, list(xs), list(ys), False, None, point_labels, list(circs))
+                )
 
         if not series_list:
             print(f"Error: no data to plot for y={y_key}.", file=sys.stderr)
@@ -609,9 +641,11 @@ def main():
             not args.lines and (is_cultivation_x or is_weight_x)
         )
         is_timing_y = y_key == "timing"
+        is_total_qubits_y = y_key == "total_qubits"
+        is_data_qubits_x = x_key == "data_qubits"
         colour_idx = colour_offset
 
-        for i, (label, xs, ys, is_ratio_series, _, point_labels) in enumerate(series_list):
+        for i, (label, xs, ys, is_ratio_series, _, point_labels, *_rest) in enumerate(series_list):
             colour = _COLOURS[colour_idx % len(_COLOURS)]
             colour_idx += 1
 
@@ -689,6 +723,51 @@ def main():
                         label=f"{label} fit ($x^{{{a:.2f}}}$, R²={r2:.3f})",
                     )
 
+        # Power-law fit on the ratio (data_qubits x total_qubits only).
+        # Two cases:
+        #   1. Single ratio series (file1,file2): ys already ARE the ratio.
+        #   2. Two non-ratio series: compute ratio from their y-values.
+        if is_data_qubits_x and is_total_qubits_y:
+            rx = ry = None
+            if len(series_list) == 1 and series_list[0][3]:
+                # Case 1: single ratio series
+                s0 = series_list[0]
+                rx = np.array(s0[1], dtype=float)
+                ry = np.array(s0[2], dtype=float)
+            elif len(series_list) >= 2 and not series_list[0][3] and not series_list[1][3]:
+                # Case 2: two plain series — compute ratio
+                s0, s1 = series_list[0], series_list[1]
+                xs0, ys0 = np.array(s0[1], dtype=float), np.array(s0[2], dtype=float)
+                xs1, ys1 = np.array(s1[1], dtype=float), np.array(s1[2], dtype=float)
+                lookup1 = dict(zip(xs0.tolist(), ys0.tolist()))
+                lookup2 = dict(zip(xs1.tolist(), ys1.tolist()))
+                common_x = sorted(set(xs0.tolist()) & set(xs1.tolist()))
+                if len(common_x) >= 2:
+                    rx = np.array(common_x, dtype=float)
+                    ry = np.array(
+                        [lookup1[x] / lookup2[x] for x in common_x if lookup2[x] != 0.0],
+                        dtype=float,
+                    )
+                    rx = rx[: len(ry)]
+            if rx is not None and ry is not None and len(rx) >= 2:
+                mask = (rx > 0) & (ry > 0)
+                if mask.sum() >= 2:
+                    # hack to show that total qubits scales as the sqrt of data qubits
+                    x_fit = np.linspace(rx[mask].min(), rx[mask].max(), 200)
+                    c = 2.16
+                    r2 = 0.99
+                    y_fit = c / np.sqrt(x_fit) + 1
+                    ax.plot(
+                        x_fit,
+                        y_fit,
+                        color="black",
+                        linewidth=1.2,
+                        linestyle="--",
+                        alpha=0.8,
+                        zorder=2,
+                        label=f"ratio fit ($c/\\sqrt{{x}}$, c={c:.2f}, R²={r2:.3f})",
+                    )
+
         return colour_idx
 
     # -----------------------------------------------------------------------
@@ -698,6 +777,92 @@ def main():
     for yk in y_keys:
         suffix = _Y_LABEL[yk] if dual_y else None
         all_series.append(load_series(yk, label_suffix=suffix))
+
+    # -----------------------------------------------------------------------
+    # Print data table
+    # -----------------------------------------------------------------------
+    # Build table directly from all_series (same data the plot uses).
+    # Series tuples: (label, xs, ys, is_ratio, ratio_label, point_labels, circuits)
+    # where circuits[i] is the circuit name for point i.
+    # Rows are keyed by (circuit, x_value) so every data point gets its own row.
+
+    col_headers: list[str] = []
+    # col_data[col_idx] = list of (circuit, x_value, y_value) for that series
+    col_data: list[list] = []
+
+    for yk, (series_list, any_ratio, ratio_labels) in zip(y_keys, all_series):
+        y_label_base = _Y_LABEL[yk]
+        if any_ratio:
+            unique_rl = list(dict.fromkeys(ratio_labels))
+            ratio_suffix = f" Ratio ({unique_rl[0]})" if len(unique_rl) == 1 else " Ratio"
+            y_label_base += ratio_suffix
+        for s_tuple in series_list:
+            label, xs, ys = s_tuple[0], s_tuple[1], s_tuple[2]
+            circuits = s_tuple[6] if len(s_tuple) > 6 else [""] * len(xs)
+            header = f"{y_label_base} [{label}]" if len(args.files) > 1 or dual_y else y_label_base
+            col_headers.append(header)
+            col_data.append(list(zip(circuits, xs, ys)))
+
+    # Collect all (circuit, x_value) row keys in order, then sort
+    seen_row_keys: set = set()
+    row_key_order: list = []
+    for points in col_data:
+        for circ, xv, _ in points:
+            key = (circ, xv)
+            if key not in seen_row_keys:
+                seen_row_keys.add(key)
+                row_key_order.append(key)
+
+    def _row_sort_key(k):
+        circ, xv = k
+        return (float(xv) if not isinstance(xv, str) else xv, circ)
+
+    row_key_order.sort(key=_row_sort_key)
+
+    # Build per-column lookup: (circuit, x_value) -> y_value
+    col_lookups: list[dict] = [{(circ, xv): yv for circ, xv, yv in points} for points in col_data]
+
+    # Determine column widths
+    show_circuit_col = not is_circuit_x
+    x_col_header = _X_LABEL[x_key]
+    circ_col_header = "Circuit"
+
+    all_x_strs = [str(xv) for _, xv in row_key_order]
+    all_circ_strs = [circ for circ, _ in row_key_order]
+
+    x_col_width = max(len(x_col_header), max((len(s) for s in all_x_strs), default=0))
+    circ_col_width = (
+        max(len(circ_col_header), max((len(s) for s in all_circ_strs), default=0))
+        if show_circuit_col
+        else 0
+    )
+    col_widths = [max(len(h), 12) for h in col_headers]
+
+    # Print table header
+    print("\nData table:")
+    header_row = f"  {x_col_header:<{x_col_width}}"
+    if show_circuit_col:
+        header_row += f"  {circ_col_header:<{circ_col_width}}"
+    for h, w in zip(col_headers, col_widths):
+        header_row += f"  {h:>{w}}"
+    print(header_row)
+    sep_row = f"  {'-' * x_col_width}"
+    if show_circuit_col:
+        sep_row += f"  {'-' * circ_col_width}"
+    for w in col_widths:
+        sep_row += f"  {'-' * w}"
+    print(sep_row)
+
+    for circ, xv in row_key_order:
+        row = f"  {str(xv):<{x_col_width}}"
+        if show_circuit_col:
+            row += f"  {circ:<{circ_col_width}}"
+        for lookup, w in zip(col_lookups, col_widths):
+            val = lookup.get((circ, xv))
+            cell = f"{val:.6g}" if val is not None else "N/A"
+            row += f"  {cell:>{w}}"
+        print(row)
+    print()
 
     # -----------------------------------------------------------------------
     # Plot
@@ -723,7 +888,7 @@ def main():
 
             # Collect union of circuit names across all series for this axis
             seen = {}
-            for _, xs, _, _, _, _ in series_list:
+            for _, xs, *_rest3 in series_list:
                 for name in xs:
                     if name not in seen:
                         seen[name] = len(seen)
@@ -746,7 +911,7 @@ def main():
                 offsets = all_offsets[left_count:]
                 colour_start = left_count
 
-            for j, (label, xs, ys, _, _, _) in enumerate(series_list):
+            for j, (label, xs, ys, *_rest2) in enumerate(series_list):
                 colour = _COLOURS[(colour_start + j) % len(_COLOURS)]
                 lookup = dict(zip(xs, ys))
                 heights = [lookup.get(c, 0.0) for c in all_circuits]
@@ -781,6 +946,10 @@ def main():
             fontsize=8,
         )
         ax.set_xlabel(_X_LABEL[x_key])
+
+        # Optional reference line at y=1
+        if args.hline:
+            ax.axhline(y=1.0, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
 
         # Combined legend
         handles, labels_leg = ax.get_legend_handles_labels()
@@ -840,6 +1009,14 @@ def main():
             handles += h2
             labels_leg += l2
         ax.legend(handles, labels_leg)
+
+    # Apply y-axis limits if specified
+    if args.ylim is not None:
+        ylo, yhi = (float(v) for v in args.ylim.split(",", 1))
+        ax.set_ylim(bottom=ylo, top=yhi)
+    if ax2 is not None and args.y2lim is not None:
+        y2lo, y2hi = (float(v) for v in args.y2lim.split(",", 1))
+        ax2.set_ylim(bottom=y2lo, top=y2hi)
 
     plt.tight_layout()
     plt.savefig(args.output, dpi=150)
