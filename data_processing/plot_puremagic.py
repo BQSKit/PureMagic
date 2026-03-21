@@ -51,6 +51,7 @@ _Y_AXES = {
     "timing": "Average Time per Cycle (μs)",
     "total_qubits": "Total Qubits",
     "volume": "Volume (Cycles × Qubits)",
+    "max_parallelism": "Max Parallelism",
 }
 
 
@@ -104,6 +105,7 @@ def parse_output_file(filepath):
                 "timesteps": cur.get("timesteps"),
                 "data_qubits": cur.get("data_qubits"),
                 "total_qubits": cur.get("total_qubits"),
+                "magic_qubits": cur.get("magic_qubits"),
                 "loaded_qubits": cur.get("loaded_qubits"),
                 "timing": cur.get("timing"),
             }
@@ -147,6 +149,8 @@ def parse_output_file(filepath):
             if in_qubit_block:
                 if m := re.match(r"data:\s+(\d+)", s):
                     cur["data_qubits"] = int(m.group(1))
+                if m := re.match(r"magic:\s+(\d+)", s):
+                    cur["magic_qubits"] = int(m.group(1))
                 if m := re.match(r"total:\s+(\d+)", s):
                     cur["total_qubits"] = int(m.group(1))
                     in_qubit_block = False
@@ -190,6 +194,7 @@ def parse_output_file(filepath):
     df["inv_lambda"] = 1.0 / df["magic_state_lambda"]
     df["ancilla_qubits"] = df["total_qubits"] - df["data_qubits"]
     df["volume"] = df["timesteps"] * df["total_qubits"]
+    df["max_parallelism"] = df["magic_qubits"] * df["magic_state_lambda"]
     print(df)
     return df
 
