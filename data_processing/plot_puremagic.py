@@ -287,8 +287,14 @@ def main():
         "--yaxis",
         dest="y_axis",
         required=True,
-        metavar=f"{'|'.join(_Y_AXES)} [,{'|'.join(_Y_AXES)}]",
-        help="One or two comma-separated y-axis keys (left[,right]).",
+        metavar=f"KEY[/KEY...] or KEY,KEY",
+        help=(
+            "Y-axis key(s).  Three forms are accepted:\n"
+            "  key              – single series on one axis\n"
+            "  key1/key2[/...]  – multiple keys on the same (left) axis\n"
+            "  key1,key2        – key1 on left axis, key2 on right axis (dual-y)\n"
+            f"Valid keys: {', '.join(_Y_AXES)}"
+        ),
     )
     parser.add_argument(
         "-f",
@@ -317,6 +323,9 @@ def main():
     parser.add_argument(
         "--xlim", default=None, metavar="MIN,MAX", help="Set the x-axis range, e.g. --xlim 0,100."
     )
+    parser.add_argument(
+        "--ylabel", default=None, metavar="LABEL", help="Override the left y-axis label."
+    )
     parser.add_argument("--ylim", default=None, metavar="MIN,MAX")
     parser.add_argument("--y2lim", default=None, metavar="MIN,MAX")
     parser.add_argument(
@@ -331,20 +340,46 @@ def main():
     is_weight_x = x_key == "weight"
     is_parallelism_x = x_key == "parallelism"
 
-    # Parse y-axis keys
+    # Parse y-axis keys.
+    # Three forms:
+    #   "key"              -> single key, single axis
+    #   "key1/key2[/...]"  -> multiple keys, all on the same (left) axis
+    #   "key1,key2"        -> dual-y: key1 left, key2 right
     y_raw = args.y_axis.strip()
+    dual_y = False
     if "," in y_raw:
+        # dual-y mode: exactly two keys separated by comma
         y_keys = [p.strip() for p in y_raw.split(",", 1)]
         if len(y_keys) != 2 or any(k not in _Y_AXES for k in y_keys):
-            print(f"Error: invalid -y value '{y_raw}'.", file=sys.stderr)
+            print(
+                f"Error: invalid -y value '{y_raw}'. Dual-y requires exactly two valid keys separated by ','.",
+                file=sys.stderr,
+            )
             sys.exit(1)
+        # Each element of y_keys is a single key; wrap in list for uniform handling below
+        # y_keys[i] is the key for axis i; multi_y_keys[i] is the list of keys for axis i
+        multi_y_keys = [[y_keys[0]], [y_keys[1]]]
         dual_y = True
+    elif "/" in y_raw:
+        # multi-key same-axis mode
+        parts = [p.strip() for p in y_raw.split("/")]
+        bad = [p for p in parts if p not in _Y_AXES]
+        if bad:
+            print(
+                f"Error: unknown y-axis key(s): {', '.join(bad)}. Valid: {', '.join(_Y_AXES)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        y_keys = parts  # all on left axis
+        multi_y_keys = [parts]  # single axis, multiple keys
     else:
         if y_raw not in _Y_AXES:
-            print(f"Error: unknown y-axis key '{y_raw}'.", file=sys.stderr)
+            print(
+                f"Error: unknown y-axis key '{y_raw}'. Valid: {', '.join(_Y_AXES)}", file=sys.stderr
+            )
             sys.exit(1)
         y_keys = [y_raw]
-        dual_y = False
+        multi_y_keys = [[y_raw]]
 
     # -----------------------------------------------------------------------
     # load_series: build Series objects for one y-key
@@ -361,71 +396,96 @@ def main():
             return None
         return df
 
-    def load_series(y_key, label_suffix=None):
+    def load_series(y_keys_for_axis, label_suffix=None):
+        """
+        Build Series objects for one axis.  y_keys_for_axis is a list of one or more
+        y-axis column names.  When multiple keys are given, each (file × key) pair
+        produces its own Series on the same axis.
+        """
         series_list, any_ratio, ratio_labels = [], False, []
 
         for i, file_arg in enumerate(args.files):
-            path1, path2, label, ratio_label = split_file_arg(file_arg, f"file{i + 1}")
-            if label_suffix:
-                label = f"{label} ({label_suffix})"
+            path1, path2, file_label, ratio_label = split_file_arg(file_arg, f"file{i + 1}")
             is_ratio = path2 is not None
 
             df1 = _load_df(path1)
             if df1 is None:
                 continue
-            df1 = df1.dropna(subset=[x_field, y_key])
 
+            df2 = None
             if is_ratio:
-                any_ratio = True
-                if ratio_label:
-                    ratio_labels.append(ratio_label)
                 df2 = _load_df(path2)
                 if df2 is None:
                     continue
-                df2 = df2.dropna(subset=[x_field, y_key])
 
-                merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
-                merged = df1.merge(df2[merge_keys + [y_key]], on=merge_keys, suffixes=("_1", "_2"))
-                merged = merged[merged[f"{y_key}_2"] != 0.0]
-                if merged.empty:
-                    print(
-                        f"Warning: no matching points between {path1} and {path2}", file=sys.stderr
+            for y_key in y_keys_for_axis:
+                # Build a per-series label: include y-key name when multiple keys share an axis
+                multi_key = len(y_keys_for_axis) > 1
+                if multi_key and label_suffix:
+                    label = f"{file_label} {_Y_AXES[y_key]} ({label_suffix})"
+                elif multi_key:
+                    label = f"{file_label} {_Y_AXES[y_key]}"
+                elif label_suffix:
+                    label = f"{file_label} ({label_suffix})"
+                else:
+                    label = file_label
+
+                d1 = df1.dropna(subset=[x_field, y_key])
+
+                if is_ratio:
+                    assert df2 is not None  # guaranteed by the continue above
+                    any_ratio = True
+                    if ratio_label and ratio_label not in ratio_labels:
+                        ratio_labels.append(ratio_label)
+                    d2 = df2.dropna(subset=[x_field, y_key])
+                    merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
+                    merged = d1.merge(
+                        d2[merge_keys + [y_key]], on=merge_keys, suffixes=("_1", "_2")
                     )
-                    continue
-                merged["_ratio"] = merged[f"{y_key}_1"] / merged[f"{y_key}_2"]
-                series_list.append(
-                    Series(
-                        label=label,
-                        xs=merged[x_field].tolist(),
-                        ys=merged["_ratio"].tolist(),
-                        circuits=merged["circuit"].tolist(),
-                        is_ratio=True,
-                        ratio_label=ratio_label,
+                    merged = merged[merged[f"{y_key}_2"] != 0.0]
+                    if merged.empty:
+                        print(
+                            f"Warning: no matching points between {path1} and {path2} for y={y_key}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    merged["_ratio"] = merged[f"{y_key}_1"] / merged[f"{y_key}_2"]
+                    series_list.append(
+                        Series(
+                            label=label,
+                            xs=merged[x_field].tolist(),
+                            ys=merged["_ratio"].tolist(),
+                            circuits=merged["circuit"].tolist(),
+                            is_ratio=True,
+                            ratio_label=ratio_label,
+                        )
                     )
-                )
-            else:
-                if df1.empty:
-                    print(f"Warning: no usable ({x_key}, {y_key}) data in {path1}", file=sys.stderr)
-                    continue
-                pt_labels = None
-                if args.label_data_qubits and is_parallelism_x:
-                    pt_map = df1.set_index(x_field)["loaded_qubits"].to_dict()
-                    pt_labels = [
-                        str(int(pt_map[x])) if x in pt_map and pd.notna(pt_map[x]) else ""
-                        for x in df1[x_field]
-                    ]
-                series_list.append(
-                    Series(
-                        label=label,
-                        xs=df1[x_field].tolist(),
-                        ys=df1[y_key].tolist(),
-                        circuits=df1["circuit"].fillna("").tolist(),
-                        point_labels=pt_labels,
+                else:
+                    if d1.empty:
+                        print(
+                            f"Warning: no usable ({x_key}, {y_key}) data in {path1}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    pt_labels = None
+                    if args.label_data_qubits and is_parallelism_x:
+                        pt_map = d1.set_index(x_field)["loaded_qubits"].to_dict()
+                        pt_labels = [
+                            str(int(pt_map[x])) if x in pt_map and pd.notna(pt_map[x]) else ""
+                            for x in d1[x_field]
+                        ]
+                    series_list.append(
+                        Series(
+                            label=label,
+                            xs=d1[x_field].tolist(),
+                            ys=d1[y_key].tolist(),
+                            circuits=d1["circuit"].fillna("").tolist(),
+                            point_labels=pt_labels,
+                        )
                     )
-                )
 
         if not series_list:
-            print(f"Error: no data to plot for y={y_key}.", file=sys.stderr)
+            print(f"Error: no data to plot for y={y_keys_for_axis}.", file=sys.stderr)
             sys.exit(1)
         ratio_flags = [s.is_ratio for s in series_list]
         if any(ratio_flags) and not all(ratio_flags):
@@ -557,19 +617,32 @@ def main():
         return colour_idx
 
     # -----------------------------------------------------------------------
-    # Load all series
+    # Load all series  (one entry per axis)
     # -----------------------------------------------------------------------
-    all_series = [load_series(yk, label_suffix=_Y_AXES[yk] if dual_y else None) for yk in y_keys]
+    # multi_y_keys[axis_idx] = list of y-keys for that axis
+    # For dual-y each list has one key; for multi-key same-axis the single list has many keys.
+    all_series = [
+        load_series(yk_list, label_suffix=_Y_AXES[yk_list[0]] if dual_y else None)
+        for yk_list in multi_y_keys
+    ]
+    # Flat list of (y_key, series) pairs for table printing and draw_series calls
+    # For each axis we need to know which y_key each Series was built from.
+    # We reconstruct this by re-iterating multi_y_keys × files.
+    # Simpler: store (axis_idx, y_key) alongside each series via a parallel structure.
+    # We'll use the existing all_series structure and pass the whole key-list to draw_series.
 
     # -----------------------------------------------------------------------
     # Print data table
     # -----------------------------------------------------------------------
     table_frames, col_names = [], []
-    for yk, (series_list, any_ratio, ratio_labels) in zip(y_keys, all_series):
-        y_label_base = _y_axis_label(yk, any_ratio, ratio_labels)
+    for yk_list, (series_list, any_ratio, ratio_labels) in zip(multi_y_keys, all_series):
+        # Use a combined label for the axis when multiple keys share it
+        y_label_base = " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
         for s in series_list:
             col_name = (
-                f"{y_label_base} [{s.label}]" if len(args.files) > 1 or dual_y else y_label_base
+                f"{y_label_base} [{s.label}]"
+                if len(args.files) > 1 or dual_y or len(yk_list) > 1
+                else y_label_base
             )
             col_names.append(col_name)
             table_frames.append(
@@ -607,8 +680,8 @@ def main():
     if is_circuit_x:
         # --- Grouped bar chart ---
         all_circuits: list = []
-        for axis_idx, (yk, (series_list, any_ratio, ratio_labels)) in enumerate(
-            zip(y_keys, all_series)
+        for axis_idx, (yk_list, (series_list, any_ratio, ratio_labels)) in enumerate(
+            zip(multi_y_keys, all_series)
         ):
             cur_ax = axes[axis_idx]
 
@@ -643,7 +716,12 @@ def main():
                     linewidth=0.4,
                 )
 
-            cur_ax.set_ylabel(_y_axis_label(yk, any_ratio, ratio_labels))
+            y_axis_lbl = (
+                args.ylabel
+                if (axis_idx == 0 and args.ylabel)
+                else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
+            )
+            cur_ax.set_ylabel(y_axis_lbl)
 
         x_pos = np.arange(len(all_circuits))
         ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
@@ -659,12 +737,19 @@ def main():
     else:
         # --- Scatter / line plot ---
         colour_offset = 0
-        for axis_idx, (yk, (series_list, any_ratio, ratio_labels)) in enumerate(
-            zip(y_keys, all_series)
+        for axis_idx, (yk_list, (series_list, any_ratio, ratio_labels)) in enumerate(
+            zip(multi_y_keys, all_series)
         ):
             cur_ax = axes[axis_idx]
-            colour_offset = draw_series(cur_ax, series_list, yk, colour_offset)
-            cur_ax.set_ylabel(_y_axis_label(yk, any_ratio, ratio_labels))
+            # draw_series uses y_key only for special trendline logic; pass the first key
+            # (trendlines are per-series and keyed by the series' own y_key name)
+            colour_offset = draw_series(cur_ax, series_list, yk_list[0], colour_offset)
+            y_axis_lbl = (
+                args.ylabel
+                if (axis_idx == 0 and args.ylabel)
+                else " / ".join(_y_axis_label(yk, any_ratio, ratio_labels) for yk in yk_list)
+            )
+            cur_ax.set_ylabel(y_axis_lbl)
 
         if is_cultivation_x:
             ax.set_xscale("log", base=2)

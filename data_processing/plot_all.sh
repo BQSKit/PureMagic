@@ -59,5 +59,6 @@
 #    -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic -o timesteps_v_data_qubits_puremagic_bus.png
 
 # for heisenberg, show relation of data qubits (circuit width) to both volume and timesteps for bus v puremagic
-./plot_puremagic.py -x data_qubits -y timesteps,volume --hline \
-    -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic --ylim 0,3 --y2lim 0,3 --lines-with-markers -s heisenberg -o timesteps_v_data_qubits_puremagic_bus.png
+./plot_puremagic.py -x data_qubits -y timesteps/volume --hline --ylabel \
+    -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic \
+    --ylabel Ratio --ylim 0,3 --y2lim 0,3 --lines-with-markers -s heisenberg -o timesteps_v_data_qubits_puremagic_bus.png
