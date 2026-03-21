@@ -190,6 +190,7 @@ def parse_output_file(filepath):
     df["inv_lambda"] = 1.0 / df["magic_state_lambda"]
     df["ancilla_qubits"] = df["total_qubits"] - df["data_qubits"]
     df["volume"] = df["timesteps"] * df["total_qubits"]
+    print(df)
     return df
 
 
@@ -259,8 +260,9 @@ def _y_axis_label(y_key, any_ratio, ratio_labels):
     """Return the y-axis display label, appending a ratio suffix when needed."""
     label = _Y_AXES[y_key]
     if any_ratio:
-        unique = list(dict.fromkeys(ratio_labels))
-        label += f" Ratio ({unique[0]})" if len(unique) == 1 else " Ratio"
+        label += " Ratio"
+        # unique = list(dict.fromkeys(ratio_labels))
+        # label += f" Ratio ({unique[0]})" if len(unique) == 1 else " Ratio"
     return label
 
 
