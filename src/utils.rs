@@ -256,3 +256,117 @@ macro_rules! accum_start {
         $crate::utils::AccumTimerGuard { timers: &mut $timers as *mut _, idx }
     }};
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ── AccumTimers::new ──────────────────────────────────────────────────────
+
+    #[test]
+    fn accum_timers_new_is_empty() {
+        let timers = AccumTimers::new();
+        assert!(timers.timers.is_empty());
+    }
+
+    // ── AccumTimers::add_or_get ───────────────────────────────────────────────
+
+    #[test]
+    fn add_or_get_returns_zero_for_first_entry() {
+        let mut timers = AccumTimers::new();
+        let idx = timers.add_or_get("alpha");
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn add_or_get_returns_sequential_indices() {
+        let mut timers = AccumTimers::new();
+        let i0 = timers.add_or_get("first");
+        let i1 = timers.add_or_get("second");
+        let i2 = timers.add_or_get("third");
+        assert_eq!(i0, 0);
+        assert_eq!(i1, 1);
+        assert_eq!(i2, 2);
+    }
+
+    #[test]
+    fn add_or_get_idempotent_for_same_name() {
+        let mut timers = AccumTimers::new();
+        let i0 = timers.add_or_get("same");
+        let i1 = timers.add_or_get("same");
+        assert_eq!(i0, i1);
+        assert_eq!(timers.timers.len(), 1);
+    }
+
+    // ── AccumTimers::start / stop ─────────────────────────────────────────────
+
+    #[test]
+    fn start_stop_does_not_panic() {
+        let mut timers = AccumTimers::new();
+        let idx = timers.add_or_get("t");
+        timers.start(idx);
+        // Small sleep so elapsed > 0
+        std::thread::sleep(Duration::from_millis(1));
+        timers.stop(idx);
+        // Verify the timer recorded at least one interval.
+        let (_, t) = timers.timers.get_index(idx).unwrap();
+        assert_eq!(t.num_intervals, 1);
+        assert!(t.total_elapsed > Duration::ZERO);
+    }
+
+    #[test]
+    fn stop_without_start_is_noop() {
+        let mut timers = AccumTimers::new();
+        let idx = timers.add_or_get("t");
+        timers.stop(idx); // should not panic
+        let (_, t) = timers.timers.get_index(idx).unwrap();
+        assert_eq!(t.num_intervals, 0);
+    }
+
+    #[test]
+    fn start_stop_out_of_bounds_index_is_noop() {
+        let mut timers = AccumTimers::new();
+        timers.start(999); // no panic
+        timers.stop(999); // no panic
+    }
+
+    #[test]
+    fn multiple_start_stop_accumulates() {
+        let mut timers = AccumTimers::new();
+        let idx = timers.add_or_get("multi");
+        for _ in 0..3 {
+            timers.start(idx);
+            std::thread::sleep(Duration::from_millis(1));
+            timers.stop(idx);
+        }
+        let (_, t) = timers.timers.get_index(idx).unwrap();
+        assert_eq!(t.num_intervals, 3);
+    }
+
+    // ── AccumTimers::default ──────────────────────────────────────────────────
+
+    #[test]
+    fn default_is_empty() {
+        let timers = AccumTimers::default();
+        assert!(timers.timers.is_empty());
+    }
+
+    // ── Timer (RAII) ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn timer_new_does_not_panic() {
+        // Timer prints on drop; just verify construction and drop are safe.
+        let _t = Timer::new("test_timer");
+        // Drop happens here — should print elapsed time without panicking.
+    }
+
+    // ── ANSI colour constants ─────────────────────────────────────────────────
+
+    #[test]
+    fn ansi_constants_are_escape_sequences() {
+        assert!(_RED.starts_with('\x1b'));
+        assert!(_GREEN.starts_with('\x1b'));
+        assert!(_RESET.starts_with('\x1b'));
+    }
+}

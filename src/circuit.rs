@@ -307,11 +307,7 @@ impl Circuit {
                         (acc_ops + ops, acc_prods + prods)
                     });
 
-                if total_products > 0 {
-                    total_ops as f64 / total_products as f64
-                } else {
-                    0.0
-                }
+                if total_products > 0 { total_ops as f64 / total_products as f64 } else { 0.0 }
             },
             RGBColor(255, 0, 0), // Red
             "avg product size",
@@ -601,5 +597,211 @@ impl Circuit {
                 eprintln!("  {} {} {}", q1, q2, n);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Write lines to a temp file and return it (kept alive by the caller).
+    fn make_circuit_file(lines: &[&str]) -> NamedTempFile {
+        let mut f = NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        f
+    }
+
+    // ── Circuit::new ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_creates_empty_circuit() {
+        let c = Circuit::new(&"test.trans".to_string());
+        assert_eq!(c.circuit_fname, "test.trans");
+        assert_eq!(c.num_qubits, 0);
+        assert_eq!(c.num_products(), 0);
+    }
+
+    // ── Circuit::load_circuit — basic loading ─────────────────────────────────
+
+    #[test]
+    fn load_circuit_single_t_gate() {
+        let f = make_circuit_file(&["+_X______<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 1);
+        // qubit 1 is the X operator; num_qubits = max_qubit + 1 = 2
+        assert_eq!(c.num_qubits, 2);
+    }
+
+    #[test]
+    fn load_circuit_skips_x_and_z_gates() {
+        let f = make_circuit_file(&[
+            "+X_<X>", // X gate — should be skipped
+            "+_Z<Z>", // Z gate — should be skipped
+            "+XZ<T>", // T gate — should be kept
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 1);
+        assert!(c.get_product(0).gate_type.is_t());
+    }
+
+    #[test]
+    fn load_circuit_multiple_products() {
+        let f = make_circuit_file(&["+_X______<T>", "+___X____<T>", "+_____X__<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 3);
+    }
+
+    #[test]
+    fn load_circuit_assigns_sequential_ids() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.get_product(0).id, 0);
+        assert_eq!(c.get_product(1).id, 1);
+    }
+
+    #[test]
+    fn load_circuit_nonexistent_file_returns_error() {
+        let mut c = Circuit::new(&"/nonexistent/path/circuit.trans".to_string());
+        assert!(c.load_circuit().is_err());
+    }
+
+    // ── Circuit::generate_dependencies ───────────────────────────────────────
+
+    #[test]
+    fn generate_dependencies_independent_products_have_no_parents() {
+        // Two products on different qubits — no dependency.
+        let f = make_circuit_file(&[
+            "+X_<T>", // qubit 0
+            "+_X<T>", // qubit 1
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert!(c.get_product(0).parents.is_empty());
+        assert!(c.get_product(1).parents.is_empty());
+    }
+
+    #[test]
+    fn generate_dependencies_sequential_same_qubit() {
+        // Two products on the same qubit — second depends on first.
+        let f = make_circuit_file(&[
+            "+X_<T>", // id=0, qubit 0
+            "+X_<T>", // id=1, qubit 0 — depends on id=0
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let pp0 = c.get_product(0);
+        let pp1 = c.get_product(1);
+        assert!(pp0.parents.is_empty(), "first product has no parents");
+        assert_eq!(pp1.parents, vec![0], "second product depends on first");
+        assert_eq!(pp0.children, vec![1], "first product has second as child");
+        assert!(pp1.children.is_empty(), "second product has no children");
+    }
+
+    #[test]
+    fn generate_dependencies_chain_of_three() {
+        let f = make_circuit_file(&[
+            "+X__<T>", // id=0
+            "+X__<T>", // id=1, depends on 0
+            "+X__<T>", // id=2, depends on 1
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert!(c.get_product(0).parents.is_empty());
+        assert_eq!(c.get_product(1).parents, vec![0]);
+        assert_eq!(c.get_product(2).parents, vec![1]);
+        assert_eq!(c.get_product(0).children, vec![1]);
+        assert_eq!(c.get_product(1).children, vec![2]);
+        assert!(c.get_product(2).children.is_empty());
+    }
+
+    // ── Circuit::initial_products ─────────────────────────────────────────────
+
+    #[test]
+    fn initial_products_returns_products_with_no_parents() {
+        let f = make_circuit_file(&[
+            "+X_<T>", // id=0, no parents
+            "+_X<T>", // id=1, no parents (different qubit)
+            "+X_<T>", // id=2, depends on id=0
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let initial_ids: Vec<i32> = c.initial_products().map(|pp| pp.id).collect();
+        assert!(initial_ids.contains(&0));
+        assert!(initial_ids.contains(&1));
+        assert!(!initial_ids.contains(&2));
+    }
+
+    // ── Circuit::get_product ──────────────────────────────────────────────────
+
+    #[test]
+    fn get_product_returns_correct_product() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<M>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert!(c.get_product(0).gate_type.is_t());
+        assert!(c.get_product(1).gate_type.is_m());
+    }
+
+    // ── Circuit::num_products ─────────────────────────────────────────────────
+
+    #[test]
+    fn num_products_matches_loaded_count() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 3);
+    }
+
+    // ── Circuit::num_qubits ───────────────────────────────────────────────────
+
+    #[test]
+    fn num_qubits_is_max_qubit_plus_one() {
+        // "+___X<T>" has operator at position 3 (0-indexed after sign).
+        // max_qubit = 3, so num_qubits = 4.
+        let f = make_circuit_file(&["+___X<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_qubits, 4);
+    }
+
+    // ── Circuit layer computation (via print_statistics) ──────────────────────
+
+    #[test]
+    fn print_statistics_returns_correct_layer_count_linear_chain() {
+        // Three products in a linear chain: each in its own layer.
+        let f = make_circuit_file(&["+X__<T>", "+X__<T>", "+X__<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let num_layers = c.print_statistics();
+        assert_eq!(num_layers, 3, "linear chain should have 3 layers");
+    }
+
+    #[test]
+    fn print_statistics_parallel_products_in_one_layer() {
+        // Two products on different qubits — both in layer 0.
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let num_layers = c.print_statistics();
+        assert_eq!(num_layers, 1, "independent products should be in one layer");
+    }
+
+    // ── Circuit::compute_moving_average (via print_statistics) ───────────────
+
+    #[test]
+    fn moving_average_does_not_panic_on_single_product() {
+        let f = make_circuit_file(&["+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        // print_statistics internally calls get_statistics which calls get_layers.
+        let _ = c.print_statistics();
     }
 }
