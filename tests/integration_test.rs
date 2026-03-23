@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use tempfile::TempDir;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -22,15 +23,25 @@ fn fixture(name: &str) -> PathBuf {
     Path::new(manifest_dir).join("tests").join("fixtures").join(name)
 }
 
-/// Build both binaries once (idempotent — cargo is a no-op if already up to date).
+/// Build both binaries exactly once across all parallel test threads.
+///
+/// When `cargo test` runs integration tests in parallel every test calls this
+/// function, but `OnceLock` ensures the actual `cargo build` subprocess is
+/// spawned only once.  Without this guard each parallel test would launch its
+/// own `cargo build`, causing them to contend for the Cargo package-cache and
+/// artifact-directory locks and print repeated
+/// "Blocking waiting for file lock on …" messages to stderr.
 fn build_binaries() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let status = Command::new("cargo")
-        .args(["build", "--bins"])
-        .current_dir(manifest_dir)
-        .status()
-        .expect("failed to run cargo build");
-    assert!(status.success(), "cargo build --bins failed");
+    static BUILT: OnceLock<()> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let status = Command::new("cargo")
+            .args(["build", "--bins"])
+            .current_dir(manifest_dir)
+            .status()
+            .expect("failed to run cargo build");
+        assert!(status.success(), "cargo build --bins failed");
+    });
 }
 
 /// Run `puremagic` with the given extra args in `workdir`.
