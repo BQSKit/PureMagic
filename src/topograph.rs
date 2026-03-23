@@ -1445,3 +1445,232 @@ fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
 
     (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::NodeType;
+
+    // ── TopoGraph::new ────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_creates_empty_topology() {
+        let topo = TopoGraph::new();
+        assert_eq!(topo.num_nodes, 0);
+        assert_eq!(topo.num_edges, 0);
+        assert_eq!(topo.num_data_qubits, 0);
+        assert_eq!(topo.num_magic_qubits, 0);
+        assert_eq!(topo.num_bus_qubits, 0);
+    }
+
+    // ── TopoGraph::gen_pure_magic_topo ────────────────────────────────────────
+
+    #[test]
+    fn gen_pure_magic_topo_has_enough_data_qubits() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        assert!(
+            topo.num_data_qubits >= 4,
+            "expected >= 4 data qubits, got {}",
+            topo.num_data_qubits
+        );
+    }
+
+    #[test]
+    fn gen_pure_magic_topo_has_only_magic_and_data_nodes() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        assert_eq!(topo.num_bus_qubits, 0, "pure magic topo should have no bus qubits");
+        assert!(topo.num_magic_qubits > 0, "pure magic topo should have magic qubits");
+    }
+
+    #[test]
+    fn gen_pure_magic_topo_total_qubits_consistent() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        assert_eq!(
+            topo.num_qubits,
+            topo.num_data_qubits + topo.num_bus_qubits + topo.num_magic_qubits
+        );
+    }
+
+    // ── TopoGraph::gen_compact_bus_routing_topo ───────────────────────────────
+
+    #[test]
+    fn compact_bus_topo_has_bus_qubits() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
+        assert!(topo.num_bus_qubits > 0, "compact bus topo should have bus qubits");
+        // The compact bus topology may include some magic nodes for border rows;
+        // the key property is that bus qubits are present and magic routing is disabled.
+        assert!(!topo.use_magic_routing, "compact bus topo should have magic routing disabled");
+    }
+
+    #[test]
+    fn compact_bus_topo_has_enough_data_qubits() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
+        assert!(topo.num_data_qubits >= 4);
+    }
+
+    // ── TopoGraph::gen_bus_routing_topo ──────────────────────────────────────
+
+    #[test]
+    fn bus_routing_topo_has_bus_qubits() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 1, false);
+        assert!(topo.num_bus_qubits > 0);
+    }
+
+    // ── TopoGraph::add_edge / get_node ────────────────────────────────────────
+
+    #[test]
+    fn add_edge_creates_bidirectional_connection() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        // Find two adjacent magic nodes and verify their neighbour lists are symmetric.
+        let magic_ids: Vec<u16> =
+            topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
+        // At least one magic node should have neighbours.
+        let has_nbors = magic_ids.iter().any(|&id| !topo.get_node(id).nbors_slice().is_empty());
+        assert!(has_nbors, "magic nodes should have neighbours after topology generation");
+    }
+
+    #[test]
+    fn edges_are_symmetric() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        // For every node, every neighbour should list the node back.
+        for node in topo.iter_nodes() {
+            for &nb_id in node.nbors_slice() {
+                let nb = topo.get_node(nb_id);
+                assert!(
+                    nb.nbors_slice().contains(&node.id),
+                    "edge {}->{} is not symmetric",
+                    node.id,
+                    nb_id
+                );
+            }
+        }
+    }
+
+    // ── TopoGraph::get_data_node_id ───────────────────────────────────────────
+
+    #[test]
+    fn get_data_node_id_returns_valid_node() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        // Qubit 0 should have both X and Z data nodes.
+        let x_id = topo.get_data_node_id(0, 'X');
+        let z_id = topo.get_data_node_id(0, 'Z');
+        assert_ne!(x_id, u16::MAX, "X data node for qubit 0 should exist");
+        assert_ne!(z_id, u16::MAX, "Z data node for qubit 0 should exist");
+        assert_ne!(x_id, z_id, "X and Z nodes should be different");
+        assert_eq!(topo.get_node(x_id).node_type, NodeType::Data);
+        assert_eq!(topo.get_node(z_id).node_type, NodeType::Data);
+    }
+
+    // ── TopoGraph::is_cultivating ─────────────────────────────────────────────
+
+    #[test]
+    fn is_cultivating_false_when_cultivation_time_zero() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        let magic_id =
+            topo.iter_nodes().find(|n| n.node_type == NodeType::Magic).map(|n| n.id).unwrap();
+        topo.cultivation_times[magic_id as usize] = 0;
+        topo.busy_counts[magic_id as usize] = 0;
+        assert!(!topo.is_cultivating(magic_id));
+    }
+
+    #[test]
+    fn is_cultivating_true_when_busy_less_than_cultivation_time() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        let magic_id =
+            topo.iter_nodes().find(|n| n.node_type == NodeType::Magic).map(|n| n.id).unwrap();
+        topo.cultivation_times[magic_id as usize] = 5;
+        topo.busy_counts[magic_id as usize] = 2;
+        assert!(topo.is_cultivating(magic_id));
+    }
+
+    #[test]
+    fn is_cultivating_false_when_busy_equals_cultivation_time() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        let magic_id =
+            topo.iter_nodes().find(|n| n.node_type == NodeType::Magic).map(|n| n.id).unwrap();
+        topo.cultivation_times[magic_id as usize] = 3;
+        topo.busy_counts[magic_id as usize] = 3;
+        assert!(!topo.is_cultivating(magic_id));
+    }
+
+    // ── TopoGraph::update_statistics ─────────────────────────────────────────
+
+    #[test]
+    fn update_statistics_keeps_counts_consistent() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        let before_total = topo.num_qubits;
+        topo.update_statistics();
+        assert_eq!(topo.num_qubits, before_total, "update_statistics should be idempotent");
+        assert_eq!(
+            topo.num_qubits,
+            topo.num_data_qubits + topo.num_bus_qubits + topo.num_magic_qubits
+        );
+    }
+
+    // ── TopoGraph::get_label ──────────────────────────────────────────────────
+
+    #[test]
+    fn get_label_returns_non_empty_string() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        for node in topo.iter_nodes() {
+            let label = topo.get_label(node.id);
+            assert!(!label.is_empty(), "node {} should have a non-empty label", node.id);
+        }
+    }
+
+    #[test]
+    fn data_node_labels_contain_basis() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        for node in topo.iter_nodes() {
+            if node.node_type == NodeType::Data {
+                let label = topo.get_label(node.id);
+                assert!(
+                    label.ends_with('X') || label.ends_with('Z'),
+                    "data node label '{}' should end with X or Z",
+                    label
+                );
+            }
+        }
+    }
+
+    // ── hsv_to_rgb ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn hsv_to_rgb_red() {
+        let (r, g, b) = super::hsv_to_rgb(0.0, 1.0, 1.0);
+        assert_eq!(r, 255);
+        assert_eq!(g, 0);
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    fn hsv_to_rgb_black() {
+        let (r, g, b) = super::hsv_to_rgb(0.0, 0.0, 0.0);
+        assert_eq!(r, 0);
+        assert_eq!(g, 0);
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    fn hsv_to_rgb_white() {
+        let (r, g, b) = super::hsv_to_rgb(0.0, 0.0, 1.0);
+        assert_eq!(r, 255);
+        assert_eq!(g, 255);
+        assert_eq!(b, 255);
+    }
+}

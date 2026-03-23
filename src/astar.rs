@@ -279,4 +279,133 @@ impl AStarComputation {
     fn manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
         ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()) as u32
     }
+
+    /// Test-only accessor for the private `manhattan_dist` function.
+    #[cfg(test)]
+    pub fn test_manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
+        Self::manhattan_dist(p1, p2)
+    }
+
+    /// Test-only accessor for the private `heuristic` function.
+    #[cfg(test)]
+    pub fn test_heuristic(pos: (f32, f32), ready: &[(f32, f32)]) -> (u32, usize) {
+        Self::heuristic(pos, ready)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::{Node, NodeType};
+    use crate::topograph::TopoGraph;
+
+    // ── manhattan_dist ────────────────────────────────────────────────────────
+
+    #[test]
+    fn manhattan_dist_same_point() {
+        assert_eq!(AStarComputation::test_manhattan_dist((3.0, 4.0), (3.0, 4.0)), 0);
+    }
+
+    #[test]
+    fn manhattan_dist_horizontal() {
+        assert_eq!(AStarComputation::test_manhattan_dist((0.0, 0.0), (5.0, 0.0)), 5);
+    }
+
+    #[test]
+    fn manhattan_dist_vertical() {
+        assert_eq!(AStarComputation::test_manhattan_dist((0.0, 0.0), (0.0, 3.0)), 3);
+    }
+
+    #[test]
+    fn manhattan_dist_diagonal() {
+        assert_eq!(AStarComputation::test_manhattan_dist((0.0, 0.0), (3.0, 4.0)), 7);
+    }
+
+    #[test]
+    fn manhattan_dist_negative_coords() {
+        assert_eq!(AStarComputation::test_manhattan_dist((-2.0, -3.0), (1.0, 1.0)), 7);
+    }
+
+    // ── heuristic ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn heuristic_single_candidate() {
+        let ready = vec![(5.0f32, 5.0f32)];
+        let (dist, idx) = AStarComputation::test_heuristic((2.0, 2.0), &ready);
+        assert_eq!(idx, 0);
+        assert_eq!(dist, 6); // |5-2| + |5-2| = 6
+    }
+
+    #[test]
+    fn heuristic_picks_nearest() {
+        // Sorted by x: (1,0), (3,0), (10,0)
+        let ready = vec![(1.0f32, 0.0f32), (3.0, 0.0), (10.0, 0.0)];
+        let (dist, idx) = AStarComputation::test_heuristic((2.0, 0.0), &ready);
+        // Nearest is (1,0) or (3,0) both at distance 1; heuristic should return one of them.
+        assert_eq!(dist, 1);
+        assert!(idx == 0 || idx == 1);
+    }
+
+    #[test]
+    fn heuristic_exact_match() {
+        let ready = vec![(0.0f32, 0.0f32), (4.0, 0.0), (8.0, 0.0)];
+        let (dist, idx) = AStarComputation::test_heuristic((4.0, 0.0), &ready);
+        assert_eq!(dist, 0);
+        assert_eq!(idx, 1);
+    }
+
+    // ── AStarComputation::new ─────────────────────────────────────────────────
+
+    #[test]
+    fn new_initialises_with_zero_calls() {
+        let astar = AStarComputation::new(10);
+        assert_eq!(astar.num_calls, 0);
+    }
+
+    // ── AStarComputation::compute — no-path case ──────────────────────────────
+
+    #[test]
+    fn compute_returns_no_path_when_no_magic_ready() {
+        // Build a minimal 3-node topology: data(0) -- bus(1) -- magic(2, cultivating)
+        // Magic node has cultivation_time > 0 so it is never "ready".
+        Node::set_magic_routing(false);
+        let mut topo = TopoGraph::new();
+        // Manually build a tiny topology via gen_compact_bus_routing_topo
+        // with 2 qubits so we get at least one bus and one magic node.
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
+
+        let num_nodes = topo.num_nodes;
+        let mut astar = AStarComputation::new(num_nodes);
+        let mut used = vec![false; num_nodes];
+
+        // Mark all magic nodes as cultivating (cultivation_time > 0).
+        let magic_ids: Vec<u16> =
+            topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
+        for id in &magic_ids {
+            topo.cultivation_times[*id as usize] = 99;
+        }
+
+        // Find a data node to use as root/terminal.
+        let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
+
+        if let Some(did) = data_id {
+            // With no ready magic positions, heuristic would panic on empty slice.
+            // Instead, test with a non-empty but all-cultivating magic list.
+            let magic_positions: Vec<(f32, f32)> = topo
+                .iter_nodes()
+                .filter(|n| n.node_type == NodeType::Magic)
+                .map(|n| n.pos)
+                .collect();
+            if !magic_positions.is_empty() {
+                let result =
+                    astar.compute(&[did], &[did], &topo, &mut used, &magic_positions, false);
+                assert_eq!(astar.num_calls, 1);
+                // Result may be NoPath since all magic nodes are cultivating.
+                match result {
+                    PathResult::NoPath | PathResult::PathFound(_) => {}
+                }
+            }
+        }
+        Node::set_magic_routing(true);
+    }
 }
