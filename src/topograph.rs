@@ -672,11 +672,9 @@ impl TopoGraph {
         let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
         let plot_fname = format!("{}{}.png", topo_stem, fname_added);
 
-        let root = BitMapBackend::new(
-            &plot_fname,
-            (self.num_cols as u32 * 100, self.num_rows as u32 * 100),
-        )
-        .into_drawing_area();
+        let root =
+            BitMapBackend::new(&plot_fname, (self.num_cols as u32 * 90, self.num_rows as u32 * 90))
+                .into_drawing_area();
         root.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&root)
             .margin(10)

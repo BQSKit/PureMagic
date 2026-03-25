@@ -133,64 +133,7 @@ impl AStarComputation {
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
-                if !plotting {
-                    used[node_id as usize] = true;
-                    let mut curr = node_id;
-                    loop {
-                        let prev_id = self.parent[curr as usize];
-                        if prev_id == u16::MAX {
-                            break;
-                        }
-                        used[prev_id as usize] = true;
-                        curr = prev_id;
-                    }
-                    for &root_id in root_ids {
-                        used[root_id as usize] = true;
-                    }
-                    for &tid in terminal_ids {
-                        used[tid as usize] = true;
-                    }
-                    return PathResult::PathFound(None);
-                }
-                let mut tree = TreeGraph::new(topo.num_nodes);
-                tree.root_node_id = Some(node_id);
-                let mut curr = node_id;
-                if !tree.contains_node(curr) {
-                    tree.add_node(topo.get_node(curr), topo.get_label(curr));
-                }
-                loop {
-                    let prev_id = self.parent[curr as usize];
-                    if prev_id == u16::MAX {
-                        break;
-                    }
-                    if !tree.contains_node(prev_id) {
-                        tree.add_node(topo.get_node(prev_id), topo.get_label(prev_id));
-                    }
-                    tree.add_edge(prev_id, curr);
-                    curr = prev_id;
-                }
-                for (i, &root_id) in root_ids.iter().enumerate() {
-                    if !tree.contains_node(root_id) {
-                        let conn = topo
-                            .get_node(root_id)
-                            .nbors_slice()
-                            .iter()
-                            .copied()
-                            .find(|&nb_id| tree.contains_node(nb_id));
-                        if let Some(conn_id) = conn {
-                            tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
-                            tree.add_edge(conn_id, root_id);
-                        } else {
-                            return PathResult::NoPath;
-                        }
-                    }
-                    if i < terminal_ids.len() {
-                        let tid = terminal_ids[i];
-                        tree.add_node(topo.get_node(tid), topo.get_label(tid));
-                        tree.add_edge(root_id, tid);
-                    }
-                }
-                return PathResult::PathFound(Some(tree));
+                return self.finish_path(node_id, root_ids, terminal_ids, topo, used, plotting);
             }
 
             // If this is a magic node that is not the goal (not ready/unused), skip expanding
@@ -205,12 +148,19 @@ impl AStarComputation {
                 if used[nb_id as usize] || self.closed_epoch[nb_id as usize] == epoch {
                     continue;
                 }
-                let (nb_is_data, nb_pos) = {
+                let (nb_type, nb_cultivation, nb_pos) = {
                     let nb = topo.get_node(nb_id);
-                    (nb.node_type == NodeType::Data, nb.pos)
+                    (nb.node_type, topo.cultivation_times[nb_id as usize], nb.pos)
                 };
-                if nb_is_data {
+                if nb_type == NodeType::Data {
                     continue;
+                }
+                // If a neighbor is a ready magic node, take it immediately — no shorter
+                // path to any goal can exist since g+1 is the minimum reachable cost.
+                if nb_type == NodeType::Magic && nb_cultivation == 0 {
+                    self.parent[nb_id as usize] = node_id;
+                    self.node_epoch[nb_id as usize] = epoch;
+                    return self.finish_path(nb_id, root_ids, terminal_ids, topo, used, plotting);
                 }
                 let new_g = g + 1;
                 // Stale slot (different epoch) is treated as g = ∞.
@@ -229,6 +179,72 @@ impl AStarComputation {
             }
         }
         PathResult::NoPath
+    }
+
+    /// Builds the final path result once a ready magic node (`magic_id`) has been found.
+    /// Walks the parent chain to mark used nodes (non-plotting) or build a TreeGraph (plotting).
+    fn finish_path(
+        &self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
+        used: &mut Vec<bool>, plotting: bool,
+    ) -> PathResult {
+        if !plotting {
+            used[magic_id as usize] = true;
+            let mut curr = magic_id;
+            loop {
+                let prev_id = self.parent[curr as usize];
+                if prev_id == u16::MAX {
+                    break;
+                }
+                used[prev_id as usize] = true;
+                curr = prev_id;
+            }
+            for &root_id in root_ids {
+                used[root_id as usize] = true;
+            }
+            for &tid in terminal_ids {
+                used[tid as usize] = true;
+            }
+            return PathResult::PathFound(None);
+        }
+        let mut tree = TreeGraph::new(topo.num_nodes);
+        tree.root_node_id = Some(magic_id);
+        let mut curr = magic_id;
+        if !tree.contains_node(curr) {
+            tree.add_node(topo.get_node(curr), topo.get_label(curr));
+        }
+        loop {
+            let prev_id = self.parent[curr as usize];
+            if prev_id == u16::MAX {
+                break;
+            }
+            if !tree.contains_node(prev_id) {
+                tree.add_node(topo.get_node(prev_id), topo.get_label(prev_id));
+            }
+            tree.add_edge(prev_id, curr);
+            curr = prev_id;
+        }
+        for (i, &root_id) in root_ids.iter().enumerate() {
+            if !tree.contains_node(root_id) {
+                let conn = topo
+                    .get_node(root_id)
+                    .nbors_slice()
+                    .iter()
+                    .copied()
+                    .find(|&nb_id| tree.contains_node(nb_id));
+                if let Some(conn_id) = conn {
+                    tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
+                    tree.add_edge(conn_id, root_id);
+                } else {
+                    return PathResult::NoPath;
+                }
+            }
+            if i < terminal_ids.len() {
+                let tid = terminal_ids[i];
+                tree.add_node(topo.get_node(tid), topo.get_label(tid));
+                tree.add_edge(root_id, tid);
+            }
+        }
+        PathResult::PathFound(Some(tree))
     }
 
     /// Returns (distance, index) of the nearest ready magic node to `pos`.
