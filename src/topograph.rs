@@ -501,7 +501,6 @@ impl TopoGraph {
                 }
             }
         }
-        // Add all edges
         for (label1, label2) in edges_to_add {
             if label1.starts_with('d') {
                 if let Some(ref d) = self.get_data_label_side(&label1, true) {
@@ -537,11 +536,9 @@ impl TopoGraph {
 
     /// Extracts the left or right side data node label from a double data qubit label.
     fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
-        // Find indices of numbers and operator
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
         let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
-        // Extract the numbers and operator
         let first_num = &label[d_pos + 1..slash_pos];
         let second_num = &label[slash_pos + 1..op_pos];
         let operator = &label[op_pos..=op_pos];
@@ -554,11 +551,9 @@ impl TopoGraph {
 
     /// Extracts both left and right data node labels from a double data qubit label.
     fn get_data_labels(&self, label: &str) -> Option<(String, String)> {
-        // Find indices of numbers and operator
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
         let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
-        // Extract the numbers and operator
         let first_num = &label[d_pos + 1..slash_pos];
         let second_num = &label[slash_pos + 1..op_pos];
         let operator = &label[op_pos..=op_pos];
@@ -606,22 +601,18 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    /// Retrieves a node by its ID.
     pub fn get_node(&self, id: u16) -> &Node {
         &self.nodes[id as usize]
     }
 
-    /// Retrieves a mutable reference to a node by its ID.
     pub fn get_node_mut(&mut self, id: u16) -> &mut Node {
         &mut self.nodes[id as usize]
     }
 
-    /// Returns an iterator over all nodes.
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.iter()
     }
 
-    /// Creates a bidirectional edge between two nodes.
     pub fn add_edge(&mut self, node_id1: u16, node_id2: u16) {
         self.get_node_mut(node_id1).add_neighbor(node_id2);
         self.get_node_mut(node_id2).add_neighbor(node_id1);
@@ -889,7 +880,6 @@ impl TopoGraph {
             let (hx, hy) =
                 if node.node_type == NodeType::Data { (0.25f32, 0.5f32) } else { (0.5f32, 0.5f32) };
 
-            // Fill only for data nodes; routing nodes get fill + border here.
             let fill = match node.node_type {
                 NodeType::Magic => RGBColor(0xFF, 0xDD, 0x44).mix(0.25).filled(),
                 NodeType::Bus => RGBColor(0x88, 0x88, 0x88).mix(0.15).filled(),
@@ -899,12 +889,10 @@ impl TopoGraph {
 
             if node.node_type != NodeType::Data {
                 draw_rect(chart, x, y, hx, hy, BLACK.stroke_width(1))?;
-                // Skip label if a product label background rect covers this node position.
                 let pos_key = ((x * 10.0).round() as i32, (y * 10.0).round() as i32);
                 if product_label_covered.contains(&pos_key) {
                     continue;
                 }
-                // Label for routing nodes
                 let label = &self.labels[node.id as usize];
                 let label_text = match node.node_type {
                     NodeType::Magic => {

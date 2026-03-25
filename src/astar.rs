@@ -43,7 +43,6 @@ pub struct AStarComputation {
 }
 
 impl AStarComputation {
-    /// Creates a new A* computation state for a graph with `num_nodes` nodes.
     pub fn new(num_nodes: usize) -> Self {
         AStarComputation {
             parent: vec![u16::MAX; num_nodes],
@@ -66,8 +65,6 @@ impl AStarComputation {
         }
     }
 
-    /// Returns the next open node, skipping already-closed (stale) entries.
-    /// Returns `None` when all buckets are empty.
     #[inline(always)]
     fn bucket_pop(&mut self, epoch: u32) -> Option<u16> {
         loop {
@@ -78,7 +75,6 @@ impl AStarComputation {
                 if self.closed_epoch[node_id as usize] != epoch {
                     return Some(node_id);
                 }
-                // stale duplicate — keep draining this bucket
             } else {
                 self.bucket_min += 1;
             }
@@ -280,13 +276,11 @@ impl AStarComputation {
         ((p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()) as u32
     }
 
-    /// Test-only accessor for the private `manhattan_dist` function.
     #[cfg(test)]
     pub fn test_manhattan_dist(p1: (f32, f32), p2: (f32, f32)) -> u32 {
         Self::manhattan_dist(p1, p2)
     }
 
-    /// Test-only accessor for the private `heuristic` function.
     #[cfg(test)]
     pub fn test_heuristic(pos: (f32, f32), ready: &[(f32, f32)]) -> (u32, usize) {
         Self::heuristic(pos, ready)
@@ -366,26 +360,20 @@ mod tests {
 
     #[test]
     fn compute_returns_no_path_when_no_magic_ready() {
-        // Build a minimal 3-node topology: data(0) -- bus(1) -- magic(2, cultivating)
-        // Magic node has cultivation_time > 0 so it is never "ready".
         Node::set_magic_routing(false);
         let mut topo = TopoGraph::new();
-        // Manually build a tiny topology via gen_compact_bus_routing_topo
-        // with 2 qubits so we get at least one bus and one magic node.
         topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
 
         let num_nodes = topo.num_nodes;
         let mut astar = AStarComputation::new(num_nodes);
         let mut used = vec![false; num_nodes];
 
-        // Mark all magic nodes as cultivating (cultivation_time > 0).
         let magic_ids: Vec<u16> =
             topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
         for id in &magic_ids {
             topo.cultivation_times[*id as usize] = 99;
         }
 
-        // Find a data node to use as root/terminal.
         let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
 
         if let Some(did) = data_id {
@@ -400,7 +388,6 @@ mod tests {
                 let result =
                     astar.compute(&[did], &[did], &topo, &mut used, &magic_positions, false);
                 assert_eq!(astar.num_calls, 1);
-                // Result may be NoPath since all magic nodes are cultivating.
                 match result {
                     PathResult::NoPath | PathResult::PathFound(_) => {}
                 }

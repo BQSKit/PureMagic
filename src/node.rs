@@ -35,12 +35,10 @@ pub struct Node {
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
-    /// Creates a new node with the given properties and empty neighbour set.
     pub fn new(id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType) -> Self {
         Node { node_type, id, paired_data_id, pos: (x, y), nbors: [0u16; MAX_NBORS], num_nbors: 0 }
     }
 
-    /// Global switch to enable/disable magic routing (vs bus routing).
     pub fn set_magic_routing(enabled: bool) {
         USE_MAGIC_ROUTING.store(enabled, Ordering::Relaxed);
     }
@@ -61,13 +59,11 @@ impl Node {
         self.num_nbors += 1;
     }
 
-    /// Returns the slice of valid neighbour IDs.
     #[inline(always)]
     pub fn nbors_slice(&self) -> &[u16] {
         &self.nbors[..self.num_nbors as usize]
     }
 
-    /// Returns true if this node is a routing node (magic or bus depending on config).
     pub fn is_routing(&self) -> bool {
         if USE_MAGIC_ROUTING.load(Ordering::Relaxed) {
             assert_ne!(self.node_type, NodeType::Bus);
@@ -195,7 +191,6 @@ mod tests {
         let data = Node::new(1, None, 0.0, 0.0, NodeType::Data);
         assert!(bus.is_routing());
         assert!(!data.is_routing());
-        // Restore default for other tests
         Node::set_magic_routing(true);
     }
 
@@ -211,7 +206,6 @@ mod tests {
         let bus = Node::new(1, None, 0.0, 0.0, NodeType::Bus);
         assert!(bus.is_routing());
 
-        // Restore
         Node::set_magic_routing(true);
     }
 
