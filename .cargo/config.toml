@@ -1,0 +1,5 @@
+[env]
+# Run unit tests single-threaded to avoid data races on the global
+# USE_MAGIC_ROUTING flag (Node::set_magic_routing) which some tests
+# temporarily set to false.
+RUST_TEST_THREADS = "1"

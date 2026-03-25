@@ -879,6 +879,11 @@ impl TopoGraph {
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Build a set of node IDs that appear in any path tree, so we can suppress
+        // the cultivation countdown label on nodes that are visually highlighted as paths.
+        let path_node_ids: std::collections::HashSet<u16> =
+            pauli_product_paths.iter().flat_map(|(_, tree)| tree.iter_nodes()).collect();
+
         for node in &self.nodes {
             let (x, y) = node.pos;
             let (hx, hy) =
@@ -905,6 +910,10 @@ impl TopoGraph {
                     NodeType::Magic => {
                         if pauli_product_paths.is_empty() {
                             label.clone()
+                        } else if path_node_ids.contains(&node.id) {
+                            // Node is part of an active path: suppress the countdown so the
+                            // path color overlay is not obscured by the number.
+                            String::new()
                         } else if self.is_cultivating(node.id) {
                             (self.cultivation_times[node.id as usize]
                                 - self.busy_counts[node.id as usize])
@@ -1504,6 +1513,7 @@ mod tests {
         // The compact bus topology may include some magic nodes for border rows;
         // the key property is that bus qubits are present and magic routing is disabled.
         assert!(!topo.use_magic_routing, "compact bus topo should have magic routing disabled");
+        crate::node::Node::set_magic_routing(true);
     }
 
     #[test]
@@ -1511,6 +1521,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
         assert!(topo.num_data_qubits >= 4);
+        crate::node::Node::set_magic_routing(true);
     }
 
     // ── TopoGraph::gen_bus_routing_topo ──────────────────────────────────────
@@ -1520,6 +1531,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 1, false);
         assert!(topo.num_bus_qubits > 0);
+        crate::node::Node::set_magic_routing(true);
     }
 
     // ── TopoGraph::add_edge / get_node ────────────────────────────────────────
