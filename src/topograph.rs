@@ -725,14 +725,13 @@ impl TopoGraph {
         self.draw_product_labels(&mut chart, pauli_product_paths, &product_label_positions)?;
 
         if !title_str.is_empty() {
-            let font_size = (6.0 * (self.num_rows as f64).sqrt()) as u32;
             for (i, line) in title_str.split('\n').enumerate() {
                 draw_text(
                     &mut chart,
                     line,
                     -0.5,
                     -0.8 - (i as f32 * 0.33),
-                    ("sans-serif", font_size).into_font(),
+                    ("sans-serif", 25).into_font(),
                 )?;
             }
         }
