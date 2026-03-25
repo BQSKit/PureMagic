@@ -37,6 +37,10 @@ struct ScheduleStats {
     bus_scheduled: usize,
     data_scheduled: usize,
     magic_scheduled: usize,
+    /// Number of T products that consumed a magic node this timestep (first attempt only).
+    t_scheduled: usize,
+    /// Number of ready magic nodes used in any path this timestep (routing or T-terminal).
+    magic_ready_used: usize,
     sum_magic_unused: usize,
     plot_info_str: String,
 }
@@ -53,6 +57,8 @@ impl ScheduleStats {
             bus_scheduled: 0,
             data_scheduled: 0,
             magic_scheduled: 0,
+            t_scheduled: 0,
+            magic_ready_used: 0,
             sum_magic_unused: 0,
             plot_info_str: String::new(),
         }
@@ -72,47 +78,55 @@ impl ScheduleStats {
     }
 
     pub fn update(
-        &mut self, step_i: usize, pp_paths_len: usize, to_schedule_len: usize, magic_unused: usize,
-        plotting: bool,
+        &mut self, step_i: usize, pp_paths_len: usize, total_available: usize, magic_ready: usize,
+        magic_unused: usize, plotting: bool,
     ) {
         self.sum_data_scheduled += self.data_scheduled;
         self.sum_bus_scheduled += self.bus_scheduled;
         self.sum_magic_scheduled += self.magic_scheduled;
         self.sum_magic_unused += magic_unused;
 
+        let total_qubits = self.data_qubits + self.bus_qubits + self.magic_qubits;
+        let tot_qubits_used = self.data_scheduled + self.bus_scheduled + self.magic_scheduled;
+
         info_sched!("Scheduling results:");
         let frac_paths =
-            if to_schedule_len == 0 { 1.0 } else { pp_paths_len as f64 / to_schedule_len as f64 };
-        let frac_data = self.data_scheduled as f64 / self.data_qubits as f64;
-        let frac_bus = self.bus_scheduled as f64 / self.bus_qubits as f64;
-        let frac_magic = self.magic_scheduled as f64 / self.magic_qubits as f64;
-        let tot_qubits = self.magic_scheduled + self.bus_scheduled + self.data_scheduled;
-        info_sched!("  products:    {}/{} ({:.2})", pp_paths_len, to_schedule_len, frac_paths);
-        info_sched!(
-            "  data:        {}/{} ({:.2})",
-            self.data_scheduled,
-            self.data_qubits,
-            frac_data
-        );
-        info_sched!("  bus:         {}/{} ({:.2})", self.bus_scheduled, self.bus_qubits, frac_bus);
-        info_sched!(
-            "  magic:       {}/{} ({:.2})",
-            self.magic_scheduled,
-            self.magic_qubits,
-            frac_magic
-        );
+            if total_available == 0 { 1.0 } else { pp_paths_len as f64 / total_available as f64 };
+        let frac_qubits =
+            if total_qubits == 0 { 0.0 } else { tot_qubits_used as f64 / total_qubits as f64 };
+        // magic numerator: T products that consumed a magic node this round (first attempt only).
+        // magic denominator: ready magic nodes visible as "T" labels in plot
+        //   = magic_ready - (ready magic nodes used as routing only)
+        //   = magic_ready - (magic_ready_used - t_scheduled)
+        let magic_ready_routing = self.magic_ready_used.saturating_sub(self.t_scheduled);
+        let magic_denom = magic_ready.saturating_sub(magic_ready_routing);
+        let frac_magic =
+            if magic_denom == 0 { 0.0 } else { self.t_scheduled as f64 / magic_denom as f64 };
+        info_sched!("  products:    {}/{} ({:.2})", pp_paths_len, total_available, frac_paths);
+        info_sched!("  qubits:      {}/{} ({:.2})", tot_qubits_used, total_qubits, frac_qubits);
+        info_sched!("  magic:       {}/{} ({:.2})", self.t_scheduled, magic_denom, frac_magic);
         // Only build the format string when path plotting is active (called rarely).
         if plotting {
             self.plot_info_str = format!(
-                "Step {} Products scheduled: {:.2}; qubits: data {:.2}, \
-                            bus {:.2}, magic {:.2}, total qubits {}",
-                step_i, frac_paths, frac_data, frac_bus, frac_magic, tot_qubits
+                "Step {}: Products scheduled {}/{} ({:.2}), qubits {}/{} ({:.2}), magic {}/{} ({:.2})",
+                step_i,
+                pp_paths_len,
+                total_available,
+                frac_paths,
+                tot_qubits_used,
+                total_qubits,
+                frac_qubits,
+                self.t_scheduled,
+                magic_denom,
+                frac_magic,
             );
         }
 
         self.data_scheduled = 0;
         self.bus_scheduled = 0;
         self.magic_scheduled = 0;
+        self.t_scheduled = 0;
+        self.magic_ready_used = 0;
     }
 
     pub fn inc(&mut self, node_type: NodeType) {
@@ -121,6 +135,19 @@ impl ScheduleStats {
             NodeType::Magic => self.magic_scheduled += 1,
             NodeType::Data => self.data_scheduled += 1,
         }
+    }
+
+    /// Like `inc()` but also tracks ready magic nodes (cultivation_time == 0 means ready).
+    pub fn inc_with_cultivation(&mut self, node_type: NodeType, cultivation_time: i32) {
+        self.inc(node_type);
+        if node_type == NodeType::Magic && cultivation_time == 0 {
+            self.magic_ready_used += 1;
+        }
+    }
+
+    /// Increments the count of T products that consumed a magic node this timestep.
+    pub fn inc_t(&mut self) {
+        self.t_scheduled += 1;
     }
 
     pub fn get_plot_info_str(&self) -> &str {
@@ -591,12 +618,18 @@ impl Scheduler {
         let _timer = accum_start!(self.timers);
         self.timers.start(self.other_timer);
         let mut num_avail_magic = self.update_cultivators();
+        let initial_magic = num_avail_magic;
         pp_paths.clear();
         self.used.fill(false);
         // Carry forward in-progress Clifford routes from previous timestep(s).
         for (_, (_, pp, node_ids, opt_tree)) in &self.clifford_paths {
             for &node_id in node_ids {
                 self.used[node_id as usize] = true;
+                let node = self.topo.get_node(node_id);
+                self.stats.inc_with_cultivation(
+                    node.node_type,
+                    self.topo.cultivation_times[node_id as usize],
+                );
             }
             pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
         }
@@ -608,14 +641,29 @@ impl Scheduler {
         for (_, (pp, node_ids, opt_tree)) in &self.failed_t_paths {
             for &node_id in node_ids {
                 self.used[node_id as usize] = true;
+                let node = self.topo.get_node(node_id);
+                self.stats.inc_with_cultivation(
+                    node.node_type,
+                    self.topo.cultivation_times[node_id as usize],
+                );
             }
             pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
         }
+        // Total available = carry-forward (cliffords + failed T recoveries) + new products queued.
+        let carry_forward_count = self.clifford_paths.len() + self.failed_t_paths.len();
+        let total_available = carry_forward_count + to_schedule.len();
         info_sched!("  Remaining to schedule: {}", to_schedule.len());
         self.schedule_precomputed(to_schedule, pp_paths, plotting);
         self.timers.stop(self.other_timer);
         self.schedule_remaining(to_schedule, pp_paths, &mut num_avail_magic, plotting);
-        self.stats.update(step_i, pp_paths.len(), to_schedule.len(), num_avail_magic, plotting);
+        self.stats.update(
+            step_i,
+            pp_paths.len(),
+            total_available,
+            initial_magic,
+            num_avail_magic,
+            plotting,
+        );
         if pp_paths.is_empty() {
             if num_avail_magic > 0 {
                 panic!(
@@ -704,7 +752,11 @@ impl Scheduler {
             if all_free {
                 to_remove.push(pp_id);
                 for node_id in tree.iter_nodes() {
-                    self.stats.inc(self.topo.get_node(node_id).node_type);
+                    let node = self.topo.get_node(node_id);
+                    self.stats.inc_with_cultivation(
+                        node.node_type,
+                        self.topo.cultivation_times[node_id as usize],
+                    );
                     self.used[node_id as usize] = true;
                 }
                 info_sched!(
@@ -755,13 +807,18 @@ impl Scheduler {
                     info_sched!("  Scheduled product {}", pp);
                     if let Some(ref pp_graph) = opt_graph {
                         for node_id in pp_graph.iter_nodes() {
-                            self.stats.inc(self.topo.get_node(node_id).node_type);
+                            let node = self.topo.get_node(node_id);
+                            self.stats.inc_with_cultivation(
+                                node.node_type,
+                                self.topo.cultivation_times[node_id as usize],
+                            );
                             self.used[node_id as usize] = true;
                         }
                     }
                     pp_paths.push((pp.id, opt_graph.map(Rc::new)));
                     if pp.gate_type.is_t() {
                         *num_avail_magic -= 1;
+                        self.stats.inc_t();
                     }
                     continue;
                 }
@@ -801,7 +858,10 @@ impl Scheduler {
             }
             if !plotting {
                 self.used[node_id as usize] = true;
-                self.stats.inc(node.node_type);
+                self.stats.inc_with_cultivation(
+                    node.node_type,
+                    self.topo.cultivation_times[node_id as usize],
+                );
                 return PathResult::PathFound(None);
             }
             let mut g = TreeGraph::new(self.topo.num_nodes);
@@ -832,8 +892,14 @@ impl Scheduler {
                         if !plotting {
                             self.used[node_id as usize] = true;
                             self.used[nb_id as usize] = true;
-                            self.stats.inc(node.node_type);
-                            self.stats.inc(nb.node_type);
+                            self.stats.inc_with_cultivation(
+                                node.node_type,
+                                self.topo.cultivation_times[node_id as usize],
+                            );
+                            self.stats.inc_with_cultivation(
+                                nb.node_type,
+                                self.topo.cultivation_times[nb_id as usize],
+                            );
                             return PathResult::PathFound(None);
                         }
                         let mut g = TreeGraph::new(self.topo.num_nodes);
