@@ -34,7 +34,7 @@ struct Args {
     /// Name of file containing topology. If this is not set, it will be generated.
     #[arg(short, long = "topo", default_value = "")]
     topo_fname: String,
-    /// Lambda parameter for exponential distribution of magic state cultivation timesteps.
+    /// Lambda parameter for exponential distribution of magic state cultivation lcycles.
     #[arg(short, long, default_value = "0.0387396")]
     magic_state_lambda: f64,
     /// Show product IDs instead of Pauli terms when plotting the circuit.
@@ -90,7 +90,7 @@ struct Args {
         "  topo:     plot topology in <CIRCUIT_FNAME>.topo.png\n",
         "  circuit:  plot full circuit in files in subdirectory <CIRCUIT_FNAME>.circuit\n",
         "  cstats:   plot circuit statistics over time in <CIRCUIT_FNAME>.layer_stats.png\n",
-        "  paths:    plot paths for first 100 timesteps in subdirectory <CIRCUIT_FNAME>.paths")
+        "  paths:    plot paths for first 100 lcycles in subdirectory <CIRCUIT_FNAME>.paths")
     )]
     plot: Vec<String>,
 }
@@ -156,11 +156,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.no_t_failures,
     );
 
-    let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;
+    let (tot_num_lcycles, num_scheduled) = scheduler.schedule_circuit()?;
     assert_eq!(num_scheduled, num_products);
     // Calculate and print statistics
-    let volume = num_qubits * tot_num_steps;
-    println!("Scheduled {} in {} timesteps, volume {}", num_scheduled, tot_num_steps, volume);
+    let volume = num_qubits * tot_num_lcycles;
+    println!("Scheduled {} in {} lcycles, volume {}", num_scheduled, tot_num_lcycles, volume);
     scheduler.print_schedule(&hdr)?;
     print!("Generating Pure Magic layout for comparison:\n  ");
     let mut best_magic_topo_graph = TopoGraph::new();
@@ -170,10 +170,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
     let optimal_volume = num_qubits * num_layers;
     println!(
-        "Optimal timesteps {} ({:.3} speedup) volume {}",
+        "Optimal lcycles {} ({:.3} speedup) volume {}",
         num_layers, optimal_speedup, optimal_volume
     );
-    let speedup = num_products as f64 / tot_num_steps as f64;
+    let speedup = num_products as f64 / tot_num_lcycles as f64;
     println!("Parallelism: {:.3}x", speedup);
     println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
     println!("Parallel efficiency: {:.3}", speedup / optimal_speedup);

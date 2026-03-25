@@ -10,8 +10,8 @@
     -f ../results/max-weight-0/puremagic/out:PureMagic,../results/max-weight-0/bus/out:"Bus" -o efficiency_puremagic_bus_w0_w1.png
 
 # improvement from max weight 1 over max weight 0 for PureMagic
-./plot_puremagic.py -x circuit -y timesteps --hline \
-    -f ../results/max-weight-0/puremagic/out:"No weight limit",../results/max-weight-1/puremagic/out:"Max weight 1" -o timesteps_puremagic_w0_v1.png
+./plot_puremagic.py -x circuit -y lcycles --hline \
+    -f ../results/max-weight-0/puremagic/out:"No weight limit",../results/max-weight-1/puremagic/out:"Max weight 1" -o lcycles_puremagic_w0_v1.png
 
 # relation between scheduling efficiency and parallelism for PureMagic with max weight 0 and 1
 #./plot_puremagic.py -x parallelism -y scheduling_efficiency -s heisenberg --label-data-qubits \
@@ -43,27 +43,27 @@
     -f ../results/max-weight-1/puremagic-vary-cultivation/out-square_heisenberg_N225:PureMagic,../results/max-weight-1/bus-vary-cultivation/out-square_heisenberg_N225:"Bus heisenberg_N225" \
     --ylim 0,5 -o efficiency_v_cultivation_puremagic_bus_ct.png --hline
 
-# relation between transpilation max weight and timesteps and number of cliffords for PureMagic
-./plot_puremagic.py -x weight -y timesteps,cliffords --lines -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N64:heisenberg_N64 -o timesteps_v_weight.png
-#./plot_puremagic.py -x weight -y timesteps --lines \
+# relation between transpilation max weight and lcycles and number of cliffords for PureMagic
+./plot_puremagic.py -x weight -y lcycles,cliffords --lines -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N64:heisenberg_N64 -o lcycles_v_weight.png
+#./plot_puremagic.py -x weight -y lcycles --lines \
 #    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N25:heisenberg_N25 \
 #    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N100:heisenberg_N100 \
 #    -f ../results/max-weight-vary/puremagic/out-square_heisenberg_N225:heisenberg_N225 \
-#    -o timesteps_v_weight.png
+#    -o lcycles_v_weight.png
 
 # relation beween computation timing and parallelism for PureMagic with max weight 1
 ./plot_puremagic.py -x parallelism -y timing -f ../results/max-weight-1/puremagic/out:PureMagic -o timing_v_parallelism.png --ylim 0,14
 
-# ratio of timesteps for given data qubits comparing bus to puremagic -
-#./plot_puremagic.py -x data_qubits -y timesteps --hline \
-#    -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic -o timesteps_v_data_qubits_puremagic_bus.png
+# ratio of lcycles for given data qubits comparing bus to puremagic -
+#./plot_puremagic.py -x data_qubits -y lcycles --hline \
+#    -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic -o lcycles_v_data_qubits_puremagic_bus.png
 
-# for heisenberg, show relation of data qubits (circuit width) to both volume and timesteps for bus v puremagic
-./plot_puremagic.py -x data_qubits -y timesteps/volume --hline --ylabel Ratio \
+# for heisenberg, show relation of data qubits (circuit width) to both volume and lcycles for bus v puremagic
+./plot_puremagic.py -x data_qubits -y lcycles/volume --hline --ylabel Ratio \
     -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic \
-    --ylabel Ratio --ylim 0,3 --stackedbar -s heisenberg -o timesteps_v_data_qubits_puremagic_bus_barchart.png
+    --ylabel Ratio --ylim 0,3 --stackedbar -s heisenberg -o lcycles_v_data_qubits_puremagic_bus_barchart.png
 
-# for heisenberg, show relation of data qubits (circuit width) to both volume and timesteps for bus v puremagic
-./plot_puremagic.py -x data_qubits -y timesteps/volume --hline --ylabel Ratio \
+# for heisenberg, show relation of data qubits (circuit width) to both volume and lcycles for bus v puremagic
+./plot_puremagic.py -x data_qubits -y lcycles/volume --hline --ylabel Ratio \
     -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic \
-    --ylabel Ratio --ylim 0,3 --lines-with-markers -s heisenberg -o timesteps_v_data_qubits_puremagic_bus.png
+    --ylabel Ratio --ylim 0,3 --lines-with-markers -s heisenberg -o lcycles_v_data_qubits_puremagic_bus.png

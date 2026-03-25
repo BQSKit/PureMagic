@@ -753,9 +753,9 @@ impl TopoGraph {
     ///
     /// Uses the golden-ratio hashing trick: multiplying the product ID by the golden ratio
     /// (conjugate) and taking the fractional part distributes hues evenly across the [0,1)
-    /// interval regardless of which subset of products appears in a given timestep.
+    /// interval regardless of which subset of products appears in a given lcycle.
     /// This guarantees:
-    ///   - The same product ID always maps to the same color across all timesteps.
+    ///   - The same product ID always maps to the same color across all lcycles.
     ///   - Any set of products visible together has well-spread, visually distinct colors.
     fn product_color(pp_id: i32) -> RGBAColor {
         // Golden ratio conjugate: (√5 − 1) / 2 ≈ 0.618033988749895
@@ -1089,8 +1089,8 @@ impl TopoGraph {
         }
 
         for (pp, path_graph) in pauli_product_paths.iter() {
-            // Use golden-ratio hashing so the color is stable across timesteps and
-            // well-spread across any subset of products visible in this timestep.
+            // Use golden-ratio hashing so the color is stable across lcycles and
+            // well-spread across any subset of products visible in this lcycle.
             let color = Self::product_color(pp.id);
             let is_t = pp.gate_type.is_t();
 

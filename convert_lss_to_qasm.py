@@ -131,7 +131,7 @@ def get_t_product(i: int, lines: list[Op]) -> str:
 
 
 def get_h_product(i: int, lines: list[Op]) -> Optional[str]:
-    # check for Hadamard - ZXZ over 3 timesteps
+    # check for Hadamard - ZXZ over 3 lcycles
     if len(lines) <= i + 2:
         return None
     (_, op_str, gate_type) = lines[i]

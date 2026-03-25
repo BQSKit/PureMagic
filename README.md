@@ -102,17 +102,18 @@ git submodule update --init
 
 ## Output Files
 
-After scheduling, the following files are produced:
+After scheduling, the following files are produced. Throughout the output, **lcycle** refers to one unit of parallel scheduling time, which is a single logical cycle in which all non-conflicting Pauli products that can be routed simultaneously are executed together.
+
 
 | File | Contents |
 |------|----------|
 | `<name>.circuit.txt` | Circuit layer and dependency information. Debug builds only. |
 | `<name>.sched_trace` | Detailed scheduling trace (requires `--log-scheduler info` or `debug`). |
-| `<name>.schedule` | Final schedule (timestep → operations). |
+| `<name>.schedule` | Final schedule (lcycle → operations). |
 | `<name>.topo.png` | Topology visualization (requires `--plot topo`). |
 | `<name>.topo.txt` | Topology grid dump. Debug builds only. |
 | `<name>.layer_stats.png` | Circuit layer statistics (requires `--plot cstats`). |
-| `<name>.paths/` | Per-timestep path visualizations (requires `--plot paths`). |
+| `<name>.paths/` | Per-lcycle path visualizations (requires `--plot paths`). |
 
 ## Topology File Format
 
