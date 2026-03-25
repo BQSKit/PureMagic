@@ -98,7 +98,7 @@ def overlaps_with(pauli_a: str, pauli_b: str) -> bool:
 
 
 def measure_parallelism(pauli_products: list[str]) -> float:
-    """Return the average number of products per time step."""
+    """Return the average number of products per lcycle."""
     depth = 0
     layer = []
     for pp in pauli_products:

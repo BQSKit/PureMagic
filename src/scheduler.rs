@@ -37,9 +37,9 @@ struct ScheduleStats {
     bus_scheduled: usize,
     data_scheduled: usize,
     magic_scheduled: usize,
-    /// T products that consumed a magic node this timestep (first attempt only).
+    /// T products that consumed a magic node this lcycle (first attempt only).
     t_scheduled: usize,
-    /// Ready magic nodes used in any path this timestep (routing or T-terminal).
+    /// Ready magic nodes used in any path this lcycle (routing or T-terminal).
     magic_ready_used: usize,
     sum_magic_unused: usize,
     plot_info_str: String,
@@ -64,12 +64,12 @@ impl ScheduleStats {
         }
     }
 
-    pub fn summarize(&self, num_steps: usize) {
-        let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_steps) as f64;
-        let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_steps) as f64;
-        let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_steps) as f64;
+    pub fn summarize(&self, num_lcycles: usize) {
+        let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_lcycles) as f64;
+        let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_lcycles) as f64;
+        let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_lcycles) as f64;
         let magic_unused_frac =
-            self.sum_magic_unused as f64 / (self.magic_qubits * num_steps) as f64;
+            self.sum_magic_unused as f64 / (self.magic_qubits * num_lcycles) as f64;
         println!("Qubit fractions used:");
         println!("  data:        {:.3}", data_frac);
         println!("  bus:         {:.3}", bus_frac);
@@ -78,8 +78,8 @@ impl ScheduleStats {
     }
 
     pub fn update(
-        &mut self, step_i: usize, pp_paths_len: usize, total_available: usize, magic_ready: usize,
-        magic_unused: usize, plotting: bool,
+        &mut self, lcycle_i: usize, pp_paths_len: usize, total_available: usize,
+        magic_ready: usize, magic_unused: usize, plotting: bool,
     ) {
         self.sum_data_scheduled += self.data_scheduled;
         self.sum_bus_scheduled += self.bus_scheduled;
@@ -104,8 +104,8 @@ impl ScheduleStats {
         info_sched!("  magic:       {}/{} ({:.2})", self.t_scheduled, magic_denom, frac_magic);
         if plotting {
             self.plot_info_str = format!(
-                "Step {}: Products scheduled {}/{} ({:.2}), qubits {}/{} ({:.2}), magic {}/{} ({:.2})",
-                step_i,
+                "lcycle {}: products scheduled {}/{} ({:.2}), qubits {}/{} ({:.2}), magic {}/{} ({:.2})",
+                lcycle_i,
                 pp_paths_len,
                 total_available,
                 frac_paths,
@@ -150,7 +150,7 @@ impl ScheduleStats {
     }
 }
 
-/// Assigns Pauli products to timesteps and routes them through the topology.
+/// Assigns Pauli products to lcycles and routes them through the topology.
 pub struct Scheduler {
     circuit: Circuit,
     topo: TopoGraph,
@@ -160,11 +160,11 @@ pub struct Scheduler {
     plot_option: String,
     cultivation_times_log: Vec<i32>,
     stats: ScheduleStats,
-    timestep_scheduled: Vec<(usize, Vec<i32>)>,
+    lcycle_scheduled: Vec<(usize, Vec<i32>)>,
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
-    /// T-gate products that failed the coin flip; rescheduled next timestep without a magic node.
+    /// T-gate products that failed the coin flip; rescheduled next lcycle without a magic node.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     t_gate_failures: usize,
     stree_computation: SteinerTreeComputation,
@@ -233,7 +233,7 @@ impl Scheduler {
             plot_option,
             cultivation_times_log: Vec::new(),
             stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
-            timestep_scheduled: Vec::new(),
+            lcycle_scheduled: Vec::new(),
             scheduled_products: IndexSet::new(),
             used: vec![false; num_nodes],
             clifford_paths: IndexMap::new(),
@@ -264,7 +264,7 @@ impl Scheduler {
         }
     }
 
-    /// Greedily assigns products to timesteps. Returns (total timesteps, total scheduled products).
+    /// Greedily assigns products to lcycles. Returns (total lcycles, total scheduled products).
     pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
         self.rng_exp
@@ -283,7 +283,7 @@ impl Scheduler {
             .map(|id| self.circuit.get_product(id as i32).parents.len())
             .collect();
         debug_sched!("Initial to_schedule len {}", to_schedule.len());
-        let mut plot_steps = 0usize;
+        let mut plot_lcycles = 0usize;
         let mut path_dir: Option<String> = None;
         if self.plot_option.contains("paths") {
             let circuit_stem = Path::new(&self.circuit.circuit_fname)
@@ -293,13 +293,13 @@ impl Scheduler {
             let dir_name = format!("{}.paths", circuit_stem);
             std::fs::create_dir_all(&dir_name)?;
             path_dir = Some(dir_name);
-            plot_steps = 30;
+            plot_lcycles = 30;
         }
         let plotting = path_dir.is_some();
         let total_to_schedule = self.circuit.num_products();
         let mut prev_perc_complete = 0usize;
-        let mut num_steps = 0usize;
-        if plot_steps == 0 {
+        let mut num_lcycles = 0usize;
+        if plot_lcycles == 0 {
             print!("Scheduling {} products:    ", total_to_schedule);
         }
         let mut pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)> = Vec::new();
@@ -308,27 +308,29 @@ impl Scheduler {
             || !self.failed_t_paths.is_empty()
         {
             self.timers.start(self.loop_timer);
-            num_steps += 1;
+            num_lcycles += 1;
             info_sched!(
-                "{}Step {}: {:?}{}",
+                "{}lcycle {}: {:?}{}",
                 _CYAN,
-                num_steps,
+                num_lcycles,
                 to_schedule
                     .iter()
                     .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
                     .collect::<Vec<_>>(),
                 _RESET
             );
-            if self.schedule_timestep(num_steps, &mut to_schedule, &mut pp_paths, plotting) {
-                self.complete_timestep(
+            if self.schedule_lcycle(num_lcycles, &mut to_schedule, &mut pp_paths, plotting) {
+                self.complete_lcycle(
                     &pp_paths,
                     &mut to_schedule,
                     &mut remaining_parents,
-                    num_steps,
+                    num_lcycles,
                 )?;
                 let num_scheduled = self.scheduled_products.len();
-                if num_steps >= plot_steps && (total_to_schedule - num_scheduled >= plot_steps) {
-                    if num_steps == plot_steps {
+                if num_lcycles >= plot_lcycles
+                    && (total_to_schedule - num_scheduled >= plot_lcycles)
+                {
+                    if num_lcycles == plot_lcycles {
                         print!("Scheduling {} products:    ", total_to_schedule);
                     }
                     let perc_complete = (num_scheduled * 100) / total_to_schedule;
@@ -337,13 +339,13 @@ impl Scheduler {
                         std::io::stdout().flush()?;
                         prev_perc_complete = perc_complete;
                     }
-                    if total_to_schedule - num_scheduled == plot_steps {
+                    if total_to_schedule - num_scheduled == plot_lcycles {
                         print!("\n");
                     }
                 } else {
                     let plot_info_str = self.stats.get_plot_info_str();
                     assert!(!plot_info_str.is_empty());
-                    let fname_added = format!(".{}", num_steps);
+                    let fname_added = format!(".{}", num_lcycles);
                     let curr_dir = std::env::current_dir()?;
                     std::env::set_current_dir(path_dir.as_ref().unwrap())?;
                     let plot_paths: Vec<(PauliProduct, Rc<TreeGraph>)> = pp_paths
@@ -360,7 +362,7 @@ impl Scheduler {
                     std::env::set_current_dir(curr_dir)?;
                 }
             } else {
-                debug_sched!("Could not schedule anything on timestep {}", num_steps);
+                debug_sched!("Could not schedule anything on lcycle {}", num_lcycles);
                 if !(0..self.topo.num_nodes).any(|node_i| self.topo.is_cultivating(node_i as u16)) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
@@ -370,12 +372,12 @@ impl Scheduler {
             }
             self.timers.stop(self.loop_timer);
         }
-        self.print_scheduling_stats(num_steps);
+        self.print_scheduling_stats(num_lcycles);
         #[cfg(debug_assertions)]
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
-        Ok((num_steps, self.scheduled_products.len()))
+        Ok((num_lcycles, self.scheduled_products.len()))
     }
 
     /// Initializes magic node cultivation times and builds `magic_node_ids`/`magic_node_positions`.
@@ -567,9 +569,9 @@ impl Scheduler {
         println!("Precomputed terminals and root candidates for {} products", num_products);
     }
 
-    /// Schedules as many products as possible in one timestep; returns false if nothing scheduled.
-    fn schedule_timestep(
-        &mut self, step_i: usize, to_schedule: &mut Vec<PauliProduct>,
+    /// Schedules as many products as possible in one lcycle; returns false if nothing scheduled.
+    fn schedule_lcycle(
+        &mut self, lcycle_i: usize, to_schedule: &mut Vec<PauliProduct>,
         pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>, plotting: bool,
     ) -> bool {
         let _timer = accum_start!(self.timers);
@@ -608,7 +610,7 @@ impl Scheduler {
         self.timers.stop(self.other_timer);
         self.schedule_remaining(to_schedule, pp_paths, &mut num_avail_magic, plotting);
         self.stats.update(
-            step_i,
+            lcycle_i,
             pp_paths.len(),
             total_available,
             initial_magic,
@@ -618,9 +620,9 @@ impl Scheduler {
         if pp_paths.is_empty() {
             if num_avail_magic > 0 {
                 panic!(
-                    "{}Step {}: Cannot schedule products [{}] on current layout ({} magic){}",
+                    "{}lcycle {}: Cannot schedule products [{}] on current layout ({} magic){}",
                     _RED,
-                    step_i,
+                    lcycle_i,
                     to_schedule
                         .iter()
                         .map(|pp| pp.to_operator_str())
@@ -930,10 +932,10 @@ impl Scheduler {
         t
     }
 
-    /// Post-timestep bookkeeping: remove scheduled products, unlock children, advance Clifford state.
-    fn complete_timestep(
+    /// Post-lcycle bookkeeping: remove scheduled products, unlock children, advance Clifford state.
+    fn complete_lcycle(
         &mut self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)], to_schedule: &mut Vec<PauliProduct>,
-        remaining_parents: &mut Vec<usize>, num_steps: usize,
+        remaining_parents: &mut Vec<usize>, num_lcycles: usize,
     ) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
         // Failed T gates stay out of to_schedule and are tracked in failed_t_paths.
@@ -949,23 +951,23 @@ impl Scheduler {
             })
             .count();
         self.t_products_remaining = self.t_products_remaining.saturating_sub(t_newly_scheduled);
-        // First-attempt T gates: 50% fail. Recovery-timestep T gates always succeed.
+        // First-attempt T gates: 50% fail. Recovery-lcycle T gates always succeed.
         let mut t_failed_ids: Vec<i32> = Vec::new();
         let mut t_recovery_ids: Vec<i32> = Vec::new();
         for &(pp_id, _) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
             if pp.gate_type.is_t() {
                 if self.failed_t_paths.contains_key(&pp_id) {
-                    // Recovery timestep: always succeeds, remove from failed_t_paths.
+                    // Recovery lcycle: always succeeds, remove from failed_t_paths.
                     t_recovery_ids.push(pp_id);
-                    info_sched!("  T gate {} recovery timestep succeeded", pp_id);
+                    info_sched!("  T gate {} recovery lcycle succeeded", pp_id);
                 } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
                 } else {
                     t_failed_ids.push(pp_id);
                     self.t_gate_failures += 1;
                     info_sched!(
-                        "  T gate {} failed (50% probability), recovery timestep next",
+                        "  T gate {} failed (50% probability), recovery lcycle next",
                         pp_id
                     );
                 }
@@ -977,7 +979,7 @@ impl Scheduler {
                 continue;
             }
             if t_failed_ids.contains(&pp_id) {
-                // Trim the magic root; recovery timestep reuses only the routing/terminal subtree.
+                // Trim the magic root; recovery lcycle reuses only the routing/terminal subtree.
                 let trimmed_opt_tree: Option<Rc<TreeGraph>> = opt_pp_path.as_ref().map(|tree| {
                     let mut t = (**tree).clone();
                     t.trim_magic_root();
@@ -1000,13 +1002,13 @@ impl Scheduler {
                 match self.clifford_paths.get(&pp_id) {
                     Some((count, _, _, _)) if *count == 2 => {
                         debug_assert!(pp.gate_type.is_s() || pp.gate_type.is_sx());
-                        continue; // second-of-three timestep: children not yet unlocked
+                        continue; // second-of-three lcycle: children not yet unlocked
                     }
-                    None => continue, // first timestep: children not yet unlocked
+                    None => continue, // first lcycle: children not yet unlocked
                     _ => {}
                 }
             }
-            // T gate that failed this timestep: children not yet unlocked.
+            // T gate that failed this lcycle: children not yet unlocked.
             if pp.gate_type.is_t() && t_failed_ids.contains(&pp_id) {
                 continue;
             }
@@ -1047,7 +1049,7 @@ impl Scheduler {
             }
         }
         debug_sched!(
-            "After inserting previous timestep cliffords, to_schedule len {}",
+            "After inserting previous lcycle cliffords, to_schedule len {}",
             to_schedule.len()
         );
         to_schedule
@@ -1057,22 +1059,22 @@ impl Scheduler {
             self.children_scratch.len(),
             to_schedule.len()
         );
-        let step_ids: Vec<i32> = pp_paths
+        let lcycle_ids: Vec<i32> = pp_paths
             .iter()
             .filter(|(id, _)| !t_failed_ids.contains(id))
             .map(|(id, _)| *id)
             .collect();
-        self.timestep_scheduled.push((num_steps, step_ids));
+        self.lcycle_scheduled.push((num_lcycles, lcycle_ids));
         #[cfg(debug_assertions)]
-        self.check_timestep(pp_paths, &t_failed_ids, &t_recovery_ids)?;
+        self.check_lcycle(pp_paths, &t_failed_ids, &t_recovery_ids)?;
         self.scheduled_products.extend(
             pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
         );
         Ok(())
     }
 
-    fn print_scheduling_stats(&mut self, num_steps: usize) {
-        self.stats.summarize(num_steps);
+    fn print_scheduling_stats(&mut self, num_lcycles: usize) {
+        self.stats.summarize(num_lcycles);
         let total_t = (0..self.circuit.num_products())
             .filter(|&id| self.circuit.get_product(id as i32).gate_type.is_t())
             .count();
@@ -1096,14 +1098,14 @@ impl Scheduler {
         }
     }
 
-    /// Per-timestep validation (debug only): checks scheduling order, terminal coverage,
+    /// Per-lcycle validation (debug only): checks scheduling order, terminal coverage,
     /// magic root presence for first-attempt T gates, and no node overlap between products.
     #[cfg(debug_assertions)]
-    fn check_timestep(
+    fn check_lcycle(
         &self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)], _t_failed_ids: &[i32],
         t_recovery_ids: &[i32],
     ) -> io::Result<()> {
-        let mut step_used = vec![false; self.topo.num_nodes];
+        let mut lcycle_used = vec![false; self.topo.num_nodes];
         for &(pp_id, ref opt_tree) in pp_paths {
             let Some(tree) = opt_tree else { continue }; // trees are None when not plotting
             let tree = tree.as_ref();
@@ -1130,7 +1132,7 @@ impl Scheduler {
                             return Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 format!(
-                                    "product {} (step 3): terminal \
+                                    "product {} (lcycle 3): terminal \
                                                                qubit {} basis {} missing from tree",
                                     pp_id, op.qubit, basis
                                 ),
@@ -1173,18 +1175,18 @@ impl Scheduler {
                 }
             }
             for node_id in tree.iter_nodes() {
-                if step_used[node_id as usize] {
+                if lcycle_used[node_id as usize] {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
                         format!(
                             "product {} shares node '{}' with another \
-                                                       product in the same timestep",
+                                                       product in the same lcycle",
                             pp_id,
                             self.topo.get_label(node_id)
                         ),
                     ));
                 }
-                step_used[node_id as usize] = true;
+                lcycle_used[node_id as usize] = true;
             }
         }
         Ok(())
@@ -1195,32 +1197,35 @@ impl Scheduler {
     fn check_clifford_repetitions(&self) -> io::Result<()> {
         let mut cx_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
         let mut s_counts: IndexMap<i32, Vec<usize>> = IndexMap::new();
-        for (step_i, step_ids) in &self.timestep_scheduled {
-            for &pp_id in step_ids {
+        for (lcycle_i, lcycle_ids) in &self.lcycle_scheduled {
+            for &pp_id in lcycle_ids {
                 let pp = self.circuit.get_product(pp_id);
                 if pp.gate_type.is_cx() {
-                    let steps = cx_counts.entry(pp_id).or_insert(Vec::new());
-                    steps.push(*step_i);
+                    let lcycles = cx_counts.entry(pp_id).or_insert(Vec::new());
+                    lcycles.push(*lcycle_i);
                 } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
-                    let steps = s_counts.entry(pp_id).or_insert(Vec::new());
-                    steps.push(*step_i);
+                    let lcycles = s_counts.entry(pp_id).or_insert(Vec::new());
+                    lcycles.push(*lcycle_i);
                 }
             }
         }
         let mut errors = Vec::new();
-        for (pp_id, steps) in &cx_counts {
+        for (pp_id, lcycles) in &cx_counts {
             let pp = self.circuit.get_product(*pp_id);
             if pp.gate_type.is_cx() {
-                if steps.len() != 2 || steps[0] != steps[1] - 1 {
-                    errors.push(format!("  product {} not scheduled 2x {:?}", pp, steps));
+                if lcycles.len() != 2 || lcycles[0] != lcycles[1] - 1 {
+                    errors.push(format!("  product {} not scheduled 2x {:?}", pp, lcycles));
                 }
             }
         }
-        for (pp_id, steps) in &s_counts {
+        for (pp_id, lcycles) in &s_counts {
             let pp = self.circuit.get_product(*pp_id);
             if pp.gate_type.is_s() || pp.gate_type.is_sx() {
-                if steps.len() != 3 || steps[0] != steps[1] - 1 || steps[1] != steps[2] - 1 {
-                    errors.push(format!("  product {} not scheduled 3x {:?}", pp, steps));
+                if lcycles.len() != 3
+                    || lcycles[0] != lcycles[1] - 1
+                    || lcycles[1] != lcycles[2] - 1
+                {
+                    errors.push(format!("  product {} not scheduled 3x {:?}", pp, lcycles));
                 }
             }
         }
@@ -1258,7 +1263,7 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Writes the per-timestep schedule to a file.
+    /// Writes the per-lcycle schedule to a file.
     pub fn print_schedule(&self, hdr: &str) -> io::Result<()> {
         let _timer = fn_timer!();
         debug_sched!("Printing schedule");
@@ -1271,15 +1276,15 @@ impl Scheduler {
         let file = File::create(&output_fname)?;
         let mut buf_file = BufWriter::new(file);
 
-        let max_step: usize =
-            self.timestep_scheduled.last().map(|(step_i, _)| *step_i).unwrap_or(0);
-        let max_width = max_step.to_string().len();
-        let tot_products = self.timestep_scheduled.iter().map(|(_, v)| v.len()).sum::<usize>();
+        let max_lcycle: usize =
+            self.lcycle_scheduled.last().map(|(lcycle_i, _)| *lcycle_i).unwrap_or(0);
+        let max_width = max_lcycle.to_string().len();
+        let tot_products = self.lcycle_scheduled.iter().map(|(_, v)| v.len()).sum::<usize>();
         writeln!(buf_file, "{}", hdr)?;
-        writeln!(buf_file, "# Total active steps: {}", self.timestep_scheduled.len())?;
-        writeln!(buf_file, "# Total steps: {}", max_step)?;
+        writeln!(buf_file, "# Total active logical cycles: {}", self.lcycle_scheduled.len())?;
+        writeln!(buf_file, "# Total logical cycles: {}", max_lcycle)?;
         writeln!(buf_file, "# Total products: {}", tot_products)?;
-        writeln!(buf_file, "# Parallelism: {:.2}", tot_products as f64 / max_step as f64)?;
+        writeln!(buf_file, "# Parallelism: {:.2}", tot_products as f64 / max_lcycle as f64)?;
 
         let colors = [
             _GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED, _LYELLOW,
@@ -1287,8 +1292,8 @@ impl Scheduler {
         ];
 
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
-        for (step_i, step_ids) in &self.timestep_scheduled {
-            let mut sorted_ids = step_ids.clone();
+        for (lcycle_i, lcycle_ids) in &self.lcycle_scheduled {
+            let mut sorted_ids = lcycle_ids.clone();
             sorted_ids.sort_by_key(|&id| {
                 self.circuit
                     .get_product(id)
@@ -1311,20 +1316,20 @@ impl Scheduler {
                 }
                 if pp.gate_type.is_cx() {
                     if !prev_cx.swap_remove(&pp_id) {
-                        debug_sched!("  first timestep of CX {} {}", pp_id, pp);
+                        debug_sched!("  first lcycle of CX {} {}", pp_id, pp);
                         prev_cx.insert(pp_id);
                         let qubit = pp.operators[1].qubit;
                         combined_colors[qubit as usize] = _RESET;
                         combined_chars[qubit as usize] = '_';
                     } else {
-                        debug_sched!("  second timestep of CX {} {}", pp_id, pp);
+                        debug_sched!("  second lcycle of CX {} {}", pp_id, pp);
                         let qubit = pp.operators[0].qubit;
                         combined_colors[qubit as usize] = _RESET;
                         combined_chars[qubit as usize] = '_';
                     }
                 }
             }
-            write!(buf_file, "{:width$}: ", step_i, width = max_width)?;
+            write!(buf_file, "{:width$}: ", lcycle_i, width = max_width)?;
             for i in 0..self.circuit.num_qubits {
                 write!(buf_file, "{}{}", combined_colors[i], combined_chars[i])?;
             }
@@ -1403,14 +1408,14 @@ mod tests {
         assert!(distinct > 1, "t_gate_failures never varied across 20 seeds: {:?}", counts);
     }
 
-    // ── schedule output (timestep_scheduled) ─────────────────────────────────
+    // ── schedule output (lcycle_scheduled) ───────────────────────────────────
 
     #[test]
-    fn all_products_appear_exactly_once_in_timestep_scheduled() {
+    fn all_products_appear_exactly_once_in_lcycle_scheduled() {
         let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
         let sched = run_scheduler(lines, 5);
         let mut id_counts: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
-        for (_, ids) in &sched.timestep_scheduled {
+        for (_, ids) in &sched.lcycle_scheduled {
             for &id in ids {
                 *id_counts.entry(id).or_insert(0) += 1;
             }
@@ -1420,26 +1425,26 @@ mod tests {
             let count = id_counts.get(&pp_id).copied().unwrap_or(0);
             assert_eq!(
                 count, 1,
-                "product {} appears {} times in timestep_scheduled (expected 1)",
+                "product {} appears {} times in lcycle_scheduled (expected 1)",
                 pp_id, count
             );
         }
     }
 
     #[test]
-    fn timestep_scheduled_total_entries_equals_num_products() {
+    fn lcycle_scheduled_total_entries_equals_num_products() {
         let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
         let sched = run_scheduler(lines, 5);
-        let total_entries: usize = sched.timestep_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        let total_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
         let num_products = 4usize;
         assert_eq!(
             total_entries, num_products,
-            "total timestep_scheduled entries {} != num_products {}",
+            "total lcycle_scheduled entries {} != num_products {}",
             total_entries, num_products
         );
     }
 
-    // ── recovery timestep always succeeds (fail at most once) ────────────────
+    // ── recovery lcycle always succeeds (fail at most once) ──────────────────
 
     #[test]
     fn failed_t_paths_empty_after_schedule_completes() {
@@ -1453,16 +1458,16 @@ mod tests {
     }
 
     #[test]
-    fn timestep_count_bounded_by_t_gate_failure_overhead() {
+    fn lcycle_count_bounded_by_t_gate_failure_overhead() {
         let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
         let sched = run_scheduler(lines, 5);
         let num_t = 4usize;
-        let active_steps = sched.timestep_scheduled.len();
-        // Each failure adds at most 1 extra step; total active steps ≤ num_t + failures.
+        let active_lcycles = sched.lcycle_scheduled.len();
+        // Each failure adds at most 1 extra lcycle; total active lcycles ≤ num_t + failures.
         assert!(
-            active_steps <= num_t + sched.t_gate_failures,
-            "active steps {} > num_t {} + failures {}",
-            active_steps,
+            active_lcycles <= num_t + sched.t_gate_failures,
+            "active lcycles {} > num_t {} + failures {}",
+            active_lcycles,
             num_t,
             sched.t_gate_failures
         );

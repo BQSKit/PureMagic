@@ -123,10 +123,10 @@ fn puremagic_schedule_file_contains_header_and_steps() {
         "schedule file missing '# Total products:' header; contents:\n{}",
         contents
     );
-    // At least one timestep line starts with a digit.
+    // At least one lcycle line starts with a digit.
     assert!(
         contents.lines().any(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit())),
-        "schedule file has no timestep lines; contents:\n{}",
+        "schedule file has no lcycle lines; contents:\n{}",
         contents
     );
 }
@@ -182,9 +182,9 @@ fn puremagic_with_fixed_rseed_is_deterministic() {
     let (ok1, stdout1, _) = run_puremagic(&args, tmp1.path());
     let (ok2, stdout2, _) = run_puremagic(&args, tmp2.path());
     assert!(ok1 && ok2, "puremagic failed with fixed rseed");
-    // The "Scheduled N in M timesteps" line must be identical across runs.
+    // The "Scheduled N in M lcycles" line must be identical across runs.
     let extract_scheduled_line = |s: &str| {
-        s.lines().find(|l| l.contains("Scheduled") && l.contains("timesteps")).map(str::to_owned)
+        s.lines().find(|l| l.contains("Scheduled") && l.contains("lcycles")).map(str::to_owned)
     };
     assert_eq!(
         extract_scheduled_line(&stdout1),
@@ -569,7 +569,7 @@ fn puremagic_t_gate_failures_vary_across_seeds() {
     );
 }
 
-/// All products must still be scheduled even when T gates fail (recovery timestep completes them).
+/// All products must still be scheduled even when T gates fail (recovery lcycle completes them).
 /// Verify that "Scheduled N in" still reports the correct total.
 #[test]
 fn puremagic_all_products_scheduled_despite_t_gate_failures() {
