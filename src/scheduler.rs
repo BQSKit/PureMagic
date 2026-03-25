@@ -164,7 +164,7 @@ pub struct Scheduler {
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
-    /// T-gate products that failed the coin flip; rescheduled next round without a magic node.
+    /// T-gate products that failed the coin flip; rescheduled next timestep without a magic node.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     t_gate_failures: usize,
     stree_computation: SteinerTreeComputation,
@@ -949,22 +949,25 @@ impl Scheduler {
             })
             .count();
         self.t_products_remaining = self.t_products_remaining.saturating_sub(t_newly_scheduled);
-        // First-attempt T gates: 50% fail. Recovery-round T gates always succeed.
+        // First-attempt T gates: 50% fail. Recovery-timestep T gates always succeed.
         let mut t_failed_ids: Vec<i32> = Vec::new();
         let mut t_recovery_ids: Vec<i32> = Vec::new();
         for &(pp_id, _) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
             if pp.gate_type.is_t() {
                 if self.failed_t_paths.contains_key(&pp_id) {
-                    // Recovery round: always succeeds, remove from failed_t_paths.
+                    // Recovery timestep: always succeeds, remove from failed_t_paths.
                     t_recovery_ids.push(pp_id);
-                    info_sched!("  T gate {} recovery round succeeded", pp_id);
+                    info_sched!("  T gate {} recovery timestep succeeded", pp_id);
                 } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
                 } else {
                     t_failed_ids.push(pp_id);
                     self.t_gate_failures += 1;
-                    info_sched!("  T gate {} failed (50% probability), recovery round next", pp_id);
+                    info_sched!(
+                        "  T gate {} failed (50% probability), recovery timestep next",
+                        pp_id
+                    );
                 }
             }
         }
@@ -974,7 +977,7 @@ impl Scheduler {
                 continue;
             }
             if t_failed_ids.contains(&pp_id) {
-                // Trim the magic root; recovery round reuses only the routing/terminal subtree.
+                // Trim the magic root; recovery timestep reuses only the routing/terminal subtree.
                 let trimmed_opt_tree: Option<Rc<TreeGraph>> = opt_pp_path.as_ref().map(|tree| {
                     let mut t = (**tree).clone();
                     t.trim_magic_root();
@@ -997,13 +1000,13 @@ impl Scheduler {
                 match self.clifford_paths.get(&pp_id) {
                     Some((count, _, _, _)) if *count == 2 => {
                         debug_assert!(pp.gate_type.is_s() || pp.gate_type.is_sx());
-                        continue; // second-of-three round: children not yet unlocked
+                        continue; // second-of-three timestep: children not yet unlocked
                     }
-                    None => continue, // first round: children not yet unlocked
+                    None => continue, // first timestep: children not yet unlocked
                     _ => {}
                 }
             }
-            // T gate that failed this round: children not yet unlocked.
+            // T gate that failed this timestep: children not yet unlocked.
             if pp.gate_type.is_t() && t_failed_ids.contains(&pp_id) {
                 continue;
             }
@@ -1044,7 +1047,7 @@ impl Scheduler {
             }
         }
         debug_sched!(
-            "After inserting previous round cliffords, to_schedule len {}",
+            "After inserting previous timestep cliffords, to_schedule len {}",
             to_schedule.len()
         );
         to_schedule
@@ -1308,13 +1311,13 @@ impl Scheduler {
                 }
                 if pp.gate_type.is_cx() {
                     if !prev_cx.swap_remove(&pp_id) {
-                        debug_sched!("  first round of CX {} {}", pp_id, pp);
+                        debug_sched!("  first timestep of CX {} {}", pp_id, pp);
                         prev_cx.insert(pp_id);
                         let qubit = pp.operators[1].qubit;
                         combined_colors[qubit as usize] = _RESET;
                         combined_chars[qubit as usize] = '_';
                     } else {
-                        debug_sched!("  second round of CX {} {}", pp_id, pp);
+                        debug_sched!("  second timestep of CX {} {}", pp_id, pp);
                         let qubit = pp.operators[0].qubit;
                         combined_colors[qubit as usize] = _RESET;
                         combined_chars[qubit as usize] = '_';
@@ -1436,7 +1439,7 @@ mod tests {
         );
     }
 
-    // ── recovery round always succeeds (fail at most once) ───────────────────
+    // ── recovery timestep always succeeds (fail at most once) ────────────────
 
     #[test]
     fn failed_t_paths_empty_after_schedule_completes() {

@@ -569,7 +569,7 @@ fn puremagic_t_gate_failures_vary_across_seeds() {
     );
 }
 
-/// All products must still be scheduled even when T gates fail (recovery round completes them).
+/// All products must still be scheduled even when T gates fail (recovery timestep completes them).
 /// Verify that "Scheduled N in" still reports the correct total.
 #[test]
 fn puremagic_all_products_scheduled_despite_t_gate_failures() {
