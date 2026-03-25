@@ -81,7 +81,8 @@ impl ScheduleStats {
         self.sum_magic_unused += magic_unused;
 
         info_sched!("Scheduling results:");
-        let frac_paths = pp_paths_len as f64 / to_schedule_len as f64;
+        let frac_paths =
+            if to_schedule_len == 0 { 1.0 } else { pp_paths_len as f64 / to_schedule_len as f64 };
         let frac_data = self.data_scheduled as f64 / self.data_qubits as f64;
         let frac_bus = self.bus_scheduled as f64 / self.bus_qubits as f64;
         let frac_magic = self.magic_scheduled as f64 / self.magic_qubits as f64;
