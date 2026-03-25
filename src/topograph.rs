@@ -692,7 +692,6 @@ impl TopoGraph {
             .set_label_area_size(LabelAreaPosition::Bottom, 50)
             .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
 
-        let path_colors = self.make_path_colors(pauli_product_paths.len());
         let data_groups = self.build_data_groups();
 
         // Pre-compute product label positions so we can suppress node labels underneath them.
@@ -728,19 +727,13 @@ impl TopoGraph {
         self.draw_path_overlays(
             &mut chart,
             pauli_product_paths,
-            &path_colors,
             &data_groups,
             &product_label_covered,
         )?;
 
         // Step 3: draw data group qubit-number labels and product operator labels.
         self.draw_data_group_labels(&mut chart, &data_groups)?;
-        self.draw_product_labels(
-            &mut chart,
-            pauli_product_paths,
-            &path_colors,
-            &product_label_positions,
-        )?;
+        self.draw_product_labels(&mut chart, pauli_product_paths, &product_label_positions)?;
 
         if !title_str.is_empty() {
             let font_size = (6.0 * (self.num_rows as f64).sqrt()) as u32;
@@ -761,16 +754,20 @@ impl TopoGraph {
 
     // ── Private plot helpers ──────────────────────────────────────────────────
 
-    /// Builds the color palette for product paths.
-    fn make_path_colors(&self, num_paths: usize) -> Vec<RGBAColor> {
-        let n = num_paths.max(1);
-        (0..n)
-            .map(|i| {
-                let hue = (i as f64) / (n as f64);
-                let (r, g, b) = hsv_to_rgb(hue, 0.8, 0.9);
-                RGBColor(r, g, b).to_rgba()
-            })
-            .collect()
+    /// Returns the stable color for a single product ID.
+    ///
+    /// Uses the golden-ratio hashing trick: multiplying the product ID by the golden ratio
+    /// (conjugate) and taking the fractional part distributes hues evenly across the [0,1)
+    /// interval regardless of which subset of products appears in a given timestep.
+    /// This guarantees:
+    ///   - The same product ID always maps to the same color across all timesteps.
+    ///   - Any set of products visible together has well-spread, visually distinct colors.
+    fn product_color(pp_id: i32) -> RGBAColor {
+        // Golden ratio conjugate: (√5 − 1) / 2 ≈ 0.618033988749895
+        const GOLDEN: f64 = 0.618_033_988_749_895;
+        let hue = (pp_id as f64 * GOLDEN).fract().abs();
+        let (r, g, b) = hsv_to_rgb(hue, 0.8, 0.9);
+        RGBColor(r, g, b).to_rgba()
     }
 
     /// Builds the list of data-qubit groups (X row + Z row pairs).
@@ -1072,8 +1069,7 @@ impl TopoGraph {
     /// side facing that routing node in the path color (and do not expand the path).
     fn draw_path_overlays(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
-        path_colors: &[RGBAColor], data_groups: &[DataGroup],
-        product_label_covered: &std::collections::HashSet<(i32, i32)>,
+        data_groups: &[DataGroup], product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Build a lookup: data node id → reference to its DataGroup.
         // Used to find the outer boundary of the four-node group for horizontal X borders.
@@ -1086,8 +1082,10 @@ impl TopoGraph {
             node_to_group.insert(group.z_right_id, gi);
         }
 
-        for (path_idx, (pp, path_graph)) in pauli_product_paths.iter().enumerate() {
-            let color = path_colors[path_idx];
+        for (pp, path_graph) in pauli_product_paths.iter() {
+            // Use golden-ratio hashing so the color is stable across timesteps and
+            // well-spread across any subset of products visible in this timestep.
+            let color = Self::product_color(pp.id);
             let is_t = pp.gate_type.is_t();
 
             // Collect all routing node IDs in this path (for outline drawing).
@@ -1297,17 +1295,19 @@ impl TopoGraph {
     /// Step 3b: draw product operator + ID labels using pre-computed positions.
     fn draw_product_labels(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
-        path_colors: &[RGBAColor], positions: &[Option<(f32, f32, f32, usize)>],
+        positions: &[Option<(f32, f32, f32, usize)>],
     ) -> Result<(), Box<dyn std::error::Error>> {
         for (pos_opt, (pp, _path_graph)) in positions.iter().zip(pauli_product_paths.iter()) {
-            if let Some(&(center_x, row_y, tw, i)) = pos_opt.as_ref() {
+            if let Some(&(center_x, row_y, tw, _i)) = pos_opt.as_ref() {
+                // Use the same stable color as the path overlay.
+                let label_color = Self::product_color(pp.id);
                 draw_rect_coords(
                     chart,
                     center_x - tw / 2.0 - 0.05,
                     row_y - 0.15,
                     center_x + tw / 2.0 + 0.05,
                     row_y + 0.15,
-                    path_colors[i].mix(0.2).filled(),
+                    label_color.mix(0.2).filled(),
                 )?;
                 let product_str = pp.to_operator_str();
                 draw_text(
