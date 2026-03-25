@@ -117,6 +117,49 @@ impl TreeGraph {
         self.num_edges += 1;
     }
 
+    /// Removes the magic root node and then trims all dangling routing nodes,
+    /// leaving the minimal subtree that still connects all terminal data nodes.
+    /// A routing node adjacent only to a single data node is kept — it is the
+    /// root-side connection point for that terminal and must not be removed.
+    /// After this call `root_node_id` is `None`.
+    pub fn trim_magic_root(&mut self) {
+        let root_id = match self.root_node_id.take() {
+            Some(id) => id,
+            None => return,
+        };
+        self.remove_node(root_id);
+        // Trim routing nodes that became dangling, but preserve any routing node
+        // whose sole remaining neighbor is a data node (it is the terminal's root).
+        loop {
+            let dangling: Vec<u16> = self
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, opt)| {
+                    opt.as_ref().and_then(|n| {
+                        if !n.is_routing || n.nbors.len() > 1 {
+                            return None;
+                        }
+                        if n.nbors.len() == 1 {
+                            // Keep if the sole neighbor is a data node.
+                            let nb = self.nodes[n.nbors[0] as usize].as_ref()?;
+                            if nb.is_data {
+                                return None;
+                            }
+                        }
+                        Some(i as u16)
+                    })
+                })
+                .collect();
+            if dangling.is_empty() {
+                break;
+            }
+            for id in dangling {
+                self.remove_node(id);
+            }
+        }
+    }
+
     /// Removes routing nodes with degree ≤ 1 (except root) until none remain.
     /// Returns the number of nodes trimmed.
     pub fn trim_dangling_nodes(&mut self) -> usize {

@@ -143,7 +143,8 @@ pub struct Scheduler {
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     /// T-gate products that failed (50% probability) and must be rescheduled next round.
-    /// Stores (pp, node_ids, opt_tree) — same layout as clifford_paths minus the count.
+    /// Stores (pp, node_ids, opt_tree) where opt_tree is the original tree with the magic root
+    /// trimmed: the recovery round reuses only the routing/terminal subtree, no magic node needed.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     t_gate_failures: usize,
     stree_computation: SteinerTreeComputation,
@@ -601,17 +602,11 @@ impl Scheduler {
         // Carry forward T gates that failed last round (50% failure):
         // mark their nodes used and re-add them to pp_paths so they are
         // counted as scheduled this timestep and re-evaluated for success/failure.
-        // Also decrement num_avail_magic for each magic node consumed by the carry-forward,
-        // so the panic guard below correctly reflects that those magic nodes are already taken.
+        // The stored tree has already had its magic root trimmed, so no magic node
+        // is consumed and num_avail_magic does not need to be decremented here.
         for (_, (pp, node_ids, opt_tree)) in &self.failed_t_paths {
             for &node_id in node_ids {
                 self.used[node_id as usize] = true;
-                if self.topo.get_node(node_id).node_type == crate::node::NodeType::Magic
-                    && self.topo.cultivation_times[node_id as usize] == 0
-                    && num_avail_magic > 0
-                {
-                    num_avail_magic -= 1;
-                }
             }
             pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
         }
@@ -962,11 +957,13 @@ impl Scheduler {
         // T gates already in failed_t_paths are on their recovery round and always succeed.
         // A T gate can fail at most once.
         let mut t_failed_ids: Vec<i32> = Vec::new();
+        let mut t_recovery_ids: Vec<i32> = Vec::new();
         for &(pp_id, _) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
             if pp.gate_type.is_t() {
                 if self.failed_t_paths.contains_key(&pp_id) {
                     // Recovery round: always succeeds, remove from failed_t_paths.
+                    t_recovery_ids.push(pp_id);
                     info_sched!("  T gate {} recovery round succeeded", pp_id);
                 } else if self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
@@ -983,14 +980,22 @@ impl Scheduler {
                 continue;
             }
             if t_failed_ids.contains(&pp_id) {
-                let node_ids: Vec<u16> = if let Some(tree) = opt_pp_path {
-                    tree.iter_nodes().collect()
+                // Build a trimmed tree: clone the original, remove the magic root and any
+                // dangling routing nodes. The recovery round only needs the data terminals
+                // connected through routing nodes — no magic node is required.
+                let trimmed_opt_tree: Option<Rc<TreeGraph>> = opt_pp_path.as_ref().map(|tree| {
+                    let mut t = (**tree).clone();
+                    t.trim_magic_root();
+                    Rc::new(t)
+                });
+                // Node IDs for used[] marking: terminals only (magic root excluded).
+                let node_ids: Vec<u16> = if let Some(ref trimmed) = trimmed_opt_tree {
+                    trimmed.iter_nodes().collect()
                 } else {
-                    // Not plotting: reconstruct terminal node IDs from precomputed terminals.
+                    // Not plotting: use precomputed terminal node IDs (no magic node).
                     self.precomputed_terminals[pp_id as usize].clone()
                 };
-                self.failed_t_paths
-                    .insert(pp_id, (pp.clone(), node_ids, opt_pp_path.as_ref().map(Rc::clone)));
+                self.failed_t_paths.insert(pp_id, (pp.clone(), node_ids, trimmed_opt_tree));
             } else {
                 self.failed_t_paths.swap_remove(&pp_id);
             }
@@ -1072,7 +1077,7 @@ impl Scheduler {
             .collect();
         self.timestep_scheduled.push((num_steps, step_ids));
         #[cfg(debug_assertions)]
-        self.check_timestep(pp_paths, &t_failed_ids)?;
+        self.check_timestep(pp_paths, &t_failed_ids, &t_recovery_ids)?;
         self.scheduled_products.extend(
             pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
         );
@@ -1109,13 +1114,15 @@ impl Scheduler {
     /// 1. No non-Clifford product is scheduled twice.
     /// 2. All parents of each product were scheduled in a prior timestep.
     /// 3. Every product's routing tree contains all required terminal data nodes.
-    /// 4. T-gate trees have a magic root node.
+    /// 4. T-gate trees on their first attempt have a magic root node.
+    ///    Recovery-round T gates (already in failed_t_paths) use a trimmed tree with no magic root.
     /// 5. No two products in this timestep share a topology node.
     ///
     /// `t_failed_ids`: T gate IDs that failed the coin flip this round (not yet in scheduled_products).
     #[cfg(debug_assertions)]
     fn check_timestep(
         &self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)], _t_failed_ids: &[i32],
+        t_recovery_ids: &[i32],
     ) -> io::Result<()> {
         let mut step_used = vec![false; self.topo.num_nodes];
         for &(pp_id, ref opt_tree) in pp_paths {
@@ -1167,17 +1174,14 @@ impl Scheduler {
                     }
                 }
             }
-            // 4. Magic root node present for T gates?
-            if pp.gate_type.is_t() {
+            // 4. Magic root node present for T gates on their first attempt.
+            // Recovery-round T gates use a trimmed tree with no magic root.
+            if pp.gate_type.is_t() && !t_recovery_ids.contains(&pp_id) {
                 match tree.root_node_id {
                     None => {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
-                            format!(
-                                "product {}: T gate has no magic root \
-                                                           node",
-                                pp_id
-                            ),
+                            format!("product {}: T gate has no magic root node", pp_id),
                         ));
                     }
                     Some(magic_id) => {
@@ -1185,8 +1189,7 @@ impl Scheduler {
                             return Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 format!(
-                                    "product {}: root node {} is not \
-                                                               a Magic node",
+                                    "product {}: root node {} is not a Magic node",
                                     pp_id, magic_id
                                 ),
                             ));
