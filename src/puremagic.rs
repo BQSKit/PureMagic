@@ -160,7 +160,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(num_scheduled, num_products);
     // Calculate and print statistics
     let volume = num_qubits * tot_num_lcycles;
-    println!("Scheduled {} in {} lcycles, volume {}", num_scheduled, tot_num_lcycles, volume);
+    println!(
+        "Scheduled {} in {} logical cycles, volume {}",
+        num_scheduled, tot_num_lcycles, volume
+    );
     scheduler.print_schedule(&hdr)?;
     print!("Generating Pure Magic layout for comparison:\n  ");
     let mut best_magic_topo_graph = TopoGraph::new();
@@ -170,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let optimal_speedup = num_scheduled as f64 / num_layers as f64;
     let optimal_volume = num_qubits * num_layers;
     println!(
-        "Optimal lcycles {} ({:.3} speedup) volume {}",
+        "Optimal logical cycles {} ({:.3} speedup) volume {}",
         num_layers, optimal_speedup, optimal_volume
     );
     let speedup = num_products as f64 / tot_num_lcycles as f64;
