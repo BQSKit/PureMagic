@@ -615,9 +615,18 @@ impl Scheduler {
         // Carry forward T gates that failed last round (50% failure):
         // mark their nodes used and re-add them to pp_paths so they are
         // counted as scheduled this timestep and re-evaluated for success/failure.
+        // Also decrement num_avail_magic for each magic node consumed by the carry-forward,
+        // so the panic guard below correctly reflects that those magic nodes are already taken.
         for (_, (pp, node_ids, opt_tree)) in &self.failed_t_paths {
             for &node_id in node_ids {
                 self.used[node_id as usize] = true;
+                // If this node is a magic node that was counted as available, consume it.
+                if self.topo.get_node(node_id).node_type == crate::node::NodeType::Magic
+                    && self.topo.cultivation_times[node_id as usize] == 0
+                    && num_avail_magic > 0
+                {
+                    num_avail_magic -= 1;
+                }
             }
             pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
         }
@@ -1474,16 +1483,11 @@ mod tests {
     #[test]
     fn t_gate_failures_varies_with_seed() {
         let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
-        // Skip seeds 3, 4, and 7: on this topology they trigger a scheduling deadlock unrelated
-        // to T gate failures (all magic nodes busy simultaneously), causing a panic in
-        // schedule_timestep.
-        let counts: Vec<usize> = (0u32..20)
-            .filter(|&s| s != 3 && s != 4 && s != 7)
-            .map(|s| run_scheduler(lines, s).t_gate_failures)
-            .collect();
-        // At least two distinct values must appear across 17 seeds.
+        let counts: Vec<usize> =
+            (0u32..20).map(|s| run_scheduler(lines, s).t_gate_failures).collect();
+        // At least two distinct values must appear across 20 seeds.
         let distinct = counts.iter().collect::<std::collections::HashSet<_>>().len();
-        assert!(distinct > 1, "t_gate_failures never varied across 17 seeds: {:?}", counts);
+        assert!(distinct > 1, "t_gate_failures never varied across 20 seeds: {:?}", counts);
     }
 
     // ── schedule output (timestep_scheduled) ─────────────────────────────────
