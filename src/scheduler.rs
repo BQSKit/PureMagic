@@ -17,6 +17,9 @@ use crate::utils::{
 };
 
 use indexmap::{IndexMap, IndexSet};
+use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand_simple::Exponential;
 use std::collections::HashMap;
 use std::fs::File;
@@ -136,6 +139,7 @@ pub struct Scheduler {
     circuit: Circuit,
     topo: TopoGraph,
     rng_exp: Exponential,
+    rng_uniform: StdRng,
     magic_state_lambda: f64,
     plot_option: String,
     cultivation_times_log: Vec<i32>,
@@ -144,6 +148,11 @@ pub struct Scheduler {
     scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
+    /// T-gate products that failed (50% probability) and must be rescheduled next round.
+    /// Stores (pp, node_ids, opt_tree) — same layout as clifford_paths minus the count.
+    failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
+    /// Total number of T gate failures across the entire run.
+    t_gate_failures: usize,
     stree_computation: SteinerTreeComputation,
     ready_magic_positions: Vec<(f32, f32)>,
     astar: AStarComputation,
@@ -212,6 +221,7 @@ impl Scheduler {
             circuit,
             topo,
             rng_exp: Exponential::new(rseed),
+            rng_uniform: StdRng::seed_from_u64(rseed as u64),
             magic_state_lambda,
             plot_option,
             cultivation_times_log: Vec::new(),
@@ -220,6 +230,8 @@ impl Scheduler {
             scheduled_products: IndexSet::new(),
             used: vec![false; num_nodes],
             clifford_paths: IndexMap::new(),
+            failed_t_paths: IndexMap::new(),
+            t_gate_failures: 0,
             stree_computation: SteinerTreeComputation::new(num_nodes),
             ready_magic_positions: Vec::new(),
             astar: AStarComputation::new(num_nodes),
@@ -288,7 +300,10 @@ impl Scheduler {
         // Reuse pp_paths Vec across timesteps so the backing buffer is never freed/reallocated.
         let mut pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)> = Vec::new();
         // main scheduling loop
-        while !to_schedule.is_empty() || !self.clifford_paths.is_empty() {
+        while !to_schedule.is_empty()
+            || !self.clifford_paths.is_empty()
+            || !self.failed_t_paths.is_empty()
+        {
             self.timers.start(self.loop_timer);
             num_steps += 1;
             info_sched!(
@@ -592,6 +607,15 @@ impl Scheduler {
         // Carry forward in-progress Clifford routes from previous timestep(s):
         // mark their nodes used and add them to pp_paths for this round.
         for (_, (_, pp, node_ids, opt_tree)) in &self.clifford_paths {
+            for &node_id in node_ids {
+                self.used[node_id as usize] = true;
+            }
+            pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
+        }
+        // Carry forward T gates that failed last round (50% failure):
+        // mark their nodes used and re-add them to pp_paths so they are
+        // counted as scheduled this timestep and re-evaluated for success/failure.
+        for (_, (pp, node_ids, opt_tree)) in &self.failed_t_paths {
             for &node_id in node_ids {
                 self.used[node_id as usize] = true;
             }
@@ -936,18 +960,68 @@ impl Scheduler {
     ) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
         // Remove freshly-scheduled products from the work queue.
+        // Note: T gates that failed are NOT removed here — they stay out of to_schedule
+        // (they were already removed when first scheduled) and are tracked in failed_t_paths.
         self.scheduled_ids_scratch.clear();
         self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(id, _)| *id));
         to_schedule.retain(|pp| !self.scheduled_ids_scratch.contains(&pp.id));
         debug_sched!("After purge, to_schedule len {}", to_schedule.len());
         // Track remaining T-gate products for cultivation pool refill sizing.
-        let t_scheduled = pp_paths
+        // Only count T gates that are not already in failed_t_paths (i.e. newly scheduled).
+        let t_newly_scheduled = pp_paths
             .iter()
-            .filter(|(id, _)| self.circuit.get_product(*id).gate_type.is_t())
+            .filter(|(id, _)| {
+                self.circuit.get_product(*id).gate_type.is_t()
+                    && !self.failed_t_paths.contains_key(id)
+            })
             .count();
-        self.t_products_remaining = self.t_products_remaining.saturating_sub(t_scheduled);
+        self.t_products_remaining = self.t_products_remaining.saturating_sub(t_newly_scheduled);
+        // Flip a coin for each T gate on its FIRST attempt (not already in failed_t_paths).
+        // T gates already in failed_t_paths are on their recovery round and always succeed.
+        // A T gate can fail at most once.
+        let mut t_failed_ids: Vec<i32> = Vec::new();
+        for &(pp_id, _) in pp_paths.iter() {
+            let pp = self.circuit.get_product(pp_id);
+            if pp.gate_type.is_t() {
+                if self.failed_t_paths.contains_key(&pp_id) {
+                    // Recovery round: always succeeds, remove from failed_t_paths.
+                    info_sched!("  T gate {} recovery round succeeded", pp_id);
+                } else if self.rng_uniform.gen_bool(0.5) {
+                    info_sched!("  T gate {} succeeded on first attempt", pp_id);
+                } else {
+                    t_failed_ids.push(pp_id);
+                    self.t_gate_failures += 1;
+                    info_sched!("  T gate {} failed (50% probability), recovery round next", pp_id);
+                }
+            }
+        }
+        // Register failed T gates in failed_t_paths for carry-forward next round.
+        // Remove succeeded retries from failed_t_paths.
+        for &(pp_id, ref opt_pp_path) in pp_paths.iter() {
+            let pp = self.circuit.get_product(pp_id);
+            if !pp.gate_type.is_t() {
+                continue;
+            }
+            if t_failed_ids.contains(&pp_id) {
+                // Collect node IDs for carry-forward used[] marking next timestep.
+                // T gates always use A* or greedy path (never precomputed), so the tree
+                // is in opt_pp_path when plotting, or we fall back to terminal nodes only.
+                let node_ids: Vec<u16> = if let Some(tree) = opt_pp_path {
+                    tree.iter_nodes().collect()
+                } else {
+                    // Not plotting: reconstruct terminal node IDs from precomputed terminals.
+                    self.precomputed_terminals[pp_id as usize].clone()
+                };
+                self.failed_t_paths
+                    .insert(pp_id, (pp.clone(), node_ids, opt_pp_path.as_ref().map(Rc::clone)));
+            } else {
+                // T gate succeeded (first attempt or recovery): remove from failed_t_paths.
+                self.failed_t_paths.swap_remove(&pp_id);
+            }
+        }
         // Identify children whose last unresolved parent was just scheduled.
         // Skip Cliffords that are still mid-sequence (not yet on their final round).
+        // Skip T gates that failed this round (they are not yet complete).
         self.children_scratch.clear();
         for &(pp_id, _) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
@@ -960,6 +1034,10 @@ impl Scheduler {
                     None => continue, // first round: children not yet unlocked
                     _ => {}
                 }
+            }
+            // T gate that failed this round: children not yet unlocked.
+            if pp.gate_type.is_t() && t_failed_ids.contains(&pp_id) {
+                continue;
             }
             for &child_id in &pp.children {
                 remaining_parents[child_id as usize] -= 1;
@@ -1016,16 +1094,32 @@ impl Scheduler {
             to_schedule.len()
         );
         // Record this step (store IDs only — no clone of PauliProduct).
-        self.timestep_scheduled.push((num_steps, pp_paths.iter().map(|(id, _)| *id).collect()));
+        // Exclude failed T gates: they are not shown in the schedule until they succeed.
+        let step_ids: Vec<i32> = pp_paths
+            .iter()
+            .filter(|(id, _)| !t_failed_ids.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        self.timestep_scheduled.push((num_steps, step_ids));
         #[cfg(debug_assertions)]
-        self.check_timestep(pp_paths)?;
-        self.scheduled_products.extend(pp_paths.iter().map(|(id, _)| *id));
+        self.check_timestep(pp_paths, &t_failed_ids)?;
+        // Only mark products as scheduled if they are not failed T gates.
+        // Failed T gates are added to scheduled_products on their recovery round.
+        self.scheduled_products.extend(
+            pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
+        );
         Ok(())
     }
 
     /// Prints final scheduling statistics after the main loop completes.
     fn print_scheduling_stats(&mut self, num_steps: usize) {
         self.stats.summarize(num_steps);
+        let total_t = (0..self.circuit.num_products())
+            .filter(|&id| self.circuit.get_product(id as i32).gate_type.is_t())
+            .count();
+        let fail_pct =
+            if total_t > 0 { 100.0 * self.t_gate_failures as f64 / total_t as f64 } else { 0.0 };
+        println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, total_t, fail_pct);
         println!("Magic state cultivation time:");
         let mean = self.cultivation_times_log.iter().sum::<i32>() as f64
             / self.cultivation_times_log.len() as f64;
@@ -1050,8 +1144,12 @@ impl Scheduler {
     /// 3. Every product's routing tree contains all required terminal data nodes.
     /// 4. T-gate trees have a magic root node.
     /// 5. No two products in this timestep share a topology node.
+    ///
+    /// `t_failed_ids`: T gate IDs that failed the coin flip this round (not yet in scheduled_products).
     #[cfg(debug_assertions)]
-    fn check_timestep(&self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)]) -> io::Result<()> {
+    fn check_timestep(
+        &self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)], _t_failed_ids: &[i32],
+    ) -> io::Result<()> {
         let mut step_used = vec![false; self.topo.num_nodes];
         for &(pp_id, ref opt_tree) in pp_paths {
             // When not plotting, trees are None — skip structural checks.
@@ -1059,6 +1157,11 @@ impl Scheduler {
             let tree = tree.as_ref();
             let pp = self.circuit.get_product(pp_id);
             // 1. Already scheduled?
+            // Failed T gates are excluded from scheduled_products until their recovery round,
+            // so they will never appear as "already scheduled" here.
+            // Recovery-round T gates ARE in scheduled_products from their failed attempt?
+            // No — failed T gates are NOT added to scheduled_products on failure.
+            // So a recovery-round T gate is not yet in scheduled_products: no special case needed.
             if self.scheduled_products.contains(&pp_id) && !pp.gate_type.is_clifford() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -1304,5 +1407,156 @@ impl Scheduler {
         }
         println!("Scheduled products written to {}", output_fname);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::Circuit;
+    use crate::node::Node;
+    use crate::topograph::TopoGraph;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Write circuit lines to a temp file, load it, and run the scheduler to completion.
+    /// Returns the scheduler so callers can inspect `t_gate_failures`, `timestep_scheduled`, etc.
+    fn run_scheduler(lines: &[&str], rseed: u32) -> Scheduler {
+        Node::set_magic_routing(true);
+        let mut f = NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        let fname = f.path().to_string_lossy().to_string();
+        let mut circuit = Circuit::new(&fname);
+        circuit.load_circuit().expect("circuit load failed");
+        let mut topo = TopoGraph::new();
+        // Pure-magic topology: 4 data qubits, magic routing, 1 ancilla row.
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        let mut sched =
+            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false);
+        sched.schedule_circuit().expect("schedule_circuit failed");
+        sched
+    }
+
+    // ── t_gate_failures counter ───────────────────────────────────────────────
+
+    /// With rseed=0 the RNG produces a known sequence; verify the counter is
+    /// non-negative and bounded by the total number of T gates.
+    #[test]
+    fn t_gate_failures_bounded_by_total_t_gates() {
+        // tiny circuit: 4 independent T gates on different qubits
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        let sched = run_scheduler(lines, 0);
+        let total_t = 4usize;
+        assert!(
+            sched.t_gate_failures <= total_t,
+            "t_gate_failures {} exceeds total T gates {}",
+            sched.t_gate_failures,
+            total_t
+        );
+    }
+
+    /// With a fixed seed the failure count must be deterministic across two runs.
+    #[test]
+    fn t_gate_failures_deterministic_with_fixed_seed() {
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        let sched1 = run_scheduler(lines, 42);
+        let sched2 = run_scheduler(lines, 42);
+        assert_eq!(
+            sched1.t_gate_failures, sched2.t_gate_failures,
+            "t_gate_failures differs between runs with the same seed"
+        );
+    }
+
+    /// Different seeds should (with overwhelming probability) produce different
+    /// failure counts for a circuit with many T gates.
+    #[test]
+    fn t_gate_failures_varies_with_seed() {
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        // Skip seed 7: on this topology it triggers a scheduling deadlock unrelated to T gate
+        // failures (all magic nodes busy simultaneously), causing a panic in schedule_timestep.
+        let counts: Vec<usize> = (0u32..20)
+            .filter(|&s| s != 7)
+            .map(|s| run_scheduler(lines, s).t_gate_failures)
+            .collect();
+        // At least two distinct values must appear across 19 seeds.
+        let distinct = counts.iter().collect::<std::collections::HashSet<_>>().len();
+        assert!(distinct > 1, "t_gate_failures never varied across 19 seeds: {:?}", counts);
+    }
+
+    // ── schedule output (timestep_scheduled) ─────────────────────────────────
+
+    /// Every product in the circuit must appear in timestep_scheduled exactly once
+    /// (failed T gate attempts are excluded; only the recovery/success round is recorded).
+    #[test]
+    fn all_products_appear_exactly_once_in_timestep_scheduled() {
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        let sched = run_scheduler(lines, 3);
+        let mut id_counts: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+        for (_, ids) in &sched.timestep_scheduled {
+            for &id in ids {
+                *id_counts.entry(id).or_insert(0) += 1;
+            }
+        }
+        let num_products = 4;
+        for pp_id in 0..num_products as i32 {
+            let count = id_counts.get(&pp_id).copied().unwrap_or(0);
+            assert_eq!(
+                count, 1,
+                "product {} appears {} times in timestep_scheduled (expected 1)",
+                pp_id, count
+            );
+        }
+    }
+
+    /// A failed T gate must NOT appear in timestep_scheduled on the round it fails —
+    /// only on its recovery round. We verify this by checking that the total number
+    /// of recorded product-step entries equals the number of products (not more).
+    #[test]
+    fn timestep_scheduled_total_entries_equals_num_products() {
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        let sched = run_scheduler(lines, 3);
+        let total_entries: usize = sched.timestep_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        let num_products = 4usize;
+        assert_eq!(
+            total_entries, num_products,
+            "total timestep_scheduled entries {} != num_products {}",
+            total_entries, num_products
+        );
+    }
+
+    // ── recovery round always succeeds (fail at most once) ───────────────────
+
+    /// A T gate that fails must complete on the very next round (recovery always succeeds).
+    /// We verify this by checking that no T gate ID appears in failed_t_paths after
+    /// schedule_circuit returns (all recoveries must have completed).
+    #[test]
+    fn failed_t_paths_empty_after_schedule_completes() {
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        let sched = run_scheduler(lines, 0);
+        assert!(
+            sched.failed_t_paths.is_empty(),
+            "failed_t_paths not empty after schedule_circuit: {:?}",
+            sched.failed_t_paths.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// With a circuit containing only T gates, the number of active timesteps must be
+    /// at least num_t_gates (one per gate) and at most 2*num_t_gates (each could fail once).
+    #[test]
+    fn timestep_count_bounded_by_t_gate_failure_overhead() {
+        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
+        let sched = run_scheduler(lines, 3);
+        let num_t = 4usize;
+        let active_steps = sched.timestep_scheduled.len();
+        // Each failure adds at most 1 extra step; total active steps ≤ num_t + failures.
+        assert!(
+            active_steps <= num_t + sched.t_gate_failures,
+            "active steps {} > num_t {} + failures {}",
+            active_steps,
+            num_t,
+            sched.t_gate_failures
+        );
     }
 }

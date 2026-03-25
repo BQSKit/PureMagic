@@ -4,7 +4,7 @@ A **Lattice Surgery Scheduling Problem (LSSP) solver** for quantum surface code 
 
 The original Lattice Surgery Scheduling problem is described in the paper [Game of Surface Codes](https://arxiv.org/abs/1808.02892).
 
-The implementation here follows the approach described in [Multi-qubit lattice surgery scheduling](https://arxiv.org/pdf/2405.17688v2).
+The implementation here is inspired by the approach described in [Multi-qubit lattice surgery scheduling](https://arxiv.org/pdf/2405.17688v2).
 
 The code in this repository is used for the paper [Scheduling Lattice Surgery with Magic State
 Cultivation](https://arxiv.org/pdf/2512.06484).

@@ -430,3 +430,159 @@ fn pipeline_schedule_file_created_for_generated_circuit() {
         schedule_file
     );
 }
+
+// ── T gate failure reporting ──────────────────────────────────────────────────
+
+/// The scheduler must always print a "T gate failures:" line in stdout.
+#[test]
+fn puremagic_reports_t_gate_failures_line() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("tiny.trans");
+    let (ok, stdout, stderr) = run_puremagic(&["--circuit", circuit.to_str().unwrap()], tmp.path());
+    assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+    assert!(
+        stdout.contains("T gate failures:"),
+        "expected 'T gate failures:' in stdout, got:\n{}",
+        stdout
+    );
+}
+
+/// The "T gate failures:" line must contain a fraction and a percentage in parentheses.
+/// Expected format: "T gate failures: N/M (P.P%)"
+#[test]
+fn puremagic_t_gate_failures_line_has_fraction_and_percent() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("tiny.trans");
+    let (ok, stdout, stderr) = run_puremagic(&["--circuit", circuit.to_str().unwrap()], tmp.path());
+    assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("T gate failures:"))
+        .expect("no 'T gate failures:' line in stdout");
+    // Must contain a '/' (fraction) and a '%' (percentage).
+    assert!(line.contains('/'), "T gate failures line missing '/': {:?}", line);
+    assert!(line.contains('%'), "T gate failures line missing '%': {:?}", line);
+}
+
+/// With a fixed rseed the T gate failure count must be identical across two runs.
+#[test]
+fn puremagic_t_gate_failures_deterministic_with_fixed_rseed() {
+    let tmp1 = TempDir::new().unwrap();
+    let tmp2 = TempDir::new().unwrap();
+    let circuit = fixture("tiny.trans");
+    let args = ["--circuit", circuit.to_str().unwrap(), "--rseed", "42"];
+    let (ok1, stdout1, _) = run_puremagic(&args, tmp1.path());
+    let (ok2, stdout2, _) = run_puremagic(&args, tmp2.path());
+    assert!(ok1 && ok2, "puremagic failed with fixed rseed");
+    let extract_failures =
+        |s: &str| s.lines().find(|l| l.contains("T gate failures:")).map(str::to_owned);
+    assert_eq!(
+        extract_failures(&stdout1),
+        extract_failures(&stdout2),
+        "T gate failures line differs between runs with the same rseed"
+    );
+}
+
+/// The failure count reported must not exceed the total number of T gates in the circuit.
+/// tiny.trans has 4 T gates, so failures must be in [0, 4].
+#[test]
+fn puremagic_t_gate_failures_bounded_by_total_t_gates() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("tiny.trans");
+    // Use rseed=0 for a deterministic run.
+    let (ok, stdout, stderr) =
+        run_puremagic(&["--circuit", circuit.to_str().unwrap(), "--rseed", "0"], tmp.path());
+    assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("T gate failures:"))
+        .expect("no 'T gate failures:' line in stdout");
+    // Parse "T gate failures: N/M (P%)" — extract N and M.
+    // The line looks like: "T gate failures: 2/4 (50.0%)"
+    let after_colon = line.split(':').nth(1).expect("no colon in T gate failures line").trim();
+    let fraction = after_colon.split_whitespace().next().expect("no fraction token");
+    let mut parts = fraction.split('/');
+    let failures: usize =
+        parts.next().and_then(|s| s.parse().ok()).expect("could not parse failure count");
+    let total: usize =
+        parts.next().and_then(|s| s.parse().ok()).expect("could not parse total T gate count");
+    assert_eq!(total, 4, "expected 4 total T gates in tiny.trans, got {}", total);
+    assert!(failures <= total, "T gate failures {} exceeds total T gates {}", failures, total);
+}
+
+/// The larger fixture (small_4q.trans, 20 T gates) must also report T gate failures correctly.
+#[test]
+fn puremagic_t_gate_failures_reported_for_larger_circuit() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("small_4q.trans");
+    let (ok, stdout, stderr) =
+        run_puremagic(&["--circuit", circuit.to_str().unwrap(), "--rseed", "7"], tmp.path());
+    assert!(ok, "puremagic failed on small_4q.trans; stderr:\n{}", stderr);
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("T gate failures:"))
+        .expect("no 'T gate failures:' line in stdout");
+    // Parse total T gate count from "T gate failures: N/M (P%)"
+    let after_colon = line.split(':').nth(1).expect("no colon in T gate failures line").trim();
+    let fraction = after_colon.split_whitespace().next().expect("no fraction token");
+    let total: usize = fraction
+        .split('/')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("could not parse total T gate count");
+    // small_4q.trans has 20 T gates.
+    assert_eq!(total, 20, "expected 20 total T gates in small_4q.trans, got {}", total);
+}
+
+/// Different rseeds must (with overwhelming probability) produce different failure counts
+/// for a circuit with many T gates.  We run 10 seeds and require at least 2 distinct values.
+#[test]
+fn puremagic_t_gate_failures_vary_across_seeds() {
+    let circuit = fixture("small_4q.trans");
+    let circuit_str = circuit.to_str().unwrap();
+    let counts: Vec<usize> = (0u32..10)
+        .map(|seed| {
+            let tmp = TempDir::new().unwrap();
+            let seed_str = seed.to_string();
+            let (ok, stdout, stderr) =
+                run_puremagic(&["--circuit", circuit_str, "--rseed", &seed_str], tmp.path());
+            assert!(ok, "puremagic failed with rseed {}; stderr:\n{}", seed, stderr);
+            let line = stdout
+                .lines()
+                .find(|l| l.contains("T gate failures:"))
+                .expect("no 'T gate failures:' line in stdout");
+            let after_colon =
+                line.split(':').nth(1).expect("no colon in T gate failures line").trim();
+            let fraction = after_colon.split_whitespace().next().expect("no fraction token");
+            fraction
+                .split('/')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .expect("could not parse failure count")
+        })
+        .collect();
+    let distinct = counts.iter().collect::<std::collections::HashSet<_>>().len();
+    assert!(
+        distinct > 1,
+        "T gate failures never varied across 10 seeds for small_4q.trans: {:?}",
+        counts
+    );
+}
+
+/// All products must still be scheduled even when T gates fail (recovery round completes them).
+/// Verify that "Scheduled N in" still reports the correct total.
+#[test]
+fn puremagic_all_products_scheduled_despite_t_gate_failures() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("tiny.trans");
+    // rseed=1 is likely to produce at least one failure.
+    let (ok, stdout, stderr) =
+        run_puremagic(&["--circuit", circuit.to_str().unwrap(), "--rseed", "1"], tmp.path());
+    assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+    // tiny.trans has 6 products total (4 T + 2 CX).
+    assert!(
+        stdout.contains("Scheduled 6 in"),
+        "expected 'Scheduled 6 in ...' in stdout even with T gate failures, got:\n{}",
+        stdout
+    );
+}
