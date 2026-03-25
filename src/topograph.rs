@@ -14,6 +14,13 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+static STATUS_FONT_SIZE: u32 = 26;
+static TLABEL_FONT_SIZE: u32 = 40;
+static CULTIVATION_LABEL_FONT_SIZE: u32 = 30;
+static DATA_QUBIT_LABEL_FONT_SIZE: u32 = 36;
+static PRODUCT_LABEL_FONT_SIZE: u32 = 28;
+static BOXED_TERM_LABEL_FONT_SIZE: u32 = 30;
+
 // ── Plot helper types ────────────────────────────────────────────────────────
 
 /// Geometry for one double-data-qubit group (X row + Z row sharing a column).
@@ -731,7 +738,7 @@ impl TopoGraph {
                     line,
                     -0.5,
                     -0.8 - (i as f32 * 0.33),
-                    ("sans-serif", 25).into_font(),
+                    ("monotype", STATUS_FONT_SIZE),
                 )?;
             }
         }
@@ -917,12 +924,17 @@ impl TopoGraph {
                     NodeType::Data => String::new(),
                 };
                 if !label_text.is_empty() {
-                    let font = if label_text == "T" {
-                        ("sans-serif", 20, FontStyle::Bold).into_font()
-                    } else {
-                        ("sans-serif", 18).into_font()
-                    };
-                    draw_text(chart, &label_text, x - 0.17, y + 0.09, font)?;
+                    draw_text(
+                        chart,
+                        &label_text,
+                        x - 0.17,
+                        y + 0.09,
+                        if label_text == "T" {
+                            ("monotype", TLABEL_FONT_SIZE, FontStyle::Bold)
+                        } else {
+                            ("monotype", CULTIVATION_LABEL_FONT_SIZE, FontStyle::Normal)
+                        },
+                    )?;
                 }
             }
         }
@@ -1116,7 +1128,7 @@ impl TopoGraph {
                         "T",
                         x - 0.17,
                         y + 0.09,
-                        ("sans-serif", 20, FontStyle::Bold).into_font(),
+                        ("monotype", TLABEL_FONT_SIZE, FontStyle::Bold),
                     )?;
                 }
 
@@ -1211,8 +1223,20 @@ impl TopoGraph {
                 .trim_start_matches('d')
                 .to_string();
             let label_x = group.col - 0.17;
-            draw_text(chart, &x_label, label_x, x_row_y + 0.09, ("sans-serif", 24).into_font())?;
-            draw_text(chart, &z_label, label_x, z_row_y + 0.09, ("sans-serif", 24).into_font())?;
+            draw_text(
+                chart,
+                &x_label,
+                label_x,
+                x_row_y + 0.09,
+                ("monotype", DATA_QUBIT_LABEL_FONT_SIZE),
+            )?;
+            draw_text(
+                chart,
+                &z_label,
+                label_x,
+                z_row_y + 0.09,
+                ("monotype", DATA_QUBIT_LABEL_FONT_SIZE),
+            )?;
         }
         Ok(())
     }
@@ -1293,23 +1317,12 @@ impl TopoGraph {
     ) -> Result<(), Box<dyn std::error::Error>> {
         for (pos_opt, (pp, _path_graph)) in positions.iter().zip(pauli_product_paths.iter()) {
             if let Some(&(center_x, row_y, tw, _i)) = pos_opt.as_ref() {
-                // Use the same stable color as the path overlay.
-                let label_color = Self::product_color(pp.id);
-                draw_rect_coords(
-                    chart,
-                    center_x - tw / 2.0 - 0.05,
-                    row_y - 0.15,
-                    center_x + tw / 2.0 + 0.05,
-                    row_y + 0.15,
-                    label_color.mix(0.2).filled(),
-                )?;
-                let product_str = pp.to_operator_str();
                 draw_text(
                     chart,
-                    &product_str,
+                    &pp.to_operator_str(),
                     center_x - tw / 2.0,
-                    row_y + 0.09,
-                    ("sans-serif", 22).into_font(),
+                    row_y + 0.22,
+                    ("monotype", PRODUCT_LABEL_FONT_SIZE),
                 )?;
                 let id_str = pp.id.to_string();
                 let id_w = id_str.len() as f32 * 0.10;
@@ -1317,8 +1330,8 @@ impl TopoGraph {
                     chart,
                     &id_str,
                     center_x - id_w / 2.0,
-                    row_y - 0.12,
-                    ("sans-serif", 14).into_font(),
+                    row_y - 0.05,
+                    ("monotype", PRODUCT_LABEL_FONT_SIZE),
                 )?;
             }
         }
@@ -1366,10 +1379,10 @@ fn draw_line(
 }
 
 /// Draws a text label at position (x, y).
-fn draw_text<'a>(
-    chart: &mut PlotChart, text: &str, x: f32, y: f32, font: plotters::style::FontDesc<'a>,
+fn draw_text<'a, F: plotters::style::IntoFont<'a>>(
+    chart: &mut PlotChart, text: &str, x: f32, y: f32, font: F,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    chart.draw_series(std::iter::once(Text::new(text.to_string(), (x, y), font)))?;
+    chart.draw_series(std::iter::once(Text::new(text.to_string(), (x, y), font.into_font())))?;
     Ok(())
 }
 
@@ -1416,8 +1429,8 @@ fn draw_boxed_label(
     // Use Text directly here because .color() returns TextStyle, not FontDesc.
     chart.draw_series(std::iter::once(Text::new(
         letter.to_string(),
-        (cx - bw * 0.45, cy + bh * 0.35),
-        ("sans-serif", 28u32).into_font().color(&c),
+        (cx - bw * 0.45, cy + bh * 0.35 + 0.05),
+        ("monotype", BOXED_TERM_LABEL_FONT_SIZE).into_font().color(&c),
     )))?;
     Ok(())
 }

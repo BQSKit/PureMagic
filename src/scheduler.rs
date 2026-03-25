@@ -308,7 +308,7 @@ impl Scheduler {
             let dir_name = format!("{}.paths", circuit_stem);
             std::fs::create_dir_all(&dir_name)?;
             path_dir = Some(dir_name);
-            plot_steps = 100;
+            plot_steps = 20;
         }
         let plotting = path_dir.is_some();
         let total_to_schedule = self.circuit.num_products();
