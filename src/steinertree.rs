@@ -18,8 +18,6 @@ pub struct SteinerTreeComputation {
 }
 
 impl SteinerTreeComputation {
-    /// Creates a new Steiner tree computation state.
-    /// `termination_threshold` controls early exit to avoid long tail computations.
     pub fn new(num_nodes: usize) -> Self {
         SteinerTreeComputation {
             num_nodes: num_nodes,
@@ -30,7 +28,6 @@ impl SteinerTreeComputation {
         }
     }
 
-    /// Clears internal state for a fresh computation.
     pub fn clear(&mut self) {
         self.visited.fill(None);
         for path in self.paths.iter_mut() {

@@ -2,14 +2,6 @@ use crate::astar::PathResult;
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
-//use std::cell::RefCell;
-//use std::sync::atomic::{AtomicBool, Ordering};
-
-// Per-rayon-thread reusable backtrack buffer for compute_parallel.
-// Avoids per-task allocation and allocator contention when threads run concurrently.
-//thread_local! {
-//    static BACKTRACKED: RefCell<Vec<bool>> = RefCell::new(Vec::new());
-//}
 
 pub struct GreedyPathComputation {
     visited: Vec<bool>,
@@ -43,17 +35,14 @@ impl GreedyPathComputation {
         self.backtracked.fill(false);
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
-        // Pick target magic node using heuristic from root
         let ready_idx = heuristic(topo.get_node(root_id).pos, ready_magic_positions).1;
         let target_pos = ready_magic_positions[ready_idx as usize];
-        // path stack: the current walk from root to current node
         let mut path: Vec<u16> = vec![root_id];
         self.visited[root_id as usize] = true;
 
         loop {
             let current = *path.last().unwrap();
             let current_node = topo.get_node(current);
-            // Check if we reached a ready magic node
             if current_node.node_type == NodeType::Magic
                 && topo.cultivation_times[current_node.id as usize] == 0
                 && !used[current as usize]
@@ -107,18 +96,15 @@ impl GreedyPathComputation {
                 .min_by_key(|&nb_id| manhattan_dist(topo.get_node(nb_id).pos, target_pos));
 
             if let Some(nb_id) = best_nb {
-                // Step forward
                 self.visited[nb_id as usize] = true;
                 path.push(nb_id);
             } else {
-                // Dead-end: backtrack
                 self.visited[current as usize] = false;
                 self.backtracked[current as usize] = true;
                 path.pop();
                 if path.is_empty() {
                     return PathResult::NoPath;
                 }
-                // Walk back further until we find a node with open neighbours
                 loop {
                     let backtrack_node = *path.last().unwrap();
                     let has_open_nb =
@@ -166,7 +152,6 @@ impl GreedyPathComputation {
 fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph) -> TreeGraph {
     let mut tree = TreeGraph::new(topo.num_nodes);
     tree.root_node_id = Some(*path.last().unwrap());
-    // Add all path nodes and edges
     for &node_id in path {
         if !tree.contains_node(node_id) {
             tree.add_node(topo.get_node(node_id), topo.get_label(node_id));
@@ -175,7 +160,6 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
     for window in path.windows(2) {
         tree.add_edge(window[0], window[1]);
     }
-    // Attach any additional root nodes not already on the path
     for (i, &root_id) in root_ids.iter().enumerate() {
         if !tree.contains_node(root_id) {
             let conn = topo
@@ -189,7 +173,6 @@ fn build_tree(path: &[u16], terminal_ids: &[u16], root_ids: &[u16], topo: &TopoG
                 tree.add_edge(conn_id, root_id);
             }
         }
-        // Attach terminal to its root
         if i < terminal_ids.len() {
             let tid = terminal_ids[i];
             if !tree.contains_node(tid) {
