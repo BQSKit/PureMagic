@@ -66,6 +66,9 @@ struct Args {
     /// Use the faster, suboptimal greedy path algorithm
     #[arg(short = 'g', long = "use_greedy")]
     greedy_path: bool,
+    /// Disable T gate failures (every T gate succeeds on first attempt)
+    #[arg(short = 'F', long)]
+    no_t_failures: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
@@ -150,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.plot.join(" "),
         args.rseed,
         args.greedy_path,
+        args.no_t_failures,
     );
 
     let (tot_num_steps, num_scheduled) = scheduler.schedule_circuit()?;

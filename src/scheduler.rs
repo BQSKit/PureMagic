@@ -180,6 +180,7 @@ pub struct Scheduler {
     astar: AStarComputation,
     greedypath: GreedyPathComputation,
     use_greedypath: bool,
+    no_t_failures: bool,
     terminals_scratch: Vec<u16>,
     scheduled_ids_scratch: Vec<i32>,
     children_scratch: Vec<i32>,
@@ -216,7 +217,7 @@ impl Scheduler {
     /// `magic_state_lambda` controls magic state cultivation timing (exponential distribution parameter).
     pub fn new(
         circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-        plot_option: String, rseed: u32, use_greedypath: bool,
+        plot_option: String, rseed: u32, use_greedypath: bool, no_t_failures: bool,
     ) -> Self {
         if log_level != "none" {
             let circuit_stem = Path::new(&circuit.circuit_fname)
@@ -258,7 +259,8 @@ impl Scheduler {
             ready_magic_positions: Vec::new(),
             astar: AStarComputation::new(num_nodes),
             greedypath: GreedyPathComputation::new(num_nodes),
-            use_greedypath: use_greedypath,
+            use_greedypath,
+            no_t_failures,
             terminals_scratch: Vec::new(),
             scheduled_ids_scratch: Vec::new(),
             children_scratch: Vec::new(),
@@ -308,7 +310,7 @@ impl Scheduler {
             let dir_name = format!("{}.paths", circuit_stem);
             std::fs::create_dir_all(&dir_name)?;
             path_dir = Some(dir_name);
-            plot_steps = 20;
+            plot_steps = 30;
         }
         let plotting = path_dir.is_some();
         let total_to_schedule = self.circuit.num_products();
@@ -1032,7 +1034,7 @@ impl Scheduler {
                     // Recovery round: always succeeds, remove from failed_t_paths.
                     t_recovery_ids.push(pp_id);
                     info_sched!("  T gate {} recovery round succeeded", pp_id);
-                } else if self.rng_uniform.gen_bool(0.5) {
+                } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
                 } else {
                     t_failed_ids.push(pp_id);
@@ -1463,7 +1465,7 @@ mod tests {
         // Pure-magic topology: 4 data qubits, magic routing, 1 ancilla row.
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         let mut sched =
-            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false);
+            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false);
         sched.schedule_circuit().expect("schedule_circuit failed");
         sched
     }
