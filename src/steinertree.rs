@@ -7,6 +7,15 @@ use crate::treegraph::TreeGraph;
 use crate::utils::{_GREEN, _LGREEN, _RESET};
 use std::collections::VecDeque;
 
+/// Returns true when `nb` is a valid magic-state cultivator for a T-gate:
+/// the gate must be a T, no cultivator has been found yet, and the node must be idle.
+#[inline]
+fn is_cultivator_candidate(
+    gate_type: GateType, cultivator: Option<u16>, cultivation_time: i32,
+) -> bool {
+    gate_type.is_t() && cultivator.is_none() && cultivation_time == 0
+}
+
 /// State container for greedy multi-source shortest path (Steiner tree) computation.
 /// Tracks visited nodes, path connectivity, and early termination statistics.
 pub struct SteinerTreeComputation {
@@ -176,10 +185,11 @@ impl SteinerTreeComputation {
             // (the T-gate goal), not as routing intermediaries. Skip magic neighbors that
             // are not ready cultivator candidates.
             if !topo.use_magic_routing && nb.node_type == NodeType::Magic {
-                let is_cultivator_candidate = gate_type.is_t()
-                    && cultivator.is_none()
-                    && topo.cultivation_times[nb.id as usize] == 0;
-                if !is_cultivator_candidate {
+                if !is_cultivator_candidate(
+                    gate_type,
+                    cultivator,
+                    topo.cultivation_times[nb.id as usize],
+                ) {
                     continue;
                 }
             }
@@ -248,10 +258,12 @@ impl SteinerTreeComputation {
                 }
                 continue;
             }
-            let nb_is_cultivator = gate_type.is_t()
-                && cultivator.is_none()
-                && nb.node_type == NodeType::Magic
-                && topo.cultivation_times[nb.id as usize] == 0;
+            let nb_is_cultivator = nb.node_type == NodeType::Magic
+                && is_cultivator_candidate(
+                    gate_type,
+                    cultivator,
+                    topo.cultivation_times[nb.id as usize],
+                );
             if nb.is_routing() || nb_is_cultivator {
                 if !tree.contains_node(nb.id) {
                     tree.add_node(nb, topo.get_label(*nb_id));
