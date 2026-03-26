@@ -1086,7 +1086,7 @@ impl TopoGraph {
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
         data_groups: &[DataGroup], product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Build a lookup: data node id → reference to its DataGroup.
+        // Build a lookup: data node id → index into data_groups.
         // Used to find the outer boundary of the four-node group for horizontal X borders.
         let mut node_to_group: std::collections::HashMap<u16, usize> =
             std::collections::HashMap::new();
@@ -1118,98 +1118,125 @@ impl TopoGraph {
                 })
                 .collect();
 
-            // Color each routing node's fill and draw its outline.
             for &id in &routing_ids {
                 let node = &self.nodes[id as usize];
-                let (x, y) = node.pos;
-                let (hx, hy) = (0.5f32, 0.5f32);
-
-                // Colored fill overlay.
-                draw_rect(chart, x, y, hx, hy, color.mix(0.35).filled())?;
-
-                // Draw "T" label on root node if this is a T gate,
-                // but only if the product label rect does not cover this node.
                 let is_root = path_graph.root_node_id == Some(id);
-                let pos_key = ((x * 10.0).round() as i32, (y * 10.0).round() as i32);
-                if is_root && is_t && !product_label_covered.contains(&pos_key) {
-                    draw_text(
-                        chart,
-                        "T",
-                        x - 0.17,
-                        y + 0.09,
-                        ("monotype", TLABEL_FONT_SIZE, FontStyle::Bold),
-                    )?;
-                }
-
-                // Draw outline: suppress edges shared with adjacent routing nodes in same path.
-                let xi = (x * 10.0).round() as i32;
-                let yi = (y * 10.0).round() as i32;
-                let step_x = (hx * 2.0 * 10.0).round() as i32;
-                let step_y = (hy * 2.0 * 10.0).round() as i32;
-                for &(p1, p2, dx, dy) in &[
-                    ((x - hx, y - hy), (x + hx, y - hy), 0i32, -step_y),
-                    ((x - hx, y + hy), (x + hx, y + hy), 0i32, step_y),
-                    ((x - hx, y - hy), (x - hx, y + hy), -step_x, 0i32),
-                    ((x + hx, y - hy), (x + hx, y + hy), step_x, 0i32),
-                ] {
-                    if !routing_pos_set.contains(&(xi + dx, yi + dy)) {
-                        draw_line(chart, p1, p2, BLACK.stroke_width(2))?;
-                    }
-                }
-
-                // For each neighbor of this routing node in the treegraph (path only):
-                // if it is a data node, highlight the border on the side facing this routing node.
-                for &nbor_id in path_graph.neighbors(id) {
-                    let nbor = &self.nodes[nbor_id as usize];
-                    if nbor.node_type != NodeType::Data {
-                        continue;
-                    }
-                    let nbor_label = &self.labels[nbor_id as usize];
-                    let is_x_node = nbor_label.ends_with('X');
-                    if let Some(side) = Self::data_side_of_neighbor(nbor.pos, node.pos) {
-                        // For Top/Bottom sides, always use the outer boundary of the
-                        // four-node group so the border/label appears at the rectangle edge.
-                        let group_outer_y = if side == DataSide::Top || side == DataSide::Bottom {
-                            if let Some(&gi) = node_to_group.get(&nbor_id) {
-                                let group = &data_groups[gi];
-                                let y_top = group.y_x.max(group.y_z) + 0.5;
-                                let y_bot = group.y_x.min(group.y_z) - 0.5;
-                                if side == DataSide::Top { y_top } else { y_bot }
-                            } else {
-                                // Fallback: use the node's own edge.
-                                if side == DataSide::Top {
-                                    nbor.pos.1 + 0.5
-                                } else {
-                                    nbor.pos.1 - 0.5
-                                }
-                            }
-                        } else {
-                            // Left/Right sides: not used for horizontal placement.
-                            if side == DataSide::Top { nbor.pos.1 + 0.5 } else { nbor.pos.1 - 0.5 }
-                        };
-                        Self::draw_data_node_side_highlight(
-                            chart,
-                            nbor.pos,
-                            side,
-                            color,
-                            is_x_node,
-                            group_outer_y,
-                        )?;
-                        // Draw boxed X/Z label on the highlighted side.
-                        let letter = if is_x_node { "X" } else { "Z" };
-                        let (lx, ly) = match side {
-                            DataSide::Left => (nbor.pos.0 - 0.25, nbor.pos.1),
-                            DataSide::Right => (nbor.pos.0 + 0.25, nbor.pos.1),
-                            DataSide::Top | DataSide::Bottom => (nbor.pos.0, group_outer_y),
-                        };
-                        draw_boxed_label(chart, letter, lx, ly, color)?;
-                    }
-                }
+                self.draw_routing_node_overlay(
+                    chart,
+                    id,
+                    node.pos,
+                    color,
+                    is_t,
+                    is_root,
+                    &routing_pos_set,
+                    product_label_covered,
+                )?;
+                self.draw_data_node_connections(
+                    chart,
+                    id,
+                    path_graph,
+                    color,
+                    data_groups,
+                    &node_to_group,
+                )?;
             }
+        }
+        Ok(())
+    }
 
-            // Product operator + ID label for this path.
-            // (drawn here so it appears on top of the colored fills)
-            let _ = (pp, data_groups); // suppress unused warnings; labels drawn in separate pass
+    /// Colors the fill of one routing node, optionally draws a "T" label on the root,
+    /// and draws the node outline suppressing edges shared with adjacent path nodes.
+    fn draw_routing_node_overlay(
+        &self, chart: &mut PlotChart, id: u16, pos: (f32, f32), color: RGBAColor, is_t: bool,
+        is_root: bool, routing_pos_set: &std::collections::HashSet<(i32, i32)>,
+        product_label_covered: &std::collections::HashSet<(i32, i32)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (x, y) = pos;
+        let (hx, hy) = (0.5f32, 0.5f32);
+
+        // Colored fill overlay.
+        draw_rect(chart, x, y, hx, hy, color.mix(0.35).filled())?;
+
+        // Draw "T" label on root node if this is a T gate,
+        // but only if the product label rect does not cover this node.
+        let pos_key = ((x * 10.0).round() as i32, (y * 10.0).round() as i32);
+        if is_root && is_t && !product_label_covered.contains(&pos_key) {
+            draw_text(
+                chart,
+                "T",
+                x - 0.17,
+                y + 0.09,
+                ("monotype", TLABEL_FONT_SIZE, FontStyle::Bold),
+            )?;
+        }
+
+        // Draw outline: suppress edges shared with adjacent routing nodes in same path.
+        let xi = (x * 10.0).round() as i32;
+        let yi = (y * 10.0).round() as i32;
+        let step_x = (hx * 2.0 * 10.0).round() as i32;
+        let step_y = (hy * 2.0 * 10.0).round() as i32;
+        for &(p1, p2, dx, dy) in &[
+            ((x - hx, y - hy), (x + hx, y - hy), 0i32, -step_y),
+            ((x - hx, y + hy), (x + hx, y + hy), 0i32, step_y),
+            ((x - hx, y - hy), (x - hx, y + hy), -step_x, 0i32),
+            ((x + hx, y - hy), (x + hx, y + hy), step_x, 0i32),
+        ] {
+            if !routing_pos_set.contains(&(xi + dx, yi + dy)) {
+                draw_line(chart, p1, p2, BLACK.stroke_width(2))?;
+            }
+        }
+        let _ = id; // id is available for future use (e.g. debug labels)
+        Ok(())
+    }
+
+    /// For each data-node neighbor of a routing node in the path tree, highlights the
+    /// border on the side facing the routing node and draws a boxed X/Z label there.
+    fn draw_data_node_connections(
+        &self, chart: &mut PlotChart, routing_id: u16, path_graph: &TreeGraph, color: RGBAColor,
+        data_groups: &[DataGroup], node_to_group: &std::collections::HashMap<u16, usize>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let routing_node = &self.nodes[routing_id as usize];
+        for &nbor_id in path_graph.neighbors(routing_id) {
+            let nbor = &self.nodes[nbor_id as usize];
+            if nbor.node_type != NodeType::Data {
+                continue;
+            }
+            let nbor_label = &self.labels[nbor_id as usize];
+            let is_x_node = nbor_label.ends_with('X');
+            if let Some(side) = Self::data_side_of_neighbor(nbor.pos, routing_node.pos) {
+                // For Top/Bottom sides, always use the outer boundary of the
+                // four-node group so the border/label appears at the rectangle edge.
+                let group_outer_y = if side == DataSide::Top || side == DataSide::Bottom {
+                    if let Some(&gi) = node_to_group.get(&nbor_id) {
+                        let group = &data_groups[gi];
+                        let y_top = group.y_x.max(group.y_z) + 0.5;
+                        let y_bot = group.y_x.min(group.y_z) - 0.5;
+                        if side == DataSide::Top { y_top } else { y_bot }
+                    } else {
+                        // Fallback: use the node's own edge.
+                        if side == DataSide::Top { nbor.pos.1 + 0.5 } else { nbor.pos.1 - 0.5 }
+                    }
+                } else {
+                    // Left/Right sides: group_outer_y is not used for horizontal placement.
+                    if side == DataSide::Top { nbor.pos.1 + 0.5 } else { nbor.pos.1 - 0.5 }
+                };
+                Self::draw_data_node_side_highlight(
+                    chart,
+                    nbor.pos,
+                    side,
+                    color,
+                    is_x_node,
+                    group_outer_y,
+                )?;
+                // Draw boxed X/Z label on the highlighted side.
+                let letter = if is_x_node { "X" } else { "Z" };
+                let (lx, ly) = match side {
+                    DataSide::Left => (nbor.pos.0 - 0.25, nbor.pos.1),
+                    DataSide::Right => (nbor.pos.0 + 0.25, nbor.pos.1),
+                    DataSide::Top | DataSide::Bottom => (nbor.pos.0, group_outer_y),
+                };
+                draw_boxed_label(chart, letter, lx, ly, color)?;
+            }
         }
         Ok(())
     }
