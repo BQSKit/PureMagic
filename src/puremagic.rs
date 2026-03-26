@@ -10,7 +10,6 @@ mod topograph;
 mod treegraph;
 #[macro_use]
 mod utils;
-mod greedypath;
 
 use circuit::Circuit;
 use scheduler::Scheduler;
@@ -63,9 +62,6 @@ struct Args {
     /// Use only the sides of data qubits for edges, not the top and bottom
     #[arg(short = 'S', long = "sides_only")]
     sides_only: bool,
-    /// Use the faster, suboptimal greedy path algorithm
-    #[arg(short = 'g', long = "use_greedy")]
-    greedy_path: bool,
     /// Disable T gate failures (every T gate succeeds on first attempt)
     #[arg(short = 'F', long)]
     no_t_failures: bool,
@@ -152,7 +148,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.log_scheduler,
         args.plot.join(" "),
         args.rseed,
-        args.greedy_path,
         args.no_t_failures,
     );
 
