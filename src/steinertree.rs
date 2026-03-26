@@ -271,8 +271,11 @@ impl SteinerTreeComputation {
     /// group knows about all the others, adds the connecting edge to `tree`, and
     /// returns the updated total path count.
     fn merge_root_groups(
-        &mut self, curr_root_id: u16, nb_root_id: u16, num_start_paths: usize, reqd_paths: usize,
-        node_id: u16, nb_id: u16, topo: &TopoGraph, tree: &mut TreeGraph,
+        &mut self, curr_root_id: u16, nb_root_id: u16, num_start_paths: usize,
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))] reqd_paths: usize,
+        node_id: u16, nb_id: u16,
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))] topo: &TopoGraph,
+        tree: &mut TreeGraph,
     ) -> usize {
         let mut num_paths = num_start_paths;
         let curr_root_paths = &self.paths[curr_root_id as usize];
