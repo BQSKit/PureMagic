@@ -743,8 +743,21 @@ impl Scheduler {
                 continue;
             }
             if *num_avail_magic > 0 || !pp.gate_type.is_t() {
-                if let PathResult::PathFound(opt_graph) = self.schedule_pauli_product(pp, plotting)
-                {
+                info_sched!("  Trying to schedule product {}", pp);
+                let result = if !self.get_terminal_nodes(pp) {
+                    info_sched!(
+                        "    Cannot schedule {}: no data nodes found in working graph",
+                        pp.id
+                    );
+                    PathResult::NoPath
+                } else if self.terminals_scratch.len() == 1 && pp.gate_type.is_m() {
+                    self.schedule_measurement(pp.id, plotting)
+                } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
+                    self.schedule_s_sx(pp, plotting)
+                } else {
+                    self.schedule_t_or_multi(pp, plotting)
+                };
+                if let PathResult::PathFound(opt_graph) = result {
                     info_sched!("  Scheduled product {}", pp);
                     if let Some(ref pp_graph) = opt_graph {
                         for node_id in pp_graph.iter_nodes() {
@@ -769,140 +782,130 @@ impl Scheduler {
         }
     }
 
-    /// Routes a single Pauli product: A* for single-qubit T gates, Steiner for others.
-    fn schedule_pauli_product(
-        &mut self, pauli_product: &PauliProduct, plotting: bool,
-    ) -> PathResult {
-        let _timer = accum_start!(self.timers);
-        info_sched!("  Trying to schedule product {}", pauli_product);
-        if !self.get_terminal_nodes(pauli_product) {
+    /// Schedules a single-qubit measurement gate (no routing needed).
+    fn schedule_measurement(&mut self, pp_id: i32, plotting: bool) -> PathResult {
+        let node_id = self.terminals_scratch[0];
+        let node = self.topo.get_node(node_id);
+        if self.used[node.id as usize] {
             info_sched!(
-                "    Cannot schedule {}: no data nodes found in working graph",
-                pauli_product.id
+                "    Cannot schedule {}: node for M {} is used",
+                pp_id,
+                self.topo.get_label(node_id)
             );
             return PathResult::NoPath;
         }
-        if self.terminals_scratch.len() == 1 && pauli_product.gate_type.is_m() {
-            let node_id = self.terminals_scratch[0];
-            let node = self.topo.get_node(node_id);
-            if self.used[node.id as usize] {
+        if !plotting {
+            self.used[node_id as usize] = true;
+            self.stats.inc_with_cultivation(
+                node.node_type,
+                self.topo.cultivation_times[node_id as usize],
+            );
+            return PathResult::PathFound(None);
+        }
+        let mut g = TreeGraph::new(self.topo.num_nodes);
+        g.add_node(node, self.topo.get_label(node_id));
+        PathResult::PathFound(Some(g))
+    }
+
+    /// Schedules an S or SX gate: data node plus one same-row ancilla neighbor.
+    fn schedule_s_sx(&mut self, pauli_product: &PauliProduct, plotting: bool) -> PathResult {
+        let node_id = self.terminals_scratch[0];
+        let node = self.topo.get_node(node_id);
+        if self.used[node.id as usize] {
+            info_sched!(
+                "    Cannot schedule {}: node for {:?} {} is used",
+                pauli_product.id,
+                pauli_product.gate_type,
+                self.topo.get_label(node_id)
+            );
+            return PathResult::NoPath;
+        }
+        for &nb_id in node.nbors_slice() {
+            let nb = self.topo.get_node(nb_id);
+            if nb.pos.1 == node.pos.1 {
                 info_sched!(
-                    "    Cannot schedule {}: node for M {} is used",
-                    pauli_product.id,
-                    self.topo.get_label(node_id)
+                    "    product {} on node {} has available ancilla {}",
+                    pauli_product,
+                    self.topo.get_label(node_id),
+                    self.topo.get_label(nb_id)
                 );
-                return PathResult::NoPath;
-            }
-            if !plotting {
-                self.used[node_id as usize] = true;
-                self.stats.inc_with_cultivation(
-                    node.node_type,
-                    self.topo.cultivation_times[node_id as usize],
-                );
-                return PathResult::PathFound(None);
-            }
-            let mut g = TreeGraph::new(self.topo.num_nodes);
-            g.add_node(node, self.topo.get_label(node_id));
-            return PathResult::PathFound(Some(g));
-        } else if pauli_product.gate_type.is_s() || pauli_product.gate_type.is_sx() {
-            let node_id = self.terminals_scratch[0];
-            let node = self.topo.get_node(node_id);
-            if self.used[node.id as usize] {
-                info_sched!(
-                    "    Cannot schedule {}: node for {:?} {} is used",
-                    pauli_product.id,
-                    pauli_product.gate_type,
-                    self.topo.get_label(node_id)
-                );
-                return PathResult::NoPath;
-            }
-            for &nb_id in node.nbors_slice() {
-                let nb = self.topo.get_node(nb_id);
-                if nb.pos.1 == node.pos.1 {
-                    info_sched!(
-                        "    product {} on node {} has available ancilla {}",
-                        pauli_product,
-                        self.topo.get_label(node_id),
-                        self.topo.get_label(nb_id)
-                    );
-                    if !self.used[nb_id as usize] {
-                        if !plotting {
-                            self.used[node_id as usize] = true;
-                            self.used[nb_id as usize] = true;
-                            self.stats.inc_with_cultivation(
-                                node.node_type,
-                                self.topo.cultivation_times[node_id as usize],
-                            );
-                            self.stats.inc_with_cultivation(
-                                nb.node_type,
-                                self.topo.cultivation_times[nb_id as usize],
-                            );
-                            return PathResult::PathFound(None);
-                        }
-                        let mut g = TreeGraph::new(self.topo.num_nodes);
-                        g.add_node(node, self.topo.get_label(node_id));
-                        g.add_node(nb, self.topo.get_label(nb_id));
-                        g.add_edge(node_id, nb_id);
-                        return PathResult::PathFound(Some(g));
+                if !self.used[nb_id as usize] {
+                    if !plotting {
+                        self.used[node_id as usize] = true;
+                        self.used[nb_id as usize] = true;
+                        self.stats.inc_with_cultivation(
+                            node.node_type,
+                            self.topo.cultivation_times[node_id as usize],
+                        );
+                        self.stats.inc_with_cultivation(
+                            nb.node_type,
+                            self.topo.cultivation_times[nb_id as usize],
+                        );
+                        return PathResult::PathFound(None);
                     }
+                    let mut g = TreeGraph::new(self.topo.num_nodes);
+                    g.add_node(node, self.topo.get_label(node_id));
+                    g.add_node(nb, self.topo.get_label(nb_id));
+                    g.add_edge(node_id, nb_id);
+                    return PathResult::PathFound(Some(g));
                 }
             }
-            info_sched!("    Cannot schedule S/SX {}: no available ancilla", pauli_product.id);
+        }
+        info_sched!("    Cannot schedule S/SX {}: no available ancilla", pauli_product.id);
+        PathResult::NoPath
+    }
+
+    /// Schedules a T gate (A*/greedy) or multi-term Clifford (Steiner tree).
+    fn schedule_t_or_multi(&mut self, pauli_product: &PauliProduct, plotting: bool) -> PathResult {
+        debug_assert!(!self.terminals_scratch.iter().any(|node_id| self.used[*node_id as usize]));
+        let root_ids = self.get_root_nodes(pauli_product.id as usize, &self.terminals_scratch[..]);
+        if root_ids.is_empty() {
+            info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
             return PathResult::NoPath;
+        }
+        let result = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
+            if self.use_greedypath {
+                self.greedypath.compute(
+                    &self.terminals_scratch[..],
+                    &root_ids[..],
+                    &self.topo,
+                    &mut self.used,
+                    &self.ready_magic_positions,
+                    plotting,
+                )
+            } else {
+                self.astar.compute(
+                    &self.terminals_scratch[..],
+                    &root_ids[..],
+                    &self.topo,
+                    &mut self.used,
+                    &self.ready_magic_positions,
+                    plotting,
+                )
+            }
         } else {
             debug_assert!(
-                !self.terminals_scratch.iter().any(|node_id| self.used[*node_id as usize])
+                !Self::should_precompute(pauli_product),
+                "should_precompute product {:?} reached Steiner path",
+                pauli_product.id
             );
-            let root_ids =
-                self.get_root_nodes(pauli_product.id as usize, &self.terminals_scratch[..]);
-            if root_ids.is_empty() {
-                info_sched!("    Cannot schedule {}: no roots available", pauli_product.id);
-                return PathResult::NoPath;
+            // Steiner always builds a tree (carry-forward needs node IDs).
+            match self.stree_computation.compute(
+                &self.topo,
+                &self.used,
+                &root_ids,
+                &self.terminals_scratch,
+                pauli_product.gate_type,
+            ) {
+                Some(tree) => PathResult::PathFound(Some(tree)),
+                None => PathResult::NoPath,
             }
-            let g = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
-                if self.use_greedypath {
-                    self.greedypath.compute(
-                        &self.terminals_scratch[..],
-                        &root_ids[..],
-                        &self.topo,
-                        &mut self.used,
-                        &self.ready_magic_positions,
-                        plotting,
-                    )
-                } else {
-                    self.astar.compute(
-                        &self.terminals_scratch[..],
-                        &root_ids[..],
-                        &self.topo,
-                        &mut self.used,
-                        &self.ready_magic_positions,
-                        plotting,
-                    )
-                }
-            } else {
-                debug_assert!(
-                    !Self::should_precompute(pauli_product),
-                    "should_precompute product {:?} reached Steiner path",
-                    pauli_product.id
-                );
-                // Steiner always builds a tree (carry-forward needs node IDs).
-                match self.stree_computation.compute(
-                    &self.topo,
-                    &self.used,
-                    &root_ids,
-                    &self.terminals_scratch,
-                    pauli_product.gate_type,
-                ) {
-                    Some(tree) => PathResult::PathFound(Some(tree)),
-                    None => PathResult::NoPath,
-                }
-            };
-            if let PathResult::PathFound(opt_g) = g {
-                return PathResult::PathFound(opt_g);
-            }
-            info_sched!("    Cannot schedule {}: no steiner tree found", pauli_product.id);
-            PathResult::NoPath
+        };
+        if let PathResult::PathFound(opt_g) = result {
+            return PathResult::PathFound(opt_g);
         }
+        info_sched!("    Cannot schedule {}: no path found", pauli_product.id);
+        PathResult::NoPath
     }
 
     fn fill_cultivation_pool(&mut self, n: usize) {
