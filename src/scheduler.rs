@@ -559,6 +559,22 @@ impl Scheduler {
         println!("Precomputed terminals and root candidates for {} products", num_products);
     }
 
+    /// Marks all nodes in a carry-forward path as used, updates stats, and appends to `pp_paths`.
+    fn carry_forward_path(
+        &mut self, pp_id: i32, node_ids: &[u16], opt_tree: Option<Rc<TreeGraph>>,
+        pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>,
+    ) {
+        for &node_id in node_ids {
+            self.used[node_id as usize] = true;
+            let node = self.topo.get_node(node_id);
+            self.stats.inc_with_cultivation(
+                node.node_type,
+                self.topo.cultivation_times[node_id as usize],
+            );
+        }
+        pp_paths.push((pp_id, opt_tree));
+    }
+
     /// Schedules as many products as possible in one lcycle; returns false if nothing scheduled.
     fn schedule_lcycle(
         &mut self, lcycle_i: usize, to_schedule: &mut Vec<PauliProduct>,
@@ -571,27 +587,26 @@ impl Scheduler {
         pp_paths.clear();
         self.used.fill(false);
         // Carry forward in-progress Clifford and failed-T routes.
-        for (_, (_, pp, node_ids, opt_tree)) in &self.clifford_paths {
-            for &node_id in node_ids {
-                self.used[node_id as usize] = true;
-                let node = self.topo.get_node(node_id);
-                self.stats.inc_with_cultivation(
-                    node.node_type,
-                    self.topo.cultivation_times[node_id as usize],
-                );
-            }
-            pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
+        // Collect first to release the borrow on clifford_paths / failed_t_paths.
+        let clifford_carry: Vec<(i32, Vec<u16>, Option<Rc<TreeGraph>>)> = self
+            .clifford_paths
+            .values()
+            .map(|(_, pp, node_ids, opt_tree)| {
+                (pp.id, node_ids.clone(), opt_tree.as_ref().map(Rc::clone))
+            })
+            .collect();
+        let failed_t_carry: Vec<(i32, Vec<u16>, Option<Rc<TreeGraph>>)> = self
+            .failed_t_paths
+            .values()
+            .map(|(pp, node_ids, opt_tree)| {
+                (pp.id, node_ids.clone(), opt_tree.as_ref().map(Rc::clone))
+            })
+            .collect();
+        for (pp_id, node_ids, opt_tree) in clifford_carry {
+            self.carry_forward_path(pp_id, &node_ids, opt_tree, pp_paths);
         }
-        for (_, (pp, node_ids, opt_tree)) in &self.failed_t_paths {
-            for &node_id in node_ids {
-                self.used[node_id as usize] = true;
-                let node = self.topo.get_node(node_id);
-                self.stats.inc_with_cultivation(
-                    node.node_type,
-                    self.topo.cultivation_times[node_id as usize],
-                );
-            }
-            pp_paths.push((pp.id, opt_tree.as_ref().map(Rc::clone)));
+        for (pp_id, node_ids, opt_tree) in failed_t_carry {
+            self.carry_forward_path(pp_id, &node_ids, opt_tree, pp_paths);
         }
         let carry_forward_count = self.clifford_paths.len() + self.failed_t_paths.len();
         let total_available = carry_forward_count + to_schedule.len();
