@@ -14,16 +14,16 @@ use std::{
 
 /// Represents a quantum circuit as a DAG of Pauli products with dependency tracking.
 /// Layers are lazily computed and cached for efficient iteration.
-pub struct Circuit {
+pub(crate) struct Circuit {
     pub(crate) products: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
-    pub circuit_fname: String,
-    pub num_qubits: usize,
+    pub(crate) circuit_fname: String,
+    pub(crate) num_qubits: usize,
 }
 
 impl Circuit {
     /// Creates a new circuit from a filename (circuit is not loaded until `load_circuit()` is called).
-    pub fn new(fname: &String) -> Self {
+    pub(crate) fn new(fname: &String) -> Self {
         let circuit = Circuit {
             products: Vec::new(),
             circuit_fname: fname.to_string(),
@@ -35,7 +35,7 @@ impl Circuit {
 
     /// Loads Pauli products from file, skipping X and Z gates.
     /// Populates `num_qubits` and establishes parent-child dependencies.
-    pub fn load_circuit(&mut self) -> io::Result<()> {
+    pub(crate) fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
         let file = File::open(&self.circuit_fname)?;
@@ -88,23 +88,23 @@ impl Circuit {
     }
 
     /// Returns an iterator over products with no dependencies (ready to schedule).
-    pub fn initial_products(&self) -> impl Iterator<Item = &PauliProduct> {
+    pub(crate) fn initial_products(&self) -> impl Iterator<Item = &PauliProduct> {
         self.products.iter().filter(|pp| pp.parents.is_empty())
     }
 
     /// Retrieves a product by its ID.
-    pub fn get_product(&self, id: i32) -> &PauliProduct {
+    pub(crate) fn get_product(&self, id: i32) -> &PauliProduct {
         &self.products[id as usize]
     }
 
     /// Returns the total number of products in the circuit.
-    pub fn num_products(&self) -> usize {
+    pub(crate) fn num_products(&self) -> usize {
         self.products.len()
     }
 
     /// Plots the circuit structure as PNG files (split into 1000-layer chunks).
     /// Each product is colored and labeled with Pauli operators.
-    pub fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
@@ -231,7 +231,7 @@ impl Circuit {
 
     /// Plots moving average statistics of layer properties (products per layer, product size, etc.).
     /// Generates an SVG file with configurable window size based on circuit size.
-    pub fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
@@ -391,7 +391,7 @@ impl Circuit {
 
     /// Prints circuit statistics (products, Cliffords, layers, avg/max products per layer).
     /// Returns the total number of layers.
-    pub fn print_statistics(&self) -> usize {
+    pub(crate) fn print_statistics(&self) -> usize {
         let layers = self.get_layers();
         let mut num_cliffords = 0;
         let mut num_products = vec![0; layers.len()];
@@ -420,7 +420,7 @@ impl Circuit {
 
     /// Writes circuit layers to a text file (debug builds only).
     #[cfg(debug_assertions)]
-    pub fn print(&self) -> io::Result<()> {
+    pub(crate) fn print(&self) -> io::Result<()> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
@@ -490,7 +490,7 @@ impl Circuit {
 
     /// Plots a heatmap of qubit coupling frequency (which pairs of qubits interact).
     /// Uses log-scale intensity to highlight frequently coupled pairs.
-    pub fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(crate) fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");

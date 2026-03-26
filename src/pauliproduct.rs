@@ -4,7 +4,7 @@ use std::fmt;
 /// Quantum gate types in the circuit.
 /// T gates require magic state distillation; S/SX/CX are Cliffords and repeat multiple times.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum GateType {
+pub(crate) enum GateType {
     T,
     S,
     SX,
@@ -16,42 +16,42 @@ pub enum GateType {
 
 impl GateType {
     /// Returns true if this is a T gate.
-    pub fn is_t(&self) -> bool {
+    pub(crate) fn is_t(&self) -> bool {
         matches!(self, GateType::T)
     }
 
     /// Returns true if this is an S gate.
-    pub fn is_s(&self) -> bool {
+    pub(crate) fn is_s(&self) -> bool {
         matches!(self, GateType::S)
     }
 
     /// Returns true if this is an SX gate.
-    pub fn is_sx(&self) -> bool {
+    pub(crate) fn is_sx(&self) -> bool {
         matches!(self, GateType::SX)
     }
 
     /// Returns true if this is a CX (CNOT) gate.
-    pub fn is_cx(&self) -> bool {
+    pub(crate) fn is_cx(&self) -> bool {
         matches!(self, GateType::CX)
     }
 
     /// Returns true if this is a measurement gate.
-    pub fn is_m(&self) -> bool {
+    pub(crate) fn is_m(&self) -> bool {
         matches!(self, GateType::M)
     }
 
     /// Returns true if this is a Pauli X gate.
-    pub fn is_x(&self) -> bool {
+    pub(crate) fn is_x(&self) -> bool {
         matches!(self, GateType::X)
     }
 
     /// Returns true if this is a Pauli Z gate.
-    pub fn is_z(&self) -> bool {
+    pub(crate) fn is_z(&self) -> bool {
         matches!(self, GateType::Z)
     }
 
     /// Returns true if this is a Clifford gate (CX, S, or SX).
-    pub fn is_clifford(&self) -> bool {
+    pub(crate) fn is_clifford(&self) -> bool {
         self.is_cx() || self.is_s() || self.is_sx()
     }
 }
@@ -64,7 +64,7 @@ impl fmt::Display for GateType {
 
 /// A single Pauli operator (X, Y, or Z) applied to a specific qubit.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Operator {
+pub(crate) struct Operator {
     pub qubit: u16,
     pub basis: char,
 }
@@ -78,7 +78,7 @@ impl fmt::Display for Operator {
 /// A quantum gate represented as a Pauli product with dependency tracking.
 /// Weight is the sum of operator costs (Y counts as 2, others as 1).
 #[derive(Debug, Clone)]
-pub struct PauliProduct {
+pub(crate) struct PauliProduct {
     pub operators: Vec<Operator>,
     pub parents: Vec<i32>,
     pub children: Vec<i32>,
@@ -102,13 +102,13 @@ impl Default for PauliProduct {
 
 impl PauliProduct {
     /// Creates a new empty Pauli product.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Parses a circuit format string into this Pauli product.
     /// Format: `[±][X/Y/Z operators][<gate_type>]` where _ denotes identity on a qubit.
-    pub fn set_from_str(&mut self, product_id: i32, s: &str) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn set_from_str(&mut self, product_id: i32, s: &str) -> Result<(), Box<dyn Error>> {
         self.id = product_id;
 
         for (i, c) in s.chars().enumerate() {
@@ -156,13 +156,13 @@ impl PauliProduct {
     }
 
     /// Returns a string representation of the operators (without sign).
-    pub fn to_operator_str(&self) -> String {
+    pub(crate) fn to_operator_str(&self) -> String {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
         format!("{}<{:?}>", ops, self.gate_type)
     }
 
     /// Returns sorted list of qubits on which this product operates.
-    pub fn get_qubits(&self) -> Vec<u16> {
+    pub(crate) fn get_qubits(&self) -> Vec<u16> {
         self.operators.iter().map(|op| op.qubit).collect()
     }
 }
