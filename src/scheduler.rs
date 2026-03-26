@@ -937,7 +937,6 @@ impl Scheduler {
         remaining_parents: &mut Vec<usize>, num_lcycles: usize,
     ) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
-        // Failed T gates stay out of to_schedule and are tracked in failed_t_paths.
         self.scheduled_ids_scratch.clear();
         self.scheduled_ids_scratch.extend(pp_paths.iter().map(|(id, _)| *id));
         to_schedule.retain(|pp| !self.scheduled_ids_scratch.contains(&pp.id));
@@ -950,14 +949,45 @@ impl Scheduler {
             })
             .count();
         self.t_products_remaining = self.t_products_remaining.saturating_sub(t_newly_scheduled);
-        // First-attempt T gates: 50% fail. Recovery-lcycle T gates always succeed.
+        let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes(pp_paths);
+        self.unlock_children(pp_paths, &t_failed_ids, remaining_parents);
+        self.advance_clifford_state(pp_paths);
+        debug_sched!(
+            "After inserting previous lcycle cliffords, to_schedule len {}",
+            to_schedule.len()
+        );
+        to_schedule
+            .extend(self.children_scratch.iter().map(|&id| self.circuit.get_product(id).clone()));
+        debug_sched!(
+            "After adding {} children, to_schedule len {}",
+            self.children_scratch.len(),
+            to_schedule.len()
+        );
+        let lcycle_ids: Vec<i32> = pp_paths
+            .iter()
+            .filter(|(id, _)| !t_failed_ids.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        self.lcycle_scheduled.push((num_lcycles, lcycle_ids));
+        #[cfg(debug_assertions)]
+        self.check_lcycle(pp_paths, &t_failed_ids, &t_recovery_ids)?;
+        self.scheduled_products.extend(
+            pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
+        );
+        Ok(())
+    }
+
+    /// Coin-flip T gate outcomes; updates `failed_t_paths`; returns (failed_ids, recovery_ids).
+    fn process_t_gate_outcomes(
+        &mut self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)],
+    ) -> (Vec<i32>, Vec<i32>) {
         let mut t_failed_ids: Vec<i32> = Vec::new();
         let mut t_recovery_ids: Vec<i32> = Vec::new();
+        // First-attempt T gates: 50% fail. Recovery-lcycle T gates always succeed.
         for &(pp_id, _) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
             if pp.gate_type.is_t() {
                 if self.failed_t_paths.contains_key(&pp_id) {
-                    // Recovery lcycle: always succeeds, remove from failed_t_paths.
                     t_recovery_ids.push(pp_id);
                     info_sched!("  T gate {} recovery lcycle succeeded", pp_id);
                 } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
@@ -994,6 +1024,14 @@ impl Scheduler {
                 self.failed_t_paths.swap_remove(&pp_id);
             }
         }
+        (t_failed_ids, t_recovery_ids)
+    }
+
+    /// Decrements `remaining_parents` for each completed product and collects newly-ready children.
+    fn unlock_children(
+        &mut self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)], t_failed_ids: &[i32],
+        remaining_parents: &mut Vec<usize>,
+    ) {
         self.children_scratch.clear();
         for &(pp_id, _) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
@@ -1020,6 +1058,10 @@ impl Scheduler {
                 }
             }
         }
+    }
+
+    /// Advances multi-lcycle Clifford state: decrements counters and inserts new entries.
+    fn advance_clifford_state(&mut self, pp_paths: &[(i32, Option<Rc<TreeGraph>>)]) {
         for &(pp_id, ref opt_pp_path) in pp_paths.iter() {
             let pp = self.circuit.get_product(pp_id);
             if !pp.gate_type.is_clifford() {
@@ -1047,29 +1089,6 @@ impl Scheduler {
                 );
             }
         }
-        debug_sched!(
-            "After inserting previous lcycle cliffords, to_schedule len {}",
-            to_schedule.len()
-        );
-        to_schedule
-            .extend(self.children_scratch.iter().map(|&id| self.circuit.get_product(id).clone()));
-        debug_sched!(
-            "After adding {} children, to_schedule len {}",
-            self.children_scratch.len(),
-            to_schedule.len()
-        );
-        let lcycle_ids: Vec<i32> = pp_paths
-            .iter()
-            .filter(|(id, _)| !t_failed_ids.contains(id))
-            .map(|(id, _)| *id)
-            .collect();
-        self.lcycle_scheduled.push((num_lcycles, lcycle_ids));
-        #[cfg(debug_assertions)]
-        self.check_lcycle(pp_paths, &t_failed_ids, &t_recovery_ids)?;
-        self.scheduled_products.extend(
-            pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
-        );
-        Ok(())
     }
 
     fn print_scheduling_stats(&mut self, num_lcycles: usize) {
