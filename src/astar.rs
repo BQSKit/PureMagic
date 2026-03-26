@@ -81,14 +81,6 @@ impl AStarComputation {
         }
     }
 
-    #[inline(always)]
-    fn bucket_clear(&mut self) {
-        for b in &mut self.buckets {
-            b.clear();
-        }
-        self.bucket_min = 0;
-    }
-
     /// A* from first root to the nearest ready, unused magic node.
     /// Each `terminal_ids[i]` is attached to `root_ids[i]` in the returned tree.
     /// For single-X/Z T gates: one root, one terminal.
@@ -113,7 +105,10 @@ impl AStarComputation {
         }
         let epoch = self.epoch;
 
-        self.bucket_clear();
+        for b in &mut self.buckets {
+            b.clear();
+        }
+        self.bucket_min = 0;
 
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);

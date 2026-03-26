@@ -237,7 +237,9 @@ impl TreeGraph {
                         _RESET
                     );
                     let vert_nb = self.nodes[vert_nb_id as usize].as_ref().unwrap();
-                    if node.pos.1 < vert_nb.pos.1 && self.get_below_edge_count(vert_nb) == 1 {
+                    if node.pos.1 < vert_nb.pos.1
+                        && self.get_horizontal_edge_count(vert_nb, false) == 1
+                    {
                         debug_sched!(
                             "      {}removing single below edge {}->{}{}",
                             _BLUE,
@@ -246,7 +248,8 @@ impl TreeGraph {
                             _RESET
                         );
                         edges_to_remove.push((node_id as u16, vert_nb_id));
-                    } else if node.pos.1 > vert_nb.pos.1 && self.get_above_edge_count(vert_nb) == 1
+                    } else if node.pos.1 > vert_nb.pos.1
+                        && self.get_horizontal_edge_count(vert_nb, true) == 1
                     {
                         debug_sched!(
                             "      {}removing single above edge {}->{}{}",
@@ -276,24 +279,15 @@ impl TreeGraph {
         }
     }
 
-    /// Counts edges pointing upward (higher y position) from a node.
-    fn get_above_edge_count(&self, node: &TreeNode) -> usize {
+    /// Counts edges in one vertical direction from a node.
+    /// If `upward` is true, counts neighbors with a higher y position (above);
+    /// if false, counts neighbors with a lower y position (below).
+    fn get_horizontal_edge_count(&self, node: &TreeNode, upward: bool) -> usize {
         node.nbors
             .iter()
             .filter(|nb_id| {
                 let nb = self.nodes[**nb_id as usize].as_ref().unwrap();
-                node.pos.1 < nb.pos.1
-            })
-            .count()
-    }
-
-    /// Counts edges pointing downward (lower y position) from a node.
-    fn get_below_edge_count(&self, node: &TreeNode) -> usize {
-        node.nbors
-            .iter()
-            .filter(|nb_id| {
-                let nb = self.nodes[**nb_id as usize].as_ref().unwrap();
-                node.pos.1 > nb.pos.1
+                if upward { node.pos.1 < nb.pos.1 } else { node.pos.1 > nb.pos.1 }
             })
             .count()
     }
