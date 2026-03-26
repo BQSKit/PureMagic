@@ -7,6 +7,7 @@ use plotters::prelude::*;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::io::{self, BufRead};
@@ -69,6 +70,12 @@ pub struct TopoGraph {
     pub busy_counts: Vec<i32>,
     pub cultivation_times: Vec<i32>,
     pub sides_only: bool,
+    /// Cached data-qubit groups (X row + Z row pairs), built once after topology is set.
+    data_groups: Vec<DataGroup>,
+    /// Cached map from data node id → index into `data_groups`, built once after topology is set.
+    node_to_group: HashMap<u16, usize>,
+    /// Cached map from rounded (x*10, y*10) → data node id, built once after topology is set.
+    data_pos_map: HashMap<(i32, i32), u16>,
 }
 
 impl TopoGraph {
@@ -94,6 +101,9 @@ impl TopoGraph {
             busy_counts: Vec::new(),
             cultivation_times: Vec::new(),
             sides_only: false,
+            data_groups: Vec::new(),
+            node_to_group: HashMap::new(),
+            data_pos_map: HashMap::new(),
         }
     }
 
@@ -162,6 +172,7 @@ impl TopoGraph {
         }
         self.update_statistics();
         self.print_statistics();
+        self.build_cached_plot_data();
     }
 
     /// Loads topology from a file describing node labels and grid positions.
@@ -573,6 +584,33 @@ impl TopoGraph {
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
     }
 
+    /// Builds and caches the data-group list, node-to-group map, and data-position map.
+    /// Called once after topology construction; used by `plot()` to avoid repeated recomputation.
+    fn build_cached_plot_data(&mut self) {
+        // Build data_pos_map: rounded (x*10, y*10) → node id for data nodes.
+        self.data_pos_map = self
+            .nodes
+            .iter()
+            .filter(|n| n.node_type == NodeType::Data)
+            .map(|n| {
+                let (px, py) = n.pos;
+                (((px * 10.0).round() as i32, (py * 10.0).round() as i32), n.id)
+            })
+            .collect();
+
+        // Build data_groups using the cached data_pos_map.
+        self.data_groups = self.build_data_groups();
+
+        // Build node_to_group: data node id → index into data_groups.
+        self.node_to_group.clear();
+        for (gi, group) in self.data_groups.iter().enumerate() {
+            self.node_to_group.insert(group.x_left_id, gi);
+            self.node_to_group.insert(group.x_right_id, gi);
+            self.node_to_group.insert(group.z_left_id, gi);
+            self.node_to_group.insert(group.z_right_id, gi);
+        }
+    }
+
     /// Recomputes qubit counts and builds fast data node lookup by qubit and basis.
     pub fn update_statistics(&mut self) {
         let mut data_count = 0;
@@ -697,8 +735,6 @@ impl TopoGraph {
             .set_label_area_size(LabelAreaPosition::Bottom, 50)
             .build_cartesian_2d(-1f32..self.num_cols as f32, -1f32..self.num_rows as f32)?;
 
-        let data_groups = self.build_data_groups();
-
         // Pre-compute product label positions so we can suppress node labels underneath them.
         let product_label_positions = self.compute_product_label_positions(pauli_product_paths);
         // Build set of (x*10, y*10) positions covered by a product label background rect.
@@ -726,18 +762,13 @@ impl TopoGraph {
         self.draw_all_nodes_plain(&mut chart, pauli_product_paths, &product_label_covered)?;
 
         // Step 1b: draw outer group borders for data groups (no internal edges).
-        self.draw_data_group_borders_plain(&mut chart, &data_groups)?;
+        self.draw_data_group_borders_plain(&mut chart, &self.data_groups)?;
 
         // Step 2: for each path, walk the treegraph and overlay colors.
-        self.draw_path_overlays(
-            &mut chart,
-            pauli_product_paths,
-            &data_groups,
-            &product_label_covered,
-        )?;
+        self.draw_path_overlays(&mut chart, pauli_product_paths, &product_label_covered)?;
 
         // Step 3: draw data group qubit-number labels and product operator labels.
-        self.draw_data_group_labels(&mut chart, &data_groups)?;
+        self.draw_data_group_labels(&mut chart, &self.data_groups)?;
         self.draw_product_labels(&mut chart, pauli_product_paths, &product_label_positions)?;
 
         if !title_str.is_empty() {
@@ -775,18 +806,9 @@ impl TopoGraph {
     }
 
     /// Builds the list of data-qubit groups (X row + Z row pairs).
+    /// Uses `self.data_pos_map` which must be populated before this is called.
     fn build_data_groups(&self) -> Vec<DataGroup> {
-        // Map from rounded (x*10, y*10) → node id for data nodes.
-        let data_pos_map: std::collections::HashMap<(i32, i32), u16> = self
-            .nodes
-            .iter()
-            .filter(|n| n.node_type == NodeType::Data)
-            .map(|n| {
-                let (px, py) = n.pos;
-                (((px * 10.0).round() as i32, (py * 10.0).round() as i32), n.id)
-            })
-            .collect();
-
+        let data_pos_map = &self.data_pos_map;
         let mut groups = Vec::new();
         let mut seen: std::collections::HashSet<u16> = std::collections::HashSet::new();
 
@@ -1084,19 +1106,8 @@ impl TopoGraph {
     /// side facing that routing node in the path color (and do not expand the path).
     fn draw_path_overlays(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
-        data_groups: &[DataGroup], product_label_covered: &std::collections::HashSet<(i32, i32)>,
+        product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Build a lookup: data node id → index into data_groups.
-        // Used to find the outer boundary of the four-node group for horizontal X borders.
-        let mut node_to_group: std::collections::HashMap<u16, usize> =
-            std::collections::HashMap::new();
-        for (gi, group) in data_groups.iter().enumerate() {
-            node_to_group.insert(group.x_left_id, gi);
-            node_to_group.insert(group.x_right_id, gi);
-            node_to_group.insert(group.z_left_id, gi);
-            node_to_group.insert(group.z_right_id, gi);
-        }
-
         for (pp, path_graph) in pauli_product_paths.iter() {
             // Use golden-ratio hashing so the color is stable across lcycles and
             // well-spread across any subset of products visible in this lcycle.
@@ -1131,14 +1142,7 @@ impl TopoGraph {
                     &routing_pos_set,
                     product_label_covered,
                 )?;
-                self.draw_data_node_connections(
-                    chart,
-                    id,
-                    path_graph,
-                    color,
-                    data_groups,
-                    &node_to_group,
-                )?;
+                self.draw_data_node_connections(chart, id, path_graph, color)?;
             }
         }
         Ok(())
@@ -1193,7 +1197,6 @@ impl TopoGraph {
     /// border on the side facing the routing node and draws a boxed X/Z label there.
     fn draw_data_node_connections(
         &self, chart: &mut PlotChart, routing_id: u16, path_graph: &TreeGraph, color: RGBAColor,
-        data_groups: &[DataGroup], node_to_group: &std::collections::HashMap<u16, usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let routing_node = &self.nodes[routing_id as usize];
         for &nbor_id in path_graph.neighbors(routing_id) {
@@ -1207,8 +1210,8 @@ impl TopoGraph {
                 // For Top/Bottom sides, always use the outer boundary of the
                 // four-node group so the border/label appears at the rectangle edge.
                 let group_outer_y = if side == DataSide::Top || side == DataSide::Bottom {
-                    if let Some(&gi) = node_to_group.get(&nbor_id) {
-                        let group = &data_groups[gi];
+                    if let Some(&gi) = self.node_to_group.get(&nbor_id) {
+                        let group = &self.data_groups[gi];
                         let y_top = group.y_x.max(group.y_z) + 0.5;
                         let y_bot = group.y_x.min(group.y_z) - 0.5;
                         if side == DataSide::Top { y_top } else { y_bot }
