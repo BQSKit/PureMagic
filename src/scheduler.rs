@@ -6,7 +6,7 @@ use crate::fn_timer;
 use crate::greedypath::GreedyPathComputation;
 use crate::info_sched;
 use crate::node::NodeType;
-use crate::pauliproduct::PauliProduct;
+use crate::pauliproduct::{Operator, PauliProduct};
 use crate::steinertree::SteinerTreeComputation;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
@@ -518,17 +518,7 @@ impl Scheduler {
         self.precomputed_root_info = vec![Vec::new(); num_products];
         for pp_id in 0..num_products {
             let pp = self.circuit.get_product(pp_id as i32).clone();
-            let mut terminals: Vec<u16> = Vec::new();
-            for op in &pp.operators {
-                if op.basis == 'Y' {
-                    for basis in ['X', 'Z'] {
-                        terminals.push(self.topo.get_data_node_id(op.qubit, basis));
-                    }
-                } else {
-                    terminals
-                        .push(self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase()));
-                }
-            }
+            let terminals = operators_to_node_ids(&self.topo, &pp.operators);
             // preferred: paired-direction neighbors for Y-pairs, side neighbors for unpaired.
             // side: fallback side neighbors (only used for paired terminals).
             let mut root_info: Vec<(bool, Vec<u16>, Vec<u16>)> =
@@ -721,14 +711,8 @@ impl Scheduler {
 
     // Takes separate params (not &mut self) to avoid borrow conflicts in caller loops.
     fn mark_blocked_product_as_used(used: &mut Vec<bool>, topo: &TopoGraph, pp: &PauliProduct) {
-        for op in &pp.operators {
-            if op.basis == 'Y' {
-                used[topo.get_data_node_id(op.qubit, 'X') as usize] = true;
-                used[topo.get_data_node_id(op.qubit, 'Z') as usize] = true;
-            } else {
-                used[topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase()) as usize] =
-                    true;
-            }
+        for node_id in operators_to_node_ids(topo, &pp.operators) {
+            used[node_id as usize] = true;
         }
     }
 
@@ -1124,33 +1108,16 @@ impl Scheduler {
                     ));
                 }
             }
-            for op in &pp.operators {
-                if op.basis == 'Y' {
-                    for basis in ['X', 'Z'] {
-                        let nid = self.topo.get_data_node_id(op.qubit, basis);
-                        if !tree.contains_node(nid) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                format!(
-                                    "product {} (lcycle 3): terminal \
-                                                               qubit {} basis {} missing from tree",
-                                    pp_id, op.qubit, basis
-                                ),
-                            ));
-                        }
-                    }
-                } else {
-                    let nid = self.topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase());
-                    if !tree.contains_node(nid) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!(
-                                "product {} terminal qubit {} basis \
-                                                           {} missing from tree",
-                                pp_id, op.qubit, op.basis
-                            ),
-                        ));
-                    }
+            for nid in operators_to_node_ids(&self.topo, &pp.operators) {
+                if !tree.contains_node(nid) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "product {} terminal node {} missing from tree",
+                            pp_id,
+                            self.topo.get_label(nid)
+                        ),
+                    ));
                 }
             }
             if pp.gate_type.is_t() && !t_recovery_ids.contains(&pp_id) {
@@ -1344,6 +1311,20 @@ impl Scheduler {
         println!("Scheduled products written to {}", output_fname);
         Ok(())
     }
+}
+
+/// Expands a slice of operators into data node IDs, substituting X+Z for Y-basis operators.
+fn operators_to_node_ids(topo: &TopoGraph, operators: &[Operator]) -> Vec<u16> {
+    let mut node_ids = Vec::with_capacity(operators.len());
+    for op in operators {
+        if op.basis == 'Y' {
+            node_ids.push(topo.get_data_node_id(op.qubit, 'X'));
+            node_ids.push(topo.get_data_node_id(op.qubit, 'Z'));
+        } else {
+            node_ids.push(topo.get_data_node_id(op.qubit, op.basis.to_ascii_uppercase()));
+        }
+    }
+    node_ids
 }
 
 #[cfg(test)]
