@@ -7,7 +7,7 @@ use crate::treegraph::TreeGraph;
 /// `PathFound(None)` means a route was found and `used[]` marked, but no tree was built (non-plotting mode).
 /// `PathFound(Some(tree))` means a route was found and a full routing tree was built (plotting mode).
 #[derive(Debug)]
-pub enum PathResult {
+pub(crate) enum PathResult {
     NoPath,
     PathFound(Option<TreeGraph>),
 }
@@ -23,7 +23,7 @@ const BUCKET_COUNT: usize = 256;
 /// bumped once per `compute` call; a node slot is valid iff its stored epoch matches.
 /// The priority queue is a bucket queue (Dial's algorithm) over integer f-costs,
 /// giving O(1) push and amortised O(1) pop without comparison overhead.
-pub struct AStarComputation {
+pub(crate) struct AStarComputation {
     /// Parent pointer; valid only when `node_epoch[id] == epoch`.
     /// `u16::MAX` is the sentinel meaning "no parent" (search root).
     parent: Vec<u16>,
@@ -43,7 +43,7 @@ pub struct AStarComputation {
 }
 
 impl AStarComputation {
-    pub fn new(num_nodes: usize) -> Self {
+    pub(crate) fn new(num_nodes: usize) -> Self {
         AStarComputation {
             parent: vec![u16::MAX; num_nodes],
             g_cost: vec![u32::MAX; num_nodes],
@@ -90,7 +90,7 @@ impl AStarComputation {
     /// When `plotting` is false, marks `used[]` directly and returns `PathFound(None)`.
     /// When `plotting` is true, builds and returns `PathFound(Some(tree))`.
     /// Returns `NoPath` if no path exists.
-    pub fn compute(
+    pub(crate) fn compute(
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> PathResult {

@@ -1,6 +1,7 @@
 use crate::accum_start;
 use crate::astar::{AStarComputation, PathResult};
 use crate::circuit::Circuit;
+use crate::cultivation::CultivationManager;
 use crate::debug_sched;
 use crate::fn_timer;
 use crate::info_sched;
@@ -19,14 +20,13 @@ use indexmap::{IndexMap, IndexSet};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand_simple::Exponential;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::rc::Rc;
 
-struct ScheduleStats {
+pub(crate) struct ScheduleStats {
     data_qubits: usize,
     bus_qubits: usize,
     magic_qubits: usize,
@@ -45,7 +45,7 @@ struct ScheduleStats {
 }
 
 impl ScheduleStats {
-    pub fn new(data_qubits: usize, bus_qubits: usize, magic_qubits: usize) -> Self {
+    pub(crate) fn new(data_qubits: usize, bus_qubits: usize, magic_qubits: usize) -> Self {
         ScheduleStats {
             data_qubits,
             bus_qubits,
@@ -63,7 +63,7 @@ impl ScheduleStats {
         }
     }
 
-    pub fn summarize(&self, num_lcycles: usize) {
+    pub(crate) fn summarize(&self, num_lcycles: usize) {
         let data_frac = self.sum_data_scheduled as f64 / (self.data_qubits * num_lcycles) as f64;
         let bus_frac = self.sum_bus_scheduled as f64 / (self.bus_qubits * num_lcycles) as f64;
         let magic_frac = self.sum_magic_scheduled as f64 / (self.magic_qubits * num_lcycles) as f64;
@@ -76,7 +76,7 @@ impl ScheduleStats {
         println!("Magic unused {:.3}", magic_unused_frac);
     }
 
-    pub fn update(
+    pub(crate) fn update(
         &mut self, lcycle_i: usize, pp_paths_len: usize, total_available: usize,
         magic_ready: usize, magic_unused: usize, plotting: bool,
     ) {
@@ -124,7 +124,7 @@ impl ScheduleStats {
         self.magic_ready_used = 0;
     }
 
-    pub fn inc(&mut self, node_type: NodeType) {
+    pub(crate) fn inc(&mut self, node_type: NodeType) {
         match node_type {
             NodeType::Bus => self.bus_scheduled += 1,
             NodeType::Magic => self.magic_scheduled += 1,
@@ -133,64 +133,63 @@ impl ScheduleStats {
     }
 
     /// Like `inc()` but also increments `magic_ready_used` for ready magic nodes.
-    pub fn inc_with_cultivation(&mut self, node_type: NodeType, cultivation_time: i32) {
+    pub(crate) fn inc_with_cultivation(&mut self, node_type: NodeType, cultivation_time: i32) {
         self.inc(node_type);
         if node_type == NodeType::Magic && cultivation_time == 0 {
             self.magic_ready_used += 1;
         }
     }
 
-    pub fn inc_t(&mut self) {
+    pub(crate) fn inc_t(&mut self) {
         self.t_scheduled += 1;
     }
 
-    pub fn get_plot_info_str(&self) -> &str {
+    pub(crate) fn get_plot_info_str(&self) -> &str {
         &self.plot_info_str
     }
 }
 
 /// Read-only inputs: circuit definition and topology. Grouped so methods can borrow
 /// `input` and mutable state fields simultaneously without cloning.
-pub struct SchedulerInput {
+pub(crate) struct SchedulerInput {
     pub circuit: Circuit,
     pub topo: TopoGraph,
 }
 
+impl SchedulerInput {
+    pub(crate) fn circuit_stem(&self) -> &str {
+        use std::path::Path;
+        Path::new(&self.circuit.circuit_fname)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("circuit")
+    }
+}
+
 /// Assigns Pauli products to lcycles and routes them through the topology.
-pub struct Scheduler {
-    input: SchedulerInput,
-    rng_exp: Exponential,
+pub(crate) struct Scheduler {
+    pub(crate) input: SchedulerInput,
     rng_uniform: StdRng,
     magic_state_lambda: f64,
     plot_option: String,
-    cultivation_times_log: Vec<i32>,
-    stats: ScheduleStats,
-    lcycle_scheduled: Vec<(usize, Vec<i32>)>,
-    scheduled_products: IndexSet<i32>,
+    /// Cultivation pool, RNG, and timing log — owned by [`CultivationManager`].
+    pub(crate) cultivation: CultivationManager,
+    pub(crate) stats: ScheduleStats,
+    pub(crate) lcycle_scheduled: Vec<(usize, Vec<i32>)>,
+    pub(crate) scheduled_products: IndexSet<i32>,
     used: Vec<bool>,
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     /// T-gate products that failed the coin flip; rescheduled next lcycle without a magic node.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
-    t_gate_failures: usize,
-    stree_computation: SteinerTreeComputation,
-    ready_magic_positions: Vec<(f32, f32)>,
-    astar: AStarComputation,
+    pub(crate) t_gate_failures: usize,
+    pub(crate) stree_computation: SteinerTreeComputation,
+    pub(crate) astar: AStarComputation,
     no_t_failures: bool,
     terminals_scratch: Vec<u16>,
     scheduled_ids_scratch: Vec<i32>,
     children_scratch: Vec<i32>,
-    new_cultivation_times: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
     remaining_ids_scratch: Vec<i32>,
-    /// Magic node IDs, built once at init.
-    magic_node_ids: Vec<u16>,
-    /// Positions of magic nodes, parallel to `magic_node_ids`.
-    magic_node_positions: Vec<(f32, f32)>,
-    /// Pre-generated pool of cultivation times (exponential distribution).
-    cultivation_time_pool: Vec<i32>,
-    pool_index: usize,
-    /// T-gate products not yet scheduled; used to size pool refills.
-    t_products_remaining: usize,
     /// Precomputed terminal node IDs per product (avoids topology lookups in hot path).
     precomputed_terminals: Vec<Vec<u16>>,
     /// Precomputed root candidates per terminal per product: (is_paired, preferred, side).
@@ -203,14 +202,14 @@ pub struct Scheduler {
     /// Number of unresolved parents remaining per product index.
     remaining_parents: Vec<usize>,
     /// (product_id, optional routing tree) pairs scheduled in the current lcycle.
-    pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)>,
+    pub(crate) pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)>,
     /// Current logical cycle index (1-based, 0 = not yet started).
     current_lcycle: usize,
 }
 
 impl Scheduler {
     /// Creates a new scheduler. `magic_state_lambda` is the exponential distribution parameter for cultivation.
-    pub fn new(
+    pub(crate) fn new(
         circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
         plot_option: String, rseed: u32, no_t_failures: bool,
     ) -> Self {
@@ -233,11 +232,10 @@ impl Scheduler {
         let other_timer = timers.add_or_get("other ");
         Scheduler {
             input: SchedulerInput { circuit, topo },
-            rng_exp: Exponential::new(rseed),
             rng_uniform: StdRng::seed_from_u64(rseed as u64),
             magic_state_lambda,
             plot_option,
-            cultivation_times_log: Vec::new(),
+            cultivation: CultivationManager::new(rseed),
             stats: ScheduleStats::new(num_data_qubits, num_bus_qubits, num_magic_qubits),
             lcycle_scheduled: Vec::new(),
             scheduled_products: IndexSet::new(),
@@ -246,20 +244,13 @@ impl Scheduler {
             failed_t_paths: IndexMap::new(),
             t_gate_failures: 0,
             stree_computation: SteinerTreeComputation::new(num_nodes),
-            ready_magic_positions: Vec::new(),
             astar: AStarComputation::new(num_nodes),
             no_t_failures,
             terminals_scratch: Vec::new(),
             scheduled_ids_scratch: Vec::new(),
             children_scratch: Vec::new(),
-            new_cultivation_times: Vec::new(),
             precomputed_clifford_trees: HashMap::new(),
             remaining_ids_scratch: Vec::new(),
-            magic_node_ids: Vec::new(),
-            magic_node_positions: Vec::new(),
-            cultivation_time_pool: Vec::new(),
-            pool_index: 0,
-            t_products_remaining: 0,
             precomputed_terminals: Vec::new(),
             precomputed_root_info: Vec::new(),
             timers: timers,
@@ -273,22 +264,22 @@ impl Scheduler {
     }
 
     /// Returns the number of T-gate products in the circuit.
-    fn count_t_products(&self) -> usize {
+    pub(crate) fn count_t_products(&self) -> usize {
         (0..self.input.circuit.num_products())
             .filter(|&id| self.input.circuit.get_product(id as i32).gate_type.is_t())
             .count()
     }
 
     /// Greedily assigns products to lcycles. Returns (total lcycles, total scheduled products).
-    pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize)> {
+    pub(crate) fn schedule_circuit(&mut self) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
-        self.rng_exp
-            .try_set_params(1.0 / self.magic_state_lambda)
+        self.cultivation
+            .set_lambda(self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         self.init_magic_nodes();
         let num_t_products = self.count_t_products();
-        self.t_products_remaining = num_t_products;
-        self.fill_cultivation_pool(100 * num_t_products.max(1) + self.input.topo.num_nodes);
+        self.cultivation.t_products_remaining = num_t_products;
+        self.cultivation.fill_pool(100 * num_t_products.max(1) + self.input.topo.num_nodes);
         self.precompute_terminals_and_roots();
         self.precompute_multi_term_clifford_trees();
         self.to_schedule = self.input.circuit.initial_products().cloned().collect();
@@ -387,20 +378,7 @@ impl Scheduler {
 
     /// Initializes magic node cultivation times and builds `magic_node_ids`/`magic_node_positions`.
     fn init_magic_nodes(&mut self) {
-        self.magic_node_ids = self
-            .input
-            .topo
-            .iter_nodes()
-            .filter(|node| node.node_type == NodeType::Magic)
-            .map(|node| node.id)
-            .collect();
-        self.magic_node_positions =
-            self.magic_node_ids.iter().map(|&id| self.input.topo.get_node(id).pos).collect();
-        for i in 0..self.magic_node_ids.len() {
-            let id = self.magic_node_ids[i];
-            self.input.topo.cultivation_times[id as usize] = self.draw_cultivation_time();
-            self.input.topo.busy_counts[id as usize] = 0;
-        }
+        self.cultivation.init_magic_nodes(&mut self.input.topo);
     }
 
     /// Returns true for multi-term non-T products whose routing is topology-independent.
@@ -651,44 +629,9 @@ impl Scheduler {
     }
 
     /// Advances cultivation state; returns count of ready (cultivation_time=0) magic nodes.
-    fn update_cultivators(&mut self) -> usize {
+    pub(crate) fn update_cultivators(&mut self) -> usize {
         let _timer = accum_start!(self.timers);
-        self.new_cultivation_times.clear();
-        for i in 0..self.magic_node_ids.len() {
-            let id = self.magic_node_ids[i];
-            if self.used[id as usize] {
-                let t = self.draw_cultivation_time();
-                self.new_cultivation_times.push(t);
-            }
-        }
-        let mut num_avail_magic = 0;
-        let mut cultivation_time_index = 0;
-        self.ready_magic_positions.clear();
-        for i in 0..self.magic_node_ids.len() {
-            let id = self.magic_node_ids[i];
-            if self.used[id as usize] {
-                self.input.topo.cultivation_times[id as usize] =
-                    self.new_cultivation_times[cultivation_time_index];
-                self.input.topo.busy_counts[id as usize] = 0;
-                cultivation_time_index += 1;
-            } else if self.input.topo.is_cultivating(id) {
-                self.input.topo.busy_counts[id as usize] += 1;
-                if self.input.topo.busy_counts[id as usize]
-                    == self.input.topo.cultivation_times[id as usize]
-                {
-                    self.cultivation_times_log.push(self.input.topo.cultivation_times[id as usize]);
-                    self.input.topo.cultivation_times[id as usize] = 0;
-                    self.input.topo.busy_counts[id as usize] = 0;
-                }
-            }
-            if self.input.topo.cultivation_times[id as usize] == 0 {
-                num_avail_magic += 1;
-                self.ready_magic_positions.push(self.magic_node_positions[i]);
-            }
-        }
-        // Sort by x so AStarComputation::heuristic can prune with binary search.
-        self.ready_magic_positions
-            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let num_avail_magic = self.cultivation.update_cultivators(&mut self.input.topo, &self.used);
         info_sched!("  Available magic {}", num_avail_magic);
         num_avail_magic
     }
@@ -885,7 +828,7 @@ impl Scheduler {
                 &root_ids[..],
                 &self.input.topo,
                 &mut self.used,
-                &self.ready_magic_positions,
+                &self.cultivation.ready_magic_positions,
                 plotting,
             )
         } else {
@@ -913,32 +856,6 @@ impl Scheduler {
         PathResult::NoPath
     }
 
-    fn fill_cultivation_pool(&mut self, n: usize) {
-        self.cultivation_time_pool.clear();
-        self.cultivation_time_pool.reserve(n);
-        for _ in 0..n {
-            self.cultivation_time_pool.push(self.rng_exp.sample().round() as i32);
-        }
-        self.pool_index = 0;
-    }
-
-    /// Returns the next cultivation time from the pool, refilling if exhausted.
-    #[inline]
-    fn draw_cultivation_time(&mut self) -> i32 {
-        if self.pool_index >= self.cultivation_time_pool.len() {
-            if self.pool_index > 0 {
-                eprintln!(
-                    "{}Warning: refilling cultivation pool for {} remaining T products{}",
-                    _RED, self.t_products_remaining, _RESET
-                );
-            }
-            self.fill_cultivation_pool(10 * self.t_products_remaining + self.input.topo.num_nodes);
-        }
-        let t = self.cultivation_time_pool[self.pool_index];
-        self.pool_index += 1;
-        t
-    }
-
     /// Post-lcycle bookkeeping: remove scheduled products, unlock children, advance Clifford state.
     fn complete_lcycle(&mut self) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
@@ -954,7 +871,8 @@ impl Scheduler {
                     && !self.failed_t_paths.contains_key(id)
             })
             .count();
-        self.t_products_remaining = self.t_products_remaining.saturating_sub(t_newly_scheduled);
+        self.cultivation.t_products_remaining =
+            self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
         let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
         self.unlock_children(&t_failed_ids);
         self.advance_clifford_state();
@@ -1123,11 +1041,11 @@ impl Scheduler {
         let fail_pct =
             if total_t > 0 { 100.0 * self.t_gate_failures as f64 / total_t as f64 } else { 0.0 };
         println!("Magic state cultivation time:");
-        let mean = self.cultivation_times_log.iter().sum::<i32>() as f64
-            / self.cultivation_times_log.len() as f64;
-        let min = self.cultivation_times_log.iter().min().copied().unwrap_or(0);
-        let max = self.cultivation_times_log.iter().max().copied().unwrap_or(0);
-        println!("  number:  {}", self.cultivation_times_log.len());
+        let mean = self.cultivation.cultivation_times_log.iter().sum::<i32>() as f64
+            / self.cultivation.cultivation_times_log.len() as f64;
+        let min = self.cultivation.cultivation_times_log.iter().min().copied().unwrap_or(0);
+        let max = self.cultivation.cultivation_times_log.iter().max().copied().unwrap_or(0);
+        println!("  number:  {}", self.cultivation.cultivation_times_log.len());
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
@@ -1136,13 +1054,12 @@ impl Scheduler {
         println!("A* computation called {} times", self.astar.num_calls);
     }
 
-    /// Per-lcycle validation (debug only): checks scheduling order, terminal coverage,
-    /// magic root presence for first-attempt T gates, and no node overlap between products.
+    /// Per-lcycle validation (debug only).
     #[cfg(debug_assertions)]
     fn check_lcycle(&self, _t_failed_ids: &[i32], t_recovery_ids: &[i32]) -> io::Result<()> {
         let mut lcycle_used = vec![false; self.input.topo.num_nodes];
         for &(pp_id, ref opt_tree) in &self.pp_paths {
-            let Some(tree) = opt_tree else { continue }; // trees are None when not plotting
+            let Some(tree) = opt_tree else { continue };
             let tree = tree.as_ref();
             let pp = self.input.circuit.get_product(pp_id);
             if self.scheduled_products.contains(&pp_id) && !pp.gate_type.is_clifford() {
@@ -1281,11 +1198,11 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Writes the per-lcycle schedule to a file.
-    pub fn print_schedule(&self, hdr: &str) -> io::Result<()> {
+    /// Writes the per-lcycle schedule to a `<circuit_stem>.schedule` file.
+    pub(crate) fn print_schedule(&self, hdr: &str) -> io::Result<()> {
         let _timer = fn_timer!();
         debug_sched!("Printing schedule");
-        let output_fname = format!("{}.schedule", circuit_stem(&self.input.circuit.circuit_fname));
+        let output_fname = format!("{}.schedule", self.input.circuit_stem());
 
         let file = File::create(&output_fname)?;
         let mut buf_file = BufWriter::new(file);

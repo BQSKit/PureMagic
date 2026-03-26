@@ -16,7 +16,7 @@ impl Circuit {
     /// Generates a random T-gate circuit with spatial locality.
     /// Each product is generated with Pauli operators spreading from a center qubit.
     /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
-    pub fn generate_random(
+    pub(crate) fn generate_random(
         &mut self, num_products: usize, num_qubits: usize, spread_probability: f64,
         decay_factor: f64,
     ) {
@@ -34,7 +34,7 @@ impl Circuit {
     }
 
     /// Writes all products to a circuit file in standard format.
-    pub fn save_circuit_to_file(&self, circuit_fname: String) -> io::Result<()> {
+    pub(crate) fn save_circuit_to_file(&self, circuit_fname: String) -> io::Result<()> {
         let _timer = fn_timer!();
         let mut file = File::create(&circuit_fname)?;
         for product in &self.products {
@@ -49,7 +49,7 @@ impl Circuit {
 impl PauliProduct {
     /// Generates a random T-gate product with spatial locality.
     /// Starts at a random qubit and spreads to neighbors with decaying probability.
-    pub fn gen_rnd_t(
+    pub(crate) fn gen_rnd_t(
         product_id: i32, num_qubits: usize, spread_probability: f64, decay_factor: f64,
     ) -> Self {
         let mut rng = rand::thread_rng();
@@ -94,7 +94,7 @@ impl PauliProduct {
     }
 
     /// Converts this product to circuit file format with random sign.
-    pub fn to_circuit_format(&self, num_qubits: usize) -> String {
+    pub(crate) fn to_circuit_format(&self, num_qubits: usize) -> String {
         let mut rng = rand::thread_rng();
         let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
         let mut pauli_string = vec!['_'; num_qubits];

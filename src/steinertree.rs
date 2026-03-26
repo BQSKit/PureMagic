@@ -18,7 +18,7 @@ fn is_cultivator_candidate(
 
 /// State container for greedy multi-source shortest path (Steiner tree) computation.
 /// Tracks visited nodes, path connectivity, and early termination statistics.
-pub struct SteinerTreeComputation {
+pub(crate) struct SteinerTreeComputation {
     num_nodes: usize,
     visited: Vec<Option<u16>>,
     paths: Vec<Vec<u16>>,
@@ -27,7 +27,7 @@ pub struct SteinerTreeComputation {
 }
 
 impl SteinerTreeComputation {
-    pub fn new(num_nodes: usize) -> Self {
+    pub(crate) fn new(num_nodes: usize) -> Self {
         SteinerTreeComputation {
             num_nodes: num_nodes,
             visited: vec![None; num_nodes],
@@ -37,7 +37,7 @@ impl SteinerTreeComputation {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.visited.fill(None);
         for path in self.paths.iter_mut() {
             path.clear();
@@ -49,7 +49,7 @@ impl SteinerTreeComputation {
     /// Expands from roots using BFS to find paths between all root pairs while
     /// identifying a magic node (for T gates) if available. Returns a tree with
     /// data and routing nodes, or None if no valid path exists.
-    pub fn compute(
+    pub(crate) fn compute(
         &mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<u16>,
         terminal_nodes: &Vec<u16>, gate_type: GateType,
     ) -> Option<TreeGraph> {

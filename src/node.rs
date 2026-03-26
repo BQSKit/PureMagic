@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// - `Bus`: routing nodes (when not using magic routing)
 /// - `Data`: logical data qubits
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NodeType {
+pub(crate) enum NodeType {
     Magic,
     Bus,
     Data,
@@ -14,14 +14,14 @@ pub enum NodeType {
 /// Maximum number of neighbours a node can have.
 /// Interior grid nodes have at most 4 (up/down/left/right).
 /// Bus nodes can additionally connect to 2 data nodes = 6 total.
-pub const MAX_NBORS: usize = 6;
+pub(crate) const MAX_NBORS: usize = 6;
 
 /// Represents a node in the topological graph.
 /// Contains metadata about node type, position, magic state cultivation tracking, and connectivity.
 /// `nbors` is stored as a fixed-size inline array to avoid heap allocation and pointer chasing
 /// in the A* inner loop.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Node {
+pub(crate) struct Node {
     pub node_type: NodeType,
     pub id: u16,
     pub paired_data_id: Option<u16>,
@@ -35,17 +35,17 @@ pub struct Node {
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
-    pub fn new(id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType) -> Self {
+    pub(crate) fn new(id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType) -> Self {
         Node { node_type, id, paired_data_id, pos: (x, y), nbors: [0u16; MAX_NBORS], num_nbors: 0 }
     }
 
-    pub fn set_magic_routing(enabled: bool) {
+    pub(crate) fn set_magic_routing(enabled: bool) {
         USE_MAGIC_ROUTING.store(enabled, Ordering::Relaxed);
     }
 
     /// Adds a neighbour to this node's connectivity list.
     /// Panics in debug mode if `MAX_NBORS` is exceeded.
-    pub fn add_neighbor(&mut self, other: u16) {
+    pub(crate) fn add_neighbor(&mut self, other: u16) {
         if self.nbors_slice().contains(&other) {
             return;
         }
@@ -60,11 +60,11 @@ impl Node {
     }
 
     #[inline(always)]
-    pub fn nbors_slice(&self) -> &[u16] {
+    pub(crate) fn nbors_slice(&self) -> &[u16] {
         &self.nbors[..self.num_nbors as usize]
     }
 
-    pub fn is_routing(&self) -> bool {
+    pub(crate) fn is_routing(&self) -> bool {
         if USE_MAGIC_ROUTING.load(Ordering::Relaxed) {
             assert_ne!(self.node_type, NodeType::Bus);
             self.node_type == NodeType::Magic
