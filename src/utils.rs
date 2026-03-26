@@ -3,31 +3,31 @@ use std::time::{Duration, Instant};
 use indexmap::IndexMap;
 
 /// ANSI escape codes for terminal colour output.
-pub const _RED: &str = "\x1b[31m";
-pub const _GREEN: &str = "\x1b[32m";
-pub const _YELLOW: &str = "\x1b[33m";
-pub const _BLUE: &str = "\x1b[34m";
-pub const _MAGENTA: &str = "\x1b[35m";
-pub const _CYAN: &str = "\x1b[36m";
-pub const _WHITE: &str = "\x1b[37m";
-pub const _LRED: &str = "\x1b[91m";
-pub const _LGREEN: &str = "\x1b[92m";
-pub const _LYELLOW: &str = "\x1b[93m";
-pub const _LBLUE: &str = "\x1b[94m";
-pub const _LMAGENTA: &str = "\x1b[95m";
-pub const _LCYAN: &str = "\x1b[96m";
-pub const _LWHITE: &str = "\x1b[97m";
+pub(crate) const _RED: &str = "\x1b[31m";
+pub(crate) const _GREEN: &str = "\x1b[32m";
+pub(crate) const _YELLOW: &str = "\x1b[33m";
+pub(crate) const _BLUE: &str = "\x1b[34m";
+pub(crate) const _MAGENTA: &str = "\x1b[35m";
+pub(crate) const _CYAN: &str = "\x1b[36m";
+pub(crate) const _WHITE: &str = "\x1b[37m";
+pub(crate) const _LRED: &str = "\x1b[91m";
+pub(crate) const _LGREEN: &str = "\x1b[92m";
+pub(crate) const _LYELLOW: &str = "\x1b[93m";
+pub(crate) const _LBLUE: &str = "\x1b[94m";
+pub(crate) const _LMAGENTA: &str = "\x1b[95m";
+pub(crate) const _LCYAN: &str = "\x1b[96m";
+pub(crate) const _LWHITE: &str = "\x1b[97m";
 /// Resets all ANSI terminal formatting.
-pub const _RESET: &str = "\x1b[0m";
+pub(crate) const _RESET: &str = "\x1b[0m";
 
 /// RAII timer that prints the elapsed wall-clock time when it goes out of scope.
-pub struct Timer {
+pub(crate) struct Timer {
     name: String,
     start: Instant,
 }
 
 impl Timer {
-    pub fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Timer { name: name.to_string(), start: Instant::now() }
     }
 }
@@ -122,18 +122,18 @@ impl AccumTimer {
 /// A collection of named accumulated timers. Timers are created automatically
 /// on first use via [`accum_start!`] and the summary is printed when this
 /// collection drops.
-pub struct AccumTimers {
+pub(crate) struct AccumTimers {
     timers: IndexMap<String, AccumTimer>,
 }
 
 impl AccumTimers {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         AccumTimers { timers: IndexMap::new() }
     }
 
     /// Register a timer by name and return its index for fast subsequent access.
     /// If already registered, just returns the existing index.
-    pub fn add_or_get(&mut self, name: &'static str) -> usize {
+    pub(crate) fn add_or_get(&mut self, name: &'static str) -> usize {
         if let Some(idx) = self.timers.get_index_of(name) {
             idx
         } else {
@@ -143,14 +143,14 @@ impl AccumTimers {
     }
 
     /// Start a timer by pre-looked-up index. O(1), no string lookup.
-    pub fn start(&mut self, idx: usize) {
+    pub(crate) fn start(&mut self, idx: usize) {
         if let Some((_, t)) = self.timers.get_index_mut(idx) {
             t.start();
         }
     }
 
     /// Stop a timer by pre-looked-up index. O(1), no string lookup.
-    pub fn stop(&mut self, idx: usize) {
+    pub(crate) fn stop(&mut self, idx: usize) {
         if let Some((_, t)) = self.timers.get_index_mut(idx) {
             t.stop();
         }
@@ -201,7 +201,7 @@ impl Drop for AccumTimers {
 }
 
 /// RAII guard that stops a timer by index when dropped.
-pub struct AccumTimerGuard {
+pub(crate) struct AccumTimerGuard {
     pub timers: *mut AccumTimers,
     pub idx: usize,
 }

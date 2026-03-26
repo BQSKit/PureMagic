@@ -18,7 +18,7 @@ struct TreeNode {
 
 impl TreeNode {
     /// Creates a tree node from a topology node.
-    pub fn new(node: &Node, #[cfg_attr(not(debug_assertions), allow(unused))] label: &str) -> Self {
+    pub(crate) fn new(node: &Node, #[cfg_attr(not(debug_assertions), allow(unused))] label: &str) -> Self {
         TreeNode {
             nbors: Vec::new(),
             is_routing: node.is_routing(),
@@ -30,7 +30,7 @@ impl TreeNode {
     }
 
     /// Removes an edge to a neighbor node.
-    pub fn remove_edge(&mut self, nb_id: u16) {
+    pub(crate) fn remove_edge(&mut self, nb_id: u16) {
         // FIXME: this could be inefficient
         let pos = self.nbors.iter().position(|&id| id == nb_id).unwrap();
         self.nbors.swap_remove(pos);
@@ -40,7 +40,7 @@ impl TreeNode {
 /// A sparse tree subgraph of the topology containing scheduled Pauli product routing.
 /// Nodes are sparse (only included nodes present); root marks the magic cultivator.
 #[derive(Debug, Clone)]
-pub struct TreeGraph {
+pub(crate) struct TreeGraph {
     // if a node is included in the graph, then it is a vector of its neighbors
     nodes: Vec<Option<TreeNode>>,
     pub num_edges: usize,
@@ -50,7 +50,7 @@ pub struct TreeGraph {
 
 impl TreeGraph {
     /// Creates a new empty tree graph with capacity for `num_nodes` nodes.
-    pub fn new(num_nodes: usize) -> Self {
+    pub(crate) fn new(num_nodes: usize) -> Self {
         TreeGraph {
             nodes: vec![None; num_nodes],
             num_edges: 0,
@@ -60,7 +60,7 @@ impl TreeGraph {
     }
 
     /// Returns an iterator over node IDs in the tree.
-    pub fn iter_nodes(&self) -> impl Iterator<Item = u16> {
+    pub(crate) fn iter_nodes(&self) -> impl Iterator<Item = u16> {
         self.nodes
             .iter()
             .enumerate()
@@ -69,17 +69,17 @@ impl TreeGraph {
 
     /// Returns a slice of neighbor IDs for a node that is in the tree.
     /// Panics if the node is not present.
-    pub fn neighbors(&self, node_id: u16) -> &[u16] {
+    pub(crate) fn neighbors(&self, node_id: u16) -> &[u16] {
         self.nodes[node_id as usize].as_ref().unwrap().nbors.as_slice()
     }
 
     /// Checks if a node exists in the tree.
-    pub fn contains_node(&self, id: u16) -> bool {
+    pub(crate) fn contains_node(&self, id: u16) -> bool {
         self.nodes[id as usize].is_some()
     }
 
     /// Checks if an undirected edge exists between two nodes.
-    pub fn contains_edge(&self, node_id1: u16, node_id2: u16) -> bool {
+    pub(crate) fn contains_edge(&self, node_id1: u16, node_id2: u16) -> bool {
         if let Some(node) = &self.nodes[node_id1 as usize] {
             node.nbors.contains(&node_id2)
         } else {
@@ -89,12 +89,12 @@ impl TreeGraph {
 
     /// Returns the degree of a node (debug builds only).
     #[cfg(debug_assertions)]
-    pub fn get_num_node_edges(&self, node_id: u16) -> usize {
+    pub(crate) fn get_num_node_edges(&self, node_id: u16) -> usize {
         self.nodes[node_id as usize].as_ref().map(|node| node.nbors.len()).unwrap_or(0)
     }
 
     /// Adds a node to the tree from topology node data.
-    pub fn add_node(&mut self, node: &Node, label: &str) {
+    pub(crate) fn add_node(&mut self, node: &Node, label: &str) {
         assert!(self.nodes[node.id as usize].is_none());
         self.nodes[node.id as usize] = Some(TreeNode::new(node, label));
         self.num_nodes += 1;
@@ -102,7 +102,7 @@ impl TreeGraph {
     }
 
     /// Adds an undirected edge between two existing nodes.
-    pub fn add_edge(&mut self, node_id1: u16, node_id2: u16) {
+    pub(crate) fn add_edge(&mut self, node_id1: u16, node_id2: u16) {
         // make sure the edge doesn't already exist
         #[cfg(debug_assertions)]
         {
@@ -117,9 +117,52 @@ impl TreeGraph {
         self.num_edges += 1;
     }
 
+    /// Removes the magic root node and then trims all dangling routing nodes,
+    /// leaving the minimal subtree that still connects all terminal data nodes.
+    /// A routing node adjacent only to a single data node is kept — it is the
+    /// root-side connection point for that terminal and must not be removed.
+    /// After this call `root_node_id` is `None`.
+    pub(crate) fn trim_magic_root(&mut self) {
+        let root_id = match self.root_node_id.take() {
+            Some(id) => id,
+            None => return,
+        };
+        self.remove_node(root_id);
+        // Trim routing nodes that became dangling, but preserve any routing node
+        // whose sole remaining neighbor is a data node (it is the terminal's root).
+        loop {
+            let dangling: Vec<u16> = self
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, opt)| {
+                    opt.as_ref().and_then(|n| {
+                        if !n.is_routing || n.nbors.len() > 1 {
+                            return None;
+                        }
+                        if n.nbors.len() == 1 {
+                            // Keep if the sole neighbor is a data node.
+                            let nb = self.nodes[n.nbors[0] as usize].as_ref()?;
+                            if nb.is_data {
+                                return None;
+                            }
+                        }
+                        Some(i as u16)
+                    })
+                })
+                .collect();
+            if dangling.is_empty() {
+                break;
+            }
+            for id in dangling {
+                self.remove_node(id);
+            }
+        }
+    }
+
     /// Removes routing nodes with degree ≤ 1 (except root) until none remain.
     /// Returns the number of nodes trimmed.
-    pub fn trim_dangling_nodes(&mut self) -> usize {
+    pub(crate) fn trim_dangling_nodes(&mut self) -> usize {
         let mut num_trimmed = 0;
         let root_id = self.root_node_id.unwrap();
         loop {
@@ -174,7 +217,7 @@ impl TreeGraph {
 
     /// For data nodes with two edges (one side, one vertical), removes the weaker edge.
     /// Prefers keeping vertical edges if they are unique connections.
-    pub fn remove_double_edges(&mut self) {
+    pub(crate) fn remove_double_edges(&mut self) {
         let mut edges_to_remove: Vec<(u16, u16)> = Vec::new();
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
             if let Some(node) = node_opt {
@@ -194,7 +237,9 @@ impl TreeGraph {
                         _RESET
                     );
                     let vert_nb = self.nodes[vert_nb_id as usize].as_ref().unwrap();
-                    if node.pos.1 < vert_nb.pos.1 && self.get_below_edge_count(vert_nb) == 1 {
+                    if node.pos.1 < vert_nb.pos.1
+                        && self.get_horizontal_edge_count(vert_nb, false) == 1
+                    {
                         debug_sched!(
                             "      {}removing single below edge {}->{}{}",
                             _BLUE,
@@ -203,7 +248,8 @@ impl TreeGraph {
                             _RESET
                         );
                         edges_to_remove.push((node_id as u16, vert_nb_id));
-                    } else if node.pos.1 > vert_nb.pos.1 && self.get_above_edge_count(vert_nb) == 1
+                    } else if node.pos.1 > vert_nb.pos.1
+                        && self.get_horizontal_edge_count(vert_nb, true) == 1
                     {
                         debug_sched!(
                             "      {}removing single above edge {}->{}{}",
@@ -233,24 +279,15 @@ impl TreeGraph {
         }
     }
 
-    /// Counts edges pointing upward (higher y position) from a node.
-    fn get_above_edge_count(&self, node: &TreeNode) -> usize {
+    /// Counts edges in one vertical direction from a node.
+    /// If `upward` is true, counts neighbors with a higher y position (above);
+    /// if false, counts neighbors with a lower y position (below).
+    fn get_horizontal_edge_count(&self, node: &TreeNode, upward: bool) -> usize {
         node.nbors
             .iter()
             .filter(|nb_id| {
                 let nb = self.nodes[**nb_id as usize].as_ref().unwrap();
-                node.pos.1 < nb.pos.1
-            })
-            .count()
-    }
-
-    /// Counts edges pointing downward (lower y position) from a node.
-    fn get_below_edge_count(&self, node: &TreeNode) -> usize {
-        node.nbors
-            .iter()
-            .filter(|nb_id| {
-                let nb = self.nodes[**nb_id as usize].as_ref().unwrap();
-                node.pos.1 > nb.pos.1
+                if upward { node.pos.1 < nb.pos.1 } else { node.pos.1 > nb.pos.1 }
             })
             .count()
     }

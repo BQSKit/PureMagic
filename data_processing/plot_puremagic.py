@@ -28,7 +28,7 @@ _COLOURS = [
     "teal",
 ]
 
-# Conversion factors to microseconds (for schedule_timestep timing)
+# Conversion factors to microseconds (for schedule_lcycle timing)
 _TO_US = {"μs": 1.0, "us": 1.0, "ms": 1e3, "s": 1e6}
 
 # X-axis: key -> (DataFrame column name, display label)
@@ -46,7 +46,7 @@ _Y_AXES = {
     "scheduling_efficiency": "Scheduling Efficiency",
     "parallel_efficiency": "Parallel Efficiency",
     "cliffords": "Number of Cliffords",
-    "timesteps": "Scheduled Cycles",
+    "lcycles": "Scheduled Logical Cycles",
     "parallelism": "Parallelism",
     "timing": "Average Time per Cycle (μs)",
     "total_qubits": "Total Qubits",
@@ -78,7 +78,7 @@ def parse_output_file(filepath):
 
     Columns (NaN where missing):
         circuit, weight, magic_state_lambda, scheduling_efficiency,
-        parallel_efficiency, parallelism, cliffords, timesteps,
+        parallel_efficiency, parallelism, cliffords, lcycles,
         data_qubits, total_qubits, magic_qubits, loaded_qubits, timing,
         inv_lambda, ancilla_qubits, volume, max_parallelism
     """
@@ -102,7 +102,7 @@ def parse_output_file(filepath):
                 "parallel_efficiency": pe,
                 "parallelism": cur.get("parallelism"),
                 "cliffords": cur.get("cliffords"),
-                "timesteps": cur.get("timesteps"),
+                "lcycles": cur.get("lcycles"),
                 "data_qubits": cur.get("data_qubits"),
                 "total_qubits": cur.get("total_qubits"),
                 "magic_qubits": cur.get("magic_qubits"),
@@ -116,7 +116,7 @@ def parse_output_file(filepath):
             "optimal_speedup",
             "parallel_efficiency",
             "scheduling_efficiency",
-            "timesteps",
+            "lcycles",
             "cliffords",
             "timing",
             "loaded_qubits",
@@ -166,11 +166,11 @@ def parse_output_file(filepath):
             if m := re.match(r"Loaded circuit with \d+ products and (\d+) qubits", s):
                 cur["loaded_qubits"] = int(m.group(1))
 
-            if m := re.match(r"Scheduled \d+ in (\d+) timesteps", s):
-                cur["timesteps"] = int(m.group(1))
+            if m := re.match(r"Scheduled \d+ in (\d+) lcycles", s):
+                cur["lcycles"] = int(m.group(1))
 
             if cur.get("circuit"):
-                if m := re.match(r"Optimal timesteps \d+ \(([0-9.eE+\-]+) speedup\)", s):
+                if m := re.match(r"Optimal lcycles \d+ \(([0-9.eE+\-]+) speedup\)", s):
                     cur["optimal_speedup"] = float(m.group(1))
                 if m := re.match(r"Parallelism:\s+([0-9.eE+\-]+)x", s):
                     cur["parallelism"] = float(m.group(1))
@@ -179,7 +179,7 @@ def parse_output_file(filepath):
                 if m := re.match(r"Parallel efficiency:\s+([0-9.eE+\-]+)", s):
                     cur["parallel_efficiency"] = float(m.group(1))
                 if m := re.match(
-                    r"schedule_timestep\s+total:.*avg:\s*([0-9.eE+\-]+)\s*(\S+)\s+max:", s
+                    r"schedule_lcycle\s+total:.*avg:\s*([0-9.eE+\-]+)\s*(\S+)\s+max:", s
                 ):
                     cur["timing"] = float(m.group(1)) * _TO_US.get(m.group(2), 1.0)
 
@@ -193,7 +193,7 @@ def parse_output_file(filepath):
         return df
     df["inv_lambda"] = 1.0 / df["magic_state_lambda"]
     df["ancilla_qubits"] = df["total_qubits"] - df["data_qubits"]
-    df["volume"] = df["timesteps"] * df["total_qubits"]
+    df["volume"] = df["lcycles"] * df["total_qubits"]
     df["max_parallelism"] = df["magic_qubits"] * df["magic_state_lambda"]
     return df
 
