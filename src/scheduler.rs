@@ -3,7 +3,6 @@ use crate::astar::{AStarComputation, PathResult};
 use crate::circuit::Circuit;
 use crate::debug_sched;
 use crate::fn_timer;
-use crate::greedypath::GreedyPathComputation;
 use crate::info_sched;
 use crate::node::NodeType;
 use crate::pauliproduct::{Operator, PauliProduct};
@@ -170,8 +169,6 @@ pub struct Scheduler {
     stree_computation: SteinerTreeComputation,
     ready_magic_positions: Vec<(f32, f32)>,
     astar: AStarComputation,
-    greedypath: GreedyPathComputation,
-    use_greedypath: bool,
     no_t_failures: bool,
     terminals_scratch: Vec<u16>,
     scheduled_ids_scratch: Vec<i32>,
@@ -201,7 +198,7 @@ impl Scheduler {
     /// Creates a new scheduler. `magic_state_lambda` is the exponential distribution parameter for cultivation.
     pub fn new(
         circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-        plot_option: String, rseed: u32, use_greedypath: bool, no_t_failures: bool,
+        plot_option: String, rseed: u32, no_t_failures: bool,
     ) -> Self {
         if log_level != "none" {
             let circuit_stem = Path::new(&circuit.circuit_fname)
@@ -242,8 +239,6 @@ impl Scheduler {
             stree_computation: SteinerTreeComputation::new(num_nodes),
             ready_magic_positions: Vec::new(),
             astar: AStarComputation::new(num_nodes),
-            greedypath: GreedyPathComputation::new(num_nodes),
-            use_greedypath,
             no_t_failures,
             terminals_scratch: Vec::new(),
             scheduled_ids_scratch: Vec::new(),
@@ -864,25 +859,14 @@ impl Scheduler {
             return PathResult::NoPath;
         }
         let result = if pauli_product.gate_type.is_t() && pauli_product.operators.len() == 1 {
-            if self.use_greedypath {
-                self.greedypath.compute(
-                    &self.terminals_scratch[..],
-                    &root_ids[..],
-                    &self.topo,
-                    &mut self.used,
-                    &self.ready_magic_positions,
-                    plotting,
-                )
-            } else {
-                self.astar.compute(
-                    &self.terminals_scratch[..],
-                    &root_ids[..],
-                    &self.topo,
-                    &mut self.used,
-                    &self.ready_magic_positions,
-                    plotting,
-                )
-            }
+            self.astar.compute(
+                &self.terminals_scratch[..],
+                &root_ids[..],
+                &self.topo,
+                &mut self.used,
+                &self.ready_magic_positions,
+                plotting,
+            )
         } else {
             debug_assert!(
                 !Self::should_precompute(pauli_product),
@@ -1112,11 +1096,7 @@ impl Scheduler {
         println!("  max:     {}", max);
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, total_t, fail_pct);
         println!("Steiner tree computation called {} times", self.stree_computation.num_calls);
-        if self.use_greedypath {
-            println!("Greed path computation called {} times", self.greedypath.num_calls);
-        } else {
-            println!("A* computation called {} times", self.astar.num_calls);
-        }
+        println!("A* computation called {} times", self.astar.num_calls);
     }
 
     /// Per-lcycle validation (debug only): checks scheduling order, terminal coverage,
@@ -1386,7 +1366,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         let mut sched =
-            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false);
+            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false);
         sched.schedule_circuit().expect("schedule_circuit failed");
         sched
     }

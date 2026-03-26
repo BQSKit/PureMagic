@@ -39,7 +39,6 @@ Run with `-h` to see all options.
 | `-R, --randomize-data-qubits` | off | Randomize data qubit numbering |
 | `-u, --use-magic-routing` | off | Use magic qubits for routing in addition to bus qubits |
 | `-S, --sides-only` | off | Use only side edges of data patches (not top/bottom) |
-| `-g, --use-greedy` | off | Use faster but suboptimal greedy path algorithm instead of A* |
 | `-a, --ancilla-rows <N>` | `1` | Number of ancilla rows between data patches (magic routing only) |
 | `-l, --log-scheduler <LEVEL>` | `none` | Scheduler trace log level: `none`, `info`, or `debug` |
 | `-I, --show-product-ids` | off | Show product IDs instead of Pauli terms in circuit plots |
@@ -53,9 +52,6 @@ Run with `-h` to see all options.
 
 # Use magic routing with a specific topology file
 ./target/release/puremagic --circuit circuit.trans --use-magic-routing --topo my.topo.txt
-
-# Use the greedy path algorithm and debug logging
-./target/release/puremagic --circuit circuit.trans --use-greedy --log-scheduler debug
 
 # Generate plots of topology, circuit layers, and scheduling paths
 ./target/release/puremagic --circuit circuit.trans --plot topo,circuit,cstats,paths
@@ -137,7 +133,6 @@ src/
 ├── puremagic.rs       # CLI entry point and argument parsing
 ├── scheduler.rs       # Core EAF scheduling algorithm
 ├── astar.rs           # A* pathfinding (single-qubit T gate routing)
-├── greedypath.rs      # Greedy path algorithm (faster alternative to A*)
 ├── steinertree.rs     # Steiner tree computation (greedy multi-source BFS)
 ├── treegraph.rs       # Tree graph structure for scheduled operation paths
 ├── circuit.rs         # Circuit DAG: products, layers, dependencies
@@ -146,3 +141,4 @@ src/
 ├── node.rs            # Node type definitions (Magic, Bus, Data)
 └── utils.rs           # Timing utilities and logging macros
 ```
+xs

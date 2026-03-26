@@ -164,16 +164,6 @@ fn puremagic_with_magic_routing_flag_exits_zero() {
 }
 
 #[test]
-fn puremagic_with_greedy_path_flag_exits_zero() {
-    let tmp = TempDir::new().unwrap();
-    let circuit = fixture("tiny.trans");
-    // This flag uses underscore (long = "use_greedy") not kebab-case.
-    let (ok, _stdout, stderr) =
-        run_puremagic(&["--circuit", circuit.to_str().unwrap(), "--use_greedy"], tmp.path());
-    assert!(ok, "puremagic --use_greedy failed; stderr:\n{}", stderr);
-}
-
-#[test]
 fn puremagic_with_fixed_rseed_is_deterministic() {
     let tmp1 = TempDir::new().unwrap();
     let tmp2 = TempDir::new().unwrap();
