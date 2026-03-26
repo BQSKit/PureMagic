@@ -354,7 +354,17 @@ impl Circuit {
     where
         F: Fn(&[Vec<&PauliProduct>]) -> f64,
     {
-        let data = self.compute_moving_average(layers, window_size, value_fn);
+        let data: Vec<f64> = layers
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let window_start = if i >= window_size { i - window_size } else { 0 };
+                let window_end = i + 1;
+                let window = &layers[window_start..window_end];
+                value_fn(window)
+            })
+            .collect();
+
         // Assert that no y value exceeds num_qubits
         for (i, &y_value) in data.iter().enumerate() {
             assert!(
@@ -379,42 +389,9 @@ impl Circuit {
         Ok(())
     }
 
-    /// Computes moving average of a metric across layers using a sliding window.
-    fn compute_moving_average<F>(
-        &self, layers: &[Vec<&PauliProduct>], window_size: usize, value_fn: F,
-    ) -> Vec<f64>
-    where
-        F: Fn(&[Vec<&PauliProduct>]) -> f64,
-    {
-        layers
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                let window_start = if i >= window_size { i - window_size } else { 0 };
-                let window_end = i + 1;
-                let window = &layers[window_start..window_end];
-                value_fn(window)
-            })
-            .collect()
-    }
-
     /// Prints circuit statistics (products, Cliffords, layers, avg/max products per layer).
     /// Returns the total number of layers.
     pub fn print_statistics(&self) -> usize {
-        let (num_layers, num_cliffords, avg_products, max_products) = self.get_statistics();
-        println!("Circuit statistics:");
-        println!("  Number of products:               {}", self.products.len());
-        println!("  Number of Cliffords:              {}", num_cliffords);
-        println!("  Layers:                           {}", num_layers);
-        println!(
-            "  Products per layer:               {:.2} avg, {} max",
-            avg_products, max_products
-        );
-        num_layers
-    }
-
-    /// Computes circuit statistics: layer count, Clifford count, avg/max products per layer.
-    fn get_statistics(&self) -> (usize, i32, f64, i32) {
         let layers = self.get_layers();
         let mut num_cliffords = 0;
         let mut num_products = vec![0; layers.len()];
@@ -430,7 +407,15 @@ impl Circuit {
         let num_layers = layers.len();
         let avg_products = self.products.len() as f64 / num_layers as f64;
         let max_products = *num_products.iter().max().unwrap_or(&0);
-        (layers.len(), num_cliffords, avg_products, max_products as i32)
+        println!("Circuit statistics:");
+        println!("  Number of products:               {}", self.products.len());
+        println!("  Number of Cliffords:              {}", num_cliffords);
+        println!("  Layers:                           {}", num_layers);
+        println!(
+            "  Products per layer:               {:.2} avg, {} max",
+            avg_products, max_products
+        );
+        num_layers
     }
 
     /// Writes circuit layers to a text file (debug builds only).
@@ -578,16 +563,10 @@ impl Circuit {
                 }
             }
         }
-        self.print_coupling_frequency(&matrix);
-        matrix
-    }
-
-    /// Prints qubit coupling frequency statistics in descending order.
-    fn print_coupling_frequency(&self, coupling_matrix: &Vec<Vec<usize>>) {
         let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
         for i in 0..(self.num_qubits - 1) {
             for j in (i + 1)..self.num_qubits {
-                pairs.push((i, j, coupling_matrix[i][j]));
+                pairs.push((i, j, matrix[i][j]));
             }
         }
         pairs.sort_by(|p1, p2| p1.2.cmp(&p2.2).reverse());
@@ -597,6 +576,7 @@ impl Circuit {
                 eprintln!("  {} {} {}", q1, q2, n);
             }
         }
+        matrix
     }
 }
 
