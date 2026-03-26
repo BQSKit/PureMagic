@@ -655,7 +655,7 @@ impl Scheduler {
                 to_remove.push(pp_id);
                 // Collect everything we need from `tree` before the mutable borrow.
                 let node_ids: Vec<u16> = tree.iter_nodes().collect();
-                let (tree_num_nodes, tree_num_edges) = (tree.num_nodes, tree.num_edges);
+                let (_tree_num_nodes, _tree_num_edges) = (tree.num_nodes, tree.num_edges);
                 // Keep opt_tree only if plotting; drop `tree` so no borrow of `self` remains
                 // before the `&mut self` call to `mark_nodes_used`.
                 let opt_tree: Option<Rc<TreeGraph>> =
@@ -665,8 +665,8 @@ impl Scheduler {
                 info_sched!(
                     "  Scheduled product {} (precomputed) with {} nodes and {} edges",
                     self.input.circuit.get_product(pp_id),
-                    tree_num_nodes,
-                    tree_num_edges
+                    _tree_num_nodes,
+                    _tree_num_edges
                 );
                 self.pp_paths.push((pp_id, opt_tree));
             } else {
@@ -738,13 +738,13 @@ impl Scheduler {
     }
 
     /// Schedules a single-qubit measurement gate (no routing needed).
-    fn schedule_measurement(&mut self, pp_id: i32, plotting: bool) -> PathResult {
+    fn schedule_measurement(&mut self, _pp_id: i32, plotting: bool) -> PathResult {
         let node_id = self.terminals_scratch[0];
         let node = self.input.topo.get_node(node_id);
         if self.used[node.id as usize] {
             info_sched!(
                 "    Cannot schedule {}: node for M {} is used",
-                pp_id,
+                _pp_id,
                 self.input.topo.get_label(node_id)
             );
             return PathResult::NoPath;
@@ -767,11 +767,11 @@ impl Scheduler {
         let node_id = self.terminals_scratch[0];
         let node = self.input.topo.get_node(node_id);
         if self.used[node.id as usize] {
-            let gate_type = self.input.circuit.get_product(pp_id).gate_type;
+            let _gate_type = self.input.circuit.get_product(pp_id).gate_type;
             info_sched!(
                 "    Cannot schedule {}: node for {:?} {} is used",
                 pp_id,
-                gate_type,
+                _gate_type,
                 self.input.topo.get_label(node_id)
             );
             return PathResult::NoPath;
@@ -873,7 +873,7 @@ impl Scheduler {
             .count();
         self.cultivation.t_products_remaining =
             self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
-        let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
+        let (t_failed_ids, _t_recovery_ids) = self.process_t_gate_outcomes();
         self.unlock_children(&t_failed_ids);
         self.advance_clifford_state();
         debug_sched!(
@@ -896,7 +896,7 @@ impl Scheduler {
             .collect();
         self.lcycle_scheduled.push((self.current_lcycle, lcycle_ids));
         #[cfg(debug_assertions)]
-        self.check_lcycle(&t_failed_ids, &t_recovery_ids)?;
+        self.check_lcycle(&t_failed_ids, &_t_recovery_ids)?;
         self.scheduled_products.extend(
             self.pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
         );
