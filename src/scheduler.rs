@@ -201,11 +201,7 @@ impl Scheduler {
         plot_option: String, rseed: u32, no_t_failures: bool,
     ) -> Self {
         if log_level != "none" {
-            let circuit_stem = Path::new(&circuit.circuit_fname)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("circuit");
-            let sched_fname = format!("{}.sched_trace", circuit_stem);
+            let sched_fname = format!("{}.sched_trace", circuit_stem(&circuit.circuit_fname));
             let level_filter = match log_level.to_lowercase().as_str() {
                 "debug" => log::LevelFilter::Debug,
                 "info" => log::LevelFilter::Info,
@@ -259,6 +255,13 @@ impl Scheduler {
         }
     }
 
+    /// Returns the number of T-gate products in the circuit.
+    fn count_t_products(&self) -> usize {
+        (0..self.circuit.num_products())
+            .filter(|&id| self.circuit.get_product(id as i32).gate_type.is_t())
+            .count()
+    }
+
     /// Greedily assigns products to lcycles. Returns (total lcycles, total scheduled products).
     pub fn schedule_circuit(&mut self) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
@@ -266,9 +269,7 @@ impl Scheduler {
             .try_set_params(1.0 / self.magic_state_lambda)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         self.init_magic_nodes();
-        let num_t_products = (0..self.circuit.num_products())
-            .filter(|&id| self.circuit.get_product(id as i32).gate_type.is_t())
-            .count();
+        let num_t_products = self.count_t_products();
         self.t_products_remaining = num_t_products;
         self.fill_cultivation_pool(100 * num_t_products.max(1) + self.topo.num_nodes);
         self.precompute_terminals_and_roots();
@@ -281,11 +282,7 @@ impl Scheduler {
         let mut plot_lcycles = 0usize;
         let mut path_dir: Option<String> = None;
         if self.plot_option.contains("paths") {
-            let circuit_stem = Path::new(&self.circuit.circuit_fname)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("circuit");
-            let dir_name = format!("{}.paths", circuit_stem);
+            let dir_name = format!("{}.paths", circuit_stem(&self.circuit.circuit_fname));
             std::fs::create_dir_all(&dir_name)?;
             path_dir = Some(dir_name);
             plot_lcycles = 30;
@@ -554,11 +551,8 @@ impl Scheduler {
         println!("Precomputed terminals and root candidates for {} products", num_products);
     }
 
-    /// Marks all nodes in a carry-forward path as used, updates stats, and appends to `pp_paths`.
-    fn carry_forward_path(
-        &mut self, pp_id: i32, node_ids: &[u16], opt_tree: Option<Rc<TreeGraph>>,
-        pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>,
-    ) {
+    /// Marks every node in `node_ids` as used and increments per-type stats.
+    fn mark_nodes_used(&mut self, node_ids: &[u16]) {
         for &node_id in node_ids {
             self.used[node_id as usize] = true;
             let node = self.topo.get_node(node_id);
@@ -567,6 +561,14 @@ impl Scheduler {
                 self.topo.cultivation_times[node_id as usize],
             );
         }
+    }
+
+    /// Marks all nodes in a carry-forward path as used, updates stats, and appends to `pp_paths`.
+    fn carry_forward_path(
+        &mut self, pp_id: i32, node_ids: &[u16], opt_tree: Option<Rc<TreeGraph>>,
+        pp_paths: &mut Vec<(i32, Option<Rc<TreeGraph>>)>,
+    ) {
+        self.mark_nodes_used(node_ids);
         pp_paths.push((pp_id, opt_tree));
     }
 
@@ -688,7 +690,10 @@ impl Scheduler {
         self.remaining_ids_scratch.clear();
         self.remaining_ids_scratch.extend(to_schedule.iter().map(|pp| pp.id));
         let mut to_remove: Vec<i32> = Vec::new();
-        for &pp_id in &self.remaining_ids_scratch {
+        // Collect into a local Vec so the borrow on `self.remaining_ids_scratch` is released
+        // before the loop body calls `self.mark_nodes_used(&mut self)`.
+        let ids_to_process: Vec<i32> = self.remaining_ids_scratch.clone();
+        for &pp_id in &ids_to_process {
             // Clone the Rc to end the borrow on precomputed_clifford_trees.
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Rc::clone) else {
                 continue;
@@ -696,21 +701,22 @@ impl Scheduler {
             let all_free = tree.iter_nodes().all(|nid| !self.used[nid as usize]);
             if all_free {
                 to_remove.push(pp_id);
-                for node_id in tree.iter_nodes() {
-                    let node = self.topo.get_node(node_id);
-                    self.stats.inc_with_cultivation(
-                        node.node_type,
-                        self.topo.cultivation_times[node_id as usize],
-                    );
-                    self.used[node_id as usize] = true;
-                }
+                // Collect everything we need from `tree` before the mutable borrow.
+                let node_ids: Vec<u16> = tree.iter_nodes().collect();
+                let (tree_num_nodes, tree_num_edges) = (tree.num_nodes, tree.num_edges);
+                // Keep opt_tree only if plotting; drop `tree` so no borrow of `self` remains
+                // before the `&mut self` call to `mark_nodes_used`.
+                let opt_tree: Option<Rc<TreeGraph>> =
+                    if plotting { Some(Rc::clone(&tree)) } else { None };
+                drop(tree);
+                self.mark_nodes_used(&node_ids);
                 info_sched!(
                     "  Scheduled product {} (precomputed) with {} nodes and {} edges",
                     self.circuit.get_product(pp_id),
-                    tree.num_nodes,
-                    tree.num_edges
+                    tree_num_nodes,
+                    tree_num_edges
                 );
-                pp_paths.push((pp_id, if plotting { Some(tree) } else { None }));
+                pp_paths.push((pp_id, opt_tree));
             } else {
                 let pp = self.circuit.get_product(pp_id);
                 Self::mark_blocked_product_as_used(&mut self.used, &self.topo, pp);
@@ -755,14 +761,8 @@ impl Scheduler {
                 if let PathResult::PathFound(opt_graph) = result {
                     info_sched!("  Scheduled product {}", pp);
                     if let Some(ref pp_graph) = opt_graph {
-                        for node_id in pp_graph.iter_nodes() {
-                            let node = self.topo.get_node(node_id);
-                            self.stats.inc_with_cultivation(
-                                node.node_type,
-                                self.topo.cultivation_times[node_id as usize],
-                            );
-                            self.used[node_id as usize] = true;
-                        }
+                        let node_ids: Vec<u16> = pp_graph.iter_nodes().collect();
+                        self.mark_nodes_used(&node_ids);
                     }
                     pp_paths.push((pp.id, opt_graph.map(Rc::new)));
                     if pp.gate_type.is_t() {
@@ -1080,9 +1080,7 @@ impl Scheduler {
 
     fn print_scheduling_stats(&mut self, num_lcycles: usize) {
         self.stats.summarize(num_lcycles);
-        let total_t = (0..self.circuit.num_products())
-            .filter(|&id| self.circuit.get_product(id as i32).gate_type.is_t())
-            .count();
+        let total_t = self.count_t_products();
         let fail_pct =
             if total_t > 0 { 100.0 * self.t_gate_failures as f64 / total_t as f64 } else { 0.0 };
         println!("Magic state cultivation time:");
@@ -1251,11 +1249,7 @@ impl Scheduler {
     pub fn print_schedule(&self, hdr: &str) -> io::Result<()> {
         let _timer = fn_timer!();
         debug_sched!("Printing schedule");
-        let circuit_stem = Path::new(&self.circuit.circuit_fname)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("circuit");
-        let output_fname = format!("{}.schedule", circuit_stem);
+        let output_fname = format!("{}.schedule", circuit_stem(&self.circuit.circuit_fname));
 
         let file = File::create(&output_fname)?;
         let mut buf_file = BufWriter::new(file);
@@ -1328,6 +1322,11 @@ impl Scheduler {
         println!("Scheduled products written to {}", output_fname);
         Ok(())
     }
+}
+
+/// Returns the file stem of a circuit filename (e.g. `"foo"` from `"/path/foo.trans"`).
+fn circuit_stem(fname: &str) -> &str {
+    Path::new(fname).file_stem().and_then(|s| s.to_str()).unwrap_or("circuit")
 }
 
 /// Expands a slice of operators into data node IDs, substituting X+Z for Y-basis operators.

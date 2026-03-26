@@ -237,6 +237,13 @@ impl TopoGraph {
         Ok(())
     }
 
+    /// Returns the node type used for routing nodes based on the current routing mode.
+    /// Magic routing uses `NodeType::Magic`; bus routing uses `NodeType::Bus`.
+    #[inline]
+    fn routing_node_type(&self) -> NodeType {
+        if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus }
+    }
+
     /// Generates a bus routing topology: data qubits with dedicated bus columns for routing.
     fn gen_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
@@ -258,9 +265,8 @@ impl TopoGraph {
             if col % 2 == 0 {
                 for row in 1..self.num_rows - 1 {
                     if row % 3 + 1 == 2 {
-                        let node_type =
-                            if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
-                        self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
+                        self.node_grid[col][row] =
+                            Some(self.add_qubit(col, row, self.routing_node_type()));
                     } else {
                         if qi < max_qi {
                             self.add_double_data_qubit(qi, col, row, row % 3 + 1 == 3);
@@ -272,8 +278,7 @@ impl TopoGraph {
                     }
                 }
             } else {
-                let node_type =
-                    if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
+                let node_type = self.routing_node_type();
                 for row in 1..self.num_rows - 1 {
                     self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                 }
@@ -312,8 +317,7 @@ impl TopoGraph {
                 let row = self.num_rows - 1;
                 self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
             } else {
-                let node_type =
-                    if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
+                let node_type = self.routing_node_type();
                 for row in 1..self.num_rows - 1 {
                     self.node_grid[col][row] = Some(self.add_qubit(col, row, node_type));
                 }
@@ -326,7 +330,7 @@ impl TopoGraph {
 
     /// Adds magic/bus nodes along a border row connecting to adjacent nodes.
     fn add_border_row(&mut self, row: usize) {
-        let node_type = if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus };
+        let node_type = self.routing_node_type();
         self.node_grid[0][row] = Some(self.add_qubit(0, row, node_type));
         self.node_grid[self.num_cols - 1][row] =
             Some(self.add_qubit(self.num_cols - 1, row, node_type));
@@ -541,29 +545,31 @@ impl TopoGraph {
         }
     }
 
-    /// Extracts the left or right side data node label from a double data qubit label.
-    fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
+    /// Parses the three parts of a combined double-data-qubit label like `"d0/1X"`:
+    /// returns `(first_num, second_num, operator)` as string slices into `label`.
+    fn get_data_label_parts<'a>(label: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
         let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
         let first_num = &label[d_pos + 1..slash_pos];
         let second_num = &label[slash_pos + 1..op_pos];
         let operator = &label[op_pos..=op_pos];
+        Some((first_num, second_num, operator))
+    }
+
+    /// Extracts the left or right side data node label from a double data qubit label.
+    fn get_data_label_side(&self, label: &str, left: bool) -> Option<String> {
+        let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
         if left {
-            return Some(format!("d{}{}", first_num, operator));
+            Some(format!("d{}{}", first_num, operator))
         } else {
-            return Some(format!("d{}{}", second_num, operator));
+            Some(format!("d{}{}", second_num, operator))
         }
     }
 
     /// Extracts both left and right data node labels from a double data qubit label.
     fn get_data_labels(&self, label: &str) -> Option<(String, String)> {
-        let d_pos = label.find('d')?;
-        let slash_pos = label.find('/')?;
-        let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
-        let first_num = &label[d_pos + 1..slash_pos];
-        let second_num = &label[slash_pos + 1..op_pos];
-        let operator = &label[op_pos..=op_pos];
+        let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
     }
 
@@ -638,10 +644,14 @@ impl TopoGraph {
             && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
     }
 
+    /// Returns the file stem of `circuit_fname` (e.g. `"foo"` from `"foo.trans"`).
+    fn circuit_stem(&self) -> &str {
+        Path::new(&self.circuit_fname).file_stem().and_then(|s| s.to_str()).unwrap_or("topo")
+    }
+
     /// Writes topology grid to a text file
     pub fn print(&self) -> io::Result<()> {
-        let topo_path = Path::new(&self.circuit_fname);
-        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
+        let topo_stem = self.circuit_stem();
         let output_fname = format!("{}.topo.txt", topo_stem);
         let mut file = File::create(&output_fname)?;
 
@@ -675,8 +685,7 @@ impl TopoGraph {
         title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
-        let topo_path = Path::new(&self.circuit_fname);
-        let topo_stem = topo_path.file_stem().and_then(|s| s.to_str()).unwrap_or("topo");
+        let topo_stem = self.circuit_stem();
         let plot_fname = format!("{}{}.png", topo_stem, fname_added);
 
         let root =
@@ -1248,6 +1257,7 @@ impl TopoGraph {
     fn compute_product_label_positions(
         &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
     ) -> Vec<Option<(f32, f32, f32, usize)>> {
+        // circuit_stem() is not used here; this function does not write files.
         // Build a set of (x*10, y*10) positions that have a non-empty node label.
         // These are: root nodes of any path (T label) and cultivating magic nodes.
         let mut labeled_positions: std::collections::HashSet<(i32, i32)> =

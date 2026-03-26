@@ -17,7 +17,8 @@
 				"ms-python.black-formatter",
 				"Anthropic.claude-code",
 				"RooVeterinaryInc.roo-cline",
-				"spencerwmiles.vscode-task-buttons"
+				"spencerwmiles.vscode-task-buttons",
+				"sammcleod.problems-filter"
 			]
 		}
 	}
