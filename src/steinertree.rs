@@ -60,44 +60,12 @@ impl SteinerTreeComputation {
         );
         self.num_calls += 1;
         self.clear();
-        let mut tree = TreeGraph::new(self.num_nodes);
-        let mut cultivator: Option<u16> = None;
-        let mut num_paths: usize = 0;
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
-        for root_id in root_ids {
-            self.visited[*root_id as usize] = Some(*root_id);
-            self.queue.push_back(*root_id);
-            let root = topo.get_node(*root_id);
-            debug_sched!("      {}root node {}{}", _GREEN, topo.get_label(*root_id), _RESET);
-            if !tree.contains_node(root.id) {
-                tree.add_node(root, topo.get_label(*root_id));
-            }
-            if cultivator.is_none()
-                && root.node_type == NodeType::Magic
-                && topo.cultivation_times[*root_id as usize] == 0
-            {
-                cultivator = Some(*root_id);
-                debug_sched!(
-                    "      {}found root cultivator {}{}",
-                    _GREEN,
-                    topo.get_label(cultivator.unwrap()),
-                    _RESET
-                );
-            }
-            let root_node = topo.get_node(*root_id);
-            for nb_id in root_node.nbors_slice().iter() {
-                let nb = topo.get_node(*nb_id);
-                if terminal_nodes.contains(&nb_id) {
-                    if !tree.contains_node(nb.id) {
-                        tree.add_node(nb, topo.get_label(*nb_id));
-                    }
-                    tree.add_edge(*root_id, *nb_id);
-                }
-            }
-        }
 
-        tree.remove_double_edges();
+        let (mut tree, mut cultivator) = self.init_bfs_from_roots(root_ids, terminal_nodes, topo);
+
+        let mut num_paths: usize = 0;
         while let Some(node_id) = self.queue.pop_front() {
             debug_sched!(
                 "      {}Visit neighbors of {}{}",
@@ -126,28 +94,8 @@ impl SteinerTreeComputation {
                 };
                 let _num_trimmed = tree.trim_dangling_nodes();
                 debug_sched!("    Trimmed {} dangling nodes", _num_trimmed);
-                // Attach any terminal data nodes not yet in the tree. This can happen when
-                // get_root_nodes counts a terminal as handled (via saturation) but didn't
-                // return a root adjacent to it (e.g. Y-type gates where one root serves both
-                // X and Z, but is only adjacent to one of them).
-                // We must only connect to a side routing node (same pos.1) to avoid creating
-                // a single vertical data edge on a routing node, which violates check_edges.
-                for &tid in terminal_nodes.iter() {
-                    if !tree.contains_node(tid) {
-                        let tid_pos = topo.get_node(tid).pos;
-                        let conn =
-                            topo.get_node(tid).nbors_slice().iter().copied().find(|&nb_id| {
-                                tree.contains_node(nb_id)
-                                    && topo.get_node(nb_id).is_routing()
-                                    && (topo.get_node(nb_id).pos.1 - tid_pos.1).abs() < 0.01
-                            });
-                        if let Some(conn_id) = conn {
-                            tree.add_node(topo.get_node(tid), topo.get_label(tid));
-                            tree.add_edge(conn_id, tid);
-                        } else {
-                            return None;
-                        }
-                    }
+                if Self::attach_missing_terminals(terminal_nodes, topo, &mut tree).is_none() {
+                    return None;
                 }
                 #[cfg(debug_assertions)]
                 self.check_edges(topo, &tree);
@@ -155,6 +103,82 @@ impl SteinerTreeComputation {
             }
         }
         None
+    }
+
+    /// Creates a new [`TreeGraph`], seeds the BFS queue with all root nodes, adds them
+    /// (and any directly adjacent terminal data nodes) to the tree, and returns
+    /// `(tree, cultivator)` where `cultivator` is the first ready magic node found
+    /// among the roots (or `None` if none is ready).
+    /// The returned tree has already had duplicate edges removed.
+    fn init_bfs_from_roots(
+        &mut self, root_ids: &[u16], terminal_nodes: &[u16], topo: &TopoGraph,
+    ) -> (TreeGraph, Option<u16>) {
+        let mut tree = TreeGraph::new(self.num_nodes);
+        let mut cultivator: Option<u16> = None;
+        for root_id in root_ids {
+            self.visited[*root_id as usize] = Some(*root_id);
+            self.queue.push_back(*root_id);
+            let root = topo.get_node(*root_id);
+            debug_sched!("      {}root node {}{}", _GREEN, topo.get_label(*root_id), _RESET);
+            if !tree.contains_node(root.id) {
+                tree.add_node(root, topo.get_label(*root_id));
+            }
+            if cultivator.is_none()
+                && root.node_type == NodeType::Magic
+                && topo.cultivation_times[*root_id as usize] == 0
+            {
+                cultivator = Some(*root_id);
+                debug_sched!(
+                    "      {}found root cultivator {}{}",
+                    _GREEN,
+                    topo.get_label(cultivator.unwrap()),
+                    _RESET
+                );
+            }
+            for nb_id in topo.get_node(*root_id).nbors_slice().iter() {
+                let nb = topo.get_node(*nb_id);
+                if terminal_nodes.contains(nb_id) {
+                    if !tree.contains_node(nb.id) {
+                        tree.add_node(nb, topo.get_label(*nb_id));
+                    }
+                    tree.add_edge(*root_id, *nb_id);
+                }
+            }
+        }
+        tree.remove_double_edges();
+        (tree, cultivator)
+    }
+
+    /// Attaches any terminal data nodes that are not yet in `tree` by finding a
+    /// same-row routing neighbor already in the tree.
+    ///
+    /// This is needed when `get_root_nodes` counts a terminal as handled via
+    /// saturation but the root it returned is not directly adjacent to that terminal
+    /// (e.g. Y-type gates where one root serves both X and Z patches but is only
+    /// adjacent to one of them). Only side routing nodes (same `pos.1`) are used to
+    /// avoid creating a lone vertical data edge, which would violate `check_edges`.
+    ///
+    /// Returns `Some(())` on success, or `None` if any terminal cannot be connected.
+    fn attach_missing_terminals(
+        terminal_nodes: &[u16], topo: &TopoGraph, tree: &mut TreeGraph,
+    ) -> Option<()> {
+        for &tid in terminal_nodes.iter() {
+            if !tree.contains_node(tid) {
+                let tid_pos = topo.get_node(tid).pos;
+                let conn = topo.get_node(tid).nbors_slice().iter().copied().find(|&nb_id| {
+                    tree.contains_node(nb_id)
+                        && topo.get_node(nb_id).is_routing()
+                        && (topo.get_node(nb_id).pos.1 - tid_pos.1).abs() < 0.01
+                });
+                if let Some(conn_id) = conn {
+                    tree.add_node(topo.get_node(tid), topo.get_label(tid));
+                    tree.add_edge(conn_id, tid);
+                } else {
+                    return None;
+                }
+            }
+        }
+        Some(())
     }
 
     /// Explores neighbors of the current node during BFS, tracking path connections
@@ -198,63 +222,21 @@ impl SteinerTreeComputation {
                 if curr_root_id == nb_root_id {
                     continue;
                 }
-                let curr_root_paths = &self.paths[curr_root_id as usize];
-                if !curr_root_paths.contains(&nb_root_id) {
-                    let nb_root_paths = self.paths[nb_root_id as usize].clone();
-                    let mut merged_set = curr_root_paths.clone();
-                    merged_set.push(nb_root_id.clone());
-                    merged_set.extend(nb_root_paths.iter().cloned());
-                    merged_set.push(curr_root_id.clone());
-                    for root_id in merged_set.iter() {
-                        assert!(num_paths >= self.paths[*root_id as usize].len());
-                        num_paths -= self.paths[*root_id as usize].len();
-                        self.paths[*root_id as usize] = merged_set.clone();
-                        let pos = self.paths[*root_id as usize]
-                            .iter()
-                            .position(|&id| id == *root_id)
-                            .unwrap();
-                        self.paths[*root_id as usize].swap_remove(pos);
-                        debug_sched!(
-                            "      {}removing self for {}{}",
-                            _GREEN,
-                            topo.get_label(*root_id),
-                            _RESET
-                        );
-                        num_paths += self.paths[*root_id as usize].len();
+                num_paths = self.merge_root_groups(
+                    curr_root_id,
+                    nb_root_id,
+                    num_paths,
+                    reqd_paths,
+                    node_id,
+                    *nb_id,
+                    topo,
+                    tree,
+                );
+                if num_paths == reqd_paths {
+                    if gate_type.is_t() && cultivator.is_none() {
+                        continue;
                     }
-                    #[cfg(debug_assertions)]
-                    {
-                        let curr_num_paths = self.paths.iter().map(|set| set.len()).sum::<usize>();
-                        assert_eq!(num_paths, curr_num_paths);
-                    }
-                    #[cfg(debug_assertions)]
-                    {
-                        debug_sched!(
-                            "      {}path from {} to {} (total paths {}/{}){}",
-                            _GREEN,
-                            topo.get_label(curr_root_id),
-                            topo.get_label(nb_root_id),
-                            num_paths,
-                            reqd_paths,
-                            _RESET
-                        );
-                        debug_sched!("      {}paths:{}", _GREEN, _RESET);
-                        for (root_id, path) in self.paths.iter().enumerate() {
-                            if !path.is_empty() {
-                                let root_label = topo.get_label(root_id as u16);
-                                let path_labels: Vec<String> =
-                                    path.iter().map(|&id| topo.get_label(id).to_string()).collect();
-                                debug_sched!("        {} -> {:?}", root_label, path_labels);
-                            }
-                        }
-                    }
-                    tree.add_edge(node_id, *nb_id);
-                    if num_paths == reqd_paths {
-                        if gate_type.is_t() && cultivator.is_none() {
-                            continue;
-                        }
-                        break;
-                    }
+                    break;
                 }
                 continue;
             }
@@ -264,30 +246,111 @@ impl SteinerTreeComputation {
                     cultivator,
                     topo.cultivation_times[nb.id as usize],
                 );
-            if nb.is_routing() || nb_is_cultivator {
-                if !tree.contains_node(nb.id) {
-                    tree.add_node(nb, topo.get_label(*nb_id));
-                }
-                if !tree.contains_edge(node_id, *nb_id) {
-                    tree.add_edge(node_id, *nb_id);
-                }
-                self.queue.push_back(*nb_id);
-                if cultivator.is_none() && nb_is_cultivator {
-                    cultivator = Some(*nb_id);
-                    debug_sched!(
-                        "      {}found cultivator {}{}",
-                        _GREEN,
-                        topo.get_label(cultivator.unwrap()),
-                        _RESET
-                    );
-                    if num_paths == reqd_paths {
-                        break;
-                    }
+            if let Some(new_cultivator) = self.expand_new_neighbor(
+                node_id,
+                *nb_id,
+                nb,
+                curr_root_id,
+                nb_is_cultivator,
+                cultivator,
+                topo,
+                tree,
+            ) {
+                cultivator = Some(new_cultivator);
+                if num_paths == reqd_paths {
+                    break;
                 }
             }
-            self.visited[*nb_id as usize] = Some(curr_root_id);
         }
         (num_paths as usize, cultivator)
+    }
+
+    /// Merges the path-connectivity groups of two roots that have just been connected
+    /// by an edge between `node_id` (belonging to `curr_root_id`) and `nb_id`
+    /// (belonging to `nb_root_id`). Updates `self.paths` so every root in the merged
+    /// group knows about all the others, adds the connecting edge to `tree`, and
+    /// returns the updated total path count.
+    fn merge_root_groups(
+        &mut self, curr_root_id: u16, nb_root_id: u16, num_start_paths: usize, reqd_paths: usize,
+        node_id: u16, nb_id: u16, topo: &TopoGraph, tree: &mut TreeGraph,
+    ) -> usize {
+        let mut num_paths = num_start_paths;
+        let curr_root_paths = &self.paths[curr_root_id as usize];
+        if curr_root_paths.contains(&nb_root_id) {
+            // Groups already merged; nothing to do.
+            return num_paths;
+        }
+        let nb_root_paths = self.paths[nb_root_id as usize].clone();
+        let mut merged_set = curr_root_paths.clone();
+        merged_set.push(nb_root_id);
+        merged_set.extend(nb_root_paths.iter().cloned());
+        merged_set.push(curr_root_id);
+        for root_id in merged_set.iter() {
+            assert!(num_paths >= self.paths[*root_id as usize].len());
+            num_paths -= self.paths[*root_id as usize].len();
+            self.paths[*root_id as usize] = merged_set.clone();
+            let pos = self.paths[*root_id as usize].iter().position(|&id| id == *root_id).unwrap();
+            self.paths[*root_id as usize].swap_remove(pos);
+            debug_sched!(
+                "      {}removing self for {}{}",
+                _GREEN,
+                topo.get_label(*root_id),
+                _RESET
+            );
+            num_paths += self.paths[*root_id as usize].len();
+        }
+        #[cfg(debug_assertions)]
+        {
+            let curr_num_paths = self.paths.iter().map(|set| set.len()).sum::<usize>();
+            assert_eq!(num_paths, curr_num_paths);
+        }
+        #[cfg(debug_assertions)]
+        {
+            debug_sched!(
+                "      {}path from {} to {} (total paths {}/{}){}",
+                _GREEN,
+                topo.get_label(curr_root_id),
+                topo.get_label(nb_root_id),
+                num_paths,
+                reqd_paths,
+                _RESET
+            );
+            debug_sched!("      {}paths:{}", _GREEN, _RESET);
+            for (root_id, path) in self.paths.iter().enumerate() {
+                if !path.is_empty() {
+                    let root_label = topo.get_label(root_id as u16);
+                    let path_labels: Vec<String> =
+                        path.iter().map(|&id| topo.get_label(id).to_string()).collect();
+                    debug_sched!("        {} -> {:?}", root_label, path_labels);
+                }
+            }
+        }
+        tree.add_edge(node_id, nb_id);
+        num_paths
+    }
+
+    /// Adds an unvisited routing (or cultivator magic) neighbor to the BFS tree and queue.
+    /// Returns `Some(nb_id)` if `nb_id` is a newly discovered cultivator, `None` otherwise.
+    fn expand_new_neighbor(
+        &mut self, node_id: u16, nb_id: u16, nb: &crate::node::Node, curr_root_id: u16,
+        nb_is_cultivator: bool, cultivator: Option<u16>, topo: &TopoGraph, tree: &mut TreeGraph,
+    ) -> Option<u16> {
+        if !nb.is_routing() && !nb_is_cultivator {
+            return None;
+        }
+        if !tree.contains_node(nb.id) {
+            tree.add_node(nb, topo.get_label(nb_id));
+        }
+        if !tree.contains_edge(node_id, nb_id) {
+            tree.add_edge(node_id, nb_id);
+        }
+        self.queue.push_back(nb_id);
+        self.visited[nb_id as usize] = Some(curr_root_id);
+        if cultivator.is_none() && nb_is_cultivator {
+            debug_sched!("      {}found cultivator {}{}", _GREEN, topo.get_label(nb_id), _RESET);
+            return Some(nb_id);
+        }
+        None
     }
 
     /// Validates tree structure in debug builds: ensures data nodes have exactly one edge,
