@@ -373,7 +373,7 @@ impl Scheduler {
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
-        Ok((self.current_lcycle, self.scheduled_products.len()))
+        Ok((self.current_lcycle, self.scheduled_products.len() + self.t_gate_failures))
     }
 
     /// Initializes magic node cultivation times and builds `magic_node_ids`/`magic_node_positions`.

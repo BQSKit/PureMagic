@@ -389,6 +389,16 @@ impl Circuit {
         Ok(())
     }
 
+    /// Returns `(num_t_gates, num_t_layers)` where `num_t_layers` is the count of layers
+    /// that contain at least one T gate.
+    pub(crate) fn count_t_stats(&self) -> (usize, usize) {
+        let layers = self.get_layers();
+        let num_t_gates = self.products.iter().filter(|pp| pp.gate_type.is_t()).count();
+        let num_t_layers =
+            layers.iter().filter(|layer| layer.iter().any(|pp| pp.gate_type.is_t())).count();
+        (num_t_gates, num_t_layers)
+    }
+
     /// Prints circuit statistics (products, Cliffords, layers, avg/max products per layer).
     /// Returns the total number of layers.
     pub(crate) fn print_statistics(&self) -> usize {

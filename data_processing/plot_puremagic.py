@@ -166,11 +166,11 @@ def parse_output_file(filepath):
             if m := re.match(r"Loaded circuit with \d+ products and (\d+) qubits", s):
                 cur["loaded_qubits"] = int(m.group(1))
 
-            if m := re.match(r"Scheduled \d+ in (\d+) lcycles", s):
+            if m := re.match(r"Scheduled \d+ in (\d+) logical cycles", s):
                 cur["lcycles"] = int(m.group(1))
 
             if cur.get("circuit"):
-                if m := re.match(r"Optimal lcycles \d+ \(([0-9.eE+\-]+) speedup\)", s):
+                if m := re.match(r"Optimal logical cycles \d+ \(([0-9.eE+\-]+) speedup\)", s):
                     cur["optimal_speedup"] = float(m.group(1))
                 if m := re.match(r"Parallelism:\s+([0-9.eE+\-]+)x", s):
                     cur["parallelism"] = float(m.group(1))
