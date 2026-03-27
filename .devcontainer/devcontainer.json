@@ -10,7 +10,7 @@
 			"version": "latest"
 		}
 	},
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf && pip install -r requirements.txt && pip install -e tableau/",
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended && pip install -r requirements.txt && pip install -e tableau/",
 	"customizations": {
 		"vscode": {
 			"extensions": [
