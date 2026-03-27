@@ -279,7 +279,7 @@ impl Scheduler {
         self.init_magic_nodes();
         let num_t_products = self.count_t_products();
         self.cultivation.t_products_remaining = num_t_products;
-        self.cultivation.fill_pool(100 * num_t_products.max(1) + self.input.topo.num_nodes);
+        self.cultivation.fill_pool(120 * num_t_products.max(1) + self.input.topo.num_nodes);
         self.precompute_terminals_and_roots();
         self.precompute_multi_term_clifford_trees();
         self.to_schedule = self.input.circuit.initial_products().cloned().collect();
