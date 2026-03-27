@@ -66,4 +66,12 @@
 # for heisenberg, show relation of data qubits (circuit width) to both volume and lcycles for bus v puremagic
 ./plot_puremagic.py -x data_qubits -y lcycles/volume --hline --ylabel Ratio \
     -f ../results/max-weight-1/bus/out:Bus,../results/max-weight-1/puremagic/out:PureMagic \
-    --ylabel Ratio --ylim 0,3 --lines-with-markers -s heisenberg -o lcycles_v_data_qubits_puremagic_bus.png
+    --ylim 0,3 --lines-with-markers -s heisenberg -o lcycles_v_data_qubits_puremagic_bus.png
+
+# impact of incorporating T failures
+./plot_puremagic.py -x circuit -y scheduling_efficiency --hline --ylabel Ratio \
+    -f ../results/max-weight-0/puremagic/out:PureMagic-w0,../results/no-t-fail/max-weight-0/puremagic/out:"No Fail" \
+    -f ../results/max-weight-1/puremagic/out:PureMagic-w1,../results/no-t-fail/max-weight-1/puremagic/out:"No Fail" \
+    -o efficiency_w0_w1_pm_no_t_fail.png
+
+

@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let (tot_num_lcycles, num_scheduled) = scheduler.schedule_circuit()?;
-    assert_eq!(num_scheduled, num_products);
+    assert!(num_scheduled >= num_products);
     // Calculate and print statistics
     let volume = num_qubits * tot_num_lcycles;
     println!(
@@ -167,13 +167,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
     best_magic_topo_graph.update_statistics();
     num_qubits = best_magic_topo_graph.num_qubits;
-    let optimal_speedup = num_scheduled as f64 / num_layers as f64;
-    let optimal_volume = num_qubits * num_layers;
+    // When T failures are allowed, account for expected 50% failure rate:
+    // each T gate needs on average 1.5 attempts, adding 0.5 * num_t_gates extra scheduled ops,
+    // and each layer containing a T gate needs on average 1.5x as many lcycles.
+    let (_, num_t_layers) = scheduler.input.circuit.count_t_stats();
+    let optimal_num_layers =
+        if args.no_t_failures { num_layers } else { num_layers + num_t_layers / 2 };
+    let optimal_speedup = num_scheduled as f64 / optimal_num_layers as f64;
+    let optimal_volume = num_qubits * optimal_num_layers;
     println!(
         "Optimal logical cycles {} ({:.3} speedup) volume {}",
-        num_layers, optimal_speedup, optimal_volume
+        optimal_num_layers, optimal_speedup, optimal_volume
     );
-    let speedup = num_products as f64 / tot_num_lcycles as f64;
+    let speedup = num_scheduled as f64 / tot_num_lcycles as f64;
     println!("Parallelism: {:.3}x", speedup);
     println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
     println!("Parallel efficiency: {:.3}", speedup / optimal_speedup);
