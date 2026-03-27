@@ -4,24 +4,33 @@ Generate a LaTeX table of circuit statistics from QASM files.
 
 Usage:
     python circuit_table.py --benchmarks <benchmarks_file> --qasmdir <qasm_directory>
-                            [--transpiled <out_file>]
+                            [--transpiled <out_file>] [--puremagic <out_file>]
+                            [--pdf <output.pdf>]
 
 Arguments:
     --benchmarks   File containing a list of circuit names (one per line)
     --qasmdir      Directory containing <circuit_name>.qasm files
-    --transpiled   Optional 'out' file produced by the transpiler; when given,
-                   adds Compiled Depth, Transpiled Depth, and Cliffords columns
+    --transpiled   Optional transpiler 'out' file; adds Compiled Gates, T Gates,
+                   and Transpiled Cliffords columns
+    --puremagic    Optional PureMagic 'out' file; adds Circuit Depth column
+                   (Layers from Circuit statistics)
+    --pdf          If given, also render the table to a PDF at this path using
+                   pdflatex/xelatex/lualatex (preferred) or pandoc as fallback
 
 Output:
     LaTeX-formatted table with: circuit name, number of qubits, circuit length
-    (circuit length = number of gate instruction lines, excluding whitespace,
-     comments, and QASM header declarations)
+    (circuit length = number of unitary gate instruction lines, excluding
+     whitespace, comments, QASM header declarations, measurements, resets,
+     barriers, and identity gates)
 """
 
 import argparse
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 
 
 def parse_qasm(filepath):
@@ -79,9 +88,9 @@ def parse_qasm(filepath):
     return num_qubits, circuit_length
 
 
-def parse_out_file(filepath):
+def parse_transpiler_output_file(filepath):
     """
-    Parse a transpiler 'out' file and return a dict mapping circuit name to
+    Parse a transpiler output file and return a dict mapping circuit name to
     (compiled_depth, transpiled_depth, cliffords_after).
 
     Relevant lines in the file look like:
@@ -130,6 +139,51 @@ def parse_out_file(filepath):
     return result
 
 
+def parse_puremagic_file(filepath):
+    """
+    Parse a PureMagic 'out' file and return a dict mapping circuit name to
+    circuit_depth (the 'Layers:' value from the 'Circuit statistics:' block).
+
+    Circuit name is taken from:
+      Scheduled products written to <name>.schedule
+    Layers is taken from the preceding 'Circuit statistics:' block:
+      Layers:  <n>
+    """
+    result = {}
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+
+    cur_layers = None
+    in_stats = False
+
+    layers_re = re.compile(r"Layers:\s+(\d+)")
+    wrote_re = re.compile(r"Scheduled products written to (.+?)\.schedule")
+    stats_re = re.compile(r"Circuit statistics:")
+
+    with open(filepath, "r") as f:
+        for line in f:
+            s = ansi_escape.sub("", line).strip()
+
+            if stats_re.search(s):
+                in_stats = True
+                cur_layers = None
+                continue
+
+            if in_stats:
+                m = layers_re.search(s)
+                if m:
+                    cur_layers = int(m.group(1))
+
+            m = wrote_re.search(s)
+            if m:
+                name = m.group(1)
+                if cur_layers is not None:
+                    result[name] = cur_layers
+                in_stats = False
+                cur_layers = None
+
+    return result
+
+
 def latex_escape(s):
     """Escape special LaTeX characters in a string."""
     replacements = [
@@ -156,6 +210,67 @@ def format_number(n):
 
 # Names that should be fully uppercased after prefix truncation
 _UPPERCASE_NAMES = {"dnn", "knn", "qft", "qv"}
+
+
+def generate_pdf(latex_table: str, pdf_path: str) -> None:
+    """
+    Wrap *latex_table* in a minimal standalone document and render it to
+    *pdf_path*.  Tries pdflatex / xelatex / lualatex first (they compile the
+    .tex directly and preserve all LaTeX commands), then falls back to pandoc.
+    Raises RuntimeError if no suitable tool is found.
+    """
+    standalone_doc = (
+        r"\documentclass{article}" + "\n"
+        r"\usepackage{booktabs}" + "\n"
+        r"\usepackage{makecell}" + "\n"
+        r"\usepackage{geometry}" + "\n"
+        r"\geometry{margin=1in}" + "\n"
+        r"\begin{document}" + "\n"
+        r"\pagestyle{empty}" + "\n" + latex_table + "\n"
+        r"\end{document}" + "\n"
+    )
+
+    pdf_path = os.path.abspath(pdf_path)
+
+    # --- try pdflatex / xelatex / lualatex (compile .tex directly) ---
+    for engine in ("pdflatex", "xelatex", "lualatex"):
+        if not shutil.which(engine):
+            continue
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tex_path = os.path.join(tmpdir, "table.tex")
+            with open(tex_path, "w") as f:
+                f.write(standalone_doc)
+            try:
+                subprocess.run(
+                    [engine, "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path],
+                    check=True,
+                    capture_output=True,
+                )
+                shutil.copy(os.path.join(tmpdir, "table.pdf"), pdf_path)
+                print(f"PDF written to {pdf_path} (via {engine})", file=sys.stderr)
+                return
+            except subprocess.CalledProcessError as e:
+                print(f"{engine} failed: {e.stderr.decode()}", file=sys.stderr)
+
+    # --- fall back to pandoc (passes --pdf-engine so it invokes pdflatex) ---
+    if shutil.which("pandoc"):
+        with tempfile.NamedTemporaryFile(suffix=".tex", mode="w", delete=False) as tmp:
+            tmp.write(standalone_doc)
+            tex_path = tmp.name
+        try:
+            subprocess.run(
+                ["pandoc", tex_path, "-o", pdf_path, "--pdf-engine=pdflatex", "--from=latex"],
+                check=True,
+                capture_output=True,
+            )
+            print(f"PDF written to {pdf_path} (via pandoc)", file=sys.stderr)
+            return
+        except subprocess.CalledProcessError as e:
+            print(f"pandoc failed: {e.stderr.decode()}", file=sys.stderr)
+        finally:
+            os.unlink(tex_path)
+
+    raise RuntimeError("No PDF renderer found. Install pdflatex, xelatex, lualatex, or pandoc.")
 
 
 def pretty_name(name):
@@ -211,6 +326,25 @@ def main():
         default=None,
         help="Transpiler 'out' file; adds Compiled Depth, Transpiled Depth, and Cliffords columns",
     )
+    parser.add_argument(
+        "-m",
+        "--puremagic",
+        metavar="FILE[:LABEL]",
+        action="append",
+        default=[],
+        help=(
+            "PureMagic 'out' file; adds a Circuit Depth column. "
+            "Append :LABEL to set the column header (e.g. file.out:w=1). "
+            "May be repeated to add multiple columns."
+        ),
+    )
+    parser.add_argument(
+        "-p",
+        "--pdf",
+        metavar="FILE",
+        default=None,
+        help="If given, also render the table to a PDF at this path (requires pandoc or a LaTeX engine)",
+    )
     args = parser.parse_args()
 
     benchmarks_file = args.benchmarks
@@ -219,7 +353,17 @@ def main():
     # Optionally load transpiler output
     transpiled_data = {}
     if args.transpiled:
-        transpiled_data = parse_out_file(args.transpiled)
+        transpiled_data = parse_transpiler_output_file(args.transpiled)
+
+    # Parse each --puremagic entry as "filepath[:label]"
+    puremagic_entries = []  # list of (label, data_dict)
+    for spec in args.puremagic:
+        if ":" in spec:
+            filepath, label = spec.rsplit(":", 1)
+        else:
+            filepath = spec
+            label = "Circuit Depth"
+        puremagic_entries.append((label, parse_puremagic_file(filepath)))
 
     # Read circuit names
     with open(benchmarks_file, "r") as f:
@@ -238,19 +382,40 @@ def main():
         compiled_depth = trans[0] if trans else None
         transpiled_depth = trans[1] if trans else None
         cliffords = trans[2] if trans else None
+        pm_depths = [data.get(name) for _, data in puremagic_entries]
 
-        rows.append((name, num_qubits, circuit_length, compiled_depth, transpiled_depth, cliffords))
+        rows.append(
+            (
+                name,
+                num_qubits,
+                circuit_length,
+                compiled_depth,
+                transpiled_depth,
+                cliffords,
+                pm_depths,
+            )
+        )
 
     use_transpiled = bool(args.transpiled)
 
-    # Build formatted cell values
+    # Build header tuple
+    header_list = ["Circuit", "Qubits", "Unitary Gates"]
     if use_transpiled:
-        header = ("Circuit", "Qubits", "Gates", "Compiled Depth", "Transpiled Depth", "Cliffords")
-    else:
-        header = ("Circuit", "Qubits", "Gates")
+        header_list += ["Compiled Gates", "Transpiled T Gates", "Transpiled Cliffords"]
+    for label, _ in puremagic_entries:
+        header_list.append(label)
+    header = tuple(header_list)
 
     formatted_rows = []
-    for name, num_qubits, circuit_length, compiled_depth, transpiled_depth, cliffords in rows:
+    for (
+        name,
+        num_qubits,
+        circuit_length,
+        compiled_depth,
+        transpiled_depth,
+        cliffords,
+        pm_depths,
+    ) in rows:
         cells = [
             latex_escape(pretty_name(name)),
             str(num_qubits) if num_qubits is not None else "?",
@@ -258,12 +423,30 @@ def main():
         ]
         if use_transpiled:
             cells.append(format_number(compiled_depth) if compiled_depth is not None else "—")
-            cells.append(format_number(transpiled_depth) if transpiled_depth is not None else "—")
+            t_gates = (
+                (transpiled_depth - cliffords - (num_qubits or 0))
+                if (transpiled_depth is not None and cliffords is not None)
+                else None
+            )
+            cells.append(format_number(t_gates) if t_gates is not None else "—")
             cells.append(format_number(cliffords) if cliffords is not None else "—")
+        for depth in pm_depths:
+            cells.append(format_number(depth) if depth is not None else "—")
         formatted_rows.append(tuple(cells))
 
-    # Compute column widths (max of header and all data cells)
-    col_widths = [len(h) for h in header]
+    # Split each header into (top_word, bottom_word); single-word headers have bottom=""
+    header_top = []
+    header_bot = []
+    for h in header:
+        if " " in h:
+            top, bot = h.split(" ", 1)
+        else:
+            top, bot = h, ""
+        header_top.append(top)
+        header_bot.append(bot)
+
+    # Compute column widths: max of top word, bottom word, and all data cells
+    col_widths = [max(len(header_top[i]), len(header_bot[i])) for i in range(len(header))]
     for row in formatted_rows:
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(cell))
@@ -278,20 +461,34 @@ def main():
     # Build tabular column spec: l for name, r for all others
     col_spec = "l" + "r" * (len(header) - 1)
 
-    # Print LaTeX table
-    print(r"\begin{table}[ht]")
-    print(r"  \centering")
-    print(f"  \\begin{{tabular}}{{{col_spec}}}")
-    print(r"    \toprule")
-    print(fmt_row(header, col_widths))
-    print(r"    \midrule")
+    # Assemble LaTeX table string
+    lines = []
+    lines.append(r"\begin{table}[ht]")
+    lines.append(r"  \centering")
+    lines.append(f"  \\begin{{tabular}}{{{col_spec}}}")
+    lines.append(r"    \hline\hline")
+    lines.append(fmt_row(header_top, col_widths))
+    lines.append(fmt_row(header_bot, col_widths))
+    lines.append(r"    \hline\hline")
     for row in formatted_rows:
-        print(fmt_row(row, col_widths))
-    print(r"    \bottomrule")
-    print(r"  \end{tabular}")
-    print(r"  \caption{Circuit benchmark statistics.}")
-    print(r"  \label{tab:benchmarks}")
-    print(r"\end{table}")
+        lines.append(fmt_row(row, col_widths))
+    lines.append(r"    \hline")
+    lines.append(r"  \end{tabular}")
+    lines.append(r"  \caption{Circuit benchmark statistics.}")
+    lines.append(r"  \label{tab:benchmarks}")
+    lines.append(r"\end{table}")
+    latex_table = "\n".join(lines)
+
+    # Print to stdout
+    print(latex_table)
+
+    # Optionally render to PDF
+    if args.pdf:
+        try:
+            generate_pdf(latex_table, args.pdf)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
