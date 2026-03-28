@@ -83,6 +83,26 @@ enum QasmGate {
     Tdg { qubit: usize },
     /// Z-basis measurement on a qubit.
     Measure { qubit: usize },
+    /// Barrier — synchronisation point (all qubits must finish before this).
+    Barrier,
+}
+
+impl QasmGate {
+    /// Returns the qubits this gate acts on (sorted ascending).
+    fn qubits(&self) -> Vec<usize> {
+        match self {
+            QasmGate::Clifford1Q { qubit, .. } => vec![*qubit],
+            QasmGate::Clifford2Q { control, target, .. } => {
+                let mut v = vec![*control, *target];
+                v.sort_unstable();
+                v
+            }
+            QasmGate::T { qubit } => vec![*qubit],
+            QasmGate::Tdg { qubit } => vec![*qubit],
+            QasmGate::Measure { qubit } => vec![*qubit],
+            QasmGate::Barrier => vec![],
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,8 +265,13 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
             || line.starts_with('{')
             || line.starts_with('}')
             || line.starts_with("U(")
-            || line.starts_with("barrier")
         {
+            continue;
+        }
+
+        // barrier — emit as a sync point for cycle-packing
+        if line.starts_with("barrier") {
+            gates.push(QasmGate::Barrier);
             continue;
         }
 
@@ -279,7 +304,78 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
         }
     }
 
+    let gates = reorder_by_cycles(gates, num_qubits);
     Ok((num_qubits, gates))
+}
+
+/// Reorder gates to match bqskit's cycle-based circuit representation.
+///
+/// bqskit packs gates into parallel "cycles": each gate is placed in the
+/// earliest cycle where all its qubits are free.  Within a cycle, gates are
+/// yielded in ascending qubit-index order (using the gate's minimum qubit).
+///
+/// This reordering is purely a scheduling of independent (commuting) gates and
+/// does not change the circuit semantics.
+fn reorder_by_cycles(gates: Vec<QasmGate>, num_qubits: usize) -> Vec<QasmGate> {
+    if num_qubits == 0 {
+        return gates;
+    }
+
+    // next_cycle[q] = the first cycle in which qubit q is free
+    let mut next_cycle = vec![0usize; num_qubits];
+
+    // cycles[c] = list of (min_qubit, gate) placed in cycle c
+    let mut cycles: Vec<Vec<(usize, QasmGate)>> = Vec::new();
+
+    for gate in gates {
+        if matches!(gate, QasmGate::Barrier) {
+            // Barrier: advance ALL qubits to the same cycle (max of all next_cycles),
+            // then place the barrier there as a sentinel, and advance all to cycle+1.
+            let sync = next_cycle.iter().copied().max().unwrap_or(0);
+            if sync >= cycles.len() {
+                cycles.resize_with(sync + 1, Vec::new);
+            }
+            // Use usize::MAX as sort key so barrier sorts last within its cycle
+            cycles[sync].push((usize::MAX, gate));
+            let after = sync + 1;
+            for q in next_cycle.iter_mut() {
+                *q = after;
+            }
+            continue;
+        }
+
+        let qubits = gate.qubits();
+        // Find the earliest cycle where all qubits of this gate are free
+        let cycle = qubits.iter().map(|&q| next_cycle[q]).max().unwrap_or(0);
+
+        // Extend cycles vec if needed
+        if cycle >= cycles.len() {
+            cycles.resize_with(cycle + 1, Vec::new);
+        }
+
+        // Sort key: minimum qubit index of the gate
+        let min_q = *qubits.iter().min().unwrap();
+        cycles[cycle].push((min_q, gate));
+
+        // Mark all qubits as busy until cycle+1
+        for &q in &qubits {
+            next_cycle[q] = cycle + 1;
+        }
+    }
+
+    // Flatten: for each cycle, sort by min_qubit, then collect
+    let mut result = Vec::new();
+    for cycle in cycles {
+        let mut sorted = cycle;
+        sorted.sort_by_key(|(min_q, _)| *min_q);
+        for (_, gate) in sorted {
+            // Drop barrier sentinels — they were only needed for cycle synchronisation
+            if !matches!(gate, QasmGate::Barrier) {
+                result.push(gate);
+            }
+        }
+    }
+    result
 }
 
 /// Parse `qreg q[N];` → N.
@@ -482,6 +578,9 @@ fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<Tran
                     ops.push(TransItem::Pauli(tp));
                 }
             }
+            QasmGate::Barrier => {
+                // Barrier is a cycle-packing sentinel; skip during transpilation.
+            }
         }
     }
 
@@ -594,6 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             QasmGate::T { .. } => "T".to_string(),
             QasmGate::Tdg { .. } => "Tdg".to_string(),
             QasmGate::Measure { .. } => "Measure".to_string(),
+            QasmGate::Barrier => continue,
         };
         gate_names.insert(name);
     }
