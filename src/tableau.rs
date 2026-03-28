@@ -1,30 +1,9 @@
 #![allow(dead_code)]
-//! Symplectic tableau for tracking Clifford conjugation of Pauli operators.
+//! Symplectic Clifford tableau for Pauli conjugation.
 //!
-//! This is a Rust reimplementation of the functionality provided by `stim.Tableau`
-//! and `stim.PauliString` as used in `tableau/tableau/transpile.py`.
+//! An n-qubit tableau stores 2n rows: row `2*q` = image of X_q, row `2*q+1` = image of Z_q.
 //!
-//! # Representation
-//!
-//! An n-qubit tableau stores 2n rows (one X-row and one Z-row per qubit).
-//! Each row is a Pauli string of length n, represented as two bit-vectors
-//! (x_bits and z_bits) plus a sign bit.
-//!
-//! Row `2*q`   = image of X_q under the accumulated Clifford conjugation.
-//! Row `2*q+1` = image of Z_q under the accumulated Clifford conjugation.
-//!
-//! # Pauli encoding
-//!
-//! | x_bit | z_bit | Pauli |
-//! |-------|-------|-------|
-//! |   0   |   0   |   I   |
-//! |   1   |   0   |   X   |
-//! |   1   |   1   |   Y   |
-//! |   0   |   1   |   Z   |
-//!
-//! # Sign convention
-//!
-//! `sign = false` → +1,  `sign = true` → −1.
+//! Pauli encoding: I=(0,0), X=(1,0), Y=(1,1), Z=(0,1).  Sign: false=+1, true=−1.
 
 use std::fmt;
 
@@ -36,24 +15,18 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PauliString {
     pub n: usize,
-    /// x_bits[q] = true  ↔  X component on qubit q
     pub x_bits: Vec<bool>,
-    /// z_bits[q] = true  ↔  Z component on qubit q
     pub z_bits: Vec<bool>,
-    /// sign: false = +1, true = −1
+    /// false = +1, true = −1
     pub sign: bool,
 }
 
 impl PauliString {
-    /// Create an all-identity Pauli string of length `n` with sign +1.
     pub(crate) fn identity(n: usize) -> Self {
         PauliString { n, x_bits: vec![false; n], z_bits: vec![false; n], sign: false }
     }
 
-    /// Create a Pauli string from a character string like `"+IXYZ"` or `"ZXI"`.
-    ///
-    /// The optional leading `+` or `-` sets the sign.  Each subsequent character
-    /// must be one of `I`, `X`, `Y`, `Z`.
+    /// Parse a string like `"+IXYZ"` or `"ZXI"`.
     pub(crate) fn from_str(s: &str) -> Self {
         let s = s.trim();
         let (sign, chars) = if s.starts_with('-') {
@@ -81,7 +54,6 @@ impl PauliString {
         PauliString { n, x_bits, z_bits, sign }
     }
 
-    /// Return the Pauli character at qubit `q`.
     pub(crate) fn pauli_at(&self, q: usize) -> char {
         match (self.x_bits[q], self.z_bits[q]) {
             (false, false) => 'I',
@@ -91,28 +63,15 @@ impl PauliString {
         }
     }
 
-    /// Number of non-identity Pauli operators (weight).
+    /// Number of non-identity Paulis.
     pub(crate) fn weight(&self) -> usize {
         (0..self.n).filter(|&q| self.x_bits[q] || self.z_bits[q]).count()
     }
 
-    /// Multiply two Pauli strings element-wise using a 4-phase accumulator.
-    ///
-    /// Phase is tracked mod 4 (0 = +1, 1 = +i, 2 = −1, 3 = −i).
-    /// The result must have phase 0 or 2 (i.e. ±1) for the product to be
-    /// a valid Hermitian Pauli string.
-    ///
-    /// Single-qubit Pauli multiplication phases (from standard table):
-    ///   X·Y = +iZ  → phase +1
-    ///   Y·Z = +iX  → phase +1
-    ///   Z·X = +iY  → phase +1
-    ///   Y·X = -iZ  → phase +3 (= -i)
-    ///   Z·Y = -iX  → phase +3
-    ///   X·Z = -iY  → phase +3
-    ///   All others (including I·anything, same·same) → phase 0
+    /// Element-wise Pauli product with phase tracking (mod 4).
+    /// Panics if the result has a non-Hermitian phase (±i).
     pub(crate) fn mul(&self, other: &PauliString) -> PauliString {
         let n = self.n.max(other.n);
-        // Start with the signs of both operands (each sign=true contributes phase 2)
         let mut phase: i32 = 0;
         if self.sign {
             phase += 2;
@@ -129,16 +88,8 @@ impl PauliString {
             let az = if q < self.n { self.z_bits[q] } else { false };
             let bx = if q < other.n { other.x_bits[q] } else { false };
             let bz = if q < other.n { other.z_bits[q] } else { false };
-
             x_bits[q] = ax ^ bx;
             z_bits[q] = az ^ bz;
-
-            // Phase contribution from single-qubit Pauli product (a)·(b):
-            // Encode: I=0, X=1, Y=3, Z=2  (this is the standard symplectic encoding)
-            // The phase table for non-trivial products:
-            //   X·Y = iZ  (+1),  Y·X = -iZ (+3)
-            //   Y·Z = iX  (+1),  Z·Y = -iX (+3)
-            //   Z·X = iY  (+1),  X·Z = -iY (+3)
             phase += single_qubit_mul_phase(ax, az, bx, bz);
         }
 
@@ -154,23 +105,14 @@ impl PauliString {
         PauliString { n, x_bits, z_bits, sign }
     }
 
-    /// Multiply `self` by `(i · x_img · z_img)` where the factor of `i` comes
-    /// from the identity Y = i·X·Z.
-    ///
-    /// When conjugating a Y operator through a tableau:
-    ///   U·Y_q·U† = U·(i·X_q·Z_q)·U† = i·(U·X_q·U†)·(U·Z_q·U†)
-    ///
-    /// This function computes `self · i · x_img · z_img` using a full 4-phase
-    /// accumulator, then asserts the result is ±1 (phase 0 or 2 mod 4).
+    /// Compute `self · i · x_img · z_img`, used when conjugating Y = i·X·Z through a tableau.
     pub(crate) fn mul_with_y_phase(&self, x_img: &PauliString, z_img: &PauliString) -> PauliString {
         let n = self.n.max(x_img.n).max(z_img.n);
-        // Accumulate phase from all three factors: self, i (=+1 phase unit), x_img, z_img
         let mut phase: i32 = 0;
         if self.sign {
             phase += 2;
         }
-        // The extra factor of i from Y = i·X·Z
-        phase += 1;
+        phase += 1; // the i factor from Y = i·X·Z
         if x_img.sign {
             phase += 2;
         }
@@ -178,7 +120,6 @@ impl PauliString {
             phase += 2;
         }
 
-        // Compute x_img · z_img Pauli part and accumulate phase
         let mut xz_x = vec![false; n];
         let mut xz_z = vec![false; n];
         for q in 0..n {
@@ -191,7 +132,6 @@ impl PauliString {
             phase += single_qubit_mul_phase(ax, az, bx, bz);
         }
 
-        // Now compute self · (x_img · z_img) Pauli part and accumulate phase
         let mut result_x = vec![false; n];
         let mut result_z = vec![false; n];
         for q in 0..n {
@@ -217,35 +157,17 @@ impl PauliString {
     }
 }
 
-/// Returns the phase contribution (0, 1, 2, or 3 mod 4) from multiplying
-/// single-qubit Paulis encoded as (x_bit, z_bit):
-///   I=(0,0), X=(1,0), Y=(1,1), Z=(0,1)
-///
-/// Non-zero contributions:
-///   X·Y = +iZ  → +1
-///   Y·Z = +iX  → +1
-///   Z·X = +iY  → +1
-///   Y·X = -iZ  → +3
-///   Z·Y = -iX  → +3
-///   X·Z = -iY  → +3
+/// Phase contribution (mod 4) from multiplying two single-qubit Paulis.
+/// Encoding: I=(0,0), X=(1,0), Y=(1,1), Z=(0,1).
+/// Cyclic rule: X·Y=+iZ (+1), Y·Z=+iX (+1), Z·X=+iY (+1); reversed gives −i (+3).
 fn single_qubit_mul_phase(ax: bool, az: bool, bx: bool, bz: bool) -> i32 {
-    // Only non-identity pairs contribute phase.
-    // We use the cyclic rule: for the "forward" cycle X→Y→Z→X, the product
-    // of consecutive elements gives +i times the next; reversed gives -i.
     match (ax, az, bx, bz) {
-        // X·Y = iZ
-        (true, false, true, true) => 1,
-        // Y·Z = iX
-        (true, true, false, true) => 1,
-        // Z·X = iY
-        (false, true, true, false) => 1,
-        // Y·X = -iZ
-        (true, true, true, false) => 3,
-        // Z·Y = -iX
-        (false, true, true, true) => 3,
-        // X·Z = -iY
-        (true, false, false, true) => 3,
-        // All other cases (I·anything, same·same, etc.) contribute 0
+        (true, false, true, true) => 1,  // X·Y = iZ
+        (true, true, false, true) => 1,  // Y·Z = iX
+        (false, true, true, false) => 1, // Z·X = iY
+        (true, true, true, false) => 3,  // Y·X = -iZ
+        (false, true, true, true) => 3,  // Z·Y = -iX
+        (true, false, false, true) => 3, // X·Z = -iY
         _ => 0,
     }
 }
@@ -266,27 +188,21 @@ impl fmt::Display for PauliString {
 
 /// Symplectic Clifford tableau on `n` qubits.
 ///
-/// Stores the images of all X_q and Z_q generators under the accumulated
-/// Clifford unitary.  Applying a gate `prepend`s it (i.e. the gate is applied
-/// *before* the existing tableau, matching stim's `tableau.prepend(gate, qubits)`).
+/// `prepend` applies a gate *before* the existing tableau (matching stim's `tableau.prepend`).
 #[derive(Debug, Clone)]
 pub(crate) struct Tableau {
     pub n: usize,
-    /// rows[2*q]   = image of X_q
-    /// rows[2*q+1] = image of Z_q
+    /// rows[2*q] = image of X_q, rows[2*q+1] = image of Z_q
     rows: Vec<PauliString>,
 }
 
 impl Tableau {
-    /// Create the identity tableau on `n` qubits.
     pub(crate) fn new(n: usize) -> Self {
         let mut rows = Vec::with_capacity(2 * n);
         for q in 0..n {
-            // X_q image: X on qubit q
             let mut xrow = PauliString::identity(n);
             xrow.x_bits[q] = true;
             rows.push(xrow);
-            // Z_q image: Z on qubit q
             let mut zrow = PauliString::identity(n);
             zrow.z_bits[q] = true;
             rows.push(zrow);
@@ -294,20 +210,11 @@ impl Tableau {
         Tableau { n, rows }
     }
 
-    /// Return the number of qubits.
     pub(crate) fn len(&self) -> usize {
         self.n
     }
 
-    /// Conjugate a Pauli string through this tableau.
-    ///
-    /// For each qubit q where the input has a non-identity Pauli:
-    ///   X_q → rows[2*q]
-    ///   Z_q → rows[2*q+1]
-    ///   Y_q = i·X_q·Z_q → i·rows[2*q]·rows[2*q+1]
-    ///
-    /// The results are multiplied together (with phase tracking) to give the
-    /// output Pauli string.
+    /// Conjugate a Pauli string through this tableau: P → U·P·U†.
     pub(crate) fn conjugate(&self, pauli: &PauliString) -> PauliString {
         let n = self.n.max(pauli.n);
         let mut result = PauliString::identity(n);
@@ -317,7 +224,7 @@ impl Tableau {
         for q in 0..pauli.n {
             let (px, pz) = (pauli.x_bits[q], pauli.z_bits[q]);
             if !px && !pz {
-                continue; // identity on this qubit
+                continue;
             }
             let x_image = self.extended_row(2 * q, n);
             let z_image = self.extended_row(2 * q + 1, n);
@@ -325,17 +232,15 @@ impl Tableau {
                 // Y_q = i·X_q·Z_q
                 result = result.mul_with_y_phase(&x_image, &z_image);
             } else if px {
-                // X_q
                 result = result.mul(&x_image);
             } else {
-                // Z_q
                 result = result.mul(&z_image);
             }
         }
         result
     }
 
-    /// Get row `r` extended to length `n` (padding with identity).
+    /// Get row `r` zero-padded to length `n`.
     fn extended_row(&self, r: usize, n: usize) -> PauliString {
         let row = &self.rows[r];
         if row.n == n {
@@ -348,33 +253,21 @@ impl Tableau {
         PauliString { n, x_bits, z_bits, sign: row.sign }
     }
 
-    /// Prepend a single-qubit gate to this tableau on qubit `q`.
-    ///
-    /// "Prepend" means the gate is applied *before* the existing tableau,
-    /// matching stim's `tableau.prepend(gate, [q])`.
-    ///
-    /// Updates rows[2*q] and rows[2*q+1] using the gate's Clifford conjugation
-    /// rules for X_q and Z_q.
     pub(crate) fn prepend_1q_correct(&mut self, gate: Gate1Q, q: usize) {
         let old_x = self.rows[2 * q].clone();
         let old_z = self.rows[2 * q + 1].clone();
-
         let (gx_sign, gx_x, gx_z) = gate.x_image_correct();
         let (gz_sign, gz_x, gz_z) = gate.z_image_correct();
-
         self.rows[2 * q] = combine_rows(&old_x, gx_x, &old_z, gx_z, gx_sign);
         self.rows[2 * q + 1] = combine_rows(&old_x, gz_x, &old_z, gz_z, gz_sign);
     }
 
-    /// Prepend a two-qubit gate to this tableau on qubits `q0`, `q1`.
     pub(crate) fn prepend_2q(&mut self, gate: Gate2Q, q0: usize, q1: usize) {
         let old_x0 = self.rows[2 * q0].clone();
         let old_z0 = self.rows[2 * q0 + 1].clone();
         let old_x1 = self.rows[2 * q1].clone();
         let old_z1 = self.rows[2 * q1 + 1].clone();
-
         let (new_x0, new_z0, new_x1, new_z1) = gate.apply(&old_x0, &old_z0, &old_x1, &old_z1);
-
         self.rows[2 * q0] = new_x0;
         self.rows[2 * q0 + 1] = new_z0;
         self.rows[2 * q1] = new_x1;
@@ -382,16 +275,9 @@ impl Tableau {
     }
 }
 
-/// Combine rows: compute the image of a generator after prepending a gate.
-///
-/// The gate maps a generator (X or Z) to `sign * P` where P is one of:
-///   - I  (use_x=false, use_z=false)
-///   - X  (use_x=true,  use_z=false)  → old_x
-///   - Z  (use_x=false, use_z=true)   → old_z
-///   - Y  (use_x=true,  use_z=true)   → i * old_x * old_z  (Y = i·X·Z)
-///
-/// When the image is Y (both use_x and use_z), we must use `mul_with_y_phase`
-/// to correctly account for the i factor in Y = i·X·Z.
+/// Compute the new row image after prepending a gate whose generator image is
+/// `sign * (use_x ? X : I) * (use_z ? Z : I)`.  When both flags are set the
+/// image is Y = i·X·Z, requiring `mul_with_y_phase`.
 fn combine_rows(
     row_x: &PauliString, use_x: bool, row_z: &PauliString, use_z: bool, sign: bool,
 ) -> PauliString {
@@ -399,7 +285,6 @@ fn combine_rows(
     let mut result = PauliString::identity(n);
     result.sign = sign;
     if use_x && use_z {
-        // Image is Y = i·X·Z: use mul_with_y_phase to handle the i factor
         result = result.mul_with_y_phase(row_x, row_z);
     } else if use_x {
         result = result.mul(row_x);
@@ -413,7 +298,6 @@ fn combine_rows(
 // Single-qubit gates
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Single-qubit Clifford gates supported by the transpiler.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Gate1Q {
     H,
@@ -427,19 +311,8 @@ pub(crate) enum Gate1Q {
 }
 
 impl Gate1Q {
-    /// Returns `(sign_negative, x_bit, z_bit)` for the image of X under this gate.
-    ///
-    /// Standard Clifford conjugation rules:
-    ///   H:    X → Z
-    ///   S:    X → Y   (= +Y, x=1,z=1, sign=false)
-    ///   Sdg:  X → -Y  (= -Y, x=1,z=1, sign=true)
-    ///   SX:   X → X
-    ///   SXdg: X → X
-    ///   X:    X → X
-    ///   Y:    X → -X
-    ///   Z:    X → -X
+    /// Returns `(sign_negative, x_bit, z_bit)` for the image of X under conjugation.
     pub(crate) fn x_image_correct(&self) -> (bool, bool, bool) {
-        // (sign_negative, x_bit, z_bit)
         match self {
             Gate1Q::H => (false, false, true),    // X → Z
             Gate1Q::S => (false, true, true),     // X → Y
@@ -452,17 +325,7 @@ impl Gate1Q {
         }
     }
 
-    /// Returns `(sign_negative, x_bit, z_bit)` for the image of Z under this gate.
-    ///
-    /// Standard Clifford conjugation rules:
-    ///   H:    Z → X
-    ///   S:    Z → Z
-    ///   Sdg:  Z → Z
-    ///   SX:   Z → -Y  (x=1,z=1, sign=true)
-    ///   SXdg: Z → Y   (x=1,z=1, sign=false)
-    ///   X:    Z → -Z
-    ///   Y:    Z → -Z
-    ///   Z:    Z → Z
+    /// Returns `(sign_negative, x_bit, z_bit)` for the image of Z under conjugation.
     pub(crate) fn z_image_correct(&self) -> (bool, bool, bool) {
         match self {
             Gate1Q::H => (false, true, false),   // Z → X
@@ -477,25 +340,18 @@ impl Gate1Q {
     }
 }
 
-/// Two-qubit Clifford gates supported by the transpiler.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Gate2Q {
-    CX, // CNOT: control=q0, target=q1
+    CX, // control=q0, target=q1
     CZ,
     Swap,
 }
 
 impl Gate2Q {
-    /// Compute the new images of X0, Z0, X1, Z1 after prepending this gate.
-    ///
-    /// CX (CNOT, control=q0, target=q1):
-    ///   X0 → X0·X1,  Z0 → Z0,  X1 → X1,  Z1 → Z0·Z1
-    ///
-    /// CZ:
-    ///   X0 → X0·Z1,  Z0 → Z0,  X1 → Z0·X1,  Z1 → Z1
-    ///
-    /// SWAP:
-    ///   X0 → X1,  Z0 → Z1,  X1 → X0,  Z1 → Z0
+    /// Clifford conjugation rules:
+    ///   CX:   X0→X0X1, Z0→Z0,   X1→X1,  Z1→Z0Z1
+    ///   CZ:   X0→X0Z1, Z0→Z0,   X1→Z0X1, Z1→Z1
+    ///   SWAP: X0→X1,   Z0→Z1,   X1→X0,  Z1→Z0
     fn apply(
         &self, x0: &PauliString, z0: &PauliString, x1: &PauliString, z1: &PauliString,
     ) -> (PauliString, PauliString, PauliString, PauliString) {
@@ -577,8 +433,7 @@ mod tests {
 
     #[test]
     fn pauli_mul_zx_gives_y_with_phase() {
-        // (XY) * (YX): qubit 0: X*Y = iZ, qubit 1: Y*X = -iZ
-        // total phase: i * (-i) = 1 (+1), result = ZZ
+        // (XY)·(YX): qubit 0: X·Y=iZ, qubit 1: Y·X=-iZ → total phase 1, result=ZZ
         let xy = PauliString::from_str("+XY");
         let yx = PauliString::from_str("+YX");
         let result = xy.mul(&yx);
@@ -589,12 +444,11 @@ mod tests {
 
     #[test]
     fn pauli_mul_negative_signs() {
-        // (-X) * (+X) = -I
         let neg_x = PauliString::from_str("-X");
         let pos_x = PauliString::from_str("+X");
         let result = neg_x.mul(&pos_x);
         assert_eq!(result.pauli_at(0), 'I');
-        assert!(result.sign); // -I
+        assert!(result.sign);
     }
 
     // ── Tableau identity ──────────────────────────────────────────────────────
@@ -622,7 +476,6 @@ mod tests {
 
     #[test]
     fn tableau_identity_conjugates_y_correctly() {
-        // Identity tableau: Y → Y
         let t = Tableau::new(1);
         let y = PauliString::from_str("+Y");
         let result = t.conjugate(&y);
@@ -647,12 +500,10 @@ mod tests {
     fn h_swaps_x_and_z() {
         let mut t = Tableau::new(1);
         t.prepend_1q_correct(Gate1Q::H, 0);
-        // H X H† = Z
         let x = PauliString::from_str("+X");
         let result = t.conjugate(&x);
         assert_eq!(result.pauli_at(0), 'Z');
         assert!(!result.sign);
-        // H Z H† = X
         let z = PauliString::from_str("+Z");
         let result = t.conjugate(&z);
         assert_eq!(result.pauli_at(0), 'X');
@@ -672,13 +523,12 @@ mod tests {
 
     #[test]
     fn h_maps_y_to_minus_y() {
-        // H Y H† = -Y
         let mut t = Tableau::new(1);
         t.prepend_1q_correct(Gate1Q::H, 0);
         let y = PauliString::from_str("+Y");
         let result = t.conjugate(&y);
         assert_eq!(result.pauli_at(0), 'Y');
-        assert!(result.sign); // -Y
+        assert!(result.sign);
     }
 
     // ── S gate ────────────────────────────────────────────────────────────────
@@ -705,14 +555,12 @@ mod tests {
 
     #[test]
     fn s_maps_y_to_minus_x() {
-        // S Y S† = -X  (since S X S† = Y and S Z S† = Z, so S Y S† = S(iXZ)S† = i·Y·Z = -X)
-        // Actually: Y = iXZ, S Y S† = i(SXS†)(SZS†) = i·Y·Z = i·(iXZ)·Z = i·iX·Z·Z = -X
         let mut t = Tableau::new(1);
         t.prepend_1q_correct(Gate1Q::S, 0);
         let y = PauliString::from_str("+Y");
         let result = t.conjugate(&y);
         assert_eq!(result.pauli_at(0), 'X');
-        assert!(result.sign); // -X
+        assert!(result.sign);
     }
 
     // ── Sdg gate ──────────────────────────────────────────────────────────────
@@ -724,7 +572,7 @@ mod tests {
         let x = PauliString::from_str("+X");
         let result = t.conjugate(&x);
         assert_eq!(result.pauli_at(0), 'Y');
-        assert!(result.sign); // -Y
+        assert!(result.sign);
     }
 
     #[test]
@@ -773,7 +621,7 @@ mod tests {
         let z = PauliString::from_str("+Z");
         let result = t.conjugate(&z);
         assert_eq!(result.pauli_at(0), 'Y');
-        assert!(result.sign); // -Y
+        assert!(result.sign);
     }
 
     #[test]
@@ -783,7 +631,7 @@ mod tests {
         let z = PauliString::from_str("+Z");
         let result = t.conjugate(&z);
         assert_eq!(result.pauli_at(0), 'Y');
-        assert!(!result.sign); // +Y
+        assert!(!result.sign);
     }
 
     // ── Z gate ────────────────────────────────────────────────────────────────
@@ -795,7 +643,7 @@ mod tests {
         let x = PauliString::from_str("+X");
         let result = t.conjugate(&x);
         assert_eq!(result.pauli_at(0), 'X');
-        assert!(result.sign); // -X
+        assert!(result.sign);
     }
 
     #[test]
@@ -817,7 +665,7 @@ mod tests {
         let z = PauliString::from_str("+Z");
         let result = t.conjugate(&z);
         assert_eq!(result.pauli_at(0), 'Z');
-        assert!(result.sign); // -Z
+        assert!(result.sign);
     }
 
     #[test]
@@ -906,7 +754,6 @@ mod tests {
 
     #[test]
     fn identity_conjugates_multi_qubit_y() {
-        // Identity tableau on 3 qubits: XYZ → XYZ
         let t = Tableau::new(3);
         let p = PauliString::from_str("+XYZ");
         let result = t.conjugate(&p);
@@ -934,22 +781,18 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── H·S·H = Sdg (up to global phase) ─────────────────────────────────────
+    // ── H·S·H = SX (up to global phase) ──────────────────────────────────────
 
     #[test]
     fn h_s_h_maps_z_to_x() {
-        // H·S·H: Z → H(S(H(Z))) = H(S(X)) = H(Y) = -Y... let's just verify
-        // the tableau gives consistent results.
         let mut t = Tableau::new(1);
         t.prepend_1q_correct(Gate1Q::H, 0);
         t.prepend_1q_correct(Gate1Q::S, 0);
         t.prepend_1q_correct(Gate1Q::H, 0);
-        // H·S·H = SX (up to global phase)
-        // SX: X→X, Z→-Y
+        // H·S·H acts as SX: Z → -Y
         let z = PauliString::from_str("+Z");
         let result = t.conjugate(&z);
-        // H·S·H·Z·H·S†·H = SX·Z·SX† = -Y
         assert_eq!(result.pauli_at(0), 'Y');
-        assert!(result.sign); // -Y
+        assert!(result.sign);
     }
 }
