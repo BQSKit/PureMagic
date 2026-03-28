@@ -1,27 +1,7 @@
 #!/usr/bin/env -S cargo run --bin transpile --
-//! Transpile a Clifford+T circuit (QASM) to Pauli basis measurements.
+//! Transpile a Clifford+T circuit (QASM) to Pauli basis measurements (.trans).
 //!
-//! This is a Rust reimplementation of `tableau/transpile_circuit.py`.
-//!
-//! The input must be a `.cliffordt.qasm` file.  The output is a `.trans` file
-//! containing a sequence of PauliProducts and CliffordOperations that can be
-//! consumed by the PureMagic scheduler.
-//!
-//! # Algorithm
-//!
-//! We maintain a symplectic Clifford tableau (see `tableau.rs`).  For each gate
-//! in the QASM circuit:
-//!
-//! - **Clifford gates** (H, S, Sdg, SX, SXdg, X, Y, Z, CX, CZ, SWAP) are
-//!   accumulated into the tableau via `prepend`.
-//! - **T / Tdg gates** are converted to a weight-1 Pauli product (Z on the
-//!   target qubit), then conjugated through the current tableau to obtain the
-//!   effective Pauli product.  If the resulting weight exceeds `max_weight`,
-//!   the Clifford queue is flushed to the output and the tableau is reset.
-//! - **Measurements** are handled similarly: a Z-basis measurement on qubit q
-//!   is conjugated through the tableau.
-//!
-//! The output `.trans` format is the same as produced by the Python version.
+//! Rust port of `tableau/transpile_circuit.py`.  Input must be a `.cliffordt.qasm` file.
 
 use clap::Parser;
 use std::fmt;
@@ -47,21 +27,17 @@ use tableau::{Gate1Q, Gate2Q, PauliString, Tableau};
 #[command(
     author,
     version,
-    about = "Transpile a Clifford+T circuit to Pauli basis measurements (.trans).\n\
-             The input must be a .cliffordt.qasm file produced by compile_circuit.py."
+    about = "Transpile a Clifford+T circuit to Pauli basis measurements (.trans)."
 )]
 struct Args {
-    /// Input compiled circuit file (must have a .cliffordt.qasm extension).
     #[arg(short, long = "input_file")]
     input_file: String,
 
-    /// Output file stem (without extension).  Defaults to the stem of the input
-    /// file.  A .trans suffix is appended automatically.
+    /// Defaults to the input stem with a .trans suffix.
     #[arg(short, long = "output_file", default_value = "")]
     output_file: String,
 
-    /// Maximum Pauli product weight allowed during tableau conjugation.
-    /// Defaults to -1 (no limit).
+    /// Maximum Pauli product weight; -1 = no limit.
     #[arg(short = 'm', long = "max_width", default_value = "-1")]
     max_width: i32,
 }
@@ -70,25 +46,17 @@ struct Args {
 // QASM gate representation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A single gate parsed from a QASM file.
 #[derive(Debug, Clone)]
 enum QasmGate {
-    /// Single-qubit Clifford gate.
     Clifford1Q { gate: Gate1Q, qubit: usize },
-    /// Two-qubit Clifford gate.
     Clifford2Q { gate: Gate2Q, control: usize, target: usize },
-    /// T gate (pi/8 rotation around Z).
     T { qubit: usize },
-    /// Tdg gate (−pi/8 rotation around Z).
     Tdg { qubit: usize },
-    /// Z-basis measurement on a qubit.
     Measure { qubit: usize },
-    /// Barrier — synchronisation point (all qubits must finish before this).
     Barrier,
 }
 
 impl QasmGate {
-    /// Returns the qubits this gate acts on (sorted ascending).
     fn qubits(&self) -> Vec<usize> {
         match self {
             QasmGate::Clifford1Q { qubit, .. } => vec![*qubit],
@@ -109,7 +77,6 @@ impl QasmGate {
 // Transpiler output types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Sign of a Pauli product (+1 or −1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Sign {
     Plus,
@@ -125,16 +92,12 @@ impl fmt::Display for Sign {
     }
 }
 
-/// A Pauli product in the `.trans` output format.
-///
-/// Stores the sign, the Pauli string (as a vector of chars, one per qubit),
-/// and the gate type label.
 #[derive(Debug, Clone)]
 struct TransPauli {
     sign: Sign,
-    /// One char per qubit: 'I', 'X', 'Y', 'Z', or '_' (identity).
+    /// One char per qubit: 'I', 'X', 'Y', 'Z'.
     paulis: Vec<char>,
-    /// Gate label: "T" or "M".
+    /// "T" or "M".
     label: String,
 }
 
@@ -160,9 +123,6 @@ impl fmt::Display for TransPauli {
     }
 }
 
-/// A Clifford operation in the `.trans` output format.
-///
-/// Matches the format produced by `format_clifford()` in the Python version.
 #[derive(Debug, Clone)]
 struct TransClifford {
     /// One char per qubit: '_', 'X', or 'Z'.
@@ -172,7 +132,7 @@ struct TransClifford {
 }
 
 impl TransClifford {
-    /// Returns `None` for X and Z gates (which are dropped in the output).
+    /// Returns `None` for gates not emitted in the .trans format (X, Z, H, Y, CZ, SWAP).
     fn from_qasm_gate(gate: &QasmGate, num_qubits: usize) -> Option<Self> {
         let mut paulis = vec!['_'; num_qubits];
         let name = match gate {
@@ -197,11 +157,6 @@ impl TransClifford {
                 paulis[*qubit] = 'X';
                 "SXdg".to_string()
             }
-            // X and Z are Pauli corrections that do not need to be scheduled
-            QasmGate::Clifford1Q { gate: Gate1Q::X, .. } => return None,
-            QasmGate::Clifford1Q { gate: Gate1Q::Z, .. } => return None,
-            // H, Y, CZ, SWAP are flushed but not written to .trans
-            // (they only appear in the clifford_queue when max_weight is exceeded)
             _ => return None,
         };
         Some(TransClifford { paulis, name })
@@ -218,7 +173,6 @@ impl fmt::Display for TransClifford {
     }
 }
 
-/// An item in the transpiler output list.
 #[derive(Debug, Clone)]
 enum TransItem {
     Pauli(TransPauli),
@@ -238,13 +192,8 @@ impl fmt::Display for TransItem {
 // QASM parser
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parse a `.cliffordt.qasm` file into a list of gates and the number of qubits.
-///
-/// Supports the gate set used by `compile_circuit.py`:
-///   h, s, sdg, sx, sxdg, x, y, z, cx, cz, swap, t, tdg, measure, barrier.
-///
-/// Lines that cannot be parsed (headers, comments, custom gate definitions,
-/// creg declarations, etc.) are silently skipped.
+/// Parse a `.cliffordt.qasm` file into a gate list and qubit count.
+/// Unrecognised lines (headers, custom gate defs, creg, etc.) are silently skipped.
 fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -255,7 +204,6 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
         let line = line?;
         let line = line.trim();
 
-        // Skip empty lines, comments, and QASM headers
         if line.is_empty()
             || line.starts_with("//")
             || line.starts_with("OPENQASM")
@@ -269,13 +217,11 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
             continue;
         }
 
-        // barrier — emit as a sync point for cycle-packing
         if line.starts_with("barrier") {
             gates.push(QasmGate::Barrier);
             continue;
         }
 
-        // qreg q[N];
         if line.starts_with("qreg") {
             if let Some(n) = parse_qreg(line) {
                 num_qubits = n;
@@ -283,7 +229,6 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
             continue;
         }
 
-        // measure q[i] -> c[i];  (treat as Z-basis measurement)
         if line.starts_with("measure") {
             if let Some(q) = parse_single_qubit_index(line) {
                 gates.push(QasmGate::Measure { qubit: q });
@@ -291,13 +236,10 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
             continue;
         }
 
-        // Two-qubit gates: cx q[a], q[b];
         if let Some(g) = try_parse_2q(line) {
             gates.push(g);
             continue;
         }
-
-        // Single-qubit gates: h q[i];
         if let Some(g) = try_parse_1q(line) {
             gates.push(g);
             continue;
@@ -308,34 +250,25 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
     Ok((num_qubits, gates))
 }
 
-/// Reorder gates to match bqskit's cycle-based circuit representation.
-///
-/// bqskit packs gates into parallel "cycles": each gate is placed in the
-/// earliest cycle where all its qubits are free.  Within a cycle, gates are
-/// yielded in ascending qubit-index order (using the gate's minimum qubit).
-///
-/// This reordering is purely a scheduling of independent (commuting) gates and
-/// does not change the circuit semantics.
+/// Reorder gates into bqskit's cycle-based order: pack each gate into the
+/// earliest cycle where all its qubits are free, then sort within each cycle
+/// by minimum qubit index.  This is a semantics-preserving reordering of
+/// independent (commuting) gates.
 fn reorder_by_cycles(gates: Vec<QasmGate>, num_qubits: usize) -> Vec<QasmGate> {
     if num_qubits == 0 {
         return gates;
     }
 
-    // next_cycle[q] = the first cycle in which qubit q is free
     let mut next_cycle = vec![0usize; num_qubits];
-
-    // cycles[c] = list of (min_qubit, gate) placed in cycle c
     let mut cycles: Vec<Vec<(usize, QasmGate)>> = Vec::new();
 
     for gate in gates {
         if matches!(gate, QasmGate::Barrier) {
-            // Barrier: advance ALL qubits to the same cycle (max of all next_cycles),
-            // then place the barrier there as a sentinel, and advance all to cycle+1.
+            // Advance all qubits to the same cycle, place barrier, then advance past it.
             let sync = next_cycle.iter().copied().max().unwrap_or(0);
             if sync >= cycles.len() {
                 cycles.resize_with(sync + 1, Vec::new);
             }
-            // Use usize::MAX as sort key so barrier sorts last within its cycle
             cycles[sync].push((usize::MAX, gate));
             let after = sync + 1;
             for q in next_cycle.iter_mut() {
@@ -345,31 +278,22 @@ fn reorder_by_cycles(gates: Vec<QasmGate>, num_qubits: usize) -> Vec<QasmGate> {
         }
 
         let qubits = gate.qubits();
-        // Find the earliest cycle where all qubits of this gate are free
         let cycle = qubits.iter().map(|&q| next_cycle[q]).max().unwrap_or(0);
-
-        // Extend cycles vec if needed
         if cycle >= cycles.len() {
             cycles.resize_with(cycle + 1, Vec::new);
         }
-
-        // Sort key: minimum qubit index of the gate
         let min_q = *qubits.iter().min().unwrap();
         cycles[cycle].push((min_q, gate));
-
-        // Mark all qubits as busy until cycle+1
         for &q in &qubits {
             next_cycle[q] = cycle + 1;
         }
     }
 
-    // Flatten: for each cycle, sort by min_qubit, then collect
     let mut result = Vec::new();
     for cycle in cycles {
         let mut sorted = cycle;
         sorted.sort_by_key(|(min_q, _)| *min_q);
         for (_, gate) in sorted {
-            // Drop barrier sentinels — they were only needed for cycle synchronisation
             if !matches!(gate, QasmGate::Barrier) {
                 result.push(gate);
             }
@@ -378,22 +302,18 @@ fn reorder_by_cycles(gates: Vec<QasmGate>, num_qubits: usize) -> Vec<QasmGate> {
     result
 }
 
-/// Parse `qreg q[N];` → N.
 fn parse_qreg(line: &str) -> Option<usize> {
-    // e.g. "qreg q[6];"
     let start = line.find('[')? + 1;
     let end = line.find(']')?;
     line[start..end].parse().ok()
 }
 
-/// Parse a single qubit index from a line like `h q[3];` → 3.
 fn parse_single_qubit_index(line: &str) -> Option<usize> {
     let start = line.find('[')? + 1;
     let end = line.find(']')?;
     line[start..end].parse().ok()
 }
 
-/// Parse two qubit indices from a line like `cx q[0], q[1];` → (0, 1).
 fn parse_two_qubit_indices(line: &str) -> Option<(usize, usize)> {
     let mut indices = line.split('[').skip(1);
     let a: usize = indices.next()?.split(']').next()?.parse().ok()?;
@@ -401,7 +321,6 @@ fn parse_two_qubit_indices(line: &str) -> Option<(usize, usize)> {
     Some((a, b))
 }
 
-/// Try to parse a two-qubit gate from a QASM line.
 fn try_parse_2q(line: &str) -> Option<QasmGate> {
     let lower = line.to_lowercase();
     if lower.starts_with("cx ") || lower.starts_with("cx\t") {
@@ -419,9 +338,7 @@ fn try_parse_2q(line: &str) -> Option<QasmGate> {
     None
 }
 
-/// Try to parse a single-qubit gate from a QASM line.
 fn try_parse_1q(line: &str) -> Option<QasmGate> {
-    // Split on whitespace to get the gate name
     let mut parts = line.splitn(2, |c: char| c.is_whitespace());
     let name = parts.next()?.trim().to_lowercase();
     let name = name.trim_end_matches(';');
@@ -446,15 +363,7 @@ fn try_parse_1q(line: &str) -> Option<QasmGate> {
 // Clifford sequence optimizer
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Optimize a sequence of Clifford gates for output.
-///
-/// This is a simplified version of `CliffordOperation.optimize_sequence()` from
-/// the Python code.  For now we just filter out gates that don't appear in the
-/// `.trans` format (H, Y, CZ, SWAP) and pass through the rest.
-///
-/// The Python version does full single-qubit unitary optimization; we replicate
-/// the essential behaviour: only S, Sdg, SX, SXdg, CX (and X, Z which are
-/// dropped) appear in the output.
+/// Filter the clifford queue down to gates that appear in the .trans format.
 fn optimize_clifford_sequence(gates: &[QasmGate], num_qubits: usize) -> Vec<TransClifford> {
     gates.iter().filter_map(|g| TransClifford::from_qasm_gate(g, num_qubits)).collect()
 }
@@ -463,9 +372,6 @@ fn optimize_clifford_sequence(gates: &[QasmGate], num_qubits: usize) -> Vec<Tran
 // Transpiler
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Transpile a parsed QASM gate list into a `.trans` item list.
-///
-/// Mirrors `Transpiler.transpile()` from `tableau/tableau/transpile.py`.
 fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransItem> {
     let effective_max_weight = if max_weight <= 0 { num_qubits + 1 } else { max_weight as usize };
 
@@ -473,14 +379,12 @@ fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<Tran
     let mut ops: Vec<TransItem> = Vec::new();
     let mut clifford_queue: Vec<QasmGate> = Vec::new();
 
-    // Check that the circuit has at least one T gate
     let has_t = gates.iter().any(|g| matches!(g, QasmGate::T { .. } | QasmGate::Tdg { .. }));
     if !has_t {
         eprintln!("Warning: circuit has no T gates");
     }
 
-    // Append Z-basis measurements for any qubit that doesn't already end with one.
-    // We do this by tracking which qubits have measurements and appending at the end.
+    // Append Z-basis measurements for any qubit not already measured.
     let mut gates_with_measurements = gates.to_vec();
     let measured: Vec<bool> = {
         let mut m = vec![false; num_qubits];
@@ -499,7 +403,6 @@ fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<Tran
 
     let mut last_weight: Option<usize> = None;
 
-    /// Flush the clifford queue: optimize and append to ops, reset tableau.
     fn flush_clifford_queue(
         clifford_queue: &mut Vec<QasmGate>, ops: &mut Vec<TransItem>, tableau: &mut Tableau,
         num_qubits: usize,
@@ -523,26 +426,20 @@ fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<Tran
                 tableau.prepend_2q(*g, *control, *target);
             }
             QasmGate::T { qubit } => {
-                // T gate: Z rotation by pi/8 on `qubit`.
-                // Pre-tableau Pauli: +Z on qubit `qubit`, I elsewhere.
                 let pre_pauli = make_z_pauli(num_qubits, *qubit, false);
                 let conjugated = tableau.conjugate(&pre_pauli);
                 let weight = conjugated.weight();
                 last_weight = Some(weight);
                 if weight > effective_max_weight {
                     flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, num_qubits);
-                    // Re-conjugate through fresh identity tableau (weight-1 result)
                     let fresh_pauli = make_z_pauli(num_qubits, *qubit, false);
-                    let tp = TransPauli::from_pauli_string(&fresh_pauli, "T");
-                    ops.push(TransItem::Pauli(tp));
+                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&fresh_pauli, "T")));
                 } else {
-                    let tp = TransPauli::from_pauli_string(&conjugated, "T");
-                    ops.push(TransItem::Pauli(tp));
+                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&conjugated, "T")));
                 }
             }
             QasmGate::Tdg { qubit } => {
-                // Tdg gate: Z rotation by −pi/8 on `qubit`.
-                // Pre-tableau Pauli: −Z on qubit `qubit` (negative sign for Tdg).
+                // Tdg uses a negative-sign Z Pauli (−Z rotation).
                 let pre_pauli = make_z_pauli(num_qubits, *qubit, true);
                 let conjugated = tableau.conjugate(&pre_pauli);
                 let weight = conjugated.weight();
@@ -550,18 +447,13 @@ fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<Tran
                 if weight > effective_max_weight {
                     flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, num_qubits);
                     let fresh_pauli = make_z_pauli(num_qubits, *qubit, true);
-                    let tp = TransPauli::from_pauli_string(&fresh_pauli, "T");
-                    ops.push(TransItem::Pauli(tp));
+                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&fresh_pauli, "T")));
                 } else {
-                    let tp = TransPauli::from_pauli_string(&conjugated, "T");
-                    ops.push(TransItem::Pauli(tp));
+                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&conjugated, "T")));
                 }
             }
             QasmGate::Measure { qubit } => {
-                // Z-basis measurement on `qubit`.
                 if last_weight.is_none() {
-                    // No T gate seen yet — this shouldn't happen in a valid circuit
-                    // but we handle it gracefully.
                     eprintln!("Warning: measurement on qubit {} before any T gate", qubit);
                 }
                 let pre_pauli = make_z_pauli(num_qubits, *qubit, false);
@@ -571,23 +463,18 @@ fn transpile(num_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<Tran
                 if should_flush {
                     flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, num_qubits);
                     let fresh_pauli = make_z_pauli(num_qubits, *qubit, false);
-                    let tp = TransPauli::from_pauli_string(&fresh_pauli, "M");
-                    ops.push(TransItem::Pauli(tp));
+                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&fresh_pauli, "M")));
                 } else {
-                    let tp = TransPauli::from_pauli_string(&conjugated, "M");
-                    ops.push(TransItem::Pauli(tp));
+                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&conjugated, "M")));
                 }
             }
-            QasmGate::Barrier => {
-                // Barrier is a cycle-packing sentinel; skip during transpilation.
-            }
+            QasmGate::Barrier => {}
         }
     }
 
     ops
 }
 
-/// Create a Pauli string with Z on qubit `q` and I elsewhere.
 fn make_z_pauli(n: usize, q: usize, negative: bool) -> PauliString {
     let mut ps = PauliString::identity(n);
     ps.z_bits[q] = true;
@@ -599,9 +486,6 @@ fn make_z_pauli(n: usize, q: usize, negative: bool) -> PauliString {
 // Output writer
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Write the transpiled circuit to a `.trans` file.
-///
-/// Mirrors `print_trans()` from `transpile_circuit.py`.
 fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usize)> {
     let file = File::create(output_path)?;
     let mut writer = BufWriter::new(file);
@@ -669,12 +553,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    // ── Load circuit ──────────────────────────────────────────────────────────
     println!("Loading compiled circuit from {}", input_file);
     let load_start = Instant::now();
     let (num_qubits, gates) = parse_qasm(input_file)?;
-    let load_elapsed = load_start.elapsed();
-    println!("Circuit loaded in {:.2} seconds", load_elapsed.as_secs_f64());
+    println!("Circuit loaded in {:.2} seconds", load_start.elapsed().as_secs_f64());
 
     let total_gates = gates.iter().filter(|g| !matches!(g, QasmGate::Measure { .. })).count();
     let clifford_gates = gates
@@ -684,7 +566,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Circuit has {} gates on {} qubits", total_gates, num_qubits);
 
-    // ── Warn about gate set ───────────────────────────────────────────────────
     let mut gate_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for g in &gates {
         let name = match g {
@@ -699,7 +580,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Gate set: {}", gate_names.iter().cloned().collect::<Vec<_>>().join(", "));
 
-    // ── Transpile ─────────────────────────────────────────────────────────────
     let transpile_start = Instant::now();
     let items = transpile(num_qubits, &gates, args.max_width);
     let transpile_elapsed = transpile_start.elapsed();
@@ -738,12 +618,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Non-Clifford Pauli products: {}", num_pauli_products);
     println!("  Average Pauli product weight: {:.2}", avg_weight);
 
-    // ── Write output ──────────────────────────────────────────────────────────
     let output_stem = if args.output_file.is_empty() {
-        // Strip both extensions from .cliffordt.qasm
         let p = Path::new(input_file);
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-        // stem is now "foo.cliffordt" — strip the .cliffordt part
+        // stem is "foo.cliffordt" — strip the inner extension
         if stem.ends_with(".cliffordt") {
             stem[..stem.len() - ".cliffordt".len()].to_string()
         } else {
@@ -872,15 +750,12 @@ mod tests {
         assert!(TransClifford::from_qasm_gate(&gate, 2).is_none());
     }
 
-    // ── Transpiler: identity tableau ──────────────────────────────────────────
+    // ── Transpiler ────────────────────────────────────────────────────────────
 
     #[test]
     fn transpile_single_t_gate_no_cliffords() {
-        // A single T gate on qubit 0 with no preceding Cliffords.
-        // The tableau is identity, so the output should be +Z_<T>.
         let gates = vec![QasmGate::T { qubit: 0 }];
         let items = transpile(2, &gates, -1);
-        // Should have: 1 T gate + 2 measurements (appended for qubits 0 and 1)
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -893,11 +768,7 @@ mod tests {
 
     #[test]
     fn transpile_h_then_t_gives_x_pauli() {
-        // H on qubit 0, then T on qubit 0.
-        // H maps Z → X, so T (which is a Z rotation) becomes an X rotation.
-        // The tableau after H: X_0 → Z, Z_0 → X.
-        // Conjugating +Z through this tableau: Z_0 → X_0.
-        // So the output T gate should be +X_<T>.
+        // H maps Z→X, so T (a Z rotation) becomes an X rotation after conjugation.
         let gates =
             vec![QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 0 }, QasmGate::T { qubit: 0 }];
         let items = transpile(2, &gates, -1);
@@ -911,7 +782,6 @@ mod tests {
 
     #[test]
     fn transpile_tdg_gives_negative_sign() {
-        // Tdg on qubit 0 with identity tableau → -Z_<T>
         let gates = vec![QasmGate::Tdg { qubit: 0 }];
         let items = transpile(1, &gates, -1);
         let t_items: Vec<_> =
@@ -925,7 +795,6 @@ mod tests {
 
     #[test]
     fn transpile_measurements_appended_for_all_qubits() {
-        // Circuit with T on qubit 0 only; measurements should be appended for both qubits.
         let gates = vec![QasmGate::T { qubit: 0 }];
         let items = transpile(2, &gates, -1);
         let m_items: Vec<_> =
@@ -933,30 +802,13 @@ mod tests {
         assert_eq!(m_items.len(), 2);
     }
 
-    // ── Transpiler: max_weight flushing ───────────────────────────────────────
-
     #[test]
     fn transpile_max_weight_1_flushes_cliffords() {
-        // CX creates a weight-2 product; with max_weight=1 it should flush.
-        // CX q[0], q[1]; T q[0];
-        // After CX: tableau maps Z_0 → Z_0 (unchanged), but X_0 → X_0 X_1.
-        // T on q[0] conjugates +Z_0 through tableau: Z_0 → Z_0 (weight 1, OK).
-        // Actually CX: X0→X0X1, Z0→Z0, X1→X1, Z1→Z0Z1.
-        // T on q[0]: conjugate +Z_0 → Z_0 (weight 1, no flush needed).
-        // Let's use a case that actually triggers flush:
-        // H q[0]; CX q[0], q[1]; T q[0];
-        // After H: Z_0→X_0, X_0→Z_0.
-        // After CX: X_0→Z_0 (unchanged since CX maps X0→X0X1 but we prepend,
-        //   so the tableau accumulates in reverse order).
-        // This is getting complex; just test that max_weight=0 (effectively 1)
-        // causes cliffords to be flushed.
         let gates =
             vec![QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 0 }, QasmGate::T { qubit: 0 }];
-        // With max_weight=-1 (no limit), S is in clifford_queue and not flushed.
         let items_unlimited = transpile(2, &gates, -1);
         let cliffords_unlimited: Vec<_> =
             items_unlimited.iter().filter(|i| matches!(i, TransItem::Clifford(_))).collect();
-        // No flush → no Clifford items in output
         assert_eq!(cliffords_unlimited.len(), 0);
     }
 
@@ -981,7 +833,6 @@ mod tests {
         assert_eq!(num_cliffords, 1);
         assert_eq!(num_paulis, 2);
         assert_eq!(total, 3);
-        // weights: 1 + 2 = 3, avg = 1.5
         assert!((avg_weight - 1.5).abs() < 1e-9);
     }
 }
