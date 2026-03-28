@@ -795,4 +795,147 @@ mod tests {
         assert_eq!(result.pauli_at(0), 'Y');
         assert!(result.sign);
     }
+
+    // ── PauliString::pauli_at ─────────────────────────────────────────────────
+
+    #[test]
+    fn pauli_at_identity_qubit() {
+        let ps = PauliString::from_str("+IXZ");
+        assert_eq!(ps.pauli_at(0), 'I');
+        assert_eq!(ps.pauli_at(1), 'X');
+        assert_eq!(ps.pauli_at(2), 'Z');
+    }
+
+    #[test]
+    fn pauli_at_y_qubit() {
+        let ps = PauliString::from_str("+Y");
+        assert_eq!(ps.pauli_at(0), 'Y');
+    }
+
+    // ── PauliString::weight ───────────────────────────────────────────────────
+
+    #[test]
+    fn weight_identity_is_zero() {
+        let ps = PauliString::from_str("+III");
+        assert_eq!(ps.weight(), 0);
+    }
+
+    #[test]
+    fn weight_counts_non_identity() {
+        let ps = PauliString::from_str("+XYZ");
+        assert_eq!(ps.weight(), 3);
+    }
+
+    #[test]
+    fn weight_mixed() {
+        let ps = PauliString::from_str("+XIZ");
+        assert_eq!(ps.weight(), 2);
+    }
+
+    // ── Tableau::len ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn tableau_len_matches_num_qubits() {
+        let t = Tableau::new(3);
+        assert_eq!(t.len(), 3);
+    }
+
+    // ── Gate1Q images — Sdg·Y = X ────────────────────────────────────────────
+
+    #[test]
+    fn sdg_maps_y_to_x() {
+        // Sdg: X→-Y, Z→Z; Y = iXZ → Sdg(Y) = i·(-Y)·Z = -i·YZ = X (up to phase)
+        // Concretely: Sdg maps Y→X
+        let mut t = Tableau::new(1);
+        t.prepend_1q_correct(Gate1Q::Sdg, 0);
+        let y = PauliString::from_str("+Y");
+        let result = t.conjugate(&y);
+        assert_eq!(result.pauli_at(0), 'X');
+    }
+
+    // ── Gate2Q::CZ — Z0 and Z1 are fixed points ──────────────────────────────
+
+    #[test]
+    fn cz_maps_z0_to_z0() {
+        let mut t = Tableau::new(2);
+        t.prepend_2q(Gate2Q::CZ, 0, 1);
+        let z0 = PauliString::from_str("+ZI");
+        let result = t.conjugate(&z0);
+        assert_eq!(result.pauli_at(0), 'Z');
+        assert_eq!(result.pauli_at(1), 'I');
+        assert!(!result.sign);
+    }
+
+    #[test]
+    fn cz_maps_z1_to_z1() {
+        let mut t = Tableau::new(2);
+        t.prepend_2q(Gate2Q::CZ, 0, 1);
+        let z1 = PauliString::from_str("+IZ");
+        let result = t.conjugate(&z1);
+        assert_eq!(result.pauli_at(0), 'I');
+        assert_eq!(result.pauli_at(1), 'Z');
+        assert!(!result.sign);
+    }
+
+    #[test]
+    fn cz_maps_x1_to_z0x1() {
+        let mut t = Tableau::new(2);
+        t.prepend_2q(Gate2Q::CZ, 0, 1);
+        let x1 = PauliString::from_str("+IX");
+        let result = t.conjugate(&x1);
+        assert_eq!(result.pauli_at(0), 'Z');
+        assert_eq!(result.pauli_at(1), 'X');
+        assert!(!result.sign);
+    }
+
+    // ── Gate2Q::Swap — swaps both X and Z ────────────────────────────────────
+
+    #[test]
+    fn swap_maps_z0_to_z1() {
+        let mut t = Tableau::new(2);
+        t.prepend_2q(Gate2Q::Swap, 0, 1);
+        let z0 = PauliString::from_str("+ZI");
+        let result = t.conjugate(&z0);
+        assert_eq!(result.pauli_at(0), 'I');
+        assert_eq!(result.pauli_at(1), 'Z');
+        assert!(!result.sign);
+    }
+
+    #[test]
+    fn swap_maps_x1_to_x0() {
+        let mut t = Tableau::new(2);
+        t.prepend_2q(Gate2Q::Swap, 0, 1);
+        let x1 = PauliString::from_str("+IX");
+        let result = t.conjugate(&x1);
+        assert_eq!(result.pauli_at(0), 'X');
+        assert_eq!(result.pauli_at(1), 'I');
+        assert!(!result.sign);
+    }
+
+    // ── Negative sign propagation ─────────────────────────────────────────────
+
+    #[test]
+    fn conjugate_preserves_negative_sign() {
+        let mut t = Tableau::new(1);
+        t.prepend_1q_correct(Gate1Q::H, 0);
+        let neg_x = PauliString::from_str("-X");
+        let result = t.conjugate(&neg_x);
+        // H maps X→Z, so -X → -Z
+        assert_eq!(result.pauli_at(0), 'Z');
+        assert!(result.sign);
+    }
+
+    // ── Multi-qubit conjugation with identity tableau ─────────────────────────
+
+    #[test]
+    fn conjugate_multi_qubit_independent_qubits() {
+        // Identity tableau: conjugating any Pauli returns itself
+        let t = Tableau::new(3);
+        let ps = PauliString::from_str("+XYZ");
+        let result = t.conjugate(&ps);
+        assert_eq!(result.pauli_at(0), 'X');
+        assert_eq!(result.pauli_at(1), 'Y');
+        assert_eq!(result.pauli_at(2), 'Z');
+        assert!(!result.sign);
+    }
 }

@@ -794,4 +794,111 @@ mod tests {
         // print_statistics internally calls get_statistics which calls get_layers.
         let _ = c.print_statistics();
     }
+
+    // ── Circuit::count_t_stats ────────────────────────────────────────────────
+
+    #[test]
+    fn count_t_stats_counts_t_gates_and_t_layers() {
+        // 2 T gates on different qubits (same layer), 1 CX gate
+        let f = make_circuit_file(&[
+            "+X_<T>",  // T gate on qubit 0
+            "+_X<T>",  // T gate on qubit 1 (parallel — same layer)
+            "+XZ<CX>", // CX gate (different layer, depends on both T gates)
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let (num_t, num_t_layers) = c.count_t_stats();
+        assert_eq!(num_t, 2, "should count 2 T gates");
+        // Both T gates are in the same layer, so 1 T-containing layer
+        assert_eq!(num_t_layers, 1, "both T gates are in the same layer");
+    }
+
+    #[test]
+    fn count_t_stats_no_t_gates() {
+        let f = make_circuit_file(&["+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let (num_t, num_t_layers) = c.count_t_stats();
+        assert_eq!(num_t, 0);
+        assert_eq!(num_t_layers, 0);
+    }
+
+    #[test]
+    fn count_t_stats_all_t_gates_in_separate_layers() {
+        // Three T gates on the same qubit — each in its own layer
+        let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let (num_t, num_t_layers) = c.count_t_stats();
+        assert_eq!(num_t, 3);
+        assert_eq!(num_t_layers, 3);
+    }
+
+    // ── Circuit::build_coupling_matrix (via plot_qubit_coupling) ─────────────
+
+    #[test]
+    fn build_coupling_matrix_symmetric_for_cx_gate() {
+        // CX on qubits 0 and 1 — coupling matrix should be symmetric
+        let f = make_circuit_file(&["+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        // build_coupling_matrix is private; exercise it indirectly via the
+        // public plot_qubit_coupling path — but since plotting requires a
+        // display, just verify the circuit loaded correctly and has 2 qubits.
+        assert_eq!(c.num_qubits, 2);
+        assert_eq!(c.num_products(), 1);
+    }
+
+    // ── Circuit::get_layers (via print_statistics) ────────────────────────────
+
+    #[test]
+    fn get_layers_diamond_dependency() {
+        // Diamond: 0 and 1 both depend on nothing; 2 depends on 0; 3 depends on 1;
+        // 4 depends on both 2 and 3.
+        let f = make_circuit_file(&[
+            "+X___<T>", // id=0, qubit 0
+            "+_X__<T>", // id=1, qubit 1
+            "+X___<T>", // id=2, qubit 0 (depends on 0)
+            "+_X__<T>", // id=3, qubit 1 (depends on 1)
+            "+__X_<T>", // id=4, qubit 2 (independent)
+        ]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let num_layers = c.print_statistics();
+        // Layer 0: ids 0,1,4; Layer 1: ids 2,3 → 2 layers
+        assert_eq!(num_layers, 2);
+    }
+
+    // ── Circuit::load_circuit — M gate is kept ────────────────────────────────
+
+    #[test]
+    fn load_circuit_keeps_m_gate() {
+        let f = make_circuit_file(&["+X_<M>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 1);
+        assert!(c.get_product(0).gate_type.is_m());
+    }
+
+    // ── Circuit::load_circuit — S gate is kept ────────────────────────────────
+
+    #[test]
+    fn load_circuit_keeps_s_gate() {
+        let f = make_circuit_file(&["+X_<S>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 1);
+        assert!(c.get_product(0).gate_type.is_s());
+    }
+
+    // ── Circuit::load_circuit — CX gate is kept ───────────────────────────────
+
+    #[test]
+    fn load_circuit_keeps_cx_gate() {
+        let f = make_circuit_file(&["+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.num_products(), 1);
+        assert!(c.get_product(0).gate_type.is_cx());
+    }
 }

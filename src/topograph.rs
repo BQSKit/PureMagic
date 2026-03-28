@@ -1015,4 +1015,108 @@ mod tests {
         assert_eq!(g, 255);
         assert_eq!(b, 255);
     }
+
+    // ── TopoGraph::set_topo — generated topology ──────────────────────────────
+
+    #[test]
+    fn set_topo_generates_topology_for_small_circuit() {
+        Node::set_magic_routing(false);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"test".to_string(), &"".to_string(), &0, false, 0, false);
+        assert!(topo.num_nodes > 0, "topology should have nodes after set_topo");
+        assert!(topo.num_qubits > 0, "topology should have qubits after set_topo");
+        Node::set_magic_routing(true);
+    }
+
+    #[test]
+    fn set_topo_with_magic_routing_has_magic_nodes() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
+        let magic_count = topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).count();
+        assert!(magic_count > 0, "magic routing topology should have magic nodes");
+    }
+
+    #[test]
+    fn set_topo_without_magic_routing_has_bus_nodes() {
+        Node::set_magic_routing(false);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, false, 0, false);
+        let bus_count = topo.iter_nodes().filter(|n| n.node_type == NodeType::Bus).count();
+        assert!(bus_count > 0, "bus routing topology should have bus nodes");
+        Node::set_magic_routing(true);
+    }
+
+    // ── TopoGraph::gen_bus_routing_topo ───────────────────────────────────────
+
+    #[test]
+    fn bus_routing_topo_has_data_qubits() {
+        Node::set_magic_routing(false);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"test".to_string(), &"".to_string(), &0, false, 0, false);
+        let data_count = topo.iter_nodes().filter(|n| n.node_type == NodeType::Data).count();
+        assert!(data_count >= 4, "bus routing topo should have at least 4 data nodes for 4 qubits");
+        Node::set_magic_routing(true);
+    }
+
+    // ── TopoGraph::update_statistics — data/bus/magic counts ─────────────────
+
+    #[test]
+    fn update_statistics_data_count_matches_data_nodes() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
+        topo.update_statistics();
+        // num_data_qubits counts logical qubits (each qubit has an X and Z data node,
+        // so num_data_qubits = num_data_nodes / 2).
+        let actual_data_nodes = topo.iter_nodes().filter(|n| n.node_type == NodeType::Data).count();
+        assert_eq!(topo.num_data_qubits * 2, actual_data_nodes);
+    }
+
+    #[test]
+    fn update_statistics_magic_count_matches_magic_nodes() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
+        topo.update_statistics();
+        let actual_magic = topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).count();
+        assert_eq!(topo.num_magic_qubits, actual_magic);
+    }
+
+    // ── TopoGraph::get_node ───────────────────────────────────────────────────
+
+    #[test]
+    fn get_node_returns_correct_node() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
+        // Every node returned by iter_nodes should be retrievable by get_node
+        for node in topo.iter_nodes() {
+            let fetched = topo.get_node(node.id);
+            assert_eq!(fetched.id, node.id);
+        }
+    }
+
+    // ── TopoGraph: all nodes have valid positions ─────────────────────────────
+
+    #[test]
+    fn all_nodes_have_finite_positions() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"test".to_string(), &"".to_string(), &0, true, 1, false);
+        for node in topo.iter_nodes() {
+            assert!(node.pos.0.is_finite(), "node {} x position is not finite", node.id);
+            assert!(node.pos.1.is_finite(), "node {} y position is not finite", node.id);
+        }
+    }
+
+    // ── TopoGraph: circuit_stem ───────────────────────────────────────────────
+
+    #[test]
+    fn circuit_stem_returns_non_empty_string() {
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"mytest.trans".to_string(), &"".to_string(), &0, false, 0, false);
+        let stem = topo.circuit_stem();
+        assert!(!stem.is_empty(), "circuit_stem should return a non-empty string");
+    }
 }
