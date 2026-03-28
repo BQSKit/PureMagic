@@ -18,7 +18,9 @@ struct TreeNode {
 
 impl TreeNode {
     /// Creates a tree node from a topology node.
-    pub(crate) fn new(node: &Node, #[cfg_attr(not(debug_assertions), allow(unused))] label: &str) -> Self {
+    pub(crate) fn new(
+        node: &Node, #[cfg_attr(not(debug_assertions), allow(unused))] label: &str,
+    ) -> Self {
         TreeNode {
             nbors: Vec::new(),
             is_routing: node.is_routing(),
@@ -524,5 +526,95 @@ mod tests {
         g.remove_double_edges();
         // After removal, data node should have exactly 1 edge.
         assert_eq!(g.neighbors(0).len(), 1);
+    }
+
+    // ── TreeGraph::trim_magic_root ────────────────────────────────────────────
+
+    #[test]
+    fn trim_magic_root_removes_root_when_set() {
+        Node::set_magic_routing(true);
+        // Graph: root(magic,0) — routing(magic,1) — data(2)
+        // After removing root 0, node 1's sole neighbor is data node 2,
+        // so node 1 is kept (the loop preserves routing nodes whose only
+        // remaining neighbor is a data node).
+        let mut g = TreeGraph::new(5);
+        let m0 = magic_node(0, 0.0, 0.0);
+        let m1 = magic_node(1, 1.0, 0.0);
+        let d2 = data_node(2, 2.0, 0.0);
+        g.add_node(&m0, "m0");
+        g.add_node(&m1, "m1");
+        g.add_node(&d2, "d2");
+        g.add_edge(0, 1);
+        g.add_edge(1, 2);
+        g.root_node_id = Some(0);
+        g.trim_magic_root();
+        // Root node 0 should be removed; nodes 1 and 2 remain
+        assert!(!g.contains_node(0));
+        assert!(g.contains_node(1));
+        assert!(g.contains_node(2));
+        assert!(g.root_node_id.is_none());
+    }
+
+    #[test]
+    fn trim_magic_root_noop_when_no_root() {
+        Node::set_magic_routing(true);
+        let mut g = TreeGraph::new(5);
+        let m0 = magic_node(0, 0.0, 0.0);
+        g.add_node(&m0, "m0");
+        g.root_node_id = None;
+        let before = g.num_nodes;
+        g.trim_magic_root();
+        assert_eq!(g.num_nodes, before);
+    }
+
+    // ── TreeGraph: num_edges tracks correctly ─────────────────────────────────
+
+    #[test]
+    fn num_edges_increments_on_add_edge() {
+        Node::set_magic_routing(true);
+        let mut g = TreeGraph::new(5);
+        let m0 = magic_node(0, 0.0, 0.0);
+        let m1 = magic_node(1, 1.0, 0.0);
+        let m2 = magic_node(2, 2.0, 0.0);
+        g.add_node(&m0, "m0");
+        g.add_node(&m1, "m1");
+        g.add_node(&m2, "m2");
+        assert_eq!(g.num_edges, 0);
+        g.add_edge(0, 1);
+        assert_eq!(g.num_edges, 1);
+        g.add_edge(1, 2);
+        assert_eq!(g.num_edges, 2);
+    }
+
+    // ── TreeGraph: trim_dangling_nodes iterates until stable ─────────────────
+
+    #[test]
+    fn trim_dangling_nodes_chain_removes_all_routing() {
+        // Chain: data(0) — routing(1) — routing(2) — routing(3)
+        // Nodes 1,2,3 are all dangling routing nodes; should all be removed.
+        // trim_dangling_nodes() requires root_node_id to be set; use the data
+        // node (id=0) as the root anchor — it is not routing so it won't be
+        // removed by the trim loop regardless.
+        Node::set_magic_routing(true);
+        let mut g = TreeGraph::new(10);
+        let d = data_node(0, 0.0, 0.0);
+        let r1 = magic_node(1, 1.0, 0.0);
+        let r2 = magic_node(2, 2.0, 0.0);
+        let r3 = magic_node(3, 3.0, 0.0);
+        g.add_node(&d, "d0");
+        g.add_node(&r1, "r1");
+        g.add_node(&r2, "r2");
+        g.add_node(&r3, "r3");
+        g.add_edge(0, 1);
+        g.add_edge(1, 2);
+        g.add_edge(2, 3);
+        // root_node_id must be set; trim_dangling_nodes() calls unwrap() on it.
+        g.root_node_id = Some(0);
+        g.trim_dangling_nodes();
+        // All routing nodes should be removed; data node stays
+        assert!(g.contains_node(0));
+        assert!(!g.contains_node(1));
+        assert!(!g.contains_node(2));
+        assert!(!g.contains_node(3));
     }
 }

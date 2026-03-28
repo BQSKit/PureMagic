@@ -429,4 +429,88 @@ mod tests {
         assert!(s.contains("42"));
         assert!(s.contains("M"));
     }
+
+    // ── to_operator_str — no operators, default gate type ────────────────────
+
+    #[test]
+    fn to_operator_str_no_operators_shows_gate_type() {
+        let pp = PauliProduct::new();
+        // Default gate_type is T; to_operator_str always includes the gate type.
+        let s = pp.to_operator_str();
+        assert!(s.contains("T"), "to_operator_str should include gate type even with no operators");
+    }
+
+    // ── set_from_str — H gate is unknown (not in the .trans format) ──────────
+
+    #[test]
+    fn set_from_str_h_gate_returns_error() {
+        let mut pp = PauliProduct::new();
+        // <H> is not a recognised gate in the .trans circuit format
+        let result = pp.set_from_str(0, "+X_<H>");
+        assert!(result.is_err(), "H gate should return an error in .trans format");
+    }
+
+    // ── set_from_str — Tdg gate is unknown (not in the .trans format) ────────
+
+    #[test]
+    fn set_from_str_tdg_gate_returns_error() {
+        let mut pp = PauliProduct::new();
+        // <Tdg> is not a recognised gate in the .trans circuit format
+        let result = pp.set_from_str(0, "+X_<Tdg>");
+        assert!(result.is_err(), "Tdg gate should return an error in .trans format");
+    }
+
+    // ── set_from_str — Sdg maps to GateType::S ───────────────────────────────
+
+    #[test]
+    fn set_from_str_sdg_maps_to_s() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+X_<Sdg>").unwrap();
+        assert!(pp.gate_type.is_s(), "Sdg should map to GateType::S");
+        assert!(pp.gate_type.is_clifford());
+    }
+
+    // ── set_from_str — SXdg maps to GateType::SX ─────────────────────────────
+
+    #[test]
+    fn set_from_str_sxdg_maps_to_sx() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+X_<SXdg>").unwrap();
+        assert!(pp.gate_type.is_sx(), "SXdg should map to GateType::SX");
+        assert!(pp.gate_type.is_clifford());
+    }
+
+    // ── GateType::is_clifford covers all Clifford variants ───────────────────
+
+    #[test]
+    fn gate_type_is_clifford_covers_all_variants() {
+        assert!(GateType::S.is_clifford());
+        assert!(GateType::SX.is_clifford());
+        assert!(GateType::CX.is_clifford());
+        assert!(!GateType::T.is_clifford());
+        assert!(!GateType::M.is_clifford());
+        assert!(!GateType::Z.is_clifford());
+        assert!(!GateType::X.is_clifford());
+    }
+
+    // ── get_qubits — multi-operator product ───────────────────────────────────
+
+    #[test]
+    fn get_qubits_multi_operator() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+XZ<CX>").unwrap();
+        let qubits = pp.get_qubits();
+        assert_eq!(qubits.len(), 2);
+        assert!(qubits.contains(&0));
+        assert!(qubits.contains(&1));
+    }
+
+    // ── max_qubit is set correctly ────────────────────────────────────────────
+
+    #[test]
+    fn max_qubit_set_correctly_for_multi_operator() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+__X<T>").unwrap();
+        assert_eq!(pp.max_qubit, 2);
+    }
 }

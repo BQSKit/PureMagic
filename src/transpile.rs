@@ -835,4 +835,117 @@ mod tests {
         assert_eq!(total, 3);
         assert!((avg_weight - 1.5).abs() < 1e-9);
     }
+
+    // ── count_stats — all Cliffords ───────────────────────────────────────────
+
+    #[test]
+    fn count_stats_all_cliffords() {
+        let items = vec![
+            TransItem::Clifford(TransClifford { paulis: vec!['X', '_'], name: "CX".to_string() }),
+            TransItem::Clifford(TransClifford { paulis: vec!['Z', '_'], name: "S".to_string() }),
+        ];
+        let (num_cliffords, num_paulis, total, _avg_weight) = count_stats(&items);
+        assert_eq!(num_cliffords, 2);
+        assert_eq!(num_paulis, 0);
+        assert_eq!(total, 2);
+    }
+
+    // ── count_stats — empty ───────────────────────────────────────────────────
+
+    #[test]
+    fn count_stats_empty() {
+        let items: Vec<TransItem> = vec![];
+        let (num_cliffords, num_paulis, total, avg_weight) = count_stats(&items);
+        assert_eq!(num_cliffords, 0);
+        assert_eq!(num_paulis, 0);
+        assert_eq!(total, 0);
+        assert_eq!(avg_weight, 0.0);
+    }
+
+    // ── make_z_pauli — weight ─────────────────────────────────────────────────
+
+    #[test]
+    fn make_z_pauli_has_weight_one() {
+        let ps = make_z_pauli(4, 2, false);
+        assert_eq!(ps.weight(), 1);
+    }
+
+    #[test]
+    fn make_z_pauli_correct_qubit() {
+        let ps = make_z_pauli(4, 1, false);
+        assert_eq!(ps.pauli_at(1), 'Z');
+        assert_eq!(ps.pauli_at(0), 'I');
+        assert_eq!(ps.pauli_at(2), 'I');
+    }
+
+    // ── parse_qasm — sdg and tdg gates ───────────────────────────────────────
+
+    #[test]
+    fn parse_qasm_sdg_and_tdg_gates() {
+        let f = write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "sdg q[0];", "tdg q[1];"]);
+        let (num_qubits, gates) = parse_qasm(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(num_qubits, 2);
+        assert_eq!(gates.len(), 2);
+    }
+
+    // ── transpile — SX gate ───────────────────────────────────────────────────
+
+    #[test]
+    fn transpile_sx_gate_produces_clifford() {
+        // Clifford gates are only flushed when a T gate's conjugated weight exceeds
+        // max_weight. Use a 2-qubit circuit: cx entangles qubits so that T on q[1]
+        // has weight 2 (> max_weight=1), triggering a flush of the clifford queue
+        // which contains the preceding sx gate.
+        let f =
+            write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "cx q[0],q[1];", "sx q[0];", "t q[1];"]);
+        let (num_qubits, gates) = parse_qasm(f.path().to_str().unwrap()).unwrap();
+        let items = transpile(num_qubits, &gates, 1);
+        // SX is a Clifford; should produce at least one Clifford item
+        let has_clifford = items.iter().any(|i| matches!(i, TransItem::Clifford(_)));
+        assert!(has_clifford, "SX gate should produce a Clifford TransItem");
+    }
+
+    // ── transpile — measurement appended for all qubits ──────────────────────
+
+    #[test]
+    fn transpile_two_qubit_circuit_appends_two_measurements() {
+        let f = write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "t q[0];"]);
+        let (num_qubits, gates) = parse_qasm(f.path().to_str().unwrap()).unwrap();
+        let items = transpile(num_qubits, &gates, 0);
+        let measurement_count = items
+            .iter()
+            .filter(|i| matches!(i, TransItem::Pauli(p) if p.label.contains('M')))
+            .count();
+        assert_eq!(measurement_count, 2, "should append one measurement per qubit");
+    }
+
+    // ── TransPauli display — negative sign ────────────────────────────────────
+
+    #[test]
+    fn trans_pauli_display_negative_sign() {
+        let ps = make_z_pauli(2, 0, true); // negative
+        let tp = TransPauli::from_pauli_string(&ps, "T");
+        let s = format!("{}", tp);
+        assert!(s.starts_with('-'), "negative pauli should start with '-': {}", s);
+    }
+
+    // ── TransClifford — CX display ────────────────────────────────────────────
+
+    #[test]
+    fn trans_clifford_cx_has_two_qubit_paulis() {
+        // Clifford gates are only flushed when a T gate's conjugated weight exceeds
+        // max_weight. After cx q[0],q[1], Z on q[1] maps to Z_0*Z_1 (weight 2).
+        // With max_weight=1, weight 2 > 1 triggers a flush of the clifford queue
+        // which contains the CX gate.
+        let f = write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "cx q[0],q[1];", "t q[1];"]);
+        let (num_qubits, gates) = parse_qasm(f.path().to_str().unwrap()).unwrap();
+        let items = transpile(num_qubits, &gates, 1);
+        let cx_item = items
+            .iter()
+            .find(|i| if let TransItem::Clifford(c) = i { c.name == "CX" } else { false });
+        assert!(cx_item.is_some(), "CX gate should produce a CX Clifford item");
+        if let Some(TransItem::Clifford(c)) = cx_item {
+            assert_eq!(c.paulis.len(), 2, "CX should have 2 qubit entries");
+        }
+    }
 }

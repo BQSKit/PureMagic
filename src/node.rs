@@ -35,7 +35,9 @@ pub(crate) struct Node {
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
-    pub(crate) fn new(id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType) -> Self {
+    pub(crate) fn new(
+        id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType,
+    ) -> Self {
         Node { node_type, id, paired_data_id, pos: (x, y), nbors: [0u16; MAX_NBORS], num_nbors: 0 }
     }
 
@@ -207,6 +209,54 @@ mod tests {
         assert!(bus.is_routing());
 
         Node::set_magic_routing(true);
+    }
+
+    // ── Node::new — data without pair ─────────────────────────────────────────
+
+    #[test]
+    fn node_new_data_without_pair() {
+        let node = Node::new(9, None, 3.0, 4.0, NodeType::Data);
+        assert_eq!(node.id, 9);
+        assert_eq!(node.node_type, NodeType::Data);
+        assert!(node.paired_data_id.is_none());
+        assert_eq!(node.pos, (3.0, 4.0));
+    }
+
+    // ── Node::add_neighbor — overflow beyond MAX_NBORS ────────────────────────
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn add_neighbor_beyond_max_is_noop_in_release() {
+        // In release builds the overflow check is disabled; adding more than MAX_NBORS
+        // neighbours should not panic and the count should stay capped.
+        let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
+        for i in 1..=(MAX_NBORS as u16 + 2) {
+            node.add_neighbor(i);
+        }
+        // num_nbors must not exceed MAX_NBORS
+        assert!(node.num_nbors as usize <= MAX_NBORS);
+    }
+
+    // ── Node::is_routing — Bus node is routing when magic routing disabled ───
+
+    #[test]
+    fn is_routing_bus_node_when_magic_routing_disabled() {
+        Node::set_magic_routing(false);
+        let bus = Node::new(0, None, 0.0, 0.0, NodeType::Bus);
+        // When magic routing is off, Bus nodes are routing nodes
+        assert!(bus.is_routing());
+        Node::set_magic_routing(true); // restore
+    }
+
+    // ── Node::is_routing — Magic node with magic routing disabled ────────────
+
+    #[test]
+    fn is_routing_magic_when_magic_routing_disabled() {
+        Node::set_magic_routing(false);
+        let magic = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
+        // When magic routing is off, magic nodes are NOT routing nodes
+        assert!(!magic.is_routing());
+        Node::set_magic_routing(true); // restore
     }
 
     // ── MAX_NBORS constant ────────────────────────────────────────────────────

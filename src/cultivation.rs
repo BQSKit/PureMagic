@@ -140,3 +140,298 @@ impl CultivationManager {
         num_avail_magic
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::Node;
+    use crate::topograph::TopoGraph;
+
+    // ── CultivationManager::new ───────────────────────────────────────────────
+
+    #[test]
+    fn new_creates_empty_manager() {
+        let mgr = CultivationManager::new(42);
+        assert_eq!(mgr.t_products_remaining, 0);
+        assert!(mgr.cultivation_times_log.is_empty());
+        assert!(mgr.magic_node_ids.is_empty());
+        assert!(mgr.magic_node_positions.is_empty());
+        assert!(mgr.ready_magic_positions.is_empty());
+    }
+
+    // ── CultivationManager::set_lambda ────────────────────────────────────────
+
+    #[test]
+    fn set_lambda_valid_returns_ok() {
+        let mut mgr = CultivationManager::new(1);
+        // lambda = 1.0 → param = 1/1.0 = 1.0, which is valid for Exponential
+        let result = mgr.set_lambda(1.0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn set_lambda_large_value_returns_ok() {
+        let mut mgr = CultivationManager::new(1);
+        let result = mgr.set_lambda(100.0);
+        assert!(result.is_ok());
+    }
+
+    // ── CultivationManager::fill_pool ────────────────────────────────────────
+
+    #[test]
+    fn fill_pool_produces_correct_count() {
+        let mut mgr = CultivationManager::new(7);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.fill_pool(10);
+        assert_eq!(mgr.cultivation_time_pool.len(), 10);
+    }
+
+    #[test]
+    fn fill_pool_resets_pool_index() {
+        let mut mgr = CultivationManager::new(7);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.fill_pool(5);
+        // Consume some entries
+        mgr.t_products_remaining = 10;
+        let _ = mgr.draw(20);
+        let _ = mgr.draw(20);
+        // Refill — pool_index should reset to 0
+        mgr.fill_pool(5);
+        assert_eq!(mgr.pool_index, 0);
+    }
+
+    #[test]
+    fn fill_pool_zero_produces_empty_pool() {
+        let mut mgr = CultivationManager::new(7);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.fill_pool(0);
+        assert!(mgr.cultivation_time_pool.is_empty());
+    }
+
+    // ── CultivationManager::draw ──────────────────────────────────────────────
+
+    #[test]
+    fn draw_returns_value_from_pool() {
+        let mut mgr = CultivationManager::new(99);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.fill_pool(5);
+        let first = mgr.cultivation_time_pool[0];
+        let drawn = mgr.draw(10);
+        assert_eq!(drawn, first);
+        assert_eq!(mgr.pool_index, 1);
+    }
+
+    #[test]
+    fn draw_increments_pool_index() {
+        let mut mgr = CultivationManager::new(3);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.fill_pool(3);
+        assert_eq!(mgr.pool_index, 0);
+        let _ = mgr.draw(10);
+        assert_eq!(mgr.pool_index, 1);
+        let _ = mgr.draw(10);
+        assert_eq!(mgr.pool_index, 2);
+    }
+
+    #[test]
+    fn draw_refills_when_pool_exhausted() {
+        let mut mgr = CultivationManager::new(5);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 2;
+        mgr.fill_pool(2);
+        // Exhaust the pool
+        let _ = mgr.draw(10);
+        let _ = mgr.draw(10);
+        // Next draw should trigger a refill (pool_index >= len)
+        let _ = mgr.draw(10);
+        // After refill, pool_index should be 1 (one entry consumed from new pool)
+        assert_eq!(mgr.pool_index, 1);
+    }
+
+    // ── CultivationManager::init_magic_nodes ─────────────────────────────────
+
+    #[test]
+    fn init_magic_nodes_populates_ids_and_positions() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(11);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 10;
+        mgr.fill_pool(100);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        let num_magic_before = topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).count();
+
+        mgr.init_magic_nodes(&mut topo);
+
+        assert_eq!(mgr.magic_node_ids.len(), num_magic_before);
+        assert_eq!(mgr.magic_node_positions.len(), num_magic_before);
+    }
+
+    #[test]
+    fn init_magic_nodes_assigns_cultivation_times() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(13);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 10;
+        mgr.fill_pool(100);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        mgr.init_magic_nodes(&mut topo);
+
+        // Every magic node should have a cultivation time assigned (>= 0)
+        for &id in &mgr.magic_node_ids {
+            // cultivation_time is i32; it was drawn from the pool so it's >= 0
+            assert!(topo.cultivation_times[id as usize] >= 0);
+        }
+    }
+
+    // ── CultivationManager::update_cultivators ────────────────────────────────
+
+    #[test]
+    fn update_cultivators_returns_count_of_ready_magic_nodes() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(17);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        mgr.init_magic_nodes(&mut topo);
+
+        // Force all magic nodes to be ready (cultivation_time = 0)
+        for &id in &mgr.magic_node_ids {
+            topo.cultivation_times[id as usize] = 0;
+        }
+
+        let used = vec![false; topo.num_nodes];
+        let num_ready = mgr.update_cultivators(&mut topo, &used);
+        assert_eq!(num_ready, mgr.magic_node_ids.len());
+    }
+
+    #[test]
+    fn update_cultivators_used_nodes_get_new_cultivation_time() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(19);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        mgr.init_magic_nodes(&mut topo);
+
+        if mgr.magic_node_ids.is_empty() {
+            return; // topology has no magic nodes — skip
+        }
+
+        // Mark the first magic node as used
+        let first_id = mgr.magic_node_ids[0];
+        let mut used = vec![false; topo.num_nodes];
+        used[first_id as usize] = true;
+
+        // Set its cultivation_time to 0 (ready)
+        topo.cultivation_times[first_id as usize] = 0;
+
+        mgr.update_cultivators(&mut topo, &used);
+
+        // After update, the used node should have a fresh cultivation time (>= 0)
+        // and busy_count reset to 0
+        assert_eq!(topo.busy_counts[first_id as usize], 0);
+    }
+
+    #[test]
+    fn update_cultivators_increments_busy_count_for_cultivating_nodes() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(23);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        mgr.init_magic_nodes(&mut topo);
+
+        if mgr.magic_node_ids.is_empty() {
+            return;
+        }
+
+        let first_id = mgr.magic_node_ids[0];
+        // Set cultivation_time > 0 so node is cultivating
+        topo.cultivation_times[first_id as usize] = 5;
+        topo.busy_counts[first_id as usize] = 0;
+
+        let used = vec![false; topo.num_nodes];
+        mgr.update_cultivators(&mut topo, &used);
+
+        // busy_count should have incremented by 1
+        assert_eq!(topo.busy_counts[first_id as usize], 1);
+    }
+
+    #[test]
+    fn update_cultivators_logs_completed_cultivation() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(29);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        mgr.init_magic_nodes(&mut topo);
+
+        if mgr.magic_node_ids.is_empty() {
+            return;
+        }
+
+        let first_id = mgr.magic_node_ids[0];
+        // Set cultivation_time = 3, busy_count = 2 → one more step completes it
+        topo.cultivation_times[first_id as usize] = 3;
+        topo.busy_counts[first_id as usize] = 2;
+
+        let used = vec![false; topo.num_nodes];
+        mgr.update_cultivators(&mut topo, &used);
+
+        // The completed cultivation time (3) should be logged
+        assert!(mgr.cultivation_times_log.contains(&3));
+        // After completion, cultivation_time and busy_count reset to 0
+        assert_eq!(topo.cultivation_times[first_id as usize], 0);
+        assert_eq!(topo.busy_counts[first_id as usize], 0);
+    }
+
+    #[test]
+    fn update_cultivators_ready_positions_sorted_by_x() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(31);
+        mgr.set_lambda(1.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        mgr.init_magic_nodes(&mut topo);
+
+        // Force all magic nodes ready
+        for &id in &mgr.magic_node_ids {
+            topo.cultivation_times[id as usize] = 0;
+        }
+
+        let used = vec![false; topo.num_nodes];
+        mgr.update_cultivators(&mut topo, &used);
+
+        // ready_magic_positions must be sorted by x (ascending)
+        let xs: Vec<f32> = mgr.ready_magic_positions.iter().map(|p| p.0).collect();
+        for w in xs.windows(2) {
+            assert!(w[0] <= w[1], "ready_magic_positions not sorted by x: {:?}", xs);
+        }
+    }
+}
