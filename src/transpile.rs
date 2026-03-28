@@ -24,11 +24,7 @@ use tableau::{Gate1Q, Gate2Q, PauliString, Tableau};
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about = "Transpile a Clifford+T circuit to Pauli basis measurements (.trans)."
-)]
+#[command(author, version, about = "Transpile a Clifford+T circuit to Pauli basis measurements")]
 struct Args {
     #[arg(short, long = "input_file")]
     input_file: String,
@@ -630,7 +626,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         args.output_file.clone()
     };
-    let output_path = format!("{}.trans", output_stem);
+    let output_path = if args.output_file.is_empty() {
+        format!("{}.trans", output_stem)
+    } else {
+        args.output_file
+    };
 
     let (num_ts, num_cliffords_written) = write_trans(&output_path, &items)?;
     println!("Wrote transpiled circuit to {}", output_path);
