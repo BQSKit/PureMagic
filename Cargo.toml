@@ -49,8 +49,10 @@ pretty_assertions = "1.3" # For better test output
 vergen = { version = "8", features = ["build", "git", "gitcl"] }
 
 [[bin]]
-#name = "transpile"
-#path = "src/transpile.rs"
+name = "transpile"
+path = "src/transpile.rs"
+
+[[bin]]
 name = "puremagic"
 path = "src/puremagic.rs"
 
