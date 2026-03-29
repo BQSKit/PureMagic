@@ -8,7 +8,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::time::Instant;
 
 #[allow(dead_code)]
 mod pauliproduct;
@@ -18,6 +17,7 @@ mod tableau;
 mod utils;
 
 use tableau::{Gate1Q, Gate2Q, PauliString, Tableau};
+use utils::Timer;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI
@@ -539,6 +539,7 @@ fn count_stats(items: &[TransItem]) -> (usize, usize, usize, f64) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let _total_timer = Timer::new("transpilation");
 
     let input_file = &args.input_file;
     if !input_file.ends_with(".cliffordt.qasm") {
@@ -550,9 +551,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("Loading compiled circuit from {}", input_file);
-    let load_start = Instant::now();
+    let _load_timer = Timer::new("load circuit");
     let (num_qubits, gates) = parse_qasm(input_file)?;
-    println!("Circuit loaded in {:.2} seconds", load_start.elapsed().as_secs_f64());
+    drop(_load_timer);
 
     let total_gates = gates.iter().filter(|g| !matches!(g, QasmGate::Measure { .. })).count();
     let clifford_gates = gates
@@ -576,15 +577,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Gate set: {}", gate_names.iter().cloned().collect::<Vec<_>>().join(", "));
 
-    let transpile_start = Instant::now();
+    let _tableau_timer = Timer::new("tableau");
     let items = transpile(num_qubits, &gates, args.max_width);
-    let transpile_elapsed = transpile_start.elapsed();
+    drop(_tableau_timer);
 
     let (num_cliffords, num_pauli_products, post_total, avg_weight) = count_stats(&items);
     let total_delta = total_gates as i64 - post_total as i64;
     let clifford_delta = clifford_gates as i64 - num_cliffords as i64;
 
-    println!("Tableau took {:.2} seconds", transpile_elapsed.as_secs_f64());
     if total_gates > 0 {
         println!(
             "Circuit length:    {} (before) -> {} (after transpilation)",
