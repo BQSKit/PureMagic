@@ -4,13 +4,23 @@
 	"name": "Rust",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	"image": "mcr.microsoft.com/devcontainers/rust:2-1-trixie",
+	// Grant the container access to all host GPUs via the NVIDIA Container Toolkit.
+	// Requires: NVIDIA drivers + nvidia-container-toolkit installed on the host.
+	// Remove or comment out this block if no GPU is available.
+	//"runArgs": [
+	//	"--gpus",
+	//	"all"
+	//],
 	"features": {
 		"ghcr.io/devcontainers/features/python:1": {
 			"installTools": true,
 			"version": "latest"
 		}
 	},
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt && pip install -e tableau/",
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt",
+	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
+	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
+	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
 	"customizations": {
 		"vscode": {
 			"extensions": [
