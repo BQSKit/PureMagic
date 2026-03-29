@@ -17,6 +17,12 @@ from bqskit.ft.cliffordt.cliffordtmodel import CliffordTModel
 from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates
 from bqskit.ir.gates import IdentityGate, MeasurementPlaceholder, BarrierPlaceholder
 
+# try:
+#    import torch
+#    _CUDA_AVAILABLE = torch.cuda.is_available()
+# except ImportError:
+#    _CUDA_AVAILABLE = False
+
 
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -41,6 +47,12 @@ def main() -> None:
         ),
         default="",
     )
+    # parser.add_argument(
+    #    "--gpu",
+    #    action="store_true",
+    #    default=False,
+    #    help="Use GPU-accelerated instantiation via QFactor (requires PyTorch with CUDA).",
+    # )
 
     args: argparse.Namespace = parser.parse_args()
 
@@ -60,10 +72,25 @@ def main() -> None:
     print(f"Input circuit has {len(circuit)} gates on {circuit.num_qudits} qubits")
 
     # Compile to Clifford+T using bqskit
+    # use_gpu: bool = args.gpu
+    # if use_gpu and not _CUDA_AVAILABLE:
+    #    print(
+    #        "Warning: --gpu requested but CUDA is not available; falling back to CPU.",
+    #        file=sys.stderr,
+    #    )
+    #    use_gpu = False
+
+    instantiate_options: dict = {}
+    # if use_gpu:
+    #    instantiate_options = {"method": "qfactor", "device": "cuda"}
+    #    print("Using GPU-accelerated QFactor instantiation.")
+    # else:
+    #    print("Using CPU instantiation.")
+
     print("Compiling to Clifford+T...")
     compile_start: float = timer()
     machine: CliffordTModel = CliffordTModel(circuit.num_qudits)
-    circuit = compile(circuit, model=machine)
+    circuit = compile(circuit, model=machine, instantiate_options=instantiate_options or None)
     compile_end: float = timer()
     print(f"Compilation took {(compile_end - compile_start):.2f} seconds")
 
