@@ -4,7 +4,7 @@ use crate::pauliproduct::GateType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 #[allow(unused_imports)]
-use crate::utils::{_GREEN, _LGREEN, _RESET};
+use colored::Colorize;
 use std::collections::VecDeque;
 
 /// Returns true when `nb` is a valid magic-state cultivator for a T-gate:
@@ -68,10 +68,8 @@ impl SteinerTreeComputation {
         let mut num_paths: usize = 0;
         while let Some(node_id) = self.queue.pop_front() {
             debug_sched!(
-                "      {}Visit neighbors of {}{}",
-                _LGREEN,
-                topo.get_label(node_id),
-                _RESET
+                "      {}",
+                format!("Visit neighbors of {}", topo.get_label(node_id)).bright_green()
             );
             (num_paths, cultivator) = self.visit_neighbors(
                 node_id, topo, used, reqd_paths, gate_type, cultivator, num_paths, &mut tree,
@@ -82,14 +80,16 @@ impl SteinerTreeComputation {
                 }
                 tree.root_node_id = if gate_type.is_t() {
                     debug_sched!(
-                        "      {}tree complete, cultivator {}{}",
-                        _GREEN,
-                        topo.get_label(cultivator.unwrap()),
-                        _RESET
+                        "      {}",
+                        format!(
+                            "tree complete, cultivator {}",
+                            topo.get_label(cultivator.unwrap())
+                        )
+                        .green()
                     );
                     Some(cultivator.unwrap())
                 } else {
-                    debug_sched!("      {}tree complete{}", _GREEN, _RESET);
+                    debug_sched!("      {}", "tree complete".green());
                     Some(root_ids[0])
                 };
                 let _num_trimmed = tree.trim_dangling_nodes();
@@ -119,7 +119,7 @@ impl SteinerTreeComputation {
             self.visited[*root_id as usize] = Some(*root_id);
             self.queue.push_back(*root_id);
             let root = topo.get_node(*root_id);
-            debug_sched!("      {}root node {}{}", _GREEN, topo.get_label(*root_id), _RESET);
+            debug_sched!("      {}", format!("root node {}", topo.get_label(*root_id)).green());
             if !tree.contains_node(root.id) {
                 tree.add_node(root, topo.get_label(*root_id));
             }
@@ -129,10 +129,9 @@ impl SteinerTreeComputation {
             {
                 cultivator = Some(*root_id);
                 debug_sched!(
-                    "      {}found root cultivator {}{}",
-                    _GREEN,
-                    topo.get_label(cultivator.unwrap()),
-                    _RESET
+                    "      {}",
+                    format!("found root cultivator {}", topo.get_label(cultivator.unwrap()))
+                        .green()
                 );
             }
             for nb_id in topo.get_node(*root_id).nbors_slice().iter() {
@@ -295,10 +294,8 @@ impl SteinerTreeComputation {
             let pos = self.paths[*root_id as usize].iter().position(|&id| id == *root_id).unwrap();
             self.paths[*root_id as usize].swap_remove(pos);
             debug_sched!(
-                "      {}removing self for {}{}",
-                _GREEN,
-                topo.get_label(*root_id),
-                _RESET
+                "      {}",
+                format!("removing self for {}", topo.get_label(*root_id)).green()
             );
             num_paths += self.paths[*root_id as usize].len();
         }
@@ -310,15 +307,17 @@ impl SteinerTreeComputation {
         #[cfg(debug_assertions)]
         {
             debug_sched!(
-                "      {}path from {} to {} (total paths {}/{}){}",
-                _GREEN,
-                topo.get_label(curr_root_id),
-                topo.get_label(nb_root_id),
-                num_paths,
-                reqd_paths,
-                _RESET
+                "      {}",
+                format!(
+                    "path from {} to {} (total paths {}/{})",
+                    topo.get_label(curr_root_id),
+                    topo.get_label(nb_root_id),
+                    num_paths,
+                    reqd_paths,
+                )
+                .green()
             );
-            debug_sched!("      {}paths:{}", _GREEN, _RESET);
+            debug_sched!("      {}", "paths:".green());
             for (root_id, path) in self.paths.iter().enumerate() {
                 if !path.is_empty() {
                     let root_label = topo.get_label(root_id as u16);
@@ -350,7 +349,7 @@ impl SteinerTreeComputation {
         self.queue.push_back(nb_id);
         self.visited[nb_id as usize] = Some(curr_root_id);
         if cultivator.is_none() && nb_is_cultivator {
-            debug_sched!("      {}found cultivator {}{}", _GREEN, topo.get_label(nb_id), _RESET);
+            debug_sched!("      {}", format!("found cultivator {}", topo.get_label(nb_id)).green());
             return Some(nb_id);
         }
         None

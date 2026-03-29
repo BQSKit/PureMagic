@@ -1,7 +1,7 @@
 use crate::debug_sched;
 use crate::node::{Node, NodeType};
 #[allow(unused_imports)]
-use crate::utils::{_BLUE, _RESET};
+use colored::Colorize;
 
 /// Internal node representation for a tree subgraph.
 /// Stores neighbor adjacencies, node type classification, and position for layout queries.
@@ -100,7 +100,7 @@ impl TreeGraph {
         assert!(self.nodes[node.id as usize].is_none());
         self.nodes[node.id as usize] = Some(TreeNode::new(node, label));
         self.num_nodes += 1;
-        debug_sched!("      {}add node {}{}", _BLUE, label, _RESET);
+        debug_sched!("      {}", format!("add node {}", label).blue());
     }
 
     /// Adds an undirected edge between two existing nodes.
@@ -112,7 +112,7 @@ impl TreeGraph {
             let node2 = self.nodes[node_id2 as usize].as_ref().unwrap();
             debug_assert!(!node1.nbors.contains(&node_id2));
             debug_assert!(!node2.nbors.contains(&node_id1));
-            debug_sched!("      {}add edge {}->{}{}", _BLUE, node1.label, node2.label, _RESET);
+            debug_sched!("      {}", format!("add edge {}->{}", node1.label, node2.label).blue());
         }
         self.nodes[node_id1 as usize].as_mut().unwrap().nbors.push(node_id2);
         self.nodes[node_id2 as usize].as_mut().unwrap().nbors.push(node_id1);
@@ -196,14 +196,16 @@ impl TreeGraph {
         let nb_ids: Vec<u16> = node.nbors.iter().copied().collect();
         #[cfg(debug_assertions)]
         {
-            debug_sched!("      {}remove node {}{}", _BLUE, node.label, _RESET);
+            debug_sched!("      {}", format!("remove node {}", node.label).blue());
             for nb_id in &nb_ids {
                 debug_sched!(
-                    "      {}remove edge {}->{}{}",
-                    _BLUE,
-                    self.nodes[*nb_id as usize].as_ref().unwrap().label,
-                    node.label,
-                    _RESET
+                    "      {}",
+                    format!(
+                        "remove edge {}->{}",
+                        self.nodes[*nb_id as usize].as_ref().unwrap().label,
+                        node.label
+                    )
+                    .blue()
                 );
             }
         }
@@ -233,41 +235,37 @@ impl TreeGraph {
                         }
                     };
                     debug_sched!(
-                        "      {}Found node {} with two edges{}",
-                        _BLUE,
-                        node.label,
-                        _RESET
+                        "      {}",
+                        format!("Found node {} with two edges", node.label).blue()
                     );
                     let vert_nb = self.nodes[vert_nb_id as usize].as_ref().unwrap();
                     if node.pos.1 < vert_nb.pos.1
                         && self.get_horizontal_edge_count(vert_nb, false) == 1
                     {
                         debug_sched!(
-                            "      {}removing single below edge {}->{}{}",
-                            _BLUE,
-                            node.label,
-                            vert_nb.label,
-                            _RESET
+                            "      {}",
+                            format!("removing single below edge {}->{}", node.label, vert_nb.label)
+                                .blue()
                         );
                         edges_to_remove.push((node_id as u16, vert_nb_id));
                     } else if node.pos.1 > vert_nb.pos.1
                         && self.get_horizontal_edge_count(vert_nb, true) == 1
                     {
                         debug_sched!(
-                            "      {}removing single above edge {}->{}{}",
-                            _BLUE,
-                            node.label,
-                            vert_nb.label,
-                            _RESET
+                            "      {}",
+                            format!("removing single above edge {}->{}", node.label, vert_nb.label)
+                                .blue()
                         );
                         edges_to_remove.push((node_id as u16, vert_nb_id));
                     } else {
                         debug_sched!(
-                            "      {}removing extra side edge {}->{}{}",
-                            _BLUE,
-                            node.label,
-                            self.nodes[side_nb_id as usize].as_ref().unwrap().label,
-                            _RESET
+                            "      {}",
+                            format!(
+                                "removing extra side edge {}->{}",
+                                node.label,
+                                self.nodes[side_nb_id as usize].as_ref().unwrap().label
+                            )
+                            .blue()
                         );
                         edges_to_remove.push((node_id as u16, side_nb_id));
                     }
