@@ -22,7 +22,6 @@ pub(crate) struct Circuit {
 }
 
 impl Circuit {
-    /// Creates a new circuit from a filename (circuit is not loaded until `load_circuit()` is called).
     pub(crate) fn new(fname: &String) -> Self {
         let circuit = Circuit {
             products: Vec::new(),
@@ -33,8 +32,6 @@ impl Circuit {
         circuit
     }
 
-    /// Loads Pauli products from file, skipping X and Z gates.
-    /// Populates `num_qubits` and establishes parent-child dependencies.
     pub(crate) fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
@@ -66,8 +63,6 @@ impl Circuit {
         Ok(())
     }
 
-    /// Establishes parent-child dependencies between products based on qubit operations.
-    /// A product becomes a child of the last product to operate on each of its qubits.
     pub(crate) fn generate_dependencies(&mut self) {
         let mut relationships = Vec::new();
         let mut current_pps = vec![-1; self.num_qubits];
@@ -87,23 +82,18 @@ impl Circuit {
         }
     }
 
-    /// Returns an iterator over products with no dependencies (ready to schedule).
     pub(crate) fn initial_products(&self) -> impl Iterator<Item = &PauliProduct> {
         self.products.iter().filter(|pp| pp.parents.is_empty())
     }
 
-    /// Retrieves a product by its ID.
     pub(crate) fn get_product(&self, id: i32) -> &PauliProduct {
         &self.products[id as usize]
     }
 
-    /// Returns the total number of products in the circuit.
     pub(crate) fn num_products(&self) -> usize {
         self.products.len()
     }
 
-    /// Plots the circuit structure as PNG files (split into 1000-layer chunks).
-    /// Each product is colored and labeled with Pauli operators.
     pub(crate) fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
@@ -202,35 +192,32 @@ impl Circuit {
         Ok(())
     }
 
-    /// Returns a color for a product based on its index within a layer.
     fn get_layer_product_color(&self, product_index: usize) -> RGBColor {
         let colors = [
-            RGBColor(255, 100, 100), // Light red
-            RGBColor(100, 255, 100), // Light green
-            RGBColor(100, 100, 255), // Light blue
-            RGBColor(255, 255, 100), // Light yellow
-            RGBColor(255, 100, 255), // Light magenta
-            RGBColor(100, 255, 255), // Light cyan
-            RGBColor(255, 150, 100), // Light orange
-            RGBColor(150, 100, 255), // Light purple
-            RGBColor(100, 255, 150), // Light mint
-            RGBColor(255, 100, 150), // Light pink
-            RGBColor(150, 255, 100), // Light lime
-            RGBColor(100, 150, 255), // Light sky blue
-            RGBColor(200, 200, 100), // Light olive
-            RGBColor(200, 100, 200), // Light violet
-            RGBColor(100, 200, 200), // Light teal
-            RGBColor(255, 200, 100), // Light peach
-            RGBColor(200, 255, 100), // Light chartreuse
-            RGBColor(100, 200, 255), // Light cornflower
-            RGBColor(255, 150, 150), // Light coral
-            RGBColor(150, 255, 150), // Light seafoam
+            RGBColor(255, 100, 100),
+            RGBColor(100, 255, 100),
+            RGBColor(100, 100, 255),
+            RGBColor(255, 255, 100),
+            RGBColor(255, 100, 255),
+            RGBColor(100, 255, 255),
+            RGBColor(255, 150, 100),
+            RGBColor(150, 100, 255),
+            RGBColor(100, 255, 150),
+            RGBColor(255, 100, 150),
+            RGBColor(150, 255, 100),
+            RGBColor(100, 150, 255),
+            RGBColor(200, 200, 100),
+            RGBColor(200, 100, 200),
+            RGBColor(100, 200, 200),
+            RGBColor(255, 200, 100),
+            RGBColor(200, 255, 100),
+            RGBColor(100, 200, 255),
+            RGBColor(255, 150, 150),
+            RGBColor(150, 255, 150),
         ];
         colors[product_index % colors.len()]
     }
 
-    /// Plots moving average statistics of layer properties (products per layer, product size, etc.).
-    /// Generates an SVG file with configurable window size based on circuit size.
     pub(crate) fn plot_layer_stats(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
@@ -279,7 +266,7 @@ impl Circuit {
                 let sum: usize = window.iter().map(|layer| layer.len()).sum();
                 sum as f64 / window.len() as f64
             },
-            RGBColor(0, 0, 255), // Blue
+            RGBColor(0, 0, 255),
             "avg products/layer",
         )?;
 
@@ -309,7 +296,7 @@ impl Circuit {
 
                 if total_products > 0 { total_ops as f64 / total_products as f64 } else { 0.0 }
             },
-            RGBColor(255, 0, 0), // Red
+            RGBColor(255, 0, 0),
             "avg product size",
         )?;
 
@@ -340,15 +327,9 @@ impl Circuit {
         Ok(())
     }
 
-    /// Plots a metric computed over a moving window of layers.
     fn plot_moving_average<F>(
-        &self,
-        //chart: &mut ChartContext<BitMapBackend,
-        chart: &mut ChartContext<SVGBackend, Cartesian2d<RangedCoordusize, RangedCoordf64>>,
-        layers: &[Vec<&PauliProduct>],
-        window_size: usize,
-        value_fn: F,
-        color: RGBColor,
+        &self, chart: &mut ChartContext<SVGBackend, Cartesian2d<RangedCoordusize, RangedCoordf64>>,
+        layers: &[Vec<&PauliProduct>], window_size: usize, value_fn: F, color: RGBColor,
         label: &str,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
@@ -365,7 +346,6 @@ impl Circuit {
             })
             .collect();
 
-        // Assert that no y value exceeds num_qubits
         for (i, &y_value) in data.iter().enumerate() {
             assert!(
                 y_value <= self.num_qubits as f64,
@@ -389,8 +369,6 @@ impl Circuit {
         Ok(())
     }
 
-    /// Returns `(num_t_gates, num_t_layers)` where `num_t_layers` is the count of layers
-    /// that contain at least one T gate.
     pub(crate) fn count_t_stats(&self) -> (usize, usize) {
         let layers = self.get_layers();
         let num_t_gates = self.products.iter().filter(|pp| pp.gate_type.is_t()).count();
@@ -399,8 +377,6 @@ impl Circuit {
         (num_t_gates, num_t_layers)
     }
 
-    /// Prints circuit statistics (products, Cliffords, layers, avg/max products per layer).
-    /// Returns the total number of layers.
     pub(crate) fn print_statistics(&self) -> usize {
         let layers = self.get_layers();
         let mut num_cliffords = 0;
@@ -428,7 +404,6 @@ impl Circuit {
         num_layers
     }
 
-    /// Writes circuit layers to a text file (debug builds only).
     #[cfg(debug_assertions)]
     pub(crate) fn print(&self) -> io::Result<()> {
         let _timer = fn_timer!();
@@ -452,8 +427,6 @@ impl Circuit {
         Ok(())
     }
 
-    /// Computes circuit layers using topological sort (cached after first call).
-    /// Returns products grouped by their topological level (layer).
     fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
         if let Some(cached) = self.layers.borrow().as_ref() {
             return cached
@@ -498,8 +471,6 @@ impl Circuit {
             .collect()
     }
 
-    /// Plots a heatmap of qubit coupling frequency (which pairs of qubits interact).
-    /// Uses log-scale intensity to highlight frequently coupled pairs.
     pub(crate) fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
@@ -556,7 +527,6 @@ impl Circuit {
         Ok(())
     }
 
-    /// Builds a qubit coupling matrix: counts how many products couple each qubit pair.
     fn build_coupling_matrix(&self) -> Vec<Vec<usize>> {
         let mut matrix = vec![vec![0; self.num_qubits]; self.num_qubits];
         for product in &self.products {
@@ -596,7 +566,6 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    /// Write lines to a temp file and return it (kept alive by the caller).
     fn make_circuit_file(lines: &[&str]) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
         for line in lines {
@@ -604,8 +573,6 @@ mod tests {
         }
         f
     }
-
-    // ── Circuit::new ──────────────────────────────────────────────────────────
 
     #[test]
     fn new_creates_empty_circuit() {
@@ -615,25 +582,18 @@ mod tests {
         assert_eq!(c.num_products(), 0);
     }
 
-    // ── Circuit::load_circuit — basic loading ─────────────────────────────────
-
     #[test]
     fn load_circuit_single_t_gate() {
         let f = make_circuit_file(&["+_X______<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_products(), 1);
-        // qubit 1 is the X operator; num_qubits = max_qubit + 1 = 2
         assert_eq!(c.num_qubits, 2);
     }
 
     #[test]
     fn load_circuit_skips_x_and_z_gates() {
-        let f = make_circuit_file(&[
-            "+X_<X>", // X gate — should be skipped
-            "+_Z<Z>", // Z gate — should be skipped
-            "+XZ<T>", // T gate — should be kept
-        ]);
+        let f = make_circuit_file(&["+X_<X>", "+_Z<Z>", "+XZ<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_products(), 1);
@@ -663,15 +623,9 @@ mod tests {
         assert!(c.load_circuit().is_err());
     }
 
-    // ── Circuit::generate_dependencies ───────────────────────────────────────
-
     #[test]
     fn generate_dependencies_independent_products_have_no_parents() {
-        // Two products on different qubits — no dependency.
-        let f = make_circuit_file(&[
-            "+X_<T>", // qubit 0
-            "+_X<T>", // qubit 1
-        ]);
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert!(c.get_product(0).parents.is_empty());
@@ -680,28 +634,20 @@ mod tests {
 
     #[test]
     fn generate_dependencies_sequential_same_qubit() {
-        // Two products on the same qubit — second depends on first.
-        let f = make_circuit_file(&[
-            "+X_<T>", // id=0, qubit 0
-            "+X_<T>", // id=1, qubit 0 — depends on id=0
-        ]);
+        let f = make_circuit_file(&["+X_<T>", "+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         let pp0 = c.get_product(0);
         let pp1 = c.get_product(1);
-        assert!(pp0.parents.is_empty(), "first product has no parents");
-        assert_eq!(pp1.parents, vec![0], "second product depends on first");
-        assert_eq!(pp0.children, vec![1], "first product has second as child");
-        assert!(pp1.children.is_empty(), "second product has no children");
+        assert!(pp0.parents.is_empty());
+        assert_eq!(pp1.parents, vec![0]);
+        assert_eq!(pp0.children, vec![1]);
+        assert!(pp1.children.is_empty());
     }
 
     #[test]
     fn generate_dependencies_chain_of_three() {
-        let f = make_circuit_file(&[
-            "+X__<T>", // id=0
-            "+X__<T>", // id=1, depends on 0
-            "+X__<T>", // id=2, depends on 1
-        ]);
+        let f = make_circuit_file(&["+X__<T>", "+X__<T>", "+X__<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert!(c.get_product(0).parents.is_empty());
@@ -712,15 +658,9 @@ mod tests {
         assert!(c.get_product(2).children.is_empty());
     }
 
-    // ── Circuit::initial_products ─────────────────────────────────────────────
-
     #[test]
     fn initial_products_returns_products_with_no_parents() {
-        let f = make_circuit_file(&[
-            "+X_<T>", // id=0, no parents
-            "+_X<T>", // id=1, no parents (different qubit)
-            "+X_<T>", // id=2, depends on id=0
-        ]);
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         let initial_ids: Vec<i32> = c.initial_products().map(|pp| pp.id).collect();
@@ -728,8 +668,6 @@ mod tests {
         assert!(initial_ids.contains(&1));
         assert!(!initial_ids.contains(&2));
     }
-
-    // ── Circuit::get_product ──────────────────────────────────────────────────
 
     #[test]
     fn get_product_returns_correct_product() {
@@ -740,8 +678,6 @@ mod tests {
         assert!(c.get_product(1).gate_type.is_m());
     }
 
-    // ── Circuit::num_products ─────────────────────────────────────────────────
-
     #[test]
     fn num_products_matches_loaded_count() {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
@@ -750,67 +686,48 @@ mod tests {
         assert_eq!(c.num_products(), 3);
     }
 
-    // ── Circuit::num_qubits ───────────────────────────────────────────────────
-
     #[test]
     fn num_qubits_is_max_qubit_plus_one() {
-        // "+___X<T>" has operator at position 3 (0-indexed after sign).
-        // max_qubit = 3, so num_qubits = 4.
         let f = make_circuit_file(&["+___X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_qubits, 4);
     }
 
-    // ── Circuit layer computation (via print_statistics) ──────────────────────
-
     #[test]
     fn print_statistics_returns_correct_layer_count_linear_chain() {
-        // Three products in a linear chain: each in its own layer.
         let f = make_circuit_file(&["+X__<T>", "+X__<T>", "+X__<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         let num_layers = c.print_statistics();
-        assert_eq!(num_layers, 3, "linear chain should have 3 layers");
+        assert_eq!(num_layers, 3);
     }
 
     #[test]
     fn print_statistics_parallel_products_in_one_layer() {
-        // Two products on different qubits — both in layer 0.
         let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         let num_layers = c.print_statistics();
-        assert_eq!(num_layers, 1, "independent products should be in one layer");
+        assert_eq!(num_layers, 1);
     }
-
-    // ── Circuit::compute_moving_average (via print_statistics) ───────────────
 
     #[test]
     fn moving_average_does_not_panic_on_single_product() {
         let f = make_circuit_file(&["+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        // print_statistics internally calls get_statistics which calls get_layers.
         let _ = c.print_statistics();
     }
 
-    // ── Circuit::count_t_stats ────────────────────────────────────────────────
-
     #[test]
     fn count_t_stats_counts_t_gates_and_t_layers() {
-        // 2 T gates on different qubits (same layer), 1 CX gate
-        let f = make_circuit_file(&[
-            "+X_<T>",  // T gate on qubit 0
-            "+_X<T>",  // T gate on qubit 1 (parallel — same layer)
-            "+XZ<CX>", // CX gate (different layer, depends on both T gates)
-        ]);
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         let (num_t, num_t_layers) = c.count_t_stats();
-        assert_eq!(num_t, 2, "should count 2 T gates");
-        // Both T gates are in the same layer, so 1 T-containing layer
-        assert_eq!(num_t_layers, 1, "both T gates are in the same layer");
+        assert_eq!(num_t, 2);
+        assert_eq!(num_t_layers, 1);
     }
 
     #[test]
@@ -825,7 +742,6 @@ mod tests {
 
     #[test]
     fn count_t_stats_all_t_gates_in_separate_layers() {
-        // Three T gates on the same qubit — each in its own layer
         let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
@@ -834,42 +750,23 @@ mod tests {
         assert_eq!(num_t_layers, 3);
     }
 
-    // ── Circuit::build_coupling_matrix (via plot_qubit_coupling) ─────────────
-
     #[test]
     fn build_coupling_matrix_symmetric_for_cx_gate() {
-        // CX on qubits 0 and 1 — coupling matrix should be symmetric
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        // build_coupling_matrix is private; exercise it indirectly via the
-        // public plot_qubit_coupling path — but since plotting requires a
-        // display, just verify the circuit loaded correctly and has 2 qubits.
         assert_eq!(c.num_qubits, 2);
         assert_eq!(c.num_products(), 1);
     }
 
-    // ── Circuit::get_layers (via print_statistics) ────────────────────────────
-
     #[test]
     fn get_layers_diamond_dependency() {
-        // Diamond: 0 and 1 both depend on nothing; 2 depends on 0; 3 depends on 1;
-        // 4 depends on both 2 and 3.
-        let f = make_circuit_file(&[
-            "+X___<T>", // id=0, qubit 0
-            "+_X__<T>", // id=1, qubit 1
-            "+X___<T>", // id=2, qubit 0 (depends on 0)
-            "+_X__<T>", // id=3, qubit 1 (depends on 1)
-            "+__X_<T>", // id=4, qubit 2 (independent)
-        ]);
+        let f = make_circuit_file(&["+X___<T>", "+_X__<T>", "+X___<T>", "+_X__<T>", "+__X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         let num_layers = c.print_statistics();
-        // Layer 0: ids 0,1,4; Layer 1: ids 2,3 → 2 layers
         assert_eq!(num_layers, 2);
     }
-
-    // ── Circuit::load_circuit — M gate is kept ────────────────────────────────
 
     #[test]
     fn load_circuit_keeps_m_gate() {
@@ -880,8 +777,6 @@ mod tests {
         assert!(c.get_product(0).gate_type.is_m());
     }
 
-    // ── Circuit::load_circuit — S gate is kept ────────────────────────────────
-
     #[test]
     fn load_circuit_keeps_s_gate() {
         let f = make_circuit_file(&["+X_<S>"]);
@@ -890,8 +785,6 @@ mod tests {
         assert_eq!(c.num_products(), 1);
         assert!(c.get_product(0).gate_type.is_s());
     }
-
-    // ── Circuit::load_circuit — CX gate is kept ───────────────────────────────
 
     #[test]
     fn load_circuit_keeps_cx_gate() {

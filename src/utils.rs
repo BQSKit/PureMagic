@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 
-/// RAII timer that prints the elapsed wall-clock time when it goes out of scope.
+/// RAII timer that prints elapsed wall-clock time on drop.
 pub(crate) struct Timer {
     name: String,
     start: Instant,
@@ -16,7 +16,6 @@ impl Timer {
 }
 
 impl Drop for Timer {
-    /// Prints elapsed time in seconds on drop.
     fn drop(&mut self) {
         println!(
             "{}",
@@ -27,8 +26,6 @@ impl Drop for Timer {
 }
 
 /// Creates a [`Timer`] scoped to the enclosing function.
-/// With no arguments, the function name is inferred automatically (crate prefix stripped).
-/// With a string argument, that string is used as the timer label instead.
 #[macro_export]
 macro_rules! fn_timer {
     () => {{
@@ -37,18 +34,13 @@ macro_rules! fn_timer {
             std::any::type_name::<T>()
         }
         let full_name = type_name_of(f);
-        // Remove the trailing "::f"
         let name = &full_name[..full_name.len() - 3];
-        // Remove the crate prefix to get "Circuit::load_circuit" instead of "puremagic::circuit::Circuit::load_circuit"
         let short_name = name.split("::").skip(2).collect::<Vec<_>>().join("::");
         $crate::utils::Timer::new(&short_name)
     }};
-    ($custom_name:expr) => {{
-        $crate::utils::Timer::new($custom_name)
-    }};
+    ($custom_name:expr) => {{ $crate::utils::Timer::new($custom_name) }};
 }
 
-/// Emits a `log::debug!` message only in debug builds (no-op in release).
 #[macro_export]
 macro_rules! debug_sched {
     ($($arg:tt)*) => {
@@ -57,7 +49,6 @@ macro_rules! debug_sched {
     };
 }
 
-/// Emits a `log::info!` message only in debug builds (no-op in release).
 #[macro_export]
 macro_rules! info_sched {
     ($($arg:tt)*) => {
@@ -66,7 +57,6 @@ macro_rules! info_sched {
     };
 }
 
-/// A single accumulated timer entry.
 struct AccumTimer {
     start_time: Option<Instant>,
     total_elapsed: Duration,
@@ -100,9 +90,7 @@ impl AccumTimer {
     }
 }
 
-/// A collection of named accumulated timers. Timers are created automatically
-/// on first use via [`accum_start!`] and the summary is printed when this
-/// collection drops.
+/// A collection of named accumulated timers; summary is printed on drop.
 pub(crate) struct AccumTimers {
     timers: IndexMap<String, AccumTimer>,
 }
@@ -112,8 +100,7 @@ impl AccumTimers {
         AccumTimers { timers: IndexMap::new() }
     }
 
-    /// Register a timer by name and return its index for fast subsequent access.
-    /// If already registered, just returns the existing index.
+    /// Returns the index for `name`, registering it if not already present.
     pub(crate) fn add_or_get(&mut self, name: &'static str) -> usize {
         if let Some(idx) = self.timers.get_index_of(name) {
             idx
@@ -123,14 +110,12 @@ impl AccumTimers {
         }
     }
 
-    /// Start a timer by pre-looked-up index. O(1), no string lookup.
     pub(crate) fn start(&mut self, idx: usize) {
         if let Some((_, t)) = self.timers.get_index_mut(idx) {
             t.start();
         }
     }
 
-    /// Stop a timer by pre-looked-up index. O(1), no string lookup.
     pub(crate) fn stop(&mut self, idx: usize) {
         if let Some((_, t)) = self.timers.get_index_mut(idx) {
             t.stop();
@@ -153,12 +138,10 @@ impl Drop for AccumTimers {
             let secs = d.as_secs_f64();
             if secs >= 1.0 {
                 format!("{:.2} s", secs)
-                //format!("{:.1}", secs * 1_000.0)
             } else if secs >= 0.001 {
                 format!("{:.1} ms", secs * 1_000.0)
             } else {
                 format!("{:.2} μs", secs * 1_000_000.0)
-                //format!("{:.6}", secs * 1_000.0)
             }
         };
         println!("{}", "Accumulated timings (ms):".cyan());
@@ -183,7 +166,6 @@ impl Drop for AccumTimers {
     }
 }
 
-/// RAII guard that stops a timer by index when dropped.
 pub(crate) struct AccumTimerGuard {
     pub timers: *mut AccumTimers,
     pub idx: usize,
@@ -191,27 +173,15 @@ pub(crate) struct AccumTimerGuard {
 
 impl Drop for AccumTimerGuard {
     fn drop(&mut self) {
-        // SAFETY: AccumTimers always outlives this guard.
+        // SAFETY: `AccumTimers` always outlives this guard.
         unsafe {
             (*self.timers).stop(self.idx);
         }
     }
 }
 
-/// Start an accumulated timer using the enclosing function name as the key.
-/// Returns an [`AccumTimerGuard`] that stops the timer automatically when it
-/// drops at the end of the enclosing scope.
-///
-/// The returned guard **must be bound to a named variable** (e.g. `_timer`);
-/// binding to `_` alone will drop it immediately.
-///
-/// # Example
-/// ```rust
-/// fn my_function(&mut self) {
-///     let _timer = accum_start!(self.timers);
-///     // ... do work ...
-/// }  // timer stops here automatically, even on early return or panic
-/// ```
+/// Starts an accumulated timer for the enclosing function; stops it on drop.
+/// The returned guard **must be bound to a named variable** (e.g. `_timer`).
 #[macro_export]
 macro_rules! accum_start {
     ($timers:expr) => {{
@@ -219,7 +189,6 @@ macro_rules! accum_start {
         fn type_name_of<T>(_: T) -> &'static str {
             std::any::type_name::<T>()
         }
-        // Compute fn_name at compile-ish time (zero cost after first call).
         let full_name = type_name_of(f);
         let fn_name: &'static str = {
             let trimmed = match full_name.strip_suffix("::f") {
@@ -231,8 +200,6 @@ macro_rules! accum_start {
                 None => trimmed,
             }
         };
-        // Cache the index in a per-call-site static so the IndexMap lookup
-        // only happens once, no matter how many times this line is executed.
         static IDX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let idx = *IDX.get_or_init(|| $timers.add_or_get(fn_name));
         $timers.start(idx);
@@ -245,15 +212,11 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    // ── AccumTimers::new ──────────────────────────────────────────────────────
-
     #[test]
     fn accum_timers_new_is_empty() {
         let timers = AccumTimers::new();
         assert!(timers.timers.is_empty());
     }
-
-    // ── AccumTimers::add_or_get ───────────────────────────────────────────────
 
     #[test]
     fn add_or_get_returns_zero_for_first_entry() {
@@ -282,17 +245,13 @@ mod tests {
         assert_eq!(timers.timers.len(), 1);
     }
 
-    // ── AccumTimers::start / stop ─────────────────────────────────────────────
-
     #[test]
     fn start_stop_does_not_panic() {
         let mut timers = AccumTimers::new();
         let idx = timers.add_or_get("t");
         timers.start(idx);
-        // Small sleep so elapsed > 0
         std::thread::sleep(Duration::from_millis(1));
         timers.stop(idx);
-        // Verify the timer recorded at least one interval.
         let (_, t) = timers.timers.get_index(idx).unwrap();
         assert_eq!(t.num_intervals, 1);
         assert!(t.total_elapsed > Duration::ZERO);
@@ -327,39 +286,24 @@ mod tests {
         assert_eq!(t.num_intervals, 3);
     }
 
-    // ── AccumTimers::default ──────────────────────────────────────────────────
-
     #[test]
     fn default_is_empty() {
         let timers = AccumTimers::default();
         assert!(timers.timers.is_empty());
     }
 
-    // ── Timer (RAII) ──────────────────────────────────────────────────────────
-
     #[test]
     fn timer_new_does_not_panic() {
-        // Timer prints on drop; just verify construction and drop are safe.
         let _t = Timer::new("test_timer");
-        // Drop happens here — should print elapsed time without panicking.
     }
-
-    // ── AccumTimerGuard drop ──────────────────────────────────────────────────
 
     #[test]
     fn accum_timer_guard_stops_on_drop() {
         let mut timers = AccumTimers::default();
         let idx = timers.add_or_get("guard_test");
-        {
-            // Start via guard; drop at end of block should call stop.
-            timers.start(idx);
-            // Simulate the guard pattern: manually stop to avoid needing the macro.
-            timers.stop(idx);
-        }
-        // If we reach here without panic, the guard pattern works.
+        timers.start(idx);
+        timers.stop(idx);
     }
-
-    // ── AccumTimers: add_or_get is idempotent across multiple calls ───────────
 
     #[test]
     fn add_or_get_same_name_always_returns_same_index() {
@@ -371,8 +315,6 @@ mod tests {
         assert_eq!(i1, i3);
     }
 
-    // ── AccumTimers: start/stop with valid index does not panic ───────────────
-
     #[test]
     fn start_stop_valid_index_does_not_panic() {
         let mut timers = AccumTimers::default();
@@ -383,8 +325,6 @@ mod tests {
         timers.start(idx);
         timers.stop(idx);
     }
-
-    // ── Timer: multiple timers can coexist ────────────────────────────────────
 
     #[test]
     fn multiple_timers_do_not_interfere() {

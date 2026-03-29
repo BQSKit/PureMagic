@@ -3,9 +3,8 @@ use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 
 /// Result of a pathfinding computation.
-/// `NoPath` means no valid route exists.
-/// `PathFound(None)` means a route was found and `used[]` marked, but no tree was built (non-plotting mode).
-/// `PathFound(Some(tree))` means a route was found and a full routing tree was built (plotting mode).
+/// `PathFound(None)` marks `used[]` but skips tree construction (non-plotting mode).
+/// `PathFound(Some(tree))` builds and returns a full routing tree (plotting mode).
 #[derive(Debug)]
 pub(crate) enum PathResult {
     NoPath,
@@ -13,31 +12,22 @@ pub(crate) enum PathResult {
 }
 
 /// Number of buckets in the bucket-queue (Dial's algorithm).
-/// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 buckets gives ample headroom.
 const BUCKET_COUNT: usize = 256;
 
 /// State container for A* pathfinding computations.
-/// Maintains parent pointers, g-costs, and closed set for multi-source searches.
 ///
 /// Uses a generation-counter to avoid O(N) array resets between calls: `epoch` is
 /// bumped once per `compute` call; a node slot is valid iff its stored epoch matches.
 /// The priority queue is a bucket queue (Dial's algorithm) over integer f-costs,
 /// giving O(1) push and amortised O(1) pop without comparison overhead.
 pub(crate) struct AStarComputation {
-    /// Parent pointer; valid only when `node_epoch[id] == epoch`.
-    /// `u16::MAX` is the sentinel meaning "no parent" (search root).
+    /// `u16::MAX` means "no parent" (search root).
     parent: Vec<u16>,
-    /// Tentative g-cost; valid only when `node_epoch[id] == epoch`.
     g_cost: Vec<u32>,
-    /// Epoch when this node was last opened; `node_epoch[id] == epoch` means open.
     node_epoch: Vec<u32>,
-    /// Epoch when this node was last closed; `closed_epoch[id] == epoch` means closed.
     closed_epoch: Vec<u32>,
-    /// Bumped once per `compute` call to invalidate stale per-node state in O(1).
     epoch: u32,
-    /// Bucket queue: `buckets[f % BUCKET_COUNT]` holds node IDs with f-cost `f`.
     buckets: Vec<Vec<u16>>,
-    /// Lowest bucket index that may be non-empty.
     bucket_min: usize,
     pub num_calls: usize,
 }
@@ -83,20 +73,14 @@ impl AStarComputation {
 
     /// A* from first root to the nearest ready, unused magic node.
     /// Each `terminal_ids[i]` is attached to `root_ids[i]` in the returned tree.
-    /// For single-X/Z T gates: one root, one terminal.
-    /// For single-Y T gates: two roots (one above X-data, one below Z-data), two terminals.
-    /// After building the main path (magic → root), any remaining roots that are not
-    /// on the path are stitched in by finding an adjacent node already in the tree.
-    /// When `plotting` is false, marks `used[]` directly and returns `PathFound(None)`.
+    /// Remaining roots not on the main path are stitched in via adjacent tree nodes.
+    /// When `plotting` is false, marks `used[]` and returns `PathFound(None)`.
     /// When `plotting` is true, builds and returns `PathFound(Some(tree))`.
-    /// Returns `NoPath` if no path exists.
     pub(crate) fn compute(
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> PathResult {
         self.num_calls += 1;
-        // Bump epoch to invalidate stale per-node state without filling arrays.
-        // On the rare u32 wrap-around, reset epoch arrays to restore the invariant.
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.epoch = 1;
@@ -131,9 +115,6 @@ impl AStarComputation {
                 return self.finish_path(node_id, root_ids, terminal_ids, topo, used, plotting);
             }
 
-            // If this is a magic node that is not the goal (not ready/unused), skip expanding
-            // its neighbors — magic nodes must not be used as routing intermediaries unless
-            // use_magic_routing is enabled.
             if !topo.use_magic_routing && node_type == NodeType::Magic {
                 continue;
             }
@@ -150,15 +131,12 @@ impl AStarComputation {
                 if nb_type == NodeType::Data {
                     continue;
                 }
-                // If a neighbor is a ready magic node, take it immediately — no shorter
-                // path to any goal can exist since g+1 is the minimum reachable cost.
                 if nb_type == NodeType::Magic && nb_cultivation == 0 {
                     self.parent[nb_id as usize] = node_id;
                     self.node_epoch[nb_id as usize] = epoch;
                     return self.finish_path(nb_id, root_ids, terminal_ids, topo, used, plotting);
                 }
                 let new_g = g + 1;
-                // Stale slot (different epoch) is treated as g = ∞.
                 let nb_g = if self.node_epoch[nb_id as usize] == epoch {
                     self.g_cost[nb_id as usize]
                 } else {
@@ -176,7 +154,6 @@ impl AStarComputation {
         PathResult::NoPath
     }
 
-    /// Builds the final path result once a ready magic node (`magic_id`) has been found.
     /// Walks the parent chain to mark used nodes (non-plotting) or build a TreeGraph (plotting).
     fn finish_path(
         &self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
@@ -244,8 +221,6 @@ impl AStarComputation {
 
     /// Returns (distance, index) of the nearest ready magic node to `pos`.
     /// `ready_magic_positions` must be sorted by x-coordinate (ascending).
-    /// Binary-searches for the x-anchor then sweeps outward, pruning once the
-    /// x-gap alone exceeds the current best distance.
     fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
         let anchor = ready_magic_positions.partition_point(|&(mx, _)| mx < pos.0);
 
@@ -304,8 +279,6 @@ mod tests {
     use crate::node::{Node, NodeType};
     use crate::topograph::TopoGraph;
 
-    // ── manhattan_dist ────────────────────────────────────────────────────────
-
     #[test]
     fn manhattan_dist_same_point() {
         assert_eq!(AStarComputation::test_manhattan_dist((3.0, 4.0), (3.0, 4.0)), 0);
@@ -331,8 +304,6 @@ mod tests {
         assert_eq!(AStarComputation::test_manhattan_dist((-2.0, -3.0), (1.0, 1.0)), 7);
     }
 
-    // ── heuristic ─────────────────────────────────────────────────────────────
-
     #[test]
     fn heuristic_single_candidate() {
         let ready = vec![(5.0f32, 5.0f32)];
@@ -343,10 +314,8 @@ mod tests {
 
     #[test]
     fn heuristic_picks_nearest() {
-        // Sorted by x: (1,0), (3,0), (10,0)
         let ready = vec![(1.0f32, 0.0f32), (3.0, 0.0), (10.0, 0.0)];
         let (dist, idx) = AStarComputation::test_heuristic((2.0, 0.0), &ready);
-        // Nearest is (1,0) or (3,0) both at distance 1; heuristic should return one of them.
         assert_eq!(dist, 1);
         assert!(idx == 0 || idx == 1);
     }
@@ -359,15 +328,11 @@ mod tests {
         assert_eq!(idx, 1);
     }
 
-    // ── AStarComputation::new ─────────────────────────────────────────────────
-
     #[test]
     fn new_initialises_with_zero_calls() {
         let astar = AStarComputation::new(10);
         assert_eq!(astar.num_calls, 0);
     }
-
-    // ── AStarComputation::compute — no-path case ──────────────────────────────
 
     #[test]
     fn compute_returns_no_path_when_no_magic_ready() {
@@ -388,8 +353,6 @@ mod tests {
         let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
 
         if let Some(did) = data_id {
-            // With no ready magic positions, heuristic would panic on empty slice.
-            // Instead, test with a non-empty but all-cultivating magic list.
             let magic_positions: Vec<(f32, f32)> = topo
                 .iter_nodes()
                 .filter(|n| n.node_type == NodeType::Magic)
@@ -407,8 +370,6 @@ mod tests {
         Node::set_magic_routing(true);
     }
 
-    // ── AStarComputation::compute — success path ──────────────────────────────
-
     #[test]
     fn compute_finds_path_when_magic_ready() {
         Node::set_magic_routing(true);
@@ -419,25 +380,20 @@ mod tests {
         let mut astar = AStarComputation::new(num_nodes);
         let mut used = vec![false; num_nodes];
 
-        // Find a data node and a magic node
         let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
         let magic_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Magic).map(|n| n.id);
 
         if let (Some(did), Some(mid)) = (data_id, magic_id) {
-            // Make the magic node ready (cultivation_time = 0)
             topo.cultivation_times[mid as usize] = 0;
 
             let ready_positions: Vec<(f32, f32)> = vec![topo.get_node(mid).pos];
             let result = astar.compute(&[did], &[did], &topo, &mut used, &ready_positions, false);
             assert_eq!(astar.num_calls, 1);
-            // Result should be either PathFound or NoPath (topology may not connect them)
             match result {
                 PathResult::NoPath | PathResult::PathFound(_) => {}
             }
         }
     }
-
-    // ── AStarComputation::num_calls increments ────────────────────────────────
 
     #[test]
     fn num_calls_increments_on_each_compute() {
@@ -454,8 +410,6 @@ mod tests {
 
         if let Some(did) = data_id {
             if !magic_positions.is_empty() {
-                // Use a fresh `used` vector for each call so the root node is not
-                // already marked as used when the second call starts.
                 let mut used1 = vec![false; num_nodes];
                 astar.compute(&[did], &[did], &topo, &mut used1, &magic_positions, false);
                 let mut used2 = vec![false; num_nodes];
@@ -465,15 +419,8 @@ mod tests {
         }
     }
 
-    // ── AStarComputation::heuristic — empty list panics guard ─────────────────
-
     #[test]
     fn heuristic_empty_list_returns_max() {
-        // When ready_magic_positions is empty, heuristic should return u32::MAX
-        // (the caller is responsible for not calling with empty list in practice,
-        // but the function itself handles it gracefully).
-        // We test the public test_heuristic helper with a non-empty list to ensure
-        // the binary search path is exercised.
         let ready = vec![(0.0f32, 0.0f32), (5.0, 0.0), (10.0, 0.0)];
         let (dist, _idx) = AStarComputation::test_heuristic((3.0, 0.0), &ready);
         assert!(dist <= 3, "nearest point is at distance 2 or 3");

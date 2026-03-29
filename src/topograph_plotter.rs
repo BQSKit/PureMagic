@@ -13,8 +13,6 @@ static DATA_QUBIT_LABEL_FONT_SIZE: u32 = 36;
 static PRODUCT_LABEL_FONT_SIZE: u32 = 28;
 static BOXED_TERM_LABEL_FONT_SIZE: u32 = 30;
 
-// ── Plot helper types ────────────────────────────────────────────────────────
-
 /// Geometry for one double-data-qubit group (X row + Z row sharing a column).
 pub(crate) struct DataGroup {
     pub col: f32,
@@ -26,7 +24,7 @@ pub(crate) struct DataGroup {
     pub z_right_id: u16,
 }
 
-/// Which side of a data node a routing neighbor is on.
+/// Side of a data node a routing neighbor is on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataSide {
     Left,
@@ -35,7 +33,6 @@ pub(crate) enum DataSide {
     Bottom,
 }
 
-/// Type alias for the chart context used in plot helpers.
 type PlotChart<'a> = plotters::prelude::ChartContext<
     'a,
     BitMapBackend<'a>,
@@ -46,19 +43,15 @@ type PlotChart<'a> = plotters::prelude::ChartContext<
 >;
 
 /// Handles all visualization/plotting for a [`TopoGraph`].
-/// Borrows the topology immutably; create with [`TopoGraphPlotter::new`].
 pub(crate) struct TopoGraphPlotter<'a> {
     topo: &'a TopoGraph,
 }
 
 impl<'a> TopoGraphPlotter<'a> {
-    /// Creates a new plotter that borrows `topo`.
     pub(crate) fn new(topo: &'a TopoGraph) -> Self {
         TopoGraphPlotter { topo }
     }
 
-    /// Plots the topology with scheduled Pauli product paths highlighted.
-    /// Generates PNG with nodes colored by type and edges colored by path.
     pub(crate) fn plot(
         &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         title_str: &str,
@@ -81,9 +74,7 @@ impl<'a> TopoGraphPlotter<'a> {
                 -1f32..self.topo.num_rows as f32,
             )?;
 
-        // Pre-compute product label positions so we can suppress node labels underneath them.
         let product_label_positions = self.compute_product_label_positions(pauli_product_paths);
-        // Build set of (x*10, y*10) positions covered by a product label background rect.
         let mut product_label_covered: std::collections::HashSet<(i32, i32)> =
             std::collections::HashSet::new();
         for opt in &product_label_positions {
@@ -103,16 +94,9 @@ impl<'a> TopoGraphPlotter<'a> {
             }
         }
 
-        // Step 1: draw all node squares (fills + borders) with no path coloring.
         self.draw_all_nodes_plain(&mut chart, pauli_product_paths, &product_label_covered)?;
-
-        // Step 1b: draw outer group borders for data groups (no internal edges).
         self.draw_data_group_borders_plain(&mut chart, self.topo.data_groups())?;
-
-        // Step 2: for each path, walk the treegraph and overlay colors.
         self.draw_path_overlays(&mut chart, pauli_product_paths, &product_label_covered)?;
-
-        // Step 3: draw data group qubit-number labels and product operator labels.
         self.draw_data_group_labels(&mut chart, self.topo.data_groups())?;
         self.draw_product_labels(&mut chart, pauli_product_paths, &product_label_positions)?;
 
@@ -132,9 +116,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    // ── Private plot helpers ──────────────────────────────────────────────────
-
-    /// Returns the stable color for a single product ID.
     fn product_color(pp_id: i32) -> RGBAColor {
         const GOLDEN: f64 = 0.618_033_988_749_895;
         let hue = (pp_id as f64 * GOLDEN).fract().abs();
@@ -142,7 +123,6 @@ impl<'a> TopoGraphPlotter<'a> {
         RGBColor(r, g, b).to_rgba()
     }
 
-    /// Step 1: draw all node fills and routing node borders with no path coloring.
     fn draw_all_nodes_plain(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
@@ -210,7 +190,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Step 1b: draw the outer boundary of each data group.
     fn draw_data_group_borders_plain(
         &self, chart: &mut PlotChart, data_groups: &[DataGroup],
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -255,7 +234,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Determines which side of a data node a routing neighbor is on.
     fn data_side_of_neighbor(data_pos: (f32, f32), nbor_pos: (f32, f32)) -> Option<DataSide> {
         let dx = nbor_pos.0 - data_pos.0;
         let dy = nbor_pos.1 - data_pos.1;
@@ -268,7 +246,6 @@ impl<'a> TopoGraphPlotter<'a> {
         }
     }
 
-    /// Draws the colored border segment on one side of a data node.
     fn draw_data_node_side_highlight(
         chart: &mut PlotChart, data_pos: (f32, f32), side: DataSide, color: RGBAColor,
         is_x_node: bool, group_outer_y: f32,
@@ -313,7 +290,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Step 2: for each product path, walk the treegraph and overlay colors.
     fn draw_path_overlays(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
@@ -354,7 +330,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Colors the fill of one routing node and draws its outline.
     fn draw_routing_node_overlay(
         &self, chart: &mut PlotChart, id: u16, pos: (f32, f32), color: RGBAColor, is_t: bool,
         is_root: bool, routing_pos_set: &std::collections::HashSet<(i32, i32)>,
@@ -394,7 +369,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// For each data-node neighbor of a routing node in the path tree, highlights the border.
     fn draw_data_node_connections(
         &self, chart: &mut PlotChart, routing_id: u16, path_graph: &TreeGraph, color: RGBAColor,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -440,7 +414,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Step 3a: draw data group qubit-number labels.
     fn draw_data_group_labels(
         &self, chart: &mut PlotChart, data_groups: &[DataGroup],
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -476,7 +449,6 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Pre-computes the (center_x, row_y, half_width, path_index) for each product label.
     fn compute_product_label_positions(
         &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
     ) -> Vec<Option<(f32, f32, f32, usize)>> {
@@ -539,7 +511,6 @@ impl<'a> TopoGraphPlotter<'a> {
             .collect()
     }
 
-    /// Step 3b: draw product operator + ID labels using pre-computed positions.
     fn draw_product_labels(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         positions: &[Option<(f32, f32, f32, usize)>],
@@ -554,7 +525,6 @@ impl<'a> TopoGraphPlotter<'a> {
                     row_y + 0.22,
                     ("monotype", PRODUCT_LABEL_FONT_SIZE),
                 )?;
-                // Show "<id>" for single-cycle products, "<id>/<n>" for multi-cycle ones.
                 let id_str =
                     if *cycle > 1 { format!("{} ({})", pp.id, cycle) } else { pp.id.to_string() };
                 let id_w = id_str.len() as f32 * 0.10;
@@ -571,9 +541,6 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 }
 
-// ── Module-level plot drawing helpers ─────────────────────────────────────────
-
-/// Draws a single filled/stroked rectangle centered at (cx, cy) with half-extents (hx, hy).
 fn draw_rect(
     chart: &mut PlotChart, cx: f32, cy: f32, hx: f32, hy: f32, style: ShapeStyle,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -584,7 +551,6 @@ fn draw_rect(
     Ok(())
 }
 
-/// Draws a rectangle given explicit corner coordinates.
 fn draw_rect_coords(
     chart: &mut PlotChart, x0: f32, y0: f32, x1: f32, y1: f32, style: ShapeStyle,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -592,7 +558,6 @@ fn draw_rect_coords(
     Ok(())
 }
 
-/// Draws a straight line between two points.
 fn draw_line(
     chart: &mut PlotChart, p1: (f32, f32), p2: (f32, f32), style: ShapeStyle,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -600,7 +565,6 @@ fn draw_line(
     Ok(())
 }
 
-/// Draws a text label at position (x, y).
 fn draw_text<'a, F: plotters::style::IntoFont<'a>>(
     chart: &mut PlotChart, text: &str, x: f32, y: f32, font: F,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -608,7 +572,6 @@ fn draw_text<'a, F: plotters::style::IntoFont<'a>>(
     Ok(())
 }
 
-/// Draws a dashed line.
 fn draw_dashed(
     chart: &mut PlotChart, vertical: bool, x0: f32, y0: f32, len: f32, c: RGBAColor,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -633,7 +596,6 @@ fn draw_dashed(
     Ok(())
 }
 
-/// Draws a white-filled, colored-outlined box with a centered letter inside.
 fn draw_boxed_label(
     chart: &mut PlotChart, letter: &str, cx: f32, cy: f32, c: RGBAColor,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -655,7 +617,6 @@ fn draw_boxed_label(
     Ok(())
 }
 
-/// Converts HSV color space to RGB for plotting.
 pub(crate) fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
     let c = v * s;
     let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());

@@ -18,8 +18,6 @@ use scheduler::Scheduler;
 use topograph::TopoGraph;
 use utils::Timer;
 
-/// Command-line arguments for PureMagic.
-/// Controls circuit input, topology, scheduling strategy, and output options.
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -93,8 +91,6 @@ struct Args {
     plot: Vec<String>,
 }
 
-/// Entry point: parses arguments, loads or generates the circuit and topology, runs the
-/// scheduler, then prints scheduling efficiency and parallelism statistics.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
     let args = Args::parse();
@@ -106,7 +102,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}\n{:#?}", hdr, args);
     hdr = format!("# {}\n# {:?}", &hdr, args);
-    // Initialize circuit
     let circuit_fname = args.circuit_fname;
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
@@ -114,7 +109,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let num_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
-    // Plot circuit if requested
     if args.plot.contains(&"circuit".to_string()) {
         circuit.plot(args.show_product_ids)?;
     }
@@ -124,7 +118,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.plot.contains(&"cstats".to_string()) {
         circuit.plot_layer_stats()?;
     }
-    // Initialize topology
     let mut topo_graph = TopoGraph::new();
     let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
     let num_data_qubits = circuit.num_qubits;
@@ -142,7 +135,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         topo_graph.print()?;
     }
     let mut num_qubits = topo_graph.num_qubits;
-
     let mut scheduler = Scheduler::new(
         circuit,
         topo_graph,
@@ -155,7 +147,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tot_num_lcycles, num_scheduled) = scheduler.schedule_circuit()?;
     assert!(num_scheduled >= num_products);
-    // Calculate and print statistics
     let volume = num_qubits * tot_num_lcycles;
     println!(
         "Scheduled {} in {} logical cycles, volume {}",
@@ -167,9 +158,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
     best_magic_topo_graph.update_statistics();
     num_qubits = best_magic_topo_graph.num_qubits;
-    // When T failures are allowed, account for expected 50% failure rate:
-    // each T gate needs on average 1.5 attempts, adding 0.5 * num_t_gates extra scheduled ops,
-    // and each layer containing a T gate needs on average 1.5x as many lcycles.
     let (_, num_t_layers) = scheduler.input.circuit.count_t_stats();
     let optimal_num_layers =
         if args.no_t_failures { num_layers } else { num_layers + num_t_layers / 2 };
