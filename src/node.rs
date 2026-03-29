@@ -23,6 +23,8 @@ pub(crate) struct Node {
     pub num_nbors: u8,
 }
 
+/// Global flag controlling whether magic nodes act as routing intermediaries.
+/// Set once at startup via `Node::set_magic_routing`; read on every A* expansion.
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
@@ -55,6 +57,9 @@ impl Node {
         &self.nbors[..self.num_nbors as usize]
     }
 
+    /// Returns true if this node is a valid routing intermediary in the current mode.
+    /// In magic-routing mode only Magic nodes route; Bus nodes must not exist.
+    /// In bus-routing mode only Bus nodes route.
     pub(crate) fn is_routing(&self) -> bool {
         if USE_MAGIC_ROUTING.load(Ordering::Relaxed) {
             assert_ne!(self.node_type, NodeType::Bus);

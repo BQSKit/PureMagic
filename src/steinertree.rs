@@ -7,6 +7,8 @@ use crate::treegraph::TreeGraph;
 use colored::Colorize;
 use std::collections::VecDeque;
 
+/// Returns true when a neighbor node qualifies as the magic-state cultivator for a T gate:
+/// the gate must be T, no cultivator has been found yet, and the node must be ready (time=0).
 #[inline]
 fn is_cultivator_candidate(
     gate_type: GateType, cultivator: Option<u16>, cultivation_time: i32,
@@ -14,7 +16,13 @@ fn is_cultivator_candidate(
     gate_type.is_t() && cultivator.is_none() && cultivation_time == 0
 }
 
-/// State container for greedy multi-source shortest path (Steiner tree) computation.
+/// State container for greedy multi-source BFS Steiner tree computation.
+///
+/// `visited[node_id]` stores the root ID that first reached that node, enabling
+/// detection of when two different root groups meet (a new path is formed).
+/// `paths[root_id]` lists all other root IDs reachable from `root_id`; the
+/// total count across all roots equals the number of distinct root-pair paths
+/// found so far, which is compared against `reqd_paths = n*(n-1)` for n roots.
 pub(crate) struct SteinerTreeComputation {
     num_nodes: usize,
     visited: Vec<Option<u16>>,
@@ -54,6 +62,7 @@ impl SteinerTreeComputation {
         );
         self.num_calls += 1;
         self.clear();
+        // For n roots, every ordered pair (a,b) must be connected: n*(n-1) directed paths.
         let reqd_paths = root_ids.len() * (root_ids.len() - 1);
         debug_sched!("    Require {} paths", reqd_paths);
 
@@ -69,6 +78,8 @@ impl SteinerTreeComputation {
                 node_id, topo, used, reqd_paths, gate_type, cultivator, num_paths, &mut tree,
             );
             if num_paths == reqd_paths {
+                // All roots are connected, but for T gates we must also have found
+                // a ready magic cultivator before we can declare success.
                 if gate_type.is_t() && cultivator.is_none() {
                     continue;
                 }
@@ -99,6 +110,10 @@ impl SteinerTreeComputation {
         None
     }
 
+    /// Seeds the BFS queue with all root nodes, adds them to the tree, and
+    /// immediately connects any directly adjacent terminal data nodes.
+    /// Returns `(tree, cultivator)` where `cultivator` is the first ready magic
+    /// root found (or `None`). Duplicate edges from adjacent roots are removed.
     fn init_bfs_from_roots(
         &mut self, root_ids: &[u16], terminal_nodes: &[u16], topo: &TopoGraph,
     ) -> (TreeGraph, Option<u16>) {
@@ -161,6 +176,8 @@ impl SteinerTreeComputation {
         Some(())
     }
 
+    /// Expands one BFS node: visits its routing neighbors, merges root groups
+    /// when two groups meet, and tracks the first ready magic cultivator found.
     fn visit_neighbors(
         &mut self, node_id: u16, topo: &TopoGraph, used: &Vec<bool>, reqd_paths: usize,
         gate_type: GateType, starting_cultivator: Option<u16>, num_start_paths: usize,
@@ -192,10 +209,12 @@ impl SteinerTreeComputation {
                     continue;
                 }
             }
+            // Both nodes are routing and both already visited: check if they belong
+            // to different root groups (a new path between groups has been found).
             if nb.is_routing() && node.is_routing() && self.visited[*nb_id as usize].is_some() {
                 let nb_root_id = self.visited[*nb_id as usize].unwrap();
                 if curr_root_id == nb_root_id {
-                    continue;
+                    continue; // Same group — no new path.
                 }
                 num_paths = self.merge_root_groups(
                     curr_root_id,
@@ -240,6 +259,11 @@ impl SteinerTreeComputation {
         (num_paths as usize, cultivator)
     }
 
+    /// Merges the connectivity groups of `curr_root_id` and `nb_root_id`.
+    ///
+    /// After merging, every root in the combined group has the full merged list
+    /// in `self.paths[root_id]` (excluding itself). `num_paths` is updated to
+    /// reflect the new total count of directed root-pair paths.
     fn merge_root_groups(
         &mut self, curr_root_id: u16, nb_root_id: u16, num_start_paths: usize,
         #[cfg_attr(not(debug_assertions), allow(unused_variables))] reqd_paths: usize,
@@ -250,9 +274,10 @@ impl SteinerTreeComputation {
         let mut num_paths = num_start_paths;
         let curr_root_paths = &self.paths[curr_root_id as usize];
         if curr_root_paths.contains(&nb_root_id) {
-            return num_paths;
+            return num_paths; // Already merged.
         }
         let nb_root_paths = self.paths[nb_root_id as usize].clone();
+        // Build the merged peer list: all roots from both groups plus each other.
         let mut merged_set = curr_root_paths.clone();
         merged_set.push(nb_root_id);
         merged_set.extend(nb_root_paths.iter().cloned());
@@ -261,6 +286,7 @@ impl SteinerTreeComputation {
             assert!(num_paths >= self.paths[*root_id as usize].len());
             num_paths -= self.paths[*root_id as usize].len();
             self.paths[*root_id as usize] = merged_set.clone();
+            // Each root's list must not contain itself.
             let pos = self.paths[*root_id as usize].iter().position(|&id| id == *root_id).unwrap();
             self.paths[*root_id as usize].swap_remove(pos);
             debug_sched!(
@@ -301,6 +327,8 @@ impl SteinerTreeComputation {
         num_paths
     }
 
+    /// Adds an unvisited routing (or cultivator magic) neighbor to the BFS tree and queue.
+    /// Returns `Some(nb_id)` if `nb_id` is a newly discovered cultivator, `None` otherwise.
     fn expand_new_neighbor(
         &mut self, node_id: u16, nb_id: u16, nb: &crate::node::Node, curr_root_id: u16,
         nb_is_cultivator: bool, cultivator: Option<u16>, topo: &TopoGraph, tree: &mut TreeGraph,

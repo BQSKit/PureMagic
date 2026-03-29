@@ -67,6 +67,10 @@ impl fmt::Display for Operator {
 }
 
 /// A quantum gate represented as a Pauli product with dependency tracking.
+///
+/// Each product has a list of `operators` (qubit + basis pairs), a `gate_type`,
+/// and DAG edges (`parents`/`children`) derived from qubit overlap in the circuit.
+/// `max_qubit` is cached to avoid repeated iteration when computing `num_qubits`.
 #[derive(Debug, Clone)]
 pub(crate) struct PauliProduct {
     pub operators: Vec<Operator>,

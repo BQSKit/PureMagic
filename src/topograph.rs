@@ -14,6 +14,10 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Topological layout of a surface code quantum processor.
+///
+/// Nodes are either Data (logical qubit patches), Magic (magic state cultivators),
+/// or Bus (routing ancilla in bus-routing mode). Each data qubit has two nodes:
+/// one for the X stabiliser patch and one for the Z stabiliser patch.
 pub(crate) struct TopoGraph {
     pub(crate) nodes: Vec<Node>,
     pub labels: Vec<String>,
@@ -95,6 +99,9 @@ impl TopoGraph {
         } else {
             self.gen_pure_magic_topo(min_num_qubits, ancilla_rows, sides_only);
         }
+        // Link each data node to its X/Z partner (same qubit, opposite basis).
+        // Data nodes are generated in pairs: even qubit index = X, odd = Z.
+        // The paired node has the adjacent qubit number and the same basis suffix.
         let node_ids: Vec<u16> = self.nodes.iter().map(|node| node.id).collect();
         for node_id in node_ids {
             let node = self.get_node(node_id);
@@ -109,6 +116,7 @@ impl TopoGraph {
                     .ok()
                     .unwrap();
                 let term = label.chars().last().map(|c| c.to_string()).unwrap();
+                // Even qubit pairs with qubit+1; odd qubit pairs with qubit-1.
                 let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
                 let paired_node_label = format!("d{}{}", pair_qubit, term);
                 self.get_node_mut(node_id).paired_data_id =
@@ -252,6 +260,7 @@ impl TopoGraph {
                 NodeType::Bus => bus_count += 1,
             }
         }
+        // Each logical qubit has two data nodes (X patch + Z patch).
         self.num_data_qubits = data_count / 2;
         self.num_magic_qubits = magic_count;
         self.num_bus_qubits = bus_count;
@@ -302,6 +311,9 @@ impl TopoGraph {
         self.data_node_ids[qubit as usize][basis_idx]
     }
 
+    /// Returns true if this magic node is actively cultivating (started but not yet ready).
+    /// A node is ready when `cultivation_time == 0`; it is cultivating when
+    /// `busy_count < cultivation_time` (i.e. it has been assigned a time but not finished).
     pub(crate) fn is_cultivating(&self, node_id: u16) -> bool {
         self.cultivation_times[node_id as usize] > 0
             && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
@@ -426,6 +438,7 @@ impl TopoGraph {
         Ok(())
     }
 
+    /// Returns the node type used for routing nodes in the current routing mode.
     #[inline]
     fn routing_node_type(&self) -> NodeType {
         if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus }
@@ -554,6 +567,9 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
+    /// Adds a pair of data nodes (left and right) at grid position (col, row).
+    /// `qi` is the base qubit index (even); the two nodes get labels `d{q}X/Z` and `d{q+1}X/Z`.
+    /// Positions are offset by ±0.25 so the two nodes sit side-by-side within the column.
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
@@ -641,6 +657,13 @@ impl TopoGraph {
         }
     }
 
+    /// Establishes edges between adjacent nodes (4-connectivity).
+    ///
+    /// Horizontal edges connect every node to its left neighbor.
+    /// Vertical edges connect routing nodes to each other (not to data nodes directly).
+    /// When `sides_only` is false, additional vertical edges connect Z data nodes to
+    /// the routing node two rows above, and X data nodes to the routing node two rows
+    /// below — these are the "top/bottom" connections used for Y-basis operators.
     fn set_edges(&mut self, sides_only: bool) {
         let mut edges_to_add = Vec::new();
         let mut vert_data_edges_to_add = Vec::new();
@@ -654,6 +677,7 @@ impl TopoGraph {
                         }
                     }
                     if !sides_only {
+                        // Z data node: connect upward to the routing node 2 rows above.
                         if row > 1 {
                             if label.starts_with('d') && label.ends_with('Z') {
                                 if let Some(ref up_label) = self.node_grid[col][row - 2].clone() {
@@ -664,6 +688,7 @@ impl TopoGraph {
                                 }
                             }
                         }
+                        // X data node: connect downward to the routing node 2 rows below.
                         if row < self.num_rows - 2 {
                             if label.starts_with('d') && label.ends_with('X') {
                                 if let Some(ref up_label) = self.node_grid[col][row + 2].clone() {
@@ -685,6 +710,8 @@ impl TopoGraph {
                 }
             }
         }
+        // For horizontal edges involving a double-data-qubit label (e.g. "d0/1X"),
+        // connect only the left or right individual data node to the routing neighbor.
         for (label1, label2) in edges_to_add {
             if label1.starts_with('d') {
                 if let Some(d) = Self::get_data_label_side_static(&label1, true) {
@@ -704,6 +731,9 @@ impl TopoGraph {
                 self.add_edge(n1, n2);
             }
         }
+        // Vertical data edges connect both individual data nodes in a pair to the
+        // routing node above/below (add_neighbor is used directly to avoid double-counting
+        // num_edges, since these are not standard bidirectional topology edges).
         for (label1, label2) in vert_data_edges_to_add {
             let (data_label, bus_label) =
                 if label1.starts_with('d') { (label1, label2) } else { (label2, label1) };
@@ -718,6 +748,7 @@ impl TopoGraph {
         }
     }
 
+    /// Parses a combined double-data-qubit label like `"d0/1X"` into its parts.
     fn get_data_label_parts(label: &str) -> Option<(&str, &str, &str)> {
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
@@ -728,6 +759,7 @@ impl TopoGraph {
         Some((first_num, second_num, operator))
     }
 
+    /// Extracts the left (`left=true`) or right (`left=false`) individual data node label.
     fn get_data_label_side_static(label: &str, left: bool) -> Option<String> {
         let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
         if left {
@@ -737,6 +769,7 @@ impl TopoGraph {
         }
     }
 
+    /// Extracts both individual data node labels from a double data qubit label.
     fn get_data_labels_static(label: &str) -> Option<(String, String)> {
         let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
