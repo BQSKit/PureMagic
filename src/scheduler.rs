@@ -202,6 +202,8 @@ pub(crate) struct Scheduler {
     pub(crate) pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)>,
     /// Current logical cycle index (1-based, 0 = not yet started).
     current_lcycle: usize,
+    /// T gate IDs that completed a recovery lcycle this cycle (populated by complete_lcycle).
+    recovery_t_ids: Vec<i32>,
 }
 
 impl Scheduler {
@@ -257,6 +259,7 @@ impl Scheduler {
             remaining_parents: Vec::new(),
             pp_paths: Vec::new(),
             current_lcycle: 0,
+            recovery_t_ids: Vec::new(),
         }
     }
 
@@ -339,12 +342,40 @@ impl Scheduler {
                     let fname_added = format!(".{}", self.current_lcycle);
                     let curr_dir = std::env::current_dir()?;
                     std::env::set_current_dir(path_dir.as_ref().unwrap())?;
-                    let plot_paths: Vec<(PauliProduct, Rc<TreeGraph>)> = self
+                    let plot_paths: Vec<(PauliProduct, Rc<TreeGraph>, u32)> = self
                         .pp_paths
                         .iter()
                         .filter_map(|(pp_id, opt_tree)| {
                             opt_tree.as_ref().map(|t| {
-                                (self.input.circuit.get_product(*pp_id).clone(), Rc::clone(t))
+                                let pp = self.input.circuit.get_product(*pp_id);
+                                // Determine which cycle of a multi-lcycle product this is.
+                                // advance_clifford_state has already run, so clifford_paths
+                                // reflects the post-advance state for this lcycle.
+                                let cycle: u32 = if pp.gate_type.is_clifford() {
+                                    match self.clifford_paths.get(pp_id) {
+                                        // CX initial=1, S/SX initial=2
+                                        Some((c, _, _, _)) => {
+                                            let initial =
+                                                if pp.gate_type.is_cx() { 1u32 } else { 2u32 };
+                                            initial - *c as u32 + 1
+                                        }
+                                        // Removed from map → final cycle
+                                        None => {
+                                            if pp.gate_type.is_cx() {
+                                                2
+                                            } else {
+                                                3
+                                            }
+                                        }
+                                    }
+                                } else if pp.gate_type.is_t() {
+                                    // cycle 2 only for recovery T gates (first attempt failed
+                                    // last lcycle); first-attempt successes stay at cycle 1.
+                                    if self.recovery_t_ids.contains(pp_id) { 2 } else { 1 }
+                                } else {
+                                    1
+                                };
+                                (pp.clone(), Rc::clone(t), cycle)
                             })
                         })
                         .collect();
@@ -877,7 +908,8 @@ impl Scheduler {
             .count();
         self.cultivation.t_products_remaining =
             self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
-        let (t_failed_ids, _t_recovery_ids) = self.process_t_gate_outcomes();
+        let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
+        self.recovery_t_ids = t_recovery_ids;
         self.unlock_children(&t_failed_ids);
         self.advance_clifford_state();
         debug_sched!(
@@ -900,7 +932,7 @@ impl Scheduler {
             .collect();
         self.lcycle_scheduled.push((self.current_lcycle, lcycle_ids));
         #[cfg(debug_assertions)]
-        self.check_lcycle(&t_failed_ids, &_t_recovery_ids)?;
+        self.check_lcycle(&t_failed_ids, &self.recovery_t_ids)?;
         self.scheduled_products.extend(
             self.pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
         );
