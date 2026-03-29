@@ -377,7 +377,7 @@ impl TopoGraph {
 
     /// Plots the topology with scheduled Pauli product paths highlighted.
     pub(crate) fn plot(
-        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         TopoGraphPlotter::new(self).plot(fname_added, pauli_product_paths, title_str)

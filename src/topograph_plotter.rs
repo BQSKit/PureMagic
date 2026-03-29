@@ -60,7 +60,7 @@ impl<'a> TopoGraphPlotter<'a> {
     /// Plots the topology with scheduled Pauli product paths highlighted.
     /// Generates PNG with nodes colored by type and edges colored by path.
     pub(crate) fn plot(
-        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
@@ -144,11 +144,11 @@ impl<'a> TopoGraphPlotter<'a> {
 
     /// Step 1: draw all node fills and routing node borders with no path coloring.
     fn draw_all_nodes_plain(
-        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let path_node_ids: std::collections::HashSet<u16> =
-            pauli_product_paths.iter().flat_map(|(_, tree)| tree.iter_nodes()).collect();
+            pauli_product_paths.iter().flat_map(|(_, tree, _)| tree.iter_nodes()).collect();
 
         for node in self.topo.iter_nodes() {
             let (x, y) = node.pos;
@@ -315,10 +315,10 @@ impl<'a> TopoGraphPlotter<'a> {
 
     /// Step 2: for each product path, walk the treegraph and overlay colors.
     fn draw_path_overlays(
-        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for (pp, path_graph) in pauli_product_paths.iter() {
+        for (pp, path_graph, _cycle) in pauli_product_paths.iter() {
             let color = Self::product_color(pp.id);
             let is_t = pp.gate_type.is_t();
 
@@ -478,11 +478,11 @@ impl<'a> TopoGraphPlotter<'a> {
 
     /// Pre-computes the (center_x, row_y, half_width, path_index) for each product label.
     fn compute_product_label_positions(
-        &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
     ) -> Vec<Option<(f32, f32, f32, usize)>> {
         let mut labeled_positions: std::collections::HashSet<(i32, i32)> =
             std::collections::HashSet::new();
-        for (pp, path_graph) in pauli_product_paths.iter() {
+        for (pp, path_graph, _cycle) in pauli_product_paths.iter() {
             if let Some(root_id) = path_graph.root_node_id {
                 if pp.gate_type.is_t() {
                     let (px, py) = self.topo.get_node(root_id).pos;
@@ -501,7 +501,7 @@ impl<'a> TopoGraphPlotter<'a> {
         pauli_product_paths
             .iter()
             .enumerate()
-            .map(|(i, (pp, path_graph))| {
+            .map(|(i, (pp, path_graph, _cycle))| {
                 let mut row_map: std::collections::HashMap<i32, Vec<f32>> =
                     std::collections::HashMap::new();
                 for id in path_graph.iter_nodes() {
@@ -530,7 +530,9 @@ impl<'a> TopoGraphPlotter<'a> {
                     let center_x = (xs.iter().cloned().fold(f32::INFINITY, f32::min)
                         + xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
                         / 2.0;
-                    let tw = pp.to_operator_str().len() as f32 * 0.125;
+                    // Width accounts for optional "/n" cycle suffix (3 chars × 0.125 each)
+                    let op_str = pp.to_operator_str();
+                    let tw = op_str.len() as f32 * 0.125;
                     (center_x, row_y, tw, i)
                 })
             })
@@ -539,10 +541,11 @@ impl<'a> TopoGraphPlotter<'a> {
 
     /// Step 3b: draw product operator + ID labels using pre-computed positions.
     fn draw_product_labels(
-        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>)],
+        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         positions: &[Option<(f32, f32, f32, usize)>],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for (pos_opt, (pp, _path_graph)) in positions.iter().zip(pauli_product_paths.iter()) {
+        for (pos_opt, (pp, _path_graph, cycle)) in positions.iter().zip(pauli_product_paths.iter())
+        {
             if let Some(&(center_x, row_y, tw, _i)) = pos_opt.as_ref() {
                 draw_text(
                     chart,
@@ -551,7 +554,9 @@ impl<'a> TopoGraphPlotter<'a> {
                     row_y + 0.22,
                     ("monotype", PRODUCT_LABEL_FONT_SIZE),
                 )?;
-                let id_str = pp.id.to_string();
+                // Show "<id>" for single-cycle products, "<id>/<n>" for multi-cycle ones.
+                let id_str =
+                    if *cycle > 1 { format!("{} ({})", pp.id, cycle) } else { pp.id.to_string() };
                 let id_w = id_str.len() as f32 * 0.10;
                 draw_text(
                     chart,
