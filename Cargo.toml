@@ -17,6 +17,7 @@ clap = { version = "4.4", features = ["derive"] }
 # Logging and output formatting
 log = "0.4"
 simple-logging = "2.0"
+colored = "2"
 # Optional performance improvements
 #rayon = "1.7"     # For parallel processing
 #dashmap = "5.4"   # For concurrent maps

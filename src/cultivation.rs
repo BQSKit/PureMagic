@@ -1,6 +1,6 @@
 use crate::node::NodeType;
 use crate::topograph::TopoGraph;
-use crate::utils::{_RED, _RESET};
+use colored::Colorize;
 use rand_simple::Exponential;
 
 // ── CultivationManager ────────────────────────────────────────────────────────
@@ -68,8 +68,12 @@ impl CultivationManager {
         if self.pool_index >= self.cultivation_time_pool.len() {
             if self.pool_index > 0 {
                 eprintln!(
-                    "{}Warning: refilling cultivation pool for {} remaining T products{}",
-                    _RED, self.t_products_remaining, _RESET
+                    "{}",
+                    format!(
+                        "Warning: refilling cultivation pool for {} remaining T products",
+                        self.t_products_remaining
+                    )
+                    .red()
                 );
             }
             self.fill_pool(10 * self.t_products_remaining + num_topo_nodes);

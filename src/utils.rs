@@ -1,24 +1,7 @@
+use colored::Colorize;
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
-
-/// ANSI escape codes for terminal colour output.
-pub(crate) const _RED: &str = "\x1b[31m";
-pub(crate) const _GREEN: &str = "\x1b[32m";
-pub(crate) const _YELLOW: &str = "\x1b[33m";
-pub(crate) const _BLUE: &str = "\x1b[34m";
-pub(crate) const _MAGENTA: &str = "\x1b[35m";
-pub(crate) const _CYAN: &str = "\x1b[36m";
-pub(crate) const _WHITE: &str = "\x1b[37m";
-pub(crate) const _LRED: &str = "\x1b[91m";
-pub(crate) const _LGREEN: &str = "\x1b[92m";
-pub(crate) const _LYELLOW: &str = "\x1b[93m";
-pub(crate) const _LBLUE: &str = "\x1b[94m";
-pub(crate) const _LMAGENTA: &str = "\x1b[95m";
-pub(crate) const _LCYAN: &str = "\x1b[96m";
-pub(crate) const _LWHITE: &str = "\x1b[97m";
-/// Resets all ANSI terminal formatting.
-pub(crate) const _RESET: &str = "\x1b[0m";
 
 /// RAII timer that prints the elapsed wall-clock time when it goes out of scope.
 pub(crate) struct Timer {
@@ -36,11 +19,9 @@ impl Drop for Timer {
     /// Prints elapsed time in seconds on drop.
     fn drop(&mut self) {
         println!(
-            "{}Timing: {} took {:.2} s{}",
-            _CYAN,
-            self.name,
-            self.start.elapsed().as_secs_f64(),
-            _RESET
+            "{}",
+            format!("Timing: {} took {:.2} s", self.name, self.start.elapsed().as_secs_f64())
+                .cyan()
         );
     }
 }
@@ -180,21 +161,23 @@ impl Drop for AccumTimers {
                 //format!("{:.6}", secs * 1_000.0)
             }
         };
-        println!("{}Accumulated timings (ms):{}", _CYAN, _RESET);
+        println!("{}", "Accumulated timings (ms):".cyan());
         for (name, t) in &self.timers {
             if t.num_intervals == 0 {
                 continue;
             }
             let avg = t.total_elapsed / t.num_intervals as u32;
             println!(
-                "{}  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}{}",
-                _CYAN,
-                name,
-                format_dur(t.total_elapsed),
-                format_dur(avg),
-                format_dur(t.max_interval),
-                t.num_intervals,
-                _RESET
+                "{}",
+                format!(
+                    "  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}",
+                    name,
+                    format_dur(t.total_elapsed),
+                    format_dur(avg),
+                    format_dur(t.max_interval),
+                    t.num_intervals,
+                )
+                .cyan()
             );
         }
     }
@@ -359,15 +342,6 @@ mod tests {
         // Timer prints on drop; just verify construction and drop are safe.
         let _t = Timer::new("test_timer");
         // Drop happens here — should print elapsed time without panicking.
-    }
-
-    // ── ANSI colour constants ─────────────────────────────────────────────────
-
-    #[test]
-    fn ansi_constants_are_escape_sequences() {
-        assert!(_RED.starts_with('\x1b'));
-        assert!(_GREEN.starts_with('\x1b'));
-        assert!(_RESET.starts_with('\x1b'));
     }
 
     // ── AccumTimerGuard drop ──────────────────────────────────────────────────

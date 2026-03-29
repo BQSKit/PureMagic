@@ -11,10 +11,7 @@ use crate::steinertree::SteinerTreeComputation;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 use crate::utils::AccumTimers;
-use crate::utils::{
-    _BLUE, _CYAN, _GREEN, _LBLUE, _LCYAN, _LGREEN, _LMAGENTA, _LRED, _LWHITE, _LYELLOW, _MAGENTA,
-    _RED, _RESET, _WHITE, _YELLOW,
-};
+use colored::{Color, Colorize};
 
 use indexmap::{IndexMap, IndexSet};
 use rand::Rng;
@@ -307,14 +304,16 @@ impl Scheduler {
             self.timers.start(self.loop_timer);
             self.current_lcycle += 1;
             info_sched!(
-                "{}lcycle {}: {:?}{}",
-                _CYAN,
-                self.current_lcycle,
-                self.to_schedule
-                    .iter()
-                    .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
-                    .collect::<Vec<_>>(),
-                _RESET
+                "{}",
+                format!(
+                    "lcycle {}: {:?}",
+                    self.current_lcycle,
+                    self.to_schedule
+                        .iter()
+                        .map(|pp| format!("{}:{}", pp.id, pp.to_operator_str()))
+                        .collect::<Vec<_>>(),
+                )
+                .cyan()
             );
             if self.schedule_lcycle(plotting) {
                 self.complete_lcycle()?;
@@ -362,7 +361,7 @@ impl Scheduler {
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("{}Cannot schedule on current layout{}", _RED, _RESET),
+                        "Cannot schedule on current layout".red().to_string(),
                     ));
                 }
             }
@@ -487,7 +486,10 @@ impl Scheduler {
                     self.precomputed_clifford_trees.insert(pp.id, Rc::new(tree));
                     num_precomputed += 1;
                 } else {
-                    eprintln!("{}Warning: failed to precompute tree for {}{}", _YELLOW, pp, _RESET);
+                    eprintln!(
+                        "{}",
+                        format!("Warning: failed to precompute tree for {}", pp).yellow()
+                    );
                 }
             }
         }
@@ -610,16 +612,18 @@ impl Scheduler {
         if self.pp_paths.is_empty() {
             if num_avail_magic > 0 {
                 panic!(
-                    "{}lcycle {}: Cannot schedule products [{}] on current layout ({} magic){}",
-                    _RED,
-                    self.current_lcycle,
-                    self.to_schedule
-                        .iter()
-                        .map(|pp| pp.to_operator_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    num_avail_magic,
-                    _RESET
+                    "{}",
+                    format!(
+                        "lcycle {}: Cannot schedule products [{}] on current layout ({} magic)",
+                        self.current_lcycle,
+                        self.to_schedule
+                            .iter()
+                            .map(|pp| pp.to_operator_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        num_avail_magic,
+                    )
+                    .red()
                 );
             }
             false
@@ -1218,8 +1222,20 @@ impl Scheduler {
         writeln!(buf_file, "# Parallelism: {:.2}", tot_products as f64 / max_lcycle as f64)?;
 
         let colors = [
-            _GREEN, _RED, _YELLOW, _BLUE, _MAGENTA, _CYAN, _WHITE, _LGREEN, _LRED, _LYELLOW,
-            _LBLUE, _LMAGENTA, _LCYAN, _LWHITE,
+            Color::Green,
+            Color::Red,
+            Color::Yellow,
+            Color::Blue,
+            Color::Magenta,
+            Color::Cyan,
+            Color::White,
+            Color::BrightGreen,
+            Color::BrightRed,
+            Color::BrightYellow,
+            Color::BrightBlue,
+            Color::BrightMagenta,
+            Color::BrightCyan,
+            Color::BrightWhite,
         ];
 
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
@@ -1236,14 +1252,14 @@ impl Scheduler {
                     .unwrap_or(u16::MAX)
             });
             let mut combined_chars = vec!['_'; self.input.circuit.num_qubits];
-            let mut combined_colors = vec![_RESET; self.input.circuit.num_qubits];
+            let mut combined_colors: Vec<Option<Color>> = vec![None; self.input.circuit.num_qubits];
             for (idx, &pp_id) in sorted_ids.iter().enumerate() {
                 let pp = self.input.circuit.get_product(pp_id);
                 let color = colors[idx % colors.len()];
                 for op in &pp.operators {
                     if op.qubit < self.input.circuit.num_qubits as u16 {
                         combined_chars[op.qubit as usize] = op.basis;
-                        combined_colors[op.qubit as usize] = color;
+                        combined_colors[op.qubit as usize] = Some(color);
                     }
                 }
                 if pp.gate_type.is_cx() {
@@ -1251,27 +1267,35 @@ impl Scheduler {
                         debug_sched!("  first lcycle of CX {} {}", pp_id, pp);
                         prev_cx.insert(pp_id);
                         let qubit = pp.operators[1].qubit;
-                        combined_colors[qubit as usize] = _RESET;
+                        combined_colors[qubit as usize] = None;
                         combined_chars[qubit as usize] = '_';
                     } else {
                         debug_sched!("  second lcycle of CX {} {}", pp_id, pp);
                         let qubit = pp.operators[0].qubit;
-                        combined_colors[qubit as usize] = _RESET;
+                        combined_colors[qubit as usize] = None;
                         combined_chars[qubit as usize] = '_';
                     }
                 }
             }
             write!(buf_file, "{:width$}: ", lcycle_i, width = max_width)?;
             for i in 0..self.input.circuit.num_qubits {
-                write!(buf_file, "{}{}", combined_colors[i], combined_chars[i])?;
+                let ch = combined_chars[i].to_string();
+                let colored_ch = match combined_colors[i] {
+                    Some(c) => ch.color(c).to_string(),
+                    None => ch,
+                };
+                write!(buf_file, "{}", colored_ch)?;
             }
             let mut id_string = String::new();
             for (idx, &pp_id) in sorted_ids.iter().enumerate() {
                 let pp = self.input.circuit.get_product(pp_id);
                 let color = colors[idx % colors.len()];
-                id_string.push_str(&format!(" {}{}<{:?}>", color, pp_id, pp.gate_type));
+                id_string.push_str(&format!(
+                    " {}",
+                    format!("{}<{:?}>", pp_id, pp.gate_type).color(color)
+                ));
             }
-            writeln!(buf_file, "{}{}", id_string, _RESET)?;
+            writeln!(buf_file, "{}", id_string)?;
         }
         println!("Scheduled products written to {}", output_fname);
         Ok(())
