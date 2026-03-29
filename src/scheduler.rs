@@ -23,17 +23,22 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::rc::Rc;
 
+/// Per-lcycle and cumulative qubit utilisation counters.
 pub(crate) struct ScheduleStats {
     data_qubits: usize,
     bus_qubits: usize,
     magic_qubits: usize,
+    /// Cumulative totals across all lcycles (reset only at construction).
     sum_data_scheduled: usize,
     sum_bus_scheduled: usize,
     sum_magic_scheduled: usize,
+    /// Per-lcycle counters; reset to 0 at the end of each `update()` call.
     bus_scheduled: usize,
     data_scheduled: usize,
     magic_scheduled: usize,
+    /// T products that consumed a magic node this lcycle (first attempt only).
     t_scheduled: usize,
+    /// Ready magic nodes used in any path this lcycle (routing or T-terminal).
     magic_ready_used: usize,
     sum_magic_unused: usize,
     plot_info_str: String,
@@ -88,6 +93,8 @@ impl ScheduleStats {
             if total_available == 0 { 1.0 } else { pp_paths_len as f64 / total_available as f64 };
         let frac_qubits =
             if total_qubits == 0 { 0.0 } else { tot_qubits_used as f64 / total_qubits as f64 };
+        // magic_denom = ready nodes that were available for T gates (excludes those
+        // consumed purely as routing intermediaries in magic-routing mode).
         let magic_ready_routing = self.magic_ready_used.saturating_sub(self.t_scheduled);
         let magic_denom = magic_ready.saturating_sub(magic_ready_routing);
         let frac_magic =
@@ -142,7 +149,8 @@ impl ScheduleStats {
     }
 }
 
-/// Read-only inputs: circuit definition and topology.
+/// Read-only inputs grouped so methods can borrow `input` and mutable state
+/// fields simultaneously without conflicting borrows.
 pub(crate) struct SchedulerInput {
     pub circuit: Circuit,
     pub topo: TopoGraph,
@@ -158,6 +166,7 @@ impl SchedulerInput {
     }
 }
 
+/// Assigns Pauli products to lcycles and routes them through the topology.
 pub(crate) struct Scheduler {
     pub(crate) input: SchedulerInput,
     rng_uniform: StdRng,
@@ -165,29 +174,40 @@ pub(crate) struct Scheduler {
     plot_option: String,
     pub(crate) cultivation: CultivationManager,
     pub(crate) stats: ScheduleStats,
+    /// (lcycle_index, product_ids) for every lcycle that scheduled at least one product.
     pub(crate) lcycle_scheduled: Vec<(usize, Vec<i32>)>,
     pub(crate) scheduled_products: IndexSet<i32>,
+    /// Per-node occupancy bitmap for the current lcycle; reset to all-false each lcycle.
     used: Vec<bool>,
+    /// In-progress multi-lcycle Clifford gates: maps product_id →
+    /// (remaining_lcycles, product, node_ids, opt_tree).
+    /// CX occupies 2 lcycles; S/SX occupy 3.
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
+    /// T gates that failed the 50% coin flip; held for one recovery lcycle.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     pub(crate) t_gate_failures: usize,
     pub(crate) stree_computation: SteinerTreeComputation,
     pub(crate) astar: AStarComputation,
     no_t_failures: bool,
+    /// Reusable scratch buffers to avoid per-lcycle allocations.
     terminals_scratch: Vec<u16>,
     scheduled_ids_scratch: Vec<i32>,
     children_scratch: Vec<i32>,
     precomputed_clifford_trees: HashMap<i32, Rc<TreeGraph>>,
     remaining_ids_scratch: Vec<i32>,
+    /// Indexed by product_id; built once before scheduling begins.
     precomputed_terminals: Vec<Vec<u16>>,
+    /// (is_y_paired, preferred_roots, side_roots) per terminal per product.
     precomputed_root_info: Vec<Vec<(bool, Vec<u16>, Vec<u16>)>>,
     timers: AccumTimers,
     loop_timer: usize,
     other_timer: usize,
     to_schedule: Vec<PauliProduct>,
+    /// Remaining unresolved parent count per product; decremented as parents complete.
     remaining_parents: Vec<usize>,
     pub(crate) pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)>,
     current_lcycle: usize,
+    /// T gate IDs that completed a recovery lcycle this cycle (populated by complete_lcycle).
     recovery_t_ids: Vec<i32>,
 }
 
@@ -253,6 +273,7 @@ impl Scheduler {
             .count()
     }
 
+    /// Greedily assigns products to lcycles. Returns (total lcycles, total scheduled products).
     pub(crate) fn schedule_circuit(&mut self) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
         self.cultivation
@@ -261,6 +282,7 @@ impl Scheduler {
         self.init_magic_nodes();
         let num_t_products = self.count_t_products();
         self.cultivation.t_products_remaining = num_t_products;
+        // Pre-generate a large pool: ~120 samples per T gate plus one per topology node.
         self.cultivation.fill_pool(120 * num_t_products.max(1) + self.input.topo.num_nodes);
         self.precompute_terminals_and_roots();
         self.precompute_multi_term_clifford_trees();
@@ -303,6 +325,8 @@ impl Scheduler {
             if self.schedule_lcycle(plotting) {
                 self.complete_lcycle()?;
                 let num_scheduled = self.scheduled_products.len();
+                // Show a progress bar during the non-plotting middle section of the run.
+                // The first `plot_lcycles` and last `plot_lcycles` are plotted instead.
                 if self.current_lcycle >= plot_lcycles
                     && (total_to_schedule - num_scheduled >= plot_lcycles)
                 {
@@ -311,6 +335,7 @@ impl Scheduler {
                     }
                     let perc_complete = (num_scheduled * 100) / total_to_schedule;
                     if perc_complete > prev_perc_complete {
+                        // \x08 is backspace; overwrite the previous "XX%" in-place.
                         print!("\x08\x08\x08{:02}%", perc_complete);
                         std::io::stdout().flush()?;
                         prev_perc_complete = perc_complete;
@@ -365,6 +390,8 @@ impl Scheduler {
                 }
             } else {
                 debug_sched!("Could not schedule anything on lcycle {}", self.current_lcycle);
+                // If nothing is cultivating, no magic state will ever become ready,
+                // so the layout is fundamentally unable to make progress.
                 if !(0..self.input.topo.num_nodes)
                     .any(|node_i| self.input.topo.is_cultivating(node_i as u16))
                 {
@@ -381,6 +408,8 @@ impl Scheduler {
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
+        // Return total lcycles and total "attempts" (successes + failures), so the
+        // caller can compute the true T-gate count including failed first attempts.
         Ok((self.current_lcycle, self.scheduled_products.len() + self.t_gate_failures))
     }
 
@@ -388,6 +417,8 @@ impl Scheduler {
         self.cultivation.init_magic_nodes(&mut self.input.topo);
     }
 
+    /// Multi-terminal non-T products have topology-independent routing trees that
+    /// can be computed once on an empty grid and reused every lcycle.
     fn should_precompute(pp: &PauliProduct) -> bool {
         !pp.gate_type.is_t() && pp.operators.len() > 1
     }
@@ -409,6 +440,10 @@ impl Scheduler {
         )
     }
 
+    /// Fills `terminals_scratch` from precomputed IDs.
+    /// Returns false early if any terminal data node is already occupied, or if
+    /// all root candidates for a terminal are occupied (fast pre-check before
+    /// the more expensive `get_root_nodes` call).
     #[inline]
     fn get_terminal_nodes(&mut self, pp_id: i32) -> bool {
         let pp_id = pp_id as usize;
@@ -432,6 +467,12 @@ impl Scheduler {
         true
     }
 
+    /// Returns routing nodes adjacent to each terminal.
+    ///
+    /// For Y-basis operators the X and Z data nodes are paired; a single routing
+    /// node between them (in the "preferred" direction) can serve both, so
+    /// `unmatched_count` is decremented by 2 when a paired root is found.
+    /// If no paired root is free, each terminal falls back to a side neighbor.
     fn get_root_nodes(&self, pp_id: usize, terminals: &[u16]) -> Vec<u16> {
         let root_info = &self.precomputed_root_info[pp_id];
         let mut root_ids: Vec<u16> = Vec::new();
@@ -447,6 +488,7 @@ impl Scheduler {
                     if !root_ids.contains(&nb_id) {
                         root_ids.push(nb_id);
                     }
+                    // One root serves both X and Z terminals of the Y pair.
                     unmatched_count = unmatched_count.saturating_sub(2);
                     pair_found = true;
                     break;
@@ -498,6 +540,13 @@ impl Scheduler {
         println!("Precomputed {} multi-term Clifford trees", num_precomputed);
     }
 
+    /// Precomputes terminal node IDs and root candidates for every product.
+    ///
+    /// For each terminal data node the root candidates are split into:
+    /// - `preferred`: the routing node between the X and Z patches of a Y-pair
+    ///   (X looks downward toward Z; Z looks upward toward X), or the same-row
+    ///   side neighbor for unpaired terminals.
+    /// - `side`: same-row side neighbors used as fallback for Y-paired terminals.
     fn precompute_terminals_and_roots(&mut self) {
         let _timer = fn_timer!("precompute_terminals_and_roots");
         let num_products = self.input.circuit.num_products();
@@ -510,11 +559,14 @@ impl Scheduler {
                 Vec::with_capacity(terminals.len());
             for &term_id in &terminals {
                 let node = self.input.topo.get_node(term_id);
+                // is_paired: this terminal's paired data node is also a terminal
+                // (i.e. the operator is Y-basis, producing both X and Z data nodes).
                 let is_paired =
                     node.paired_data_id.map(|pid| terminals.contains(&pid)).unwrap_or(false);
                 let mut preferred: Vec<u16> = Vec::new();
                 let mut side: Vec<u16> = Vec::new();
                 if is_paired {
+                    // X nodes look downward (toward paired Z), Z nodes look upward.
                     let is_x = self.input.topo.get_label(term_id).contains('X');
                     for &nb_id in node.nbors_slice() {
                         let nb = self.input.topo.get_node(nb_id);
@@ -528,6 +580,7 @@ impl Scheduler {
                         }
                     }
                 } else {
+                    // Unpaired terminal: only same-row side neighbors are valid roots.
                     for &nb_id in node.nbors_slice() {
                         let nb = self.input.topo.get_node(nb_id);
                         if nb.is_routing() && nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
@@ -554,6 +607,8 @@ impl Scheduler {
         }
     }
 
+    /// Reserves the nodes of an in-progress multi-lcycle product for this lcycle.
+    /// Called for both Clifford carry-forwards and failed-T recovery paths.
     fn carry_forward_path(
         &mut self, pp_id: i32, node_ids: &[u16], opt_tree: Option<Rc<TreeGraph>>,
     ) {
@@ -561,6 +616,7 @@ impl Scheduler {
         self.pp_paths.push((pp_id, opt_tree));
     }
 
+    /// Schedules as many products as possible in one lcycle; returns false if nothing scheduled.
     fn schedule_lcycle(&mut self, plotting: bool) -> bool {
         let _timer = accum_start!(self.timers);
         self.timers.start(self.other_timer);
@@ -568,6 +624,7 @@ impl Scheduler {
         let initial_magic = num_avail_magic;
         self.pp_paths.clear();
         self.used.fill(false);
+        // Collect carry-forward data before the loop to release borrows on the maps.
         let clifford_carry: Vec<(i32, Vec<u16>, Option<Rc<TreeGraph>>)> = self
             .clifford_paths
             .values()
@@ -632,13 +689,20 @@ impl Scheduler {
         num_avail_magic
     }
 
+    /// First pass: schedule products with precomputed Clifford trees.
+    /// Products whose tree nodes are all free are scheduled immediately.
+    /// Products whose data nodes are blocked mark those nodes as used to prevent
+    /// other products from routing through them this lcycle.
     fn schedule_precomputed(&mut self, plotting: bool) {
         let _timer = accum_start!(self.timers);
         self.remaining_ids_scratch.clear();
         self.remaining_ids_scratch.extend(self.to_schedule.iter().map(|pp| pp.id));
         let mut to_remove: Vec<i32> = Vec::new();
+        // Clone into a local Vec to release the borrow on `remaining_ids_scratch`
+        // before the loop body calls `&mut self` methods.
         let ids_to_process: Vec<i32> = self.remaining_ids_scratch.clone();
         for &pp_id in &ids_to_process {
+            // Clone the Rc to end the immutable borrow on `precomputed_clifford_trees`.
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Rc::clone) else {
                 continue;
             };
@@ -649,6 +713,7 @@ impl Scheduler {
                 let (_tree_num_nodes, _tree_num_edges) = (tree.num_nodes, tree.num_edges);
                 let opt_tree: Option<Rc<TreeGraph>> =
                     if plotting { Some(Rc::clone(&tree)) } else { None };
+                // Drop `tree` before the `&mut self` call to `mark_nodes_used`.
                 drop(tree);
                 self.mark_nodes_used(&node_ids);
                 info_sched!(
@@ -666,12 +731,17 @@ impl Scheduler {
         self.to_schedule.retain(|pp| !to_remove.contains(&pp.id));
     }
 
+    /// Marks the data nodes of a blocked product as used so that other products
+    /// cannot route through them this lcycle (takes separate params to avoid
+    /// borrow conflicts in caller loops).
     fn mark_blocked_product_as_used(used: &mut Vec<bool>, topo: &TopoGraph, pp: &PauliProduct) {
         for node_id in operators_to_node_ids(topo, &pp.operators) {
             used[node_id as usize] = true;
         }
     }
 
+    /// Second pass: greedily schedule T gates, measurements, and S/SX gates.
+    /// T gates are skipped when no magic state is available.
     fn schedule_remaining(&mut self, num_avail_magic: &mut usize, plotting: bool) {
         let _timer = accum_start!(self.timers);
         for i in 0..self.to_schedule.len() {
@@ -743,6 +813,9 @@ impl Scheduler {
         PathResult::PathFound(Some(g))
     }
 
+    /// Schedules an S or SX gate: data node plus one same-row ancilla neighbor.
+    /// S/SX require two adjacent nodes in the same row (the data qubit and its
+    /// horizontal routing neighbor).
     fn schedule_s_sx(&mut self, pp_id: i32, plotting: bool) -> PathResult {
         let node_id = self.terminals_scratch[0];
         let node = self.input.topo.get_node(node_id);
@@ -834,12 +907,16 @@ impl Scheduler {
         PathResult::NoPath
     }
 
+    /// Post-lcycle bookkeeping: remove scheduled products, unlock children,
+    /// advance Clifford state, and process T-gate coin-flip outcomes.
     fn complete_lcycle(&mut self) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
         self.scheduled_ids_scratch.clear();
         self.scheduled_ids_scratch.extend(self.pp_paths.iter().map(|(id, _)| *id));
         self.to_schedule.retain(|pp| !self.scheduled_ids_scratch.contains(&pp.id));
         debug_sched!("After purge, to_schedule len {}", self.to_schedule.len());
+        // Only count T gates that are newly scheduled (not recovery lcycles) to
+        // keep the pool-size estimate accurate.
         let t_newly_scheduled = self
             .pp_paths
             .iter()
@@ -881,6 +958,12 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Coin-flip T gate outcomes; updates `failed_t_paths`; returns (failed_ids, recovery_ids).
+    ///
+    /// First-attempt T gates succeed with 50% probability (or always if `no_t_failures`).
+    /// Recovery-lcycle T gates (already in `failed_t_paths`) always succeed.
+    /// Failed gates are stored in `failed_t_paths` with the magic root trimmed off
+    /// so the routing subtree can be reused in the recovery lcycle.
     fn process_t_gate_outcomes(&mut self) -> (Vec<i32>, Vec<i32>) {
         let mut t_failed_ids: Vec<i32> = Vec::new();
         let mut t_recovery_ids: Vec<i32> = Vec::new();
@@ -913,6 +996,9 @@ impl Scheduler {
                 continue;
             }
             if t_failed_ids.contains(&pp_id) {
+                // Store the routing subtree without the magic root so the recovery
+                // lcycle can reuse the same data/routing nodes while finding a new
+                // magic state.  When not plotting, fall back to just the terminal IDs.
                 let trimmed_opt_tree: Option<Rc<TreeGraph>> = opt_pp_path.as_ref().map(|tree| {
                     let mut t = (**tree).clone();
                     t.trim_magic_root();
@@ -931,6 +1017,8 @@ impl Scheduler {
         (t_failed_ids, t_recovery_ids)
     }
 
+    /// Decrements `remaining_parents` for each completed product and collects
+    /// newly-ready children into `children_scratch`.
     fn unlock_children(&mut self, t_failed_ids: &[i32]) {
         self.children_scratch.clear();
         for i in 0..self.pp_paths.len() {
@@ -939,10 +1027,14 @@ impl Scheduler {
             let gate_type = pp.gate_type;
             if gate_type.is_clifford() {
                 match self.clifford_paths.get(&pp_id) {
+                    // S/SX: count==2 means this is the second of three lcycles;
+                    // children are not unlocked until the third (final) lcycle.
                     Some((count, _, _, _)) if *count == 2 => {
                         debug_assert!(gate_type.is_s() || gate_type.is_sx());
                         continue;
                     }
+                    // count==1 (CX) or count==1 (S/SX final): fall through to unlock.
+                    // None means this is the first lcycle: children not yet unlocked.
                     None => continue,
                     _ => {}
                 }
@@ -962,6 +1054,11 @@ impl Scheduler {
         }
     }
 
+    /// Advances multi-lcycle Clifford state: decrements remaining-lcycle counters
+    /// and inserts new entries for first-seen Clifford products.
+    ///
+    /// CX requires 2 consecutive lcycles (initial count = 1, removed when it hits 0).
+    /// S/SX require 3 consecutive lcycles (initial count = 2).
     fn advance_clifford_state(&mut self) {
         let pp_path_data: Vec<(i32, Option<Rc<TreeGraph>>)> =
             self.pp_paths.iter().map(|(id, opt)| (*id, opt.as_ref().map(Rc::clone))).collect();
@@ -978,6 +1075,7 @@ impl Scheduler {
                     self.clifford_paths.swap_remove(&pp_id);
                 }
             } else {
+                // First lcycle for this Clifford: insert with remaining count.
                 let count = if gate_type.is_cx() { 1 } else { 2 };
                 let node_ids: Vec<u16> = if let Some(tree) = opt_pp_path {
                     tree.iter_nodes().collect()
@@ -1191,6 +1289,8 @@ impl Scheduler {
             Color::BrightWhite,
         ];
 
+        // prev_cx tracks CX products seen in the previous lcycle so we can
+        // suppress the second operator on the correct lcycle in the output.
         let mut prev_cx: IndexSet<i32> = IndexSet::new();
         for (lcycle_i, lcycle_ids) in &self.lcycle_scheduled {
             let mut sorted_ids = lcycle_ids.clone();
@@ -1216,6 +1316,8 @@ impl Scheduler {
                     }
                 }
                 if pp.gate_type.is_cx() {
+                    // CX spans 2 lcycles. On the first lcycle show only operator[0]
+                    // (the control); on the second show only operator[1] (the target).
                     if !prev_cx.swap_remove(&pp_id) {
                         debug_sched!("  first lcycle of CX {} {}", pp_id, pp);
                         prev_cx.insert(pp_id);
@@ -1259,6 +1361,9 @@ fn circuit_stem(fname: &str) -> &str {
     Path::new(fname).file_stem().and_then(|s| s.to_str()).unwrap_or("circuit")
 }
 
+/// Expands operators into data node IDs.
+/// Y-basis operators expand to two nodes (X patch + Z patch) because a Y
+/// measurement requires both the X and Z stabiliser data qubits.
 fn operators_to_node_ids(topo: &TopoGraph, operators: &[Operator]) -> Vec<u16> {
     let mut node_ids = Vec::with_capacity(operators.len());
     for op in operators {

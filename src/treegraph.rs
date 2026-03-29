@@ -35,10 +35,13 @@ impl TreeNode {
 }
 
 /// A sparse tree subgraph of the topology containing scheduled Pauli product routing.
+/// Only nodes that are part of the routing path are present (`Some`); all others are `None`.
+/// `root_node_id` is the magic cultivator node for T gates, or the first root for Cliffords.
 #[derive(Debug, Clone)]
 pub(crate) struct TreeGraph {
     nodes: Vec<Option<TreeNode>>,
     pub num_edges: usize,
+    /// Capacity (total topology nodes), not the count of nodes actually in the tree.
     pub num_nodes: usize,
     pub root_node_id: Option<u16>,
 }
@@ -82,7 +85,7 @@ impl TreeGraph {
     }
 
     pub(crate) fn add_node(&mut self, node: &Node, label: &str) {
-        assert!(self.nodes[node.id as usize].is_none());
+        assert!(self.nodes[node.id as usize].is_none(), "node {} already in tree", node.id);
         self.nodes[node.id as usize] = Some(TreeNode::new(node, label));
         self.num_nodes += 1;
         debug_sched!("      {}", format!("add node {}", label).blue());
@@ -191,6 +194,13 @@ impl TreeGraph {
         self.num_nodes -= 1;
     }
 
+    /// Resolves data nodes that ended up with two edges (one side, one vertical).
+    ///
+    /// This can happen during `init_bfs_from_roots` when two adjacent roots both
+    /// connect to the same terminal data node. The weaker edge is removed:
+    /// - If the vertical neighbor has only one below/above edge (to this data node),
+    ///   the vertical edge is removed (the routing node is not needed vertically).
+    /// - Otherwise the side edge is removed.
     pub(crate) fn remove_double_edges(&mut self) {
         let mut edges_to_remove: Vec<(u16, u16)> = Vec::new();
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
@@ -249,6 +259,8 @@ impl TreeGraph {
         }
     }
 
+    /// Counts vertical neighbors of `node` in one direction.
+    /// `upward=true` counts neighbors with higher y (above); `false` counts lower y (below).
     fn get_horizontal_edge_count(&self, node: &TreeNode, upward: bool) -> usize {
         node.nbors
             .iter()

@@ -5,6 +5,12 @@ use rand_simple::Exponential;
 
 /// Owns the magic-state cultivation pool, timing state, and magic node tracking
 /// for a [`crate::scheduler::Scheduler`].
+///
+/// Magic state cultivation is modelled as a stochastic process: each magic node
+/// is assigned a random cultivation time drawn from an exponential distribution
+/// with parameter `lambda`. The node becomes "ready" (cultivation_time = 0) after
+/// `busy_count` reaches `cultivation_time`. Once consumed by a T gate, a new
+/// cultivation time is drawn and the cycle restarts.
 pub(crate) struct CultivationManager {
     rng_exp: Exponential,
     cultivation_time_pool: Vec<i32>,
@@ -47,6 +53,9 @@ impl CultivationManager {
         self.pool_index = 0;
     }
 
+    /// Returns the next cultivation time from the pool, refilling if exhausted.
+    /// The pool is pre-generated to amortise RNG cost; refilling mid-run is a
+    /// fallback that should rarely occur if the initial pool was sized correctly.
     #[inline]
     pub(crate) fn draw(&mut self, num_topo_nodes: usize) -> i32 {
         if self.pool_index >= self.cultivation_time_pool.len() {
@@ -85,8 +94,12 @@ impl CultivationManager {
 
     /// Advances cultivation state for all magic nodes after an lcycle.
     /// Returns the number of available (ready) magic nodes.
+    ///
+    /// New cultivation times are drawn before the update loop to avoid
+    /// interleaving RNG calls with the state mutation.
     pub(crate) fn update_cultivators(&mut self, topo: &mut TopoGraph, used: &[bool]) -> usize {
         let num_topo_nodes = topo.num_nodes;
+        // Pre-draw new times for all used nodes before mutating topo state.
         self.new_cultivation_times.clear();
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
@@ -101,6 +114,7 @@ impl CultivationManager {
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
             if used[id as usize] {
+                // Node was consumed this lcycle: assign a fresh cultivation time.
                 topo.cultivation_times[id as usize] =
                     self.new_cultivation_times[cultivation_time_index];
                 topo.busy_counts[id as usize] = 0;
@@ -108,6 +122,7 @@ impl CultivationManager {
             } else if topo.is_cultivating(id) {
                 topo.busy_counts[id as usize] += 1;
                 if topo.busy_counts[id as usize] == topo.cultivation_times[id as usize] {
+                    // Cultivation complete: log the time and mark node as ready.
                     self.cultivation_times_log.push(topo.cultivation_times[id as usize]);
                     topo.cultivation_times[id as usize] = 0;
                     topo.busy_counts[id as usize] = 0;

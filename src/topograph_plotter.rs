@@ -116,6 +116,9 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
+    /// Returns a stable, visually distinct color for a product ID.
+    /// Uses the golden-ratio hue sequence to maximise perceptual separation
+    /// between consecutive product IDs.
     fn product_color(pp_id: i32) -> RGBAColor {
         const GOLDEN: f64 = 0.618_033_988_749_895;
         let hue = (pp_id as f64 * GOLDEN).fract().abs();
@@ -123,6 +126,9 @@ impl<'a> TopoGraphPlotter<'a> {
         RGBColor(r, g, b).to_rgba()
     }
 
+    /// Draws all node fills and routing node borders with no path coloring.
+    /// Magic nodes show: their label (no paths), nothing (in a path), remaining
+    /// cultivation lcycles (cultivating), or "T" (ready).
     fn draw_all_nodes_plain(
         &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
@@ -132,6 +138,7 @@ impl<'a> TopoGraphPlotter<'a> {
 
         for node in self.topo.iter_nodes() {
             let (x, y) = node.pos;
+            // Data nodes are narrower (hx=0.25) to show the X/Z pair side-by-side.
             let (hx, hy) =
                 if node.node_type == NodeType::Data { (0.25f32, 0.5f32) } else { (0.5f32, 0.5f32) };
 
@@ -154,13 +161,14 @@ impl<'a> TopoGraphPlotter<'a> {
                         if pauli_product_paths.is_empty() {
                             label.clone()
                         } else if path_node_ids.contains(&node.id) {
-                            String::new()
+                            String::new() // Covered by path overlay.
                         } else if self.topo.is_cultivating(node.id) {
+                            // Show remaining cultivation lcycles.
                             (self.topo.cultivation_times[node.id as usize]
                                 - self.topo.busy_counts[node.id as usize])
                                 .to_string()
                         } else {
-                            "T".to_string()
+                            "T".to_string() // Ready to use.
                         }
                     }
                     NodeType::Bus => {
@@ -617,6 +625,7 @@ fn draw_boxed_label(
     Ok(())
 }
 
+/// Converts HSV (hue ∈ [0,1), saturation, value) to RGB bytes.
 pub(crate) fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
     let c = v * s;
     let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());

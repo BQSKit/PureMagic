@@ -12,6 +12,7 @@ pub(crate) enum PathResult {
 }
 
 /// Number of buckets in the bucket-queue (Dial's algorithm).
+/// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 gives ample headroom.
 const BUCKET_COUNT: usize = 256;
 
 /// State container for A* pathfinding computations.
@@ -62,6 +63,7 @@ impl AStarComputation {
                 return None;
             }
             if let Some(node_id) = self.buckets[self.bucket_min].pop() {
+                // Lazy deletion: skip nodes already closed this epoch.
                 if self.closed_epoch[node_id as usize] != epoch {
                     return Some(node_id);
                 }
@@ -81,6 +83,8 @@ impl AStarComputation {
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> PathResult {
         self.num_calls += 1;
+        // Bump epoch to invalidate stale per-node state in O(1).
+        // On the rare u32 wrap-around, reset epoch arrays to restore the invariant.
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.epoch = 1;
@@ -94,6 +98,8 @@ impl AStarComputation {
         }
         self.bucket_min = 0;
 
+        // Seed the search from the first root; additional roots (Y-gate pairs) are
+        // stitched into the tree after the main path is found in finish_path.
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
         self.g_cost[root_id as usize] = 0;
@@ -101,6 +107,9 @@ impl AStarComputation {
         self.node_epoch[root_id as usize] = epoch;
         let (h, ready_idx) = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
         self.bucket_push(h, root_id);
+        // Pin the heuristic target to the nearest ready magic node at search start.
+        // Using a fixed target keeps the heuristic admissible even as other magic
+        // nodes become used during the search.
         let ready_pos = ready_magic_positions[ready_idx];
 
         while let Some(node_id) = self.bucket_pop(epoch) {
@@ -115,6 +124,8 @@ impl AStarComputation {
                 return self.finish_path(node_id, root_ids, terminal_ids, topo, used, plotting);
             }
 
+            // In bus-routing mode, magic nodes are only valid as the T-gate goal
+            // (cultivator), not as routing intermediaries.
             if !topo.use_magic_routing && node_type == NodeType::Magic {
                 continue;
             }
@@ -131,12 +142,15 @@ impl AStarComputation {
                 if nb_type == NodeType::Data {
                     continue;
                 }
+                // Early-exit: a ready magic neighbor is the optimal goal — no shorter
+                // path can exist since g+1 is the minimum reachable cost from here.
                 if nb_type == NodeType::Magic && nb_cultivation == 0 {
                     self.parent[nb_id as usize] = node_id;
                     self.node_epoch[nb_id as usize] = epoch;
                     return self.finish_path(nb_id, root_ids, terminal_ids, topo, used, plotting);
                 }
                 let new_g = g + 1;
+                // A stale slot (different epoch) has never been opened this search: treat as g = ∞.
                 let nb_g = if self.node_epoch[nb_id as usize] == epoch {
                     self.g_cost[nb_id as usize]
                 } else {
@@ -221,6 +235,8 @@ impl AStarComputation {
 
     /// Returns (distance, index) of the nearest ready magic node to `pos`.
     /// `ready_magic_positions` must be sorted by x-coordinate (ascending).
+    /// Binary-searches for the x-anchor then sweeps outward, pruning once the
+    /// x-gap alone exceeds the current best distance.
     fn heuristic(pos: (f32, f32), ready_magic_positions: &[(f32, f32)]) -> (u32, usize) {
         let anchor = ready_magic_positions.partition_point(|&(mx, _)| mx < pos.0);
 

@@ -12,8 +12,12 @@ use std::{
     path::Path,
 };
 
-/// Represents a quantum circuit as a DAG of Pauli products with dependency tracking.
-/// Layers are lazily computed and cached for efficient iteration.
+/// A quantum circuit as a DAG of Pauli products with dependency tracking.
+///
+/// Products are ordered by their circuit-file position; dependencies are derived
+/// from qubit overlap (the last product to touch a qubit becomes the parent of
+/// the next one on that qubit). Layers are lazily computed via topological sort
+/// and cached after the first call to avoid repeated recomputation.
 pub(crate) struct Circuit {
     pub(crate) products: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
@@ -32,6 +36,9 @@ impl Circuit {
         circuit
     }
 
+    /// Loads Pauli products from file, skipping X and Z gates.
+    /// X and Z are Pauli corrections that are tracked classically in the
+    /// Pauli frame and do not require physical operations on the layout.
     pub(crate) fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
@@ -427,6 +434,8 @@ impl Circuit {
         Ok(())
     }
 
+    /// Computes circuit layers using Kahn's topological sort (cached after first call).
+    /// Each layer contains all products whose parents have all been placed in earlier layers.
     fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
         if let Some(cached) = self.layers.borrow().as_ref() {
             return cached
