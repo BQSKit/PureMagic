@@ -7,8 +7,6 @@ use crate::treegraph::TreeGraph;
 use colored::Colorize;
 use std::collections::VecDeque;
 
-/// Returns true when `nb` is a valid magic-state cultivator for a T-gate:
-/// the gate must be a T, no cultivator has been found yet, and the node must be idle.
 #[inline]
 fn is_cultivator_candidate(
     gate_type: GateType, cultivator: Option<u16>, cultivation_time: i32,
@@ -17,7 +15,6 @@ fn is_cultivator_candidate(
 }
 
 /// State container for greedy multi-source shortest path (Steiner tree) computation.
-/// Tracks visited nodes, path connectivity, and early termination statistics.
 pub(crate) struct SteinerTreeComputation {
     num_nodes: usize,
     visited: Vec<Option<u16>>,
@@ -45,10 +42,7 @@ impl SteinerTreeComputation {
         self.queue.clear();
     }
 
-    /// Greedy multi-source shortest path computation connecting all root nodes.
-    /// Expands from roots using BFS to find paths between all root pairs while
-    /// identifying a magic node (for T gates) if available. Returns a tree with
-    /// data and routing nodes, or None if no valid path exists.
+    /// Greedy BFS connecting all root nodes; returns a routing tree or None.
     pub(crate) fn compute(
         &mut self, topo: &TopoGraph, used: &Vec<bool>, root_ids: &Vec<u16>,
         terminal_nodes: &Vec<u16>, gate_type: GateType,
@@ -105,11 +99,6 @@ impl SteinerTreeComputation {
         None
     }
 
-    /// Creates a new [`TreeGraph`], seeds the BFS queue with all root nodes, adds them
-    /// (and any directly adjacent terminal data nodes) to the tree, and returns
-    /// `(tree, cultivator)` where `cultivator` is the first ready magic node found
-    /// among the roots (or `None` if none is ready).
-    /// The returned tree has already had duplicate edges removed.
     fn init_bfs_from_roots(
         &mut self, root_ids: &[u16], terminal_nodes: &[u16], topo: &TopoGraph,
     ) -> (TreeGraph, Option<u16>) {
@@ -148,15 +137,7 @@ impl SteinerTreeComputation {
         (tree, cultivator)
     }
 
-    /// Attaches any terminal data nodes that are not yet in `tree` by finding a
-    /// same-row routing neighbor already in the tree.
-    ///
-    /// This is needed when `get_root_nodes` counts a terminal as handled via
-    /// saturation but the root it returned is not directly adjacent to that terminal
-    /// (e.g. Y-type gates where one root serves both X and Z patches but is only
-    /// adjacent to one of them). Only side routing nodes (same `pos.1`) are used to
-    /// avoid creating a lone vertical data edge, which would violate `check_edges`.
-    ///
+    /// Attaches terminal data nodes not yet in `tree` via a same-row routing neighbor.
     /// Returns `Some(())` on success, or `None` if any terminal cannot be connected.
     fn attach_missing_terminals(
         terminal_nodes: &[u16], topo: &TopoGraph, tree: &mut TreeGraph,
@@ -180,8 +161,6 @@ impl SteinerTreeComputation {
         Some(())
     }
 
-    /// Explores neighbors of the current node during BFS, tracking path connections
-    /// and merging root groups when paths connect. Updates tree with new edges.
     fn visit_neighbors(
         &mut self, node_id: u16, topo: &TopoGraph, used: &Vec<bool>, reqd_paths: usize,
         gate_type: GateType, starting_cultivator: Option<u16>, num_start_paths: usize,
@@ -204,9 +183,6 @@ impl SteinerTreeComputation {
             if nb.node_type == NodeType::Data {
                 continue;
             }
-            // When not using magic routing, magic nodes may only be used as cultivators
-            // (the T-gate goal), not as routing intermediaries. Skip magic neighbors that
-            // are not ready cultivator candidates.
             if !topo.use_magic_routing && nb.node_type == NodeType::Magic {
                 if !is_cultivator_candidate(
                     gate_type,
@@ -264,11 +240,6 @@ impl SteinerTreeComputation {
         (num_paths as usize, cultivator)
     }
 
-    /// Merges the path-connectivity groups of two roots that have just been connected
-    /// by an edge between `node_id` (belonging to `curr_root_id`) and `nb_id`
-    /// (belonging to `nb_root_id`). Updates `self.paths` so every root in the merged
-    /// group knows about all the others, adds the connecting edge to `tree`, and
-    /// returns the updated total path count.
     fn merge_root_groups(
         &mut self, curr_root_id: u16, nb_root_id: u16, num_start_paths: usize,
         #[cfg_attr(not(debug_assertions), allow(unused_variables))] reqd_paths: usize,
@@ -279,7 +250,6 @@ impl SteinerTreeComputation {
         let mut num_paths = num_start_paths;
         let curr_root_paths = &self.paths[curr_root_id as usize];
         if curr_root_paths.contains(&nb_root_id) {
-            // Groups already merged; nothing to do.
             return num_paths;
         }
         let nb_root_paths = self.paths[nb_root_id as usize].clone();
@@ -331,8 +301,6 @@ impl SteinerTreeComputation {
         num_paths
     }
 
-    /// Adds an unvisited routing (or cultivator magic) neighbor to the BFS tree and queue.
-    /// Returns `Some(nb_id)` if `nb_id` is a newly discovered cultivator, `None` otherwise.
     fn expand_new_neighbor(
         &mut self, node_id: u16, nb_id: u16, nb: &crate::node::Node, curr_root_id: u16,
         nb_is_cultivator: bool, cultivator: Option<u16>, topo: &TopoGraph, tree: &mut TreeGraph,
@@ -355,8 +323,6 @@ impl SteinerTreeComputation {
         None
     }
 
-    /// Validates tree structure in debug builds: ensures data nodes have exactly one edge,
-    /// edges are reciprocated, and routing nodes have matching top/bottom data edges.
     #[cfg(debug_assertions)]
     fn check_edges(&self, topo: &TopoGraph, tree: &TreeGraph) {
         for node_id in tree.iter_nodes() {
@@ -370,10 +336,6 @@ impl SteinerTreeComputation {
                 let n2n1 = tree.contains_edge(*nb_id, node_id);
                 assert_eq!(n1n2, n2n1);
             }
-            // Note: we intentionally do not assert that vertical data edge counts == 2 here.
-            // For Clifford gates this invariant held, but T-gates with non-Y operators can
-            // legitimately have a routing node with a single vertical data edge (e.g. only
-            // the X patch of a qubit is a terminal, not the Z patch).
         }
     }
 }
@@ -384,15 +346,11 @@ mod tests {
     use crate::node::{Node, NodeType};
     use crate::topograph::TopoGraph;
 
-    // ── SteinerTreeComputation::new ───────────────────────────────────────────
-
     #[test]
     fn new_initialises_with_zero_calls() {
         let stree = SteinerTreeComputation::new(10);
         assert_eq!(stree.num_calls, 0);
     }
-
-    // ── SteinerTreeComputation::clear ─────────────────────────────────────────
 
     #[test]
     fn clear_resets_state() {
@@ -404,12 +362,8 @@ mod tests {
         assert!(stree.visited.iter().all(|v| v.is_none()));
     }
 
-    // ── SteinerTreeComputation::compute — CX gate (two roots) ────────────────
-
     #[test]
     fn compute_cx_gate_finds_tree_between_two_data_qubits() {
-        // Use a pure magic topology so Magic nodes act as routing nodes.
-        // This avoids calling is_routing() on Bus nodes which asserts magic routing is on.
         Node::set_magic_routing(true);
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
@@ -417,11 +371,9 @@ mod tests {
         let num_nodes = topo.num_nodes;
         let used = vec![false; num_nodes];
 
-        // Get the X-basis data nodes for qubits 0 and 1.
         let root0 = topo.get_data_node_id(0, 'X');
         let root1 = topo.get_data_node_id(1, 'X');
 
-        // Find Magic routing neighbours of each root (safe to call is_routing() in magic mode).
         let roots: Vec<u16> = [root0, root1]
             .iter()
             .filter_map(|&did| {
@@ -434,7 +386,6 @@ mod tests {
             .collect();
 
         if roots.len() < 2 {
-            // Topology too small to have two distinct routing roots — skip.
             return;
         }
 
@@ -442,15 +393,11 @@ mod tests {
         let mut stree = SteinerTreeComputation::new(num_nodes);
         let result = stree.compute(&topo, &used, &roots, &terminals, GateType::CX);
         assert_eq!(stree.num_calls, 1);
-        // A valid tree should be found for adjacent qubits.
-        // (May be None if topology is too small, but we at least verify no panic.)
         let _ = result;
     }
 
     #[test]
     fn compute_increments_num_calls() {
-        // Use a pure magic topology so Magic nodes act as routing nodes.
-        // This avoids calling is_routing() on Bus nodes which asserts magic routing is on.
         Node::set_magic_routing(true);
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
@@ -458,7 +405,6 @@ mod tests {
         let num_nodes = topo.num_nodes;
         let used = vec![false; num_nodes];
         let root0 = topo.get_data_node_id(0, 'X');
-        // Find a Magic routing neighbour of root0.
         let roots: Vec<u16> = topo
             .get_node(root0)
             .nbors_slice()
@@ -479,16 +425,12 @@ mod tests {
         assert_eq!(stree.num_calls, 2);
     }
 
-    // ── SteinerTreeComputation::compute — T gate (needs magic cultivator) ─────
-
     #[test]
     fn compute_t_gate_returns_none_when_no_magic_ready() {
-        // Use magic routing topology but mark all magic nodes as cultivating.
         Node::set_magic_routing(true);
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
 
-        // Mark all magic nodes as cultivating.
         let magic_ids: Vec<u16> =
             topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
         for id in &magic_ids {
@@ -516,8 +458,7 @@ mod tests {
         let terminals = vec![root0];
         let mut stree = SteinerTreeComputation::new(num_nodes);
         let result = stree.compute(&topo, &used, &roots, &terminals, GateType::T);
-        // With no ready magic nodes, T gate should return None.
-        assert!(result.is_none(), "T gate with no ready magic should return None");
+        assert!(result.is_none());
     }
 
     #[test]
@@ -526,10 +467,8 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
 
-        // Ensure at least one magic node is ready (cultivation_time == 0).
         let magic_ids: Vec<u16> =
             topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
-        // Set all to cultivating first, then free the first one.
         for id in &magic_ids {
             topo.cultivation_times[*id as usize] = 5;
             topo.busy_counts[*id as usize] = 1;
@@ -559,8 +498,7 @@ mod tests {
         let terminals = vec![root0];
         let mut stree = SteinerTreeComputation::new(num_nodes);
         let result = stree.compute(&topo, &used, &roots, &terminals, GateType::T);
-        // With a ready magic node, T gate should find a tree.
-        assert!(result.is_some(), "T gate with a ready magic node should succeed");
+        assert!(result.is_some());
         if let Some(tree) = result {
             assert!(tree.root_node_id.is_some());
             let root_id = tree.root_node_id.unwrap();

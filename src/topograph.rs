@@ -13,16 +13,11 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// ── TopoGraph ─────────────────────────────────────────────────────────────────
-
-/// Represents the topological layout of a surface code quantum processor.
-/// Contains data, magic, and routing qubits arranged in a 2D grid.
-/// Supports both magic routing and bus routing architectures.
+/// Topological layout of a surface code quantum processor.
 pub(crate) struct TopoGraph {
     pub(crate) nodes: Vec<Node>,
     pub labels: Vec<String>,
     pub(crate) node_ids_from_labels: IndexMap<String, u16>,
-    // Fast lookup for data nodes: indexed by qubit number, [0] = X node id, [1] = Z node id
     pub(crate) data_node_ids: Vec<[u16; 2]>,
     pub(crate) node_grid: Vec<Vec<Option<String>>>,
     pub(crate) num_cols: usize,
@@ -39,16 +34,12 @@ pub(crate) struct TopoGraph {
     pub busy_counts: Vec<i32>,
     pub cultivation_times: Vec<i32>,
     pub sides_only: bool,
-    /// Cached data-qubit groups (X row + Z row pairs), built once after topology is set.
     pub(crate) data_groups: Vec<DataGroup>,
-    /// Cached map from data node id → index into `data_groups`, built once after topology is set.
     pub(crate) node_to_group: HashMap<u16, usize>,
-    /// Cached map from rounded (x*10, y*10) → data node id, built once after topology is set.
     pub(crate) data_pos_map: HashMap<(i32, i32), u16>,
 }
 
 impl TopoGraph {
-    /// Creates an empty topology graph.
     pub(crate) fn new() -> Self {
         TopoGraph {
             nodes: Vec::new(),
@@ -80,8 +71,6 @@ impl TopoGraph {
         &self.labels[id as usize]
     }
 
-    /// Initializes topology from file or generates a synthetic layout.
-    /// Sets up node metadata, qubit pairings, and edge connectivity.
     pub(crate) fn set_topo(
         &mut self, min_num_qubits: usize, circuit_fname: &String, topo_fname: &String, rseed: &u32,
         use_magic_routing: bool, ancilla_rows: usize, sides_only: bool,
@@ -126,7 +115,6 @@ impl TopoGraph {
                     self.node_ids_from_labels.get(&paired_node_label).copied();
             }
         }
-        // Build fast data-node lookup: label format is "d{qubit}{basis}" where basis is 'X' or 'Z'
         self.data_node_ids.clear();
         for node in &self.nodes {
             if node.node_type == NodeType::Data {
@@ -145,10 +133,7 @@ impl TopoGraph {
         self.build_cached_plot_data();
     }
 
-    /// Builds and caches the data-group list, node-to-group map, and data-position map.
-    /// Called once after topology construction; used by `plot()` to avoid repeated recomputation.
     pub(crate) fn build_cached_plot_data(&mut self) {
-        // Build data_pos_map: rounded (x*10, y*10) → node id for data nodes.
         self.data_pos_map = self
             .nodes
             .iter()
@@ -159,10 +144,7 @@ impl TopoGraph {
             })
             .collect();
 
-        // Build data_groups using the cached data_pos_map.
         self.data_groups = self.build_data_groups();
-
-        // Build node_to_group: data node id → index into data_groups.
         self.node_to_group.clear();
         for (gi, group) in self.data_groups.iter().enumerate() {
             self.node_to_group.insert(group.x_left_id, gi);
@@ -172,7 +154,6 @@ impl TopoGraph {
         }
     }
 
-    /// Builds the list of data-qubit groups (X row + Z row pairs).
     fn build_data_groups(&self) -> Vec<DataGroup> {
         let data_pos_map = &self.data_pos_map;
         let mut groups = Vec::new();
@@ -194,7 +175,6 @@ impl TopoGraph {
             let xi = (x * 10.0).round() as i32;
             let yi = (y * 10.0).round() as i32;
 
-            // Find the X-row partner (same y, x differs by 0.5 = 5 in *10 units).
             let partner_xi = if data_pos_map.contains_key(&(xi + 5, yi)) {
                 xi + 5
             } else if data_pos_map.contains_key(&(xi - 5, yi)) {
@@ -220,7 +200,6 @@ impl TopoGraph {
                 )
             };
 
-            // Find the Z-row partners (adjacent y, same x positions).
             let left_xi = xi.min(partner_xi);
             let right_xi = xi.max(partner_xi);
             let mut z_found = None;
@@ -261,7 +240,6 @@ impl TopoGraph {
         groups
     }
 
-    /// Recomputes qubit counts and builds fast data node lookup by qubit and basis.
     pub(crate) fn update_statistics(&mut self) {
         let mut data_count = 0;
         let mut magic_count = 0;
@@ -280,7 +258,6 @@ impl TopoGraph {
         self.num_qubits = self.num_data_qubits + self.num_bus_qubits + self.num_magic_qubits;
     }
 
-    /// Prints qubit type distribution to stdout.
     fn print_statistics(&mut self) {
         let total = self.num_qubits as f64;
         println!("Number of qubits:");
@@ -320,34 +297,28 @@ impl TopoGraph {
         self.num_edges += 1;
     }
 
-    /// Fast lookup of a data node by qubit number and basis (X or Z).
     pub(crate) fn get_data_node_id(&self, qubit: u16, basis: char) -> u16 {
         let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
         self.data_node_ids[qubit as usize][basis_idx]
     }
 
-    /// Returns true if this magic node is currently cultivating (in progress).
     pub(crate) fn is_cultivating(&self, node_id: u16) -> bool {
         self.cultivation_times[node_id as usize] > 0
             && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
     }
 
-    /// Returns the file stem of `circuit_fname` (e.g. `"foo"` from `"foo.trans"`).
     pub(crate) fn circuit_stem(&self) -> &str {
         Path::new(&self.circuit_fname).file_stem().and_then(|s| s.to_str()).unwrap_or("topo")
     }
 
-    /// Returns a reference to the cached data groups (for use by `TopoGraphPlotter`).
     pub(crate) fn data_groups(&self) -> &[DataGroup] {
         &self.data_groups
     }
 
-    /// Returns a reference to the node-to-group map (for use by `TopoGraphPlotter`).
     pub(crate) fn node_to_group(&self) -> &HashMap<u16, usize> {
         &self.node_to_group
     }
 
-    /// Writes topology grid to a text file
     pub(crate) fn print(&self) -> io::Result<()> {
         let topo_stem = self.circuit_stem();
         let output_fname = format!("{}.topo.txt", topo_stem);
@@ -375,7 +346,6 @@ impl TopoGraph {
         Ok(())
     }
 
-    /// Plots the topology with scheduled Pauli product paths highlighted.
     pub(crate) fn plot(
         &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         title_str: &str,
@@ -383,10 +353,6 @@ impl TopoGraph {
         TopoGraphPlotter::new(self).plot(fname_added, pauli_product_paths, title_str)
     }
 
-    // ── Topology construction ─────────────────────────────────────────────────
-
-    /// Loads topology from a file describing node labels and grid positions.
-    /// Supports randomized data node pairing for scheduling variation.
     fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
         use crate::fn_timer;
         let _timer = fn_timer!();
@@ -460,13 +426,11 @@ impl TopoGraph {
         Ok(())
     }
 
-    /// Returns the node type used for routing nodes based on the current routing mode.
     #[inline]
     fn routing_node_type(&self) -> NodeType {
         if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus }
     }
 
-    /// Generates a bus routing topology: data qubits with dedicated bus columns for routing.
     fn gen_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
@@ -509,7 +473,6 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
-    /// Generates a compact bus routing topology without separate bus columns.
     fn gen_compact_bus_routing_topo(&mut self, min_num_qubits: usize, sides_only: bool) {
         let sq_dim = (min_num_qubits as f64).sqrt().floor() as usize;
         let patch_rows = sq_dim / 2 + sq_dim % 2;
@@ -547,8 +510,6 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
-    /// Generates a pure magic topology: all non-data qubits are magic nodes.
-    /// `ancilla_rows` controls spacing between data qubit rows.
     pub(crate) fn gen_pure_magic_topo(
         &mut self, min_num_qubits: usize, ancilla_rows: usize, sides_only: bool,
     ) {
@@ -593,7 +554,6 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.num_cols, self.num_rows);
     }
 
-    /// Adds a pair of data qubits (X and Z basis) at the given position.
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
@@ -631,7 +591,6 @@ impl TopoGraph {
         self.num_nodes += 1;
     }
 
-    /// Creates and adds a single node (magic, bus, or data) at grid position (col, row).
     fn add_qubit(&mut self, col: usize, row: usize, node_type: NodeType) -> String {
         let ch = match node_type {
             NodeType::Magic => "m",
@@ -656,7 +615,6 @@ impl TopoGraph {
         label
     }
 
-    /// Adds magic/bus nodes along a border row.
     fn add_border_row(&mut self, row: usize) {
         let node_type = self.routing_node_type();
         self.node_grid[0][row] = Some(self.add_qubit(0, row, node_type));
@@ -667,7 +625,6 @@ impl TopoGraph {
         }
     }
 
-    /// Adds border nodes for compact bus topology (alternating magic/bus columns).
     fn add_border_row_compact(&mut self, row: usize) {
         for col in 0..self.num_cols {
             if col % 2 == 0 {
@@ -678,14 +635,12 @@ impl TopoGraph {
         }
     }
 
-    /// Adds magic nodes down a border column.
     fn add_border_column(&mut self, col: usize) {
         for row in 1..self.num_rows - 1 {
             self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Magic));
         }
     }
 
-    /// Establishes edges between adjacent nodes (4-connectivity with optional vertical data edges).
     fn set_edges(&mut self, sides_only: bool) {
         let mut edges_to_add = Vec::new();
         let mut vert_data_edges_to_add = Vec::new();
@@ -763,7 +718,6 @@ impl TopoGraph {
         }
     }
 
-    /// Parses the three parts of a combined double-data-qubit label like `"d0/1X"`.
     fn get_data_label_parts(label: &str) -> Option<(&str, &str, &str)> {
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
@@ -774,7 +728,6 @@ impl TopoGraph {
         Some((first_num, second_num, operator))
     }
 
-    /// Extracts the left or right side data node label from a double data qubit label.
     fn get_data_label_side_static(label: &str, left: bool) -> Option<String> {
         let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
         if left {
@@ -784,7 +737,6 @@ impl TopoGraph {
         }
     }
 
-    /// Extracts both left and right data node labels from a double data qubit label.
     fn get_data_labels_static(label: &str) -> Option<(String, String)> {
         let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
@@ -796,8 +748,6 @@ mod tests {
     use super::*;
     use crate::node::NodeType;
 
-    // ── TopoGraph::new ────────────────────────────────────────────────────────
-
     #[test]
     fn new_creates_empty_topology() {
         let topo = TopoGraph::new();
@@ -807,8 +757,6 @@ mod tests {
         assert_eq!(topo.num_magic_qubits, 0);
         assert_eq!(topo.num_bus_qubits, 0);
     }
-
-    // ── TopoGraph::gen_pure_magic_topo ────────────────────────────────────────
 
     #[test]
     fn gen_pure_magic_topo_has_enough_data_qubits() {
@@ -839,14 +787,12 @@ mod tests {
         );
     }
 
-    // ── TopoGraph::gen_compact_bus_routing_topo ───────────────────────────────
-
     #[test]
     fn compact_bus_topo_has_bus_qubits() {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
-        assert!(topo.num_bus_qubits > 0, "compact bus topo should have bus qubits");
-        assert!(!topo.use_magic_routing, "compact bus topo should have magic routing disabled");
+        assert!(topo.num_bus_qubits > 0);
+        assert!(!topo.use_magic_routing);
         crate::node::Node::set_magic_routing(true);
     }
 
@@ -858,8 +804,6 @@ mod tests {
         crate::node::Node::set_magic_routing(true);
     }
 
-    // ── TopoGraph::gen_bus_routing_topo ──────────────────────────────────────
-
     #[test]
     fn bus_routing_topo_has_bus_qubits() {
         let mut topo = TopoGraph::new();
@@ -868,8 +812,6 @@ mod tests {
         crate::node::Node::set_magic_routing(true);
     }
 
-    // ── TopoGraph::add_edge / get_node ────────────────────────────────────────
-
     #[test]
     fn add_edge_creates_bidirectional_connection() {
         let mut topo = TopoGraph::new();
@@ -877,7 +819,7 @@ mod tests {
         let magic_ids: Vec<u16> =
             topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
         let has_nbors = magic_ids.iter().any(|&id| !topo.get_node(id).nbors_slice().is_empty());
-        assert!(has_nbors, "magic nodes should have neighbours after topology generation");
+        assert!(has_nbors);
     }
 
     #[test]
@@ -897,22 +839,18 @@ mod tests {
         }
     }
 
-    // ── TopoGraph::get_data_node_id ───────────────────────────────────────────
-
     #[test]
     fn get_data_node_id_returns_valid_node() {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         let x_id = topo.get_data_node_id(0, 'X');
         let z_id = topo.get_data_node_id(0, 'Z');
-        assert_ne!(x_id, u16::MAX, "X data node for qubit 0 should exist");
-        assert_ne!(z_id, u16::MAX, "Z data node for qubit 0 should exist");
-        assert_ne!(x_id, z_id, "X and Z nodes should be different");
+        assert_ne!(x_id, u16::MAX);
+        assert_ne!(z_id, u16::MAX);
+        assert_ne!(x_id, z_id);
         assert_eq!(topo.get_node(x_id).node_type, NodeType::Data);
         assert_eq!(topo.get_node(z_id).node_type, NodeType::Data);
     }
-
-    // ── TopoGraph::is_cultivating ─────────────────────────────────────────────
 
     #[test]
     fn is_cultivating_false_when_cultivation_time_zero() {
@@ -947,8 +885,6 @@ mod tests {
         assert!(!topo.is_cultivating(magic_id));
     }
 
-    // ── TopoGraph::update_statistics ─────────────────────────────────────────
-
     #[test]
     fn update_statistics_keeps_counts_consistent() {
         let mut topo = TopoGraph::new();
@@ -962,15 +898,13 @@ mod tests {
         );
     }
 
-    // ── TopoGraph::get_label ──────────────────────────────────────────────────
-
     #[test]
     fn get_label_returns_non_empty_string() {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         for node in topo.iter_nodes() {
             let label = topo.get_label(node.id);
-            assert!(!label.is_empty(), "node {} should have a non-empty label", node.id);
+            assert!(!label.is_empty());
         }
     }
 
@@ -981,16 +915,10 @@ mod tests {
         for node in topo.iter_nodes() {
             if node.node_type == NodeType::Data {
                 let label = topo.get_label(node.id);
-                assert!(
-                    label.ends_with('X') || label.ends_with('Z'),
-                    "data node label '{}' should end with X or Z",
-                    label
-                );
+                assert!(label.ends_with('X') || label.ends_with('Z'));
             }
         }
     }
-
-    // ── hsv_to_rgb ────────────────────────────────────────────────────────────
 
     #[test]
     fn hsv_to_rgb_red() {
@@ -1016,15 +944,13 @@ mod tests {
         assert_eq!(b, 255);
     }
 
-    // ── TopoGraph::set_topo — generated topology ──────────────────────────────
-
     #[test]
     fn set_topo_generates_topology_for_small_circuit() {
         Node::set_magic_routing(false);
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"test".to_string(), &"".to_string(), &0, false, 0, false);
-        assert!(topo.num_nodes > 0, "topology should have nodes after set_topo");
-        assert!(topo.num_qubits > 0, "topology should have qubits after set_topo");
+        assert!(topo.num_nodes > 0);
+        assert!(topo.num_qubits > 0);
         Node::set_magic_routing(true);
     }
 
@@ -1034,7 +960,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
         let magic_count = topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).count();
-        assert!(magic_count > 0, "magic routing topology should have magic nodes");
+        assert!(magic_count > 0);
     }
 
     #[test]
@@ -1043,11 +969,9 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, false, 0, false);
         let bus_count = topo.iter_nodes().filter(|n| n.node_type == NodeType::Bus).count();
-        assert!(bus_count > 0, "bus routing topology should have bus nodes");
+        assert!(bus_count > 0);
         Node::set_magic_routing(true);
     }
-
-    // ── TopoGraph::gen_bus_routing_topo ───────────────────────────────────────
 
     #[test]
     fn bus_routing_topo_has_data_qubits() {
@@ -1055,11 +979,9 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"test".to_string(), &"".to_string(), &0, false, 0, false);
         let data_count = topo.iter_nodes().filter(|n| n.node_type == NodeType::Data).count();
-        assert!(data_count >= 4, "bus routing topo should have at least 4 data nodes for 4 qubits");
+        assert!(data_count >= 4);
         Node::set_magic_routing(true);
     }
-
-    // ── TopoGraph::update_statistics — data/bus/magic counts ─────────────────
 
     #[test]
     fn update_statistics_data_count_matches_data_nodes() {
@@ -1067,8 +989,6 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
         topo.update_statistics();
-        // num_data_qubits counts logical qubits (each qubit has an X and Z data node,
-        // so num_data_qubits = num_data_nodes / 2).
         let actual_data_nodes = topo.iter_nodes().filter(|n| n.node_type == NodeType::Data).count();
         assert_eq!(topo.num_data_qubits * 2, actual_data_nodes);
     }
@@ -1083,21 +1003,16 @@ mod tests {
         assert_eq!(topo.num_magic_qubits, actual_magic);
     }
 
-    // ── TopoGraph::get_node ───────────────────────────────────────────────────
-
     #[test]
     fn get_node_returns_correct_node() {
         Node::set_magic_routing(true);
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
-        // Every node returned by iter_nodes should be retrievable by get_node
         for node in topo.iter_nodes() {
             let fetched = topo.get_node(node.id);
             assert_eq!(fetched.id, node.id);
         }
     }
-
-    // ── TopoGraph: all nodes have valid positions ─────────────────────────────
 
     #[test]
     fn all_nodes_have_finite_positions() {
@@ -1105,18 +1020,16 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"test".to_string(), &"".to_string(), &0, true, 1, false);
         for node in topo.iter_nodes() {
-            assert!(node.pos.0.is_finite(), "node {} x position is not finite", node.id);
-            assert!(node.pos.1.is_finite(), "node {} y position is not finite", node.id);
+            assert!(node.pos.0.is_finite());
+            assert!(node.pos.1.is_finite());
         }
     }
-
-    // ── TopoGraph: circuit_stem ───────────────────────────────────────────────
 
     #[test]
     fn circuit_stem_returns_non_empty_string() {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"mytest.trans".to_string(), &"".to_string(), &0, false, 0, false);
         let stem = topo.circuit_stem();
-        assert!(!stem.is_empty(), "circuit_stem should return a non-empty string");
+        assert!(!stem.is_empty());
     }
 }
