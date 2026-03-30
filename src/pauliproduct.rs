@@ -2,7 +2,6 @@ use std::error::Error;
 use std::fmt;
 
 /// Quantum gate types in the circuit.
-/// T gates require magic state distillation; S/SX/CX are Cliffords and repeat multiple times.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum GateType {
     T,
@@ -15,42 +14,34 @@ pub(crate) enum GateType {
 }
 
 impl GateType {
-    /// Returns true if this is a T gate.
     pub(crate) fn is_t(&self) -> bool {
         matches!(self, GateType::T)
     }
 
-    /// Returns true if this is an S gate.
     pub(crate) fn is_s(&self) -> bool {
         matches!(self, GateType::S)
     }
 
-    /// Returns true if this is an SX gate.
     pub(crate) fn is_sx(&self) -> bool {
         matches!(self, GateType::SX)
     }
 
-    /// Returns true if this is a CX (CNOT) gate.
     pub(crate) fn is_cx(&self) -> bool {
         matches!(self, GateType::CX)
     }
 
-    /// Returns true if this is a measurement gate.
     pub(crate) fn is_m(&self) -> bool {
         matches!(self, GateType::M)
     }
 
-    /// Returns true if this is a Pauli X gate.
     pub(crate) fn is_x(&self) -> bool {
         matches!(self, GateType::X)
     }
 
-    /// Returns true if this is a Pauli Z gate.
     pub(crate) fn is_z(&self) -> bool {
         matches!(self, GateType::Z)
     }
 
-    /// Returns true if this is a Clifford gate (CX, S, or SX).
     pub(crate) fn is_clifford(&self) -> bool {
         self.is_cx() || self.is_s() || self.is_sx()
     }
@@ -62,7 +53,7 @@ impl fmt::Display for GateType {
     }
 }
 
-/// A single Pauli operator (X, Y, or Z) applied to a specific qubit.
+/// A Pauli operator applied to a specific qubit.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Operator {
     pub qubit: u16,
@@ -76,7 +67,10 @@ impl fmt::Display for Operator {
 }
 
 /// A quantum gate represented as a Pauli product with dependency tracking.
-/// Weight is the sum of operator costs (Y counts as 2, others as 1).
+///
+/// Each product has a list of `operators` (qubit + basis pairs), a `gate_type`,
+/// and DAG edges (`parents`/`children`) derived from qubit overlap in the circuit.
+/// `max_qubit` is cached to avoid repeated iteration when computing `n_qubits`.
 #[derive(Debug, Clone)]
 pub(crate) struct PauliProduct {
     pub operators: Vec<Operator>,
@@ -101,13 +95,11 @@ impl Default for PauliProduct {
 }
 
 impl PauliProduct {
-    /// Creates a new empty Pauli product.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Parses a circuit format string into this Pauli product.
-    /// Format: `[±][X/Y/Z operators][<gate_type>]` where _ denotes identity on a qubit.
+    /// Parses a circuit format string: `[±][X/Y/Z/_...][<gate_type>]`.
     pub(crate) fn set_from_str(&mut self, product_id: i32, s: &str) -> Result<(), Box<dyn Error>> {
         self.id = product_id;
 
@@ -155,13 +147,11 @@ impl PauliProduct {
         Ok(())
     }
 
-    /// Returns a string representation of the operators (without sign).
     pub(crate) fn to_operator_str(&self) -> String {
         let ops = self.operators.iter().map(|op| op.to_string()).collect::<String>();
         format!("{}<{:?}>", ops, self.gate_type)
     }
 
-    /// Returns sorted list of qubits on which this product operates.
     pub(crate) fn get_qubits(&self) -> Vec<u16> {
         self.operators.iter().map(|op| op.qubit).collect()
     }
@@ -181,8 +171,6 @@ impl fmt::Display for PauliProduct {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── GateType tests ────────────────────────────────────────────────────────
 
     #[test]
     fn gate_type_is_t() {
@@ -255,8 +243,6 @@ mod tests {
         assert_eq!(format!("{}", GateType::M), "M");
     }
 
-    // ── Operator tests ────────────────────────────────────────────────────────
-
     #[test]
     fn operator_display() {
         let op = Operator { qubit: 3, basis: 'X' };
@@ -269,8 +255,6 @@ mod tests {
         assert_eq!(format!("{}", op), "0Z");
     }
 
-    // ── PauliProduct::new / default ───────────────────────────────────────────
-
     #[test]
     fn pauli_product_new_defaults() {
         let pp = PauliProduct::new();
@@ -281,8 +265,6 @@ mod tests {
         assert_eq!(pp.max_qubit, 0);
         assert!(pp.gate_type.is_t());
     }
-
-    // ── PauliProduct::set_from_str ────────────────────────────────────────────
 
     #[test]
     fn set_from_str_t_gate_single_x() {
@@ -331,7 +313,7 @@ mod tests {
     fn set_from_str_sdg_gate() {
         let mut pp = PauliProduct::new();
         pp.set_from_str(4, "+_Z<Sdg>").unwrap();
-        assert!(pp.gate_type.is_s(), "Sdg should map to S gate type");
+        assert!(pp.gate_type.is_s());
     }
 
     #[test]
@@ -345,7 +327,7 @@ mod tests {
     fn set_from_str_sxdg_gate() {
         let mut pp = PauliProduct::new();
         pp.set_from_str(6, "+X_<SXdg>").unwrap();
-        assert!(pp.gate_type.is_sx(), "SXdg should map to SX gate type");
+        assert!(pp.gate_type.is_sx());
     }
 
     #[test]
@@ -392,8 +374,6 @@ mod tests {
         assert_eq!(pp.max_qubit, 7);
     }
 
-    // ── PauliProduct::get_qubits ──────────────────────────────────────────────
-
     #[test]
     fn get_qubits_returns_all_qubit_indices() {
         let mut pp = PauliProduct::new();
@@ -408,8 +388,6 @@ mod tests {
         assert!(pp.get_qubits().is_empty());
     }
 
-    // ── PauliProduct::to_operator_str ─────────────────────────────────────────
-
     #[test]
     fn to_operator_str_format() {
         let mut pp = PauliProduct::new();
@@ -419,8 +397,6 @@ mod tests {
         assert!(s.contains("T"), "should contain gate type");
     }
 
-    // ── PauliProduct Display ──────────────────────────────────────────────────
-
     #[test]
     fn pauli_product_display_contains_id_and_gate() {
         let mut pp = PauliProduct::new();
@@ -428,5 +404,70 @@ mod tests {
         let s = format!("{}", pp);
         assert!(s.contains("42"));
         assert!(s.contains("M"));
+    }
+
+    #[test]
+    fn to_operator_str_no_operators_shows_gate_type() {
+        let pp = PauliProduct::new();
+        let s = pp.to_operator_str();
+        assert!(s.contains("T"));
+    }
+
+    #[test]
+    fn set_from_str_h_gate_returns_error() {
+        let mut pp = PauliProduct::new();
+        let result = pp.set_from_str(0, "+X_<H>");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_from_str_tdg_gate_returns_error() {
+        let mut pp = PauliProduct::new();
+        let result = pp.set_from_str(0, "+X_<Tdg>");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_from_str_sdg_maps_to_s() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+X_<Sdg>").unwrap();
+        assert!(pp.gate_type.is_s());
+        assert!(pp.gate_type.is_clifford());
+    }
+
+    #[test]
+    fn set_from_str_sxdg_maps_to_sx() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+X_<SXdg>").unwrap();
+        assert!(pp.gate_type.is_sx());
+        assert!(pp.gate_type.is_clifford());
+    }
+
+    #[test]
+    fn gate_type_is_clifford_covers_all_variants() {
+        assert!(GateType::S.is_clifford());
+        assert!(GateType::SX.is_clifford());
+        assert!(GateType::CX.is_clifford());
+        assert!(!GateType::T.is_clifford());
+        assert!(!GateType::M.is_clifford());
+        assert!(!GateType::Z.is_clifford());
+        assert!(!GateType::X.is_clifford());
+    }
+
+    #[test]
+    fn get_qubits_multi_operator() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+XZ<CX>").unwrap();
+        let qubits = pp.get_qubits();
+        assert_eq!(qubits.len(), 2);
+        assert!(qubits.contains(&0));
+        assert!(qubits.contains(&1));
+    }
+
+    #[test]
+    fn max_qubit_set_correctly_for_multi_operator() {
+        let mut pp = PauliProduct::new();
+        pp.set_from_str(0, "+__X<T>").unwrap();
+        assert_eq!(pp.max_qubit, 2);
     }
 }

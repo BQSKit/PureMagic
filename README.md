@@ -1,6 +1,6 @@
 # PureMagic
 
-A **Lattice Surgery Scheduling Problem (LSSP) solver** for quantum surface code topologies. PureMagic schedules transpiled quantum circuits onto an abstract physical hardware layer, minimizing execution time by exploiting parallelism through Steiner tree packing.
+A dynamic lactice surgery scheduler for quantum surface code topologies. PureMagic schedules transpiled quantum circuits onto an abstract physical hardware layer, minimizing execution time by exploiting parallelism through Steiner tree packing. It dynamically simulates the execution of the circuit, including magic state cultivation and T gate injection failures.
 
 The original Lattice Surgery Scheduling problem is described in the paper [Game of Surface Codes](https://arxiv.org/abs/1808.02892).
 
@@ -18,7 +18,12 @@ Requires Rust (stable). Build with:
 cargo build --release
 ```
 
-The binary is placed at `target/release/puremagic`.
+This produces two binaries:
+
+| Binary | Path | Description |
+|--------|------|-------------|
+| `puremagic` | `target/release/puremagic` | Lattice surgery scheduler |
+| `transpile` | `target/release/transpile` | Clifford+T QASM → `.trans` transpiler |
 
 ## Usage
 
@@ -80,21 +85,32 @@ Each line encodes a Pauli product with a sign (`+`/`-`), per-qubit operators (`_
 <X>     X Pauli gate
 ```
 
-Files in this format can be obtained by using Tableau in the `tableau` submodule directory, for example running:
+Files in this format are produced by the `transpile` binary. The full pipeline from a raw QASM circuit to a scheduled output is:
 
+### Step 1 — Compile to Clifford+T (Python, optional)
+
+If your circuit is not already in the Clifford+T gate set, compile it first using [`src/compile_circuit.py`](src/compile_circuit.py):
+
+```bash
+# Install Python dependencies once
+pip install -r requirements.txt
+
+python src/compile_circuit.py -i circuit.qasm
 ```
-python transpile_circuit.py -i circuit.qasm
+
+This produces `circuit.cliffordt.qasm` using [BQSKit](https://bqskit.readthedocs.io/).
+
+### Step 2 — Transpile to `.trans` format (Rust)
+
+Convert the Clifford+T QASM file to the Pauli product `.trans` format using the `transpile` binary:
+
+```bash
+./target/release/transpile -i circuit.cliffordt.qasm
 ```
 
-will produce a file `circuit.trans` which is in the correct input format for `puremagic`.
+This produces `circuit.trans`, which is the correct input format for `puremagic`.
 
-Consult the `README.md` in the `tableau` directory for usage details.
-
-After cloning the PureMagic repository, make sure to checkout the tableau submodule with
-
-```
-git submodule update --init
-```
+Run `./target/release/transpile --help` to see all options, including `--max_width` to limit Pauli product weight.
 
 ## Output Files
 
@@ -130,15 +146,15 @@ If no topology file is provided, one is auto-generated based on the circuit's qu
 
 ```
 src/
-├── puremagic.rs       # CLI entry point and argument parsing
-├── scheduler.rs       # Core EAF scheduling algorithm
-├── astar.rs           # A* pathfinding (single-qubit T gate routing)
-├── steinertree.rs     # Steiner tree computation (greedy multi-source BFS)
-├── treegraph.rs       # Tree graph structure for scheduled operation paths
-├── circuit.rs         # Circuit DAG: products, layers, dependencies
-├── pauliproduct.rs    # Pauli product operations and gate types
-├── topograph.rs       # Topology graph: nodes, grid layout, qubit types
-├── node.rs            # Node type definitions (Magic, Bus, Data)
-└── utils.rs           # Timing utilities and logging macros
+├── puremagic.rs        # CLI entry point and argument parsing (puremagic binary)
+├── transpile.rs        # CLI entry point for transpiler (transpile binary)
+├── tableau.rs          # Clifford tableau simulation used by transpile
+├── compile_circuit.py  # Python script: compile QASM → Clifford+T QASM (uses BQSKit)
+├── scheduler.rs        # Core EAF scheduling algorithm
+├── astar.rs            # A* pathfinding (single-qubit T gate routing)
+├── steinertree.rs      # Steiner tree computation (greedy multi-source BFS)
+├── circuit.rs          # Circuit DAG: products, layers, dependencies
+├── pauliproduct.rs     # Pauli product operations and gate types
+├── node.rs             # Node type definitions (Magic, Bus, Data)
+└── utils.rs            # Timing utilities and logging macros
 ```
-xs

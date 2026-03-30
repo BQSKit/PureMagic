@@ -1,9 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Classification of nodes in the topological graph.
-/// - `Magic`: nodes for magic state distillation/cultivation
-/// - `Bus`: routing nodes (when not using magic routing)
-/// - `Data`: logical data qubits
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum NodeType {
     Magic,
@@ -11,59 +8,58 @@ pub(crate) enum NodeType {
     Data,
 }
 
-/// Maximum number of neighbours a node can have.
-/// Interior grid nodes have at most 4 (up/down/left/right).
-/// Bus nodes can additionally connect to 2 data nodes = 6 total.
-pub(crate) const MAX_NBORS: usize = 6;
+/// Maximum number of neighbours a node can have (4 grid + 2 data = 6).
+pub(crate) const MAX_NBS: usize = 6;
 
-/// Represents a node in the topological graph.
-/// Contains metadata about node type, position, magic state cultivation tracking, and connectivity.
-/// `nbors` is stored as a fixed-size inline array to avoid heap allocation and pointer chasing
-/// in the A* inner loop.
+/// A node in the topological graph.
+/// `nbs` is a fixed-size inline array to avoid heap allocation in the A* inner loop.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node {
     pub node_type: NodeType,
     pub id: u16,
     pub paired_data_id: Option<u16>,
     pub pos: (f32, f32),
-    /// Inline neighbour list; valid entries are `nbors[0..num_nbors]`.
-    pub nbors: [u16; MAX_NBORS],
-    /// Number of valid entries in `nbors`.
-    pub num_nbors: u8,
+    pub nbs: [u16; MAX_NBS],
+    pub n_nbs: u8,
 }
 
+/// Global flag controlling whether magic nodes act as routing intermediaries.
+/// Set once at startup via `Node::set_magic_routing`; read on every A* expansion.
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
 
 impl Node {
-    pub(crate) fn new(id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType) -> Self {
-        Node { node_type, id, paired_data_id, pos: (x, y), nbors: [0u16; MAX_NBORS], num_nbors: 0 }
+    pub(crate) fn new(
+        id: u16, paired_data_id: Option<u16>, x: f32, y: f32, node_type: NodeType,
+    ) -> Self {
+        Node { node_type, id, paired_data_id, pos: (x, y), nbs: [0u16; MAX_NBS], n_nbs: 0 }
     }
 
     pub(crate) fn set_magic_routing(enabled: bool) {
         USE_MAGIC_ROUTING.store(enabled, Ordering::Relaxed);
     }
 
-    /// Adds a neighbour to this node's connectivity list.
-    /// Panics in debug mode if `MAX_NBORS` is exceeded.
-    pub(crate) fn add_neighbor(&mut self, other: u16) {
-        if self.nbors_slice().contains(&other) {
+    pub(crate) fn add_nb(&mut self, other: u16) {
+        if self.nbs_slice().contains(&other) {
             return;
         }
         debug_assert!(
-            (self.num_nbors as usize) < MAX_NBORS,
-            "Node {} exceeded MAX_NBORS={} neighbours",
+            (self.n_nbs as usize) < MAX_NBS,
+            "Node {} exceeded MAX_NBS={} neighbours",
             self.id,
-            MAX_NBORS
+            MAX_NBS
         );
-        self.nbors[self.num_nbors as usize] = other;
-        self.num_nbors += 1;
+        self.nbs[self.n_nbs as usize] = other;
+        self.n_nbs += 1;
     }
 
     #[inline(always)]
-    pub(crate) fn nbors_slice(&self) -> &[u16] {
-        &self.nbors[..self.num_nbors as usize]
+    pub(crate) fn nbs_slice(&self) -> &[u16] {
+        &self.nbs[..self.n_nbs as usize]
     }
 
+    /// Returns true if this node is a valid routing intermediary in the current mode.
+    /// In magic-routing mode only Magic nodes route; Bus nodes must not exist.
+    /// In bus-routing mode only Bus nodes route.
     pub(crate) fn is_routing(&self) -> bool {
         if USE_MAGIC_ROUTING.load(Ordering::Relaxed) {
             assert_ne!(self.node_type, NodeType::Bus);
@@ -78,8 +74,6 @@ impl Node {
 mod tests {
     use super::*;
 
-    // ── NodeType tests ────────────────────────────────────────────────────────
-
     #[test]
     fn node_type_equality() {
         assert_eq!(NodeType::Magic, NodeType::Magic);
@@ -93,13 +87,11 @@ mod tests {
     #[test]
     fn node_type_clone_and_copy() {
         let t = NodeType::Magic;
-        let t2 = t; // Copy
-        let t3 = t.clone(); // Clone
+        let t2 = t;
+        let t3 = t.clone();
         assert_eq!(t, t2);
         assert_eq!(t, t3);
     }
-
-    // ── Node::new ─────────────────────────────────────────────────────────────
 
     #[test]
     fn node_new_magic() {
@@ -108,7 +100,7 @@ mod tests {
         assert_eq!(node.node_type, NodeType::Magic);
         assert_eq!(node.pos, (1.0, 2.0));
         assert!(node.paired_data_id.is_none());
-        assert_eq!(node.num_nbors, 0);
+        assert_eq!(node.n_nbs, 0);
     }
 
     #[test]
@@ -125,55 +117,49 @@ mod tests {
         assert_eq!(node.node_type, NodeType::Bus);
     }
 
-    // ── Node::add_neighbor ────────────────────────────────────────────────────
-
     #[test]
-    fn add_neighbor_increases_count() {
+    fn add_nb_increases_count() {
         let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
-        assert_eq!(node.num_nbors, 0);
-        node.add_neighbor(1);
-        assert_eq!(node.num_nbors, 1);
-        node.add_neighbor(2);
-        assert_eq!(node.num_nbors, 2);
+        assert_eq!(node.n_nbs, 0);
+        node.add_nb(1);
+        assert_eq!(node.n_nbs, 1);
+        node.add_nb(2);
+        assert_eq!(node.n_nbs, 2);
     }
 
     #[test]
-    fn add_neighbor_no_duplicates() {
+    fn add_nb_no_duplicates() {
         let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
-        node.add_neighbor(1);
-        node.add_neighbor(1); // duplicate — should be ignored
-        assert_eq!(node.num_nbors, 1);
+        node.add_nb(1);
+        node.add_nb(1);
+        assert_eq!(node.n_nbs, 1);
     }
 
     #[test]
-    fn add_neighbor_up_to_max() {
+    fn add_nb_up_to_max() {
         let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
-        for i in 1..=(MAX_NBORS as u16) {
-            node.add_neighbor(i);
+        for i in 1..=(MAX_NBS as u16) {
+            node.add_nb(i);
         }
-        assert_eq!(node.num_nbors as usize, MAX_NBORS);
+        assert_eq!(node.n_nbs as usize, MAX_NBS);
     }
 
-    // ── Node::nbors_slice ─────────────────────────────────────────────────────
-
     #[test]
-    fn nbors_slice_empty_initially() {
+    fn nbs_slice_empty_initially() {
         let node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
-        assert!(node.nbors_slice().is_empty());
+        assert!(node.nbs_slice().is_empty());
     }
 
     #[test]
-    fn nbors_slice_contains_added_neighbors() {
+    fn nbs_slice_contains_added_nbs() {
         let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
-        node.add_neighbor(10);
-        node.add_neighbor(20);
-        let slice = node.nbors_slice();
+        node.add_nb(10);
+        node.add_nb(20);
+        let slice = node.nbs_slice();
         assert_eq!(slice.len(), 2);
         assert!(slice.contains(&10));
         assert!(slice.contains(&20));
     }
-
-    // ── Node::is_routing ─────────────────────────────────────────────────────
 
     #[test]
     fn is_routing_magic_when_magic_routing_enabled() {
@@ -194,8 +180,6 @@ mod tests {
         Node::set_magic_routing(true);
     }
 
-    // ── Node::set_magic_routing ───────────────────────────────────────────────
-
     #[test]
     fn set_magic_routing_toggles_global_flag() {
         Node::set_magic_routing(true);
@@ -209,10 +193,43 @@ mod tests {
         Node::set_magic_routing(true);
     }
 
-    // ── MAX_NBORS constant ────────────────────────────────────────────────────
+    #[test]
+    fn node_new_data_without_pair() {
+        let node = Node::new(9, None, 3.0, 4.0, NodeType::Data);
+        assert_eq!(node.id, 9);
+        assert_eq!(node.node_type, NodeType::Data);
+        assert!(node.paired_data_id.is_none());
+        assert_eq!(node.pos, (3.0, 4.0));
+    }
 
     #[test]
-    fn max_nbors_is_six() {
-        assert_eq!(MAX_NBORS, 6);
+    #[cfg(not(debug_assertions))]
+    fn add_nb_beyond_max_is_noop_in_release() {
+        let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
+        for i in 1..=(MAX_NBS as u16 + 2) {
+            node.add_nb(i);
+        }
+        assert!(node.n_nbs as usize <= MAX_NBS);
+    }
+
+    #[test]
+    fn is_routing_bus_node_when_magic_routing_disabled() {
+        Node::set_magic_routing(false);
+        let bus = Node::new(0, None, 0.0, 0.0, NodeType::Bus);
+        assert!(bus.is_routing());
+        Node::set_magic_routing(true);
+    }
+
+    #[test]
+    fn is_routing_magic_when_magic_routing_disabled() {
+        Node::set_magic_routing(false);
+        let magic = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
+        assert!(!magic.is_routing());
+        Node::set_magic_routing(true);
+    }
+
+    #[test]
+    fn max_nbs_is_six() {
+        assert_eq!(MAX_NBS, 6);
     }
 }
