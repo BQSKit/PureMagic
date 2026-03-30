@@ -22,7 +22,7 @@ pub(crate) struct Circuit {
     pub(crate) pps: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
     pub(crate) circuit_fname: String,
-    pub(crate) num_qubits: usize,
+    pub(crate) n_qubits: usize,
 }
 
 impl Circuit {
@@ -30,7 +30,7 @@ impl Circuit {
         Circuit {
             pps: Vec::new(),
             circuit_fname: fname.to_string(),
-            num_qubits: 0,
+            n_qubits: 0,
             layers: RefCell::new(None),
         }
     }
@@ -56,9 +56,9 @@ impl Circuit {
             self.pps.push(product);
             product_id += 1;
         }
-        self.num_qubits = self.pps.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
+        self.n_qubits = self.pps.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
 
-        println!("Loaded circuit with {} products and {} qubits", self.pps.len(), self.num_qubits);
+        println!("Loaded circuit with {} products and {} qubits", self.pps.len(), self.n_qubits);
 
         self.gen_deps();
         Ok(())
@@ -66,7 +66,7 @@ impl Circuit {
 
     pub(crate) fn gen_deps(&mut self) {
         let mut deps = Vec::new();
-        let mut current_pps = vec![-1; self.num_qubits];
+        let mut current_pps = vec![-1; self.n_qubits];
 
         for pp in self.pps.iter() {
             for op in &pp.operators {
@@ -91,7 +91,7 @@ impl Circuit {
         &self.pps[id as usize]
     }
 
-    pub(crate) fn num_products(&self) -> usize {
+    pub(crate) fn n_products(&self) -> usize {
         self.pps.len()
     }
 
@@ -114,7 +114,7 @@ impl Circuit {
                 &plot_fname,
                 (
                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
-                    (self.num_qubits as f32 * 0.22 * 100.0) as u32,
+                    (self.n_qubits as f32 * 0.22 * 100.0) as u32,
                 ),
             )
             .into_drawing_area();
@@ -126,13 +126,13 @@ impl Circuit {
                 .set_label_area_size(LabelAreaPosition::Bottom, 40)
                 .build_cartesian_2d(
                     chunk_start as f32..chunk_end as f32,
-                    ((self.num_qubits - 1) as f32 + 0.5)..(-0.5f32),
+                    ((self.n_qubits - 1) as f32 + 0.5)..(-0.5f32),
                 )?;
             chart
                 .configure_mesh()
                 .x_labels(chunk_layers / 5)
                 .x_label_formatter(&|x| format!("{}", x))
-                .y_labels((self.num_qubits + 1) as usize)
+                .y_labels((self.n_qubits + 1) as usize)
                 .y_label_formatter(&|y| format!("{}", y))
                 .x_desc("Layers")
                 .y_desc("Qubit Number")
@@ -233,7 +233,7 @@ impl Circuit {
             .margin(60)
             .set_label_area_size(LabelAreaPosition::Left, 100)
             .set_label_area_size(LabelAreaPosition::Bottom, 100)
-            .build_cartesian_2d(0..layers.len(), 0.0f64..self.num_qubits as f64)?;
+            .build_cartesian_2d(0..layers.len(), 0.0f64..self.n_qubits as f64)?;
         chart
             .configure_mesh()
             .x_labels(20)
@@ -349,11 +349,11 @@ impl Circuit {
 
         for (i, &y_value) in data.iter().enumerate() {
             assert!(
-                y_value <= self.num_qubits as f64,
-                "Y value {} at index {} exceeds num_qubits {} for metric '{}'",
+                y_value <= self.n_qubits as f64,
+                "Y value {} at index {} exceeds n_qubits {} for metric '{}'",
                 y_value,
                 i,
-                self.num_qubits,
+                self.n_qubits,
                 label
             );
         }
@@ -372,10 +372,10 @@ impl Circuit {
 
     pub(crate) fn count_t_stats(&self) -> (usize, usize) {
         let layers = self.layers();
-        let num_t_gates = self.pps.iter().filter(|pp| pp.gate_type.is_t()).count();
-        let num_t_layers =
+        let n_t_gates = self.pps.iter().filter(|pp| pp.gate_type.is_t()).count();
+        let n_t_layers =
             layers.iter().filter(|layer| layer.iter().any(|pp| pp.gate_type.is_t())).count();
-        (num_t_gates, num_t_layers)
+        (n_t_gates, n_t_layers)
     }
 
     pub(crate) fn print_statistics(&self) -> usize {
@@ -524,7 +524,7 @@ impl Circuit {
     }
 
     fn build_coupling_matrix(&self) -> Vec<Vec<usize>> {
-        let mut matrix = vec![vec![0; self.num_qubits]; self.num_qubits];
+        let mut matrix = vec![vec![0; self.n_qubits]; self.n_qubits];
         for pp in &self.pps {
             let qubits: Vec<u16> = pp.get_qubits();
             for i in 0..qubits.len() {
@@ -540,8 +540,8 @@ impl Circuit {
             }
         }
         let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
-        for i in 0..(self.num_qubits - 1) {
-            for j in (i + 1)..self.num_qubits {
+        for i in 0..(self.n_qubits - 1) {
+            for j in (i + 1)..self.n_qubits {
                 pairs.push((i, j, matrix[i][j]));
             }
         }
@@ -574,8 +574,8 @@ mod tests {
     fn new_creates_empty_circuit() {
         let c = Circuit::new(&"test.trans".to_string());
         assert_eq!(c.circuit_fname, "test.trans");
-        assert_eq!(c.num_qubits, 0);
-        assert_eq!(c.num_products(), 0);
+        assert_eq!(c.n_qubits, 0);
+        assert_eq!(c.n_products(), 0);
     }
 
     #[test]
@@ -583,8 +583,8 @@ mod tests {
         let f = make_circuit_file(&["+_X______<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 1);
-        assert_eq!(c.num_qubits, 2);
+        assert_eq!(c.n_products(), 1);
+        assert_eq!(c.n_qubits, 2);
     }
 
     #[test]
@@ -592,7 +592,7 @@ mod tests {
         let f = make_circuit_file(&["+X_<X>", "+_Z<Z>", "+XZ<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 1);
+        assert_eq!(c.n_products(), 1);
         assert!(c.product(0).gate_type.is_t());
     }
 
@@ -601,7 +601,7 @@ mod tests {
         let f = make_circuit_file(&["+_X______<T>", "+___X____<T>", "+_____X__<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 3);
+        assert_eq!(c.n_products(), 3);
     }
 
     #[test]
@@ -675,19 +675,19 @@ mod tests {
     }
 
     #[test]
-    fn num_products_matches_loaded_count() {
+    fn n_products_matches_loaded_count() {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 3);
+        assert_eq!(c.n_products(), 3);
     }
 
     #[test]
-    fn num_qubits_is_max_qubit_plus_one() {
+    fn n_qubits_is_max_qubit_plus_one() {
         let f = make_circuit_file(&["+___X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_qubits, 4);
+        assert_eq!(c.n_qubits, 4);
     }
 
     #[test]
@@ -695,8 +695,8 @@ mod tests {
         let f = make_circuit_file(&["+X__<T>", "+X__<T>", "+X__<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let num_layers = c.print_statistics();
-        assert_eq!(num_layers, 3);
+        let n_layers = c.print_statistics();
+        assert_eq!(n_layers, 3);
     }
 
     #[test]
@@ -704,8 +704,8 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let num_layers = c.print_statistics();
-        assert_eq!(num_layers, 1);
+        let n_layers = c.print_statistics();
+        assert_eq!(n_layers, 1);
     }
 
     #[test]
@@ -721,9 +721,9 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let (num_t, num_t_layers) = c.count_t_stats();
-        assert_eq!(num_t, 2);
-        assert_eq!(num_t_layers, 1);
+        let (n_t, n_t_layers) = c.count_t_stats();
+        assert_eq!(n_t, 2);
+        assert_eq!(n_t_layers, 1);
     }
 
     #[test]
@@ -731,9 +731,9 @@ mod tests {
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let (num_t, num_t_layers) = c.count_t_stats();
-        assert_eq!(num_t, 0);
-        assert_eq!(num_t_layers, 0);
+        let (n_t, n_t_layers) = c.count_t_stats();
+        assert_eq!(n_t, 0);
+        assert_eq!(n_t_layers, 0);
     }
 
     #[test]
@@ -741,9 +741,9 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let (num_t, num_t_layers) = c.count_t_stats();
-        assert_eq!(num_t, 3);
-        assert_eq!(num_t_layers, 3);
+        let (n_t, n_t_layers) = c.count_t_stats();
+        assert_eq!(n_t, 3);
+        assert_eq!(n_t_layers, 3);
     }
 
     #[test]
@@ -751,8 +751,8 @@ mod tests {
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_qubits, 2);
-        assert_eq!(c.num_products(), 1);
+        assert_eq!(c.n_qubits, 2);
+        assert_eq!(c.n_products(), 1);
     }
 
     #[test]
@@ -760,8 +760,8 @@ mod tests {
         let f = make_circuit_file(&["+X___<T>", "+_X__<T>", "+X___<T>", "+_X__<T>", "+__X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let num_layers = c.print_statistics();
-        assert_eq!(num_layers, 2);
+        let n_layers = c.print_statistics();
+        assert_eq!(n_layers, 2);
     }
 
     #[test]
@@ -769,7 +769,7 @@ mod tests {
         let f = make_circuit_file(&["+X_<M>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 1);
+        assert_eq!(c.n_products(), 1);
         assert!(c.product(0).gate_type.is_m());
     }
 
@@ -778,7 +778,7 @@ mod tests {
         let f = make_circuit_file(&["+X_<S>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 1);
+        assert_eq!(c.n_products(), 1);
         assert!(c.product(0).gate_type.is_s());
     }
 
@@ -787,7 +787,7 @@ mod tests {
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.num_products(), 1);
+        assert_eq!(c.n_products(), 1);
         assert!(c.product(0).gate_type.is_cx());
     }
 }

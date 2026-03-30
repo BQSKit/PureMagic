@@ -31,7 +31,7 @@ pub(crate) struct AStar {
     epoch: u32,
     buckets: Vec<Vec<u16>>,
     bucket_min: usize,
-    pub num_calls: usize,
+    pub n_calls: usize,
 }
 
 impl AStar {
@@ -44,7 +44,7 @@ impl AStar {
             epoch: 0,
             buckets: vec![Vec::new(); BUCKET_COUNT],
             bucket_min: 0,
-            num_calls: 0,
+            n_calls: 0,
         }
     }
 
@@ -83,7 +83,7 @@ impl AStar {
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> PathResult {
-        self.num_calls += 1;
+        self.n_calls += 1;
         // Bump epoch to invalidate stale per-node state in O(1).
         // On the rare u32 wrap-around, reset epoch arrays to restore the invariant.
         self.epoch = self.epoch.wrapping_add(1);
@@ -116,9 +116,9 @@ impl AStar {
         while let Some(node_id) = self.bucket_pop(epoch) {
             self.closed_epochs[node_id as usize] = epoch;
 
-            let (node_type, cultivation_time, n_nbors) = {
+            let (node_type, cultivation_time, n_nbs) = {
                 let node = topo.node(node_id);
-                (node.node_type, topo.cultivation_times[node_id as usize], node.num_nbors as usize)
+                (node.node_type, topo.cultivation_times[node_id as usize], node.n_nbs as usize)
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
@@ -131,8 +131,8 @@ impl AStar {
                 continue;
             }
             let g = self.g_cost[node_id as usize];
-            for i in 0..n_nbors {
-                let nb_id = topo.node(node_id).nbors[i];
+            for i in 0..n_nbs {
+                let nb_id = topo.node(node_id).nbs[i];
                 if used[nb_id as usize] || self.closed_epochs[nb_id as usize] == epoch {
                     continue;
                 }
@@ -143,7 +143,7 @@ impl AStar {
                 if nb_type == NodeType::Data {
                     continue;
                 }
-                // Early-exit: a ready magic neighbor is the optimal goal — no shorter
+                // Early-exit: a ready magic nb is the optimal goal — no shorter
                 // path can exist since g+1 is the minimum reachable cost from here.
                 if nb_type == NodeType::Magic && nb_cultivation == 0 {
                     self.parent[nb_id as usize] = node_id;
@@ -193,7 +193,7 @@ impl AStar {
             }
             return PathResult::PathFound(None);
         }
-        let mut tree = TreeGraph::new(topo.num_nodes);
+        let mut tree = TreeGraph::new(topo.n_nodes);
         tree.root_node_id = Some(magic_id);
         let mut curr = magic_id;
         if !tree.contains_node(curr) {
@@ -214,7 +214,7 @@ impl AStar {
             if !tree.contains_node(root_id) {
                 let conn = topo
                     .node(root_id)
-                    .nbors_slice()
+                    .nbs_slice()
                     .iter()
                     .copied()
                     .find(|&nb_id| tree.contains_node(nb_id));
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn new_initialises_with_zero_calls() {
         let astar = AStar::new(10);
-        assert_eq!(astar.num_calls, 0);
+        assert_eq!(astar.n_calls, 0);
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
 
-        let n_nodes = topo.num_nodes;
+        let n_nodes = topo.n_nodes;
         let mut astar = AStar::new(n_nodes);
         let mut used = vec![false; n_nodes];
 
@@ -378,7 +378,7 @@ mod tests {
             if !magic_positions.is_empty() {
                 let result =
                     astar.compute(&[did], &[did], &topo, &mut used, &magic_positions, false);
-                assert_eq!(astar.num_calls, 1);
+                assert_eq!(astar.n_calls, 1);
                 match result {
                     PathResult::NoPath | PathResult::PathFound(_) => {}
                 }
@@ -393,7 +393,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
 
-        let n_nodes = topo.num_nodes;
+        let n_nodes = topo.n_nodes;
         let mut astar = AStar::new(n_nodes);
         let mut used = vec![false; n_nodes];
 
@@ -405,7 +405,7 @@ mod tests {
 
             let ready_positions: Vec<(f32, f32)> = vec![topo.node(mid).pos];
             let result = astar.compute(&[did], &[did], &topo, &mut used, &ready_positions, false);
-            assert_eq!(astar.num_calls, 1);
+            assert_eq!(astar.n_calls, 1);
             match result {
                 PathResult::NoPath | PathResult::PathFound(_) => {}
             }
@@ -413,12 +413,12 @@ mod tests {
     }
 
     #[test]
-    fn num_calls_increments_on_each_compute() {
+    fn n_calls_increments_on_each_compute() {
         Node::set_magic_routing(true);
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
 
-        let n_nodes = topo.num_nodes;
+        let n_nodes = topo.n_nodes;
         let mut astar = AStar::new(n_nodes);
 
         let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
@@ -431,7 +431,7 @@ mod tests {
                 astar.compute(&[did], &[did], &topo, &mut used1, &magic_positions, false);
                 let mut used2 = vec![false; n_nodes];
                 astar.compute(&[did], &[did], &topo, &mut used2, &magic_positions, false);
-                assert_eq!(astar.num_calls, 2);
+                assert_eq!(astar.n_calls, 2);
             }
         }
     }

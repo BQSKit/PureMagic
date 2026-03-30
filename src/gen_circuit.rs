@@ -20,23 +20,23 @@ impl Circuit {
     /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
     /// `rng` is a caller-supplied seeded RNG so that results are reproducible.
     pub(crate) fn generate_random(
-        &mut self, num_products: usize, num_qubits: usize, spread_probability: f64,
+        &mut self, n_products: usize, n_qubits: usize, spread_probability: f64,
         decay_factor: f64, rng: &mut StdRng,
     ) {
-        self.pps.extend((0..num_products).map(|product_id| {
+        self.pps.extend((0..n_products).map(|product_id| {
             PauliProduct::gen_rnd_t(
                 product_id as i32,
-                num_qubits,
+                n_qubits,
                 spread_probability,
                 decay_factor,
                 rng,
             )
         }));
-        self.num_qubits = self.pps.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
+        self.n_qubits = self.pps.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
         println!(
             "Generated random circuit with {} products and {} qubits",
             self.pps.len(),
-            self.num_qubits
+            self.n_qubits
         );
         self.gen_deps();
     }
@@ -49,7 +49,7 @@ impl Circuit {
         let _timer = fn_timer!();
         let mut f = File::create(&circuit_fname)?;
         for pp in &self.pps {
-            let circuit_line = pp.to_circuit_format(self.num_qubits, rng);
+            let circuit_line = pp.to_circuit_format(self.n_qubits, rng);
             writeln!(f, "{}", circuit_line)?;
         }
         println!("Saved circuit to {}", circuit_fname);
@@ -59,14 +59,14 @@ impl Circuit {
 
 impl PauliProduct {
     /// Generates a random T-gate product with spatial locality.
-    /// Starts at a random qubit and spreads to neighbors with decaying probability.
+    /// Starts at a random qubit and spreads to nbs with decaying probability.
     /// `rng` is a caller-supplied seeded RNG so that results are reproducible.
     pub(crate) fn gen_rnd_t(
-        product_id: i32, num_qubits: usize, spread_probability: f64, decay_factor: f64,
+        product_id: i32, n_qubits: usize, spread_probability: f64, decay_factor: f64,
         rng: &mut StdRng,
     ) -> Self {
         let mut operators = Vec::new();
-        let center_qubit = rng.gen_range(0..num_qubits);
+        let center_qubit = rng.gen_range(0..n_qubits);
         let center_basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
         operators.push(Operator { qubit: center_qubit as u16, basis: center_basis });
         let mut current_prob = spread_probability;
@@ -82,7 +82,7 @@ impl PauliProduct {
             }
         }
         current_prob = spread_probability;
-        for distance in 1..(num_qubits - center_qubit) {
+        for distance in 1..(n_qubits - center_qubit) {
             if rng.gen_range(0.0..1.0) < current_prob {
                 let qubit = (center_qubit + distance) as u16;
                 let basis = ['X', 'Y', 'Z'][rng.gen_range(0..3)];
@@ -106,13 +106,13 @@ impl PauliProduct {
     }
 
     /// Converts this product to circuit file format with a random sign drawn from `rng`.
-    pub(crate) fn to_circuit_format(&self, num_qubits: usize, rng: &mut StdRng) -> String {
+    pub(crate) fn to_circuit_format(&self, n_qubits: usize, rng: &mut StdRng) -> String {
         let sign = if rng.gen_bool(0.5) { "+" } else { "-" };
-        let mut pauli_string = vec!['_'; num_qubits];
+        let mut op_chars = vec!['_'; n_qubits];
         for op in &self.operators {
-            pauli_string[op.qubit as usize] = op.basis;
+            op_chars[op.qubit as usize] = op.basis;
         }
-        format!("{}{}<{:?}>", sign, pauli_string.iter().collect::<String>(), self.gate_type)
+        format!("{}{}<{:?}>", sign, op_chars.iter().collect::<String>(), self.gate_type)
     }
 }
 
