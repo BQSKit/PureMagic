@@ -1,26 +1,9 @@
+use colored::Colorize;
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 
-/// ANSI escape codes for terminal colour output.
-pub(crate) const _RED: &str = "\x1b[31m";
-pub(crate) const _GREEN: &str = "\x1b[32m";
-pub(crate) const _YELLOW: &str = "\x1b[33m";
-pub(crate) const _BLUE: &str = "\x1b[34m";
-pub(crate) const _MAGENTA: &str = "\x1b[35m";
-pub(crate) const _CYAN: &str = "\x1b[36m";
-pub(crate) const _WHITE: &str = "\x1b[37m";
-pub(crate) const _LRED: &str = "\x1b[91m";
-pub(crate) const _LGREEN: &str = "\x1b[92m";
-pub(crate) const _LYELLOW: &str = "\x1b[93m";
-pub(crate) const _LBLUE: &str = "\x1b[94m";
-pub(crate) const _LMAGENTA: &str = "\x1b[95m";
-pub(crate) const _LCYAN: &str = "\x1b[96m";
-pub(crate) const _LWHITE: &str = "\x1b[97m";
-/// Resets all ANSI terminal formatting.
-pub(crate) const _RESET: &str = "\x1b[0m";
-
-/// RAII timer that prints the elapsed wall-clock time when it goes out of scope.
+/// RAII timer that prints elapsed wall-clock time on drop.
 pub(crate) struct Timer {
     name: String,
     start: Instant,
@@ -33,21 +16,16 @@ impl Timer {
 }
 
 impl Drop for Timer {
-    /// Prints elapsed time in seconds on drop.
     fn drop(&mut self) {
         println!(
-            "{}Timing: {} took {:.2} s{}",
-            _CYAN,
-            self.name,
-            self.start.elapsed().as_secs_f64(),
-            _RESET
+            "{}",
+            format!("Timing: {} took {:.2} s", self.name, self.start.elapsed().as_secs_f64())
+                .cyan()
         );
     }
 }
 
 /// Creates a [`Timer`] scoped to the enclosing function.
-/// With no arguments, the function name is inferred automatically (crate prefix stripped).
-/// With a string argument, that string is used as the timer label instead.
 #[macro_export]
 macro_rules! fn_timer {
     () => {{
@@ -56,18 +34,13 @@ macro_rules! fn_timer {
             std::any::type_name::<T>()
         }
         let full_name = type_name_of(f);
-        // Remove the trailing "::f"
         let name = &full_name[..full_name.len() - 3];
-        // Remove the crate prefix to get "Circuit::load_circuit" instead of "puremagic::circuit::Circuit::load_circuit"
         let short_name = name.split("::").skip(2).collect::<Vec<_>>().join("::");
         $crate::utils::Timer::new(&short_name)
     }};
-    ($custom_name:expr) => {{
-        $crate::utils::Timer::new($custom_name)
-    }};
+    ($custom_name:expr) => {{ $crate::utils::Timer::new($custom_name) }};
 }
 
-/// Emits a `log::debug!` message only in debug builds (no-op in release).
 #[macro_export]
 macro_rules! debug_sched {
     ($($arg:tt)*) => {
@@ -76,7 +49,6 @@ macro_rules! debug_sched {
     };
 }
 
-/// Emits a `log::info!` message only in debug builds (no-op in release).
 #[macro_export]
 macro_rules! info_sched {
     ($($arg:tt)*) => {
@@ -85,21 +57,20 @@ macro_rules! info_sched {
     };
 }
 
-/// A single accumulated timer entry.
 struct AccumTimer {
     start_time: Option<Instant>,
-    total_elapsed: Duration,
+    tot_elapsed: Duration,
     max_interval: Duration,
-    num_intervals: usize,
+    n_intervals: usize,
 }
 
 impl AccumTimer {
     fn new() -> Self {
         AccumTimer {
             start_time: None,
-            total_elapsed: Duration::ZERO,
+            tot_elapsed: Duration::ZERO,
             max_interval: Duration::ZERO,
-            num_intervals: 0,
+            n_intervals: 0,
         }
     }
 
@@ -110,18 +81,16 @@ impl AccumTimer {
     fn stop(&mut self) {
         if let Some(start) = self.start_time.take() {
             let elapsed = start.elapsed();
-            self.total_elapsed += elapsed;
+            self.tot_elapsed += elapsed;
             if elapsed > self.max_interval {
                 self.max_interval = elapsed;
             }
-            self.num_intervals += 1;
+            self.n_intervals += 1;
         }
     }
 }
 
-/// A collection of named accumulated timers. Timers are created automatically
-/// on first use via [`accum_start!`] and the summary is printed when this
-/// collection drops.
+/// A collection of named accumulated timers; summary is printed on drop.
 pub(crate) struct AccumTimers {
     timers: IndexMap<String, AccumTimer>,
 }
@@ -131,8 +100,7 @@ impl AccumTimers {
         AccumTimers { timers: IndexMap::new() }
     }
 
-    /// Register a timer by name and return its index for fast subsequent access.
-    /// If already registered, just returns the existing index.
+    /// Returns the index for `name`, registering it if not already present.
     pub(crate) fn add_or_get(&mut self, name: &'static str) -> usize {
         if let Some(idx) = self.timers.get_index_of(name) {
             idx
@@ -142,14 +110,12 @@ impl AccumTimers {
         }
     }
 
-    /// Start a timer by pre-looked-up index. O(1), no string lookup.
     pub(crate) fn start(&mut self, idx: usize) {
         if let Some((_, t)) = self.timers.get_index_mut(idx) {
             t.start();
         }
     }
 
-    /// Stop a timer by pre-looked-up index. O(1), no string lookup.
     pub(crate) fn stop(&mut self, idx: usize) {
         if let Some((_, t)) = self.timers.get_index_mut(idx) {
             t.stop();
@@ -172,35 +138,34 @@ impl Drop for AccumTimers {
             let secs = d.as_secs_f64();
             if secs >= 1.0 {
                 format!("{:.2} s", secs)
-                //format!("{:.1}", secs * 1_000.0)
             } else if secs >= 0.001 {
                 format!("{:.1} ms", secs * 1_000.0)
             } else {
                 format!("{:.2} μs", secs * 1_000_000.0)
-                //format!("{:.6}", secs * 1_000.0)
             }
         };
-        println!("{}Accumulated timings (ms):{}", _CYAN, _RESET);
+        println!("{}", "Accumulated timings (ms):".cyan());
         for (name, t) in &self.timers {
-            if t.num_intervals == 0 {
+            if t.n_intervals == 0 {
                 continue;
             }
-            let avg = t.total_elapsed / t.num_intervals as u32;
+            let avg = t.tot_elapsed / t.n_intervals as u32;
             println!(
-                "{}  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}{}",
-                _CYAN,
-                name,
-                format_dur(t.total_elapsed),
-                format_dur(avg),
-                format_dur(t.max_interval),
-                t.num_intervals,
-                _RESET
+                "{}",
+                format!(
+                    "  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}",
+                    name,
+                    format_dur(t.tot_elapsed),
+                    format_dur(avg),
+                    format_dur(t.max_interval),
+                    t.n_intervals,
+                )
+                .cyan()
             );
         }
     }
 }
 
-/// RAII guard that stops a timer by index when dropped.
 pub(crate) struct AccumTimerGuard {
     pub timers: *mut AccumTimers,
     pub idx: usize,
@@ -208,27 +173,15 @@ pub(crate) struct AccumTimerGuard {
 
 impl Drop for AccumTimerGuard {
     fn drop(&mut self) {
-        // SAFETY: AccumTimers always outlives this guard.
+        // SAFETY: `AccumTimers` always outlives this guard.
         unsafe {
             (*self.timers).stop(self.idx);
         }
     }
 }
 
-/// Start an accumulated timer using the enclosing function name as the key.
-/// Returns an [`AccumTimerGuard`] that stops the timer automatically when it
-/// drops at the end of the enclosing scope.
-///
-/// The returned guard **must be bound to a named variable** (e.g. `_timer`);
-/// binding to `_` alone will drop it immediately.
-///
-/// # Example
-/// ```rust
-/// fn my_function(&mut self) {
-///     let _timer = accum_start!(self.timers);
-///     // ... do work ...
-/// }  // timer stops here automatically, even on early return or panic
-/// ```
+/// Starts an accumulated timer for the enclosing function; stops it on drop.
+/// The returned guard **must be bound to a named variable** (e.g. `_timer`).
 #[macro_export]
 macro_rules! accum_start {
     ($timers:expr) => {{
@@ -236,7 +189,6 @@ macro_rules! accum_start {
         fn type_name_of<T>(_: T) -> &'static str {
             std::any::type_name::<T>()
         }
-        // Compute fn_name at compile-ish time (zero cost after first call).
         let full_name = type_name_of(f);
         let fn_name: &'static str = {
             let trimmed = match full_name.strip_suffix("::f") {
@@ -248,8 +200,6 @@ macro_rules! accum_start {
                 None => trimmed,
             }
         };
-        // Cache the index in a per-call-site static so the IndexMap lookup
-        // only happens once, no matter how many times this line is executed.
         static IDX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let idx = *IDX.get_or_init(|| $timers.add_or_get(fn_name));
         $timers.start(idx);
@@ -262,15 +212,11 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    // ── AccumTimers::new ──────────────────────────────────────────────────────
-
     #[test]
     fn accum_timers_new_is_empty() {
         let timers = AccumTimers::new();
         assert!(timers.timers.is_empty());
     }
-
-    // ── AccumTimers::add_or_get ───────────────────────────────────────────────
 
     #[test]
     fn add_or_get_returns_zero_for_first_entry() {
@@ -299,20 +245,16 @@ mod tests {
         assert_eq!(timers.timers.len(), 1);
     }
 
-    // ── AccumTimers::start / stop ─────────────────────────────────────────────
-
     #[test]
     fn start_stop_does_not_panic() {
         let mut timers = AccumTimers::new();
         let idx = timers.add_or_get("t");
         timers.start(idx);
-        // Small sleep so elapsed > 0
         std::thread::sleep(Duration::from_millis(1));
         timers.stop(idx);
-        // Verify the timer recorded at least one interval.
         let (_, t) = timers.timers.get_index(idx).unwrap();
-        assert_eq!(t.num_intervals, 1);
-        assert!(t.total_elapsed > Duration::ZERO);
+        assert_eq!(t.n_intervals, 1);
+        assert!(t.tot_elapsed > Duration::ZERO);
     }
 
     #[test]
@@ -321,7 +263,7 @@ mod tests {
         let idx = timers.add_or_get("t");
         timers.stop(idx); // should not panic
         let (_, t) = timers.timers.get_index(idx).unwrap();
-        assert_eq!(t.num_intervals, 0);
+        assert_eq!(t.n_intervals, 0);
     }
 
     #[test]
@@ -341,10 +283,8 @@ mod tests {
             timers.stop(idx);
         }
         let (_, t) = timers.timers.get_index(idx).unwrap();
-        assert_eq!(t.num_intervals, 3);
+        assert_eq!(t.n_intervals, 3);
     }
-
-    // ── AccumTimers::default ──────────────────────────────────────────────────
 
     #[test]
     fn default_is_empty() {
@@ -352,21 +292,44 @@ mod tests {
         assert!(timers.timers.is_empty());
     }
 
-    // ── Timer (RAII) ──────────────────────────────────────────────────────────
-
     #[test]
     fn timer_new_does_not_panic() {
-        // Timer prints on drop; just verify construction and drop are safe.
         let _t = Timer::new("test_timer");
-        // Drop happens here — should print elapsed time without panicking.
     }
 
-    // ── ANSI colour constants ─────────────────────────────────────────────────
+    #[test]
+    fn accum_timer_guard_stops_on_drop() {
+        let mut timers = AccumTimers::default();
+        let idx = timers.add_or_get("guard_test");
+        timers.start(idx);
+        timers.stop(idx);
+    }
 
     #[test]
-    fn ansi_constants_are_escape_sequences() {
-        assert!(_RED.starts_with('\x1b'));
-        assert!(_GREEN.starts_with('\x1b'));
-        assert!(_RESET.starts_with('\x1b'));
+    fn add_or_get_same_name_always_returns_same_index() {
+        let mut timers = AccumTimers::default();
+        let i1 = timers.add_or_get("alpha");
+        let i2 = timers.add_or_get("beta");
+        let i3 = timers.add_or_get("alpha"); // same as first
+        assert_ne!(i1, i2);
+        assert_eq!(i1, i3);
+    }
+
+    #[test]
+    fn start_stop_valid_index_does_not_panic() {
+        let mut timers = AccumTimers::default();
+        let idx = timers.add_or_get("t1");
+        timers.start(idx);
+        timers.stop(idx);
+        // Second round
+        timers.start(idx);
+        timers.stop(idx);
+    }
+
+    #[test]
+    fn multiple_timers_do_not_interfere() {
+        let _t1 = Timer::new("timer_a");
+        let _t2 = Timer::new("timer_b");
+        // Both drop here — should not panic.
     }
 }

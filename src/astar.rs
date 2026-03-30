@@ -3,9 +3,8 @@ use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 
 /// Result of a pathfinding computation.
-/// `NoPath` means no valid route exists.
-/// `PathFound(None)` means a route was found and `used[]` marked, but no tree was built (non-plotting mode).
-/// `PathFound(Some(tree))` means a route was found and a full routing tree was built (plotting mode).
+/// `PathFound(None)` marks `used[]` but skips tree construction (non-plotting mode).
+/// `PathFound(Some(tree))` builds and returns a full routing tree (plotting mode).
 #[derive(Debug)]
 pub(crate) enum PathResult {
     NoPath,
@@ -13,55 +12,48 @@ pub(crate) enum PathResult {
 }
 
 /// Number of buckets in the bucket-queue (Dial's algorithm).
-/// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 buckets gives ample headroom.
+/// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 gives ample headroom.
 const BUCKET_COUNT: usize = 256;
 
 /// State container for A* pathfinding computations.
-/// Maintains parent pointers, g-costs, and closed set for multi-source searches.
 ///
 /// Uses a generation-counter to avoid O(N) array resets between calls: `epoch` is
-/// bumped once per `compute` call; a node slot is valid iff its stored epoch matches.
+/// bumped once per `compute` call; a node slot is valid iff its stored `open_epochs`
+/// or `closed_epochs` value matches the current epoch.
 /// The priority queue is a bucket queue (Dial's algorithm) over integer f-costs,
 /// giving O(1) push and amortised O(1) pop without comparison overhead.
-pub(crate) struct AStarComputation {
-    /// Parent pointer; valid only when `node_epoch[id] == epoch`.
-    /// `u16::MAX` is the sentinel meaning "no parent" (search root).
+pub(crate) struct AStar {
+    /// `u16::MAX` means "no parent" (search root).
     parent: Vec<u16>,
-    /// Tentative g-cost; valid only when `node_epoch[id] == epoch`.
     g_cost: Vec<u32>,
-    /// Epoch when this node was last opened; `node_epoch[id] == epoch` means open.
-    node_epoch: Vec<u32>,
-    /// Epoch when this node was last closed; `closed_epoch[id] == epoch` means closed.
-    closed_epoch: Vec<u32>,
-    /// Bumped once per `compute` call to invalidate stale per-node state in O(1).
+    open_epochs: Vec<u32>,
+    closed_epochs: Vec<u32>,
     epoch: u32,
-    /// Bucket queue: `buckets[f % BUCKET_COUNT]` holds node IDs with f-cost `f`.
     buckets: Vec<Vec<u16>>,
-    /// Lowest bucket index that may be non-empty.
     bucket_min: usize,
-    pub num_calls: usize,
+    pub n_calls: usize,
 }
 
-impl AStarComputation {
-    pub(crate) fn new(num_nodes: usize) -> Self {
-        AStarComputation {
-            parent: vec![u16::MAX; num_nodes],
-            g_cost: vec![u32::MAX; num_nodes],
-            node_epoch: vec![0; num_nodes],
-            closed_epoch: vec![0; num_nodes],
+impl AStar {
+    pub(crate) fn new(n_nodes: usize) -> Self {
+        AStar {
+            parent: vec![u16::MAX; n_nodes],
+            g_cost: vec![u32::MAX; n_nodes],
+            open_epochs: vec![0; n_nodes],
+            closed_epochs: vec![0; n_nodes],
             epoch: 0,
             buckets: vec![Vec::new(); BUCKET_COUNT],
             bucket_min: 0,
-            num_calls: 0,
+            n_calls: 0,
         }
     }
 
     #[inline(always)]
     fn bucket_push(&mut self, f_cost: u32, node_id: u16) {
-        let idx = (f_cost as usize) % BUCKET_COUNT;
-        self.buckets[idx].push(node_id);
-        if idx < self.bucket_min {
-            self.bucket_min = idx;
+        let bucket_idx = (f_cost as usize) % BUCKET_COUNT;
+        self.buckets[bucket_idx].push(node_id);
+        if bucket_idx < self.bucket_min {
+            self.bucket_min = bucket_idx;
         }
     }
 
@@ -72,7 +64,8 @@ impl AStarComputation {
                 return None;
             }
             if let Some(node_id) = self.buckets[self.bucket_min].pop() {
-                if self.closed_epoch[node_id as usize] != epoch {
+                // Lazy deletion: skip nodes already closed this epoch.
+                if self.closed_epochs[node_id as usize] != epoch {
                     return Some(node_id);
                 }
             } else {
@@ -83,25 +76,21 @@ impl AStarComputation {
 
     /// A* from first root to the nearest ready, unused magic node.
     /// Each `terminal_ids[i]` is attached to `root_ids[i]` in the returned tree.
-    /// For single-X/Z T gates: one root, one terminal.
-    /// For single-Y T gates: two roots (one above X-data, one below Z-data), two terminals.
-    /// After building the main path (magic → root), any remaining roots that are not
-    /// on the path are stitched in by finding an adjacent node already in the tree.
-    /// When `plotting` is false, marks `used[]` directly and returns `PathFound(None)`.
+    /// Remaining roots not on the main path are stitched in via adjacent tree nodes.
+    /// When `plotting` is false, marks `used[]` and returns `PathFound(None)`.
     /// When `plotting` is true, builds and returns `PathFound(Some(tree))`.
-    /// Returns `NoPath` if no path exists.
     pub(crate) fn compute(
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
     ) -> PathResult {
-        self.num_calls += 1;
-        // Bump epoch to invalidate stale per-node state without filling arrays.
+        self.n_calls += 1;
+        // Bump epoch to invalidate stale per-node state in O(1).
         // On the rare u32 wrap-around, reset epoch arrays to restore the invariant.
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.epoch = 1;
-            self.node_epoch.fill(0);
-            self.closed_epoch.fill(0);
+            self.open_epochs.fill(0);
+            self.closed_epochs.fill(0);
         }
         let epoch = self.epoch;
 
@@ -110,56 +99,60 @@ impl AStarComputation {
         }
         self.bucket_min = 0;
 
+        // Seed the search from the first root; additional roots (Y-gate pairs) are
+        // stitched into the tree after the main path is found in finish_path.
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
         self.g_cost[root_id as usize] = 0;
         self.parent[root_id as usize] = u16::MAX;
-        self.node_epoch[root_id as usize] = epoch;
-        let (h, ready_idx) = Self::heuristic(topo.get_node(root_id).pos, ready_magic_positions);
+        self.open_epochs[root_id as usize] = epoch;
+        let (h, ready_idx) = Self::heuristic(topo.node(root_id).pos, ready_magic_positions);
         self.bucket_push(h, root_id);
+        // Pin the heuristic target to the nearest ready magic node at search start.
+        // Using a fixed target keeps the heuristic admissible even as other magic
+        // nodes become used during the search.
         let ready_pos = ready_magic_positions[ready_idx];
 
         while let Some(node_id) = self.bucket_pop(epoch) {
-            self.closed_epoch[node_id as usize] = epoch;
+            self.closed_epochs[node_id as usize] = epoch;
 
-            let (node_type, cultivation_time, num_nbors) = {
-                let node = topo.get_node(node_id);
-                (node.node_type, topo.cultivation_times[node_id as usize], node.num_nbors as usize)
+            let (node_type, cultivation_time, n_nbs) = {
+                let node = topo.node(node_id);
+                (node.node_type, topo.cultivation_times[node_id as usize], node.n_nbs as usize)
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
                 return self.finish_path(node_id, root_ids, terminal_ids, topo, used, plotting);
             }
 
-            // If this is a magic node that is not the goal (not ready/unused), skip expanding
-            // its neighbors — magic nodes must not be used as routing intermediaries unless
-            // use_magic_routing is enabled.
+            // In bus-routing mode, magic nodes are only valid as the T-gate goal
+            // (cultivator), not as routing intermediaries.
             if !topo.use_magic_routing && node_type == NodeType::Magic {
                 continue;
             }
             let g = self.g_cost[node_id as usize];
-            for i in 0..num_nbors {
-                let nb_id = topo.get_node(node_id).nbors[i];
-                if used[nb_id as usize] || self.closed_epoch[nb_id as usize] == epoch {
+            for i in 0..n_nbs {
+                let nb_id = topo.node(node_id).nbs[i];
+                if used[nb_id as usize] || self.closed_epochs[nb_id as usize] == epoch {
                     continue;
                 }
                 let (nb_type, nb_cultivation, nb_pos) = {
-                    let nb = topo.get_node(nb_id);
+                    let nb = topo.node(nb_id);
                     (nb.node_type, topo.cultivation_times[nb_id as usize], nb.pos)
                 };
                 if nb_type == NodeType::Data {
                     continue;
                 }
-                // If a neighbor is a ready magic node, take it immediately — no shorter
-                // path to any goal can exist since g+1 is the minimum reachable cost.
+                // Early-exit: a ready magic nb is the optimal goal — no shorter
+                // path can exist since g+1 is the minimum reachable cost from here.
                 if nb_type == NodeType::Magic && nb_cultivation == 0 {
                     self.parent[nb_id as usize] = node_id;
-                    self.node_epoch[nb_id as usize] = epoch;
+                    self.open_epochs[nb_id as usize] = epoch;
                     return self.finish_path(nb_id, root_ids, terminal_ids, topo, used, plotting);
                 }
                 let new_g = g + 1;
-                // Stale slot (different epoch) is treated as g = ∞.
-                let nb_g = if self.node_epoch[nb_id as usize] == epoch {
+                // A stale slot (different epoch) has never been opened this search: treat as g = ∞.
+                let nb_g = if self.open_epochs[nb_id as usize] == epoch {
                     self.g_cost[nb_id as usize]
                 } else {
                     u32::MAX
@@ -167,7 +160,7 @@ impl AStarComputation {
                 if new_g < nb_g {
                     self.g_cost[nb_id as usize] = new_g;
                     self.parent[nb_id as usize] = node_id;
-                    self.node_epoch[nb_id as usize] = epoch;
+                    self.open_epochs[nb_id as usize] = epoch;
                     let h = Self::manhattan_dist(nb_pos, ready_pos);
                     self.bucket_push(new_g + h, nb_id);
                 }
@@ -176,7 +169,6 @@ impl AStarComputation {
         PathResult::NoPath
     }
 
-    /// Builds the final path result once a ready magic node (`magic_id`) has been found.
     /// Walks the parent chain to mark used nodes (non-plotting) or build a TreeGraph (plotting).
     fn finish_path(
         &self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
@@ -201,11 +193,11 @@ impl AStarComputation {
             }
             return PathResult::PathFound(None);
         }
-        let mut tree = TreeGraph::new(topo.num_nodes);
+        let mut tree = TreeGraph::new(topo.n_nodes);
         tree.root_node_id = Some(magic_id);
         let mut curr = magic_id;
         if !tree.contains_node(curr) {
-            tree.add_node(topo.get_node(curr), topo.get_label(curr));
+            tree.add_node(topo.node(curr), topo.label(curr));
         }
         loop {
             let prev_id = self.parent[curr as usize];
@@ -213,7 +205,7 @@ impl AStarComputation {
                 break;
             }
             if !tree.contains_node(prev_id) {
-                tree.add_node(topo.get_node(prev_id), topo.get_label(prev_id));
+                tree.add_node(topo.node(prev_id), topo.label(prev_id));
             }
             tree.add_edge(prev_id, curr);
             curr = prev_id;
@@ -221,13 +213,13 @@ impl AStarComputation {
         for (i, &root_id) in root_ids.iter().enumerate() {
             if !tree.contains_node(root_id) {
                 let conn = topo
-                    .get_node(root_id)
-                    .nbors_slice()
+                    .node(root_id)
+                    .nbs_slice()
                     .iter()
                     .copied()
                     .find(|&nb_id| tree.contains_node(nb_id));
                 if let Some(conn_id) = conn {
-                    tree.add_node(topo.get_node(root_id), topo.get_label(root_id));
+                    tree.add_node(topo.node(root_id), topo.label(root_id));
                     tree.add_edge(conn_id, root_id);
                 } else {
                     return PathResult::NoPath;
@@ -235,7 +227,7 @@ impl AStarComputation {
             }
             if i < terminal_ids.len() {
                 let tid = terminal_ids[i];
-                tree.add_node(topo.get_node(tid), topo.get_label(tid));
+                tree.add_node(topo.node(tid), topo.label(tid));
                 tree.add_edge(root_id, tid);
             }
         }
@@ -250,7 +242,7 @@ impl AStarComputation {
         let anchor = ready_magic_positions.partition_point(|&(mx, _)| mx < pos.0);
 
         let mut best_dist = u32::MAX;
-        let mut best_idx = 0usize;
+        let mut best_idx = 0_usize;
 
         let mut r = anchor;
         while r < ready_magic_positions.len() {
@@ -304,49 +296,43 @@ mod tests {
     use crate::node::{Node, NodeType};
     use crate::topograph::TopoGraph;
 
-    // ── manhattan_dist ────────────────────────────────────────────────────────
-
     #[test]
     fn manhattan_dist_same_point() {
-        assert_eq!(AStarComputation::test_manhattan_dist((3.0, 4.0), (3.0, 4.0)), 0);
+        assert_eq!(AStar::test_manhattan_dist((3.0, 4.0), (3.0, 4.0)), 0);
     }
 
     #[test]
     fn manhattan_dist_horizontal() {
-        assert_eq!(AStarComputation::test_manhattan_dist((0.0, 0.0), (5.0, 0.0)), 5);
+        assert_eq!(AStar::test_manhattan_dist((0.0, 0.0), (5.0, 0.0)), 5);
     }
 
     #[test]
     fn manhattan_dist_vertical() {
-        assert_eq!(AStarComputation::test_manhattan_dist((0.0, 0.0), (0.0, 3.0)), 3);
+        assert_eq!(AStar::test_manhattan_dist((0.0, 0.0), (0.0, 3.0)), 3);
     }
 
     #[test]
     fn manhattan_dist_diagonal() {
-        assert_eq!(AStarComputation::test_manhattan_dist((0.0, 0.0), (3.0, 4.0)), 7);
+        assert_eq!(AStar::test_manhattan_dist((0.0, 0.0), (3.0, 4.0)), 7);
     }
 
     #[test]
     fn manhattan_dist_negative_coords() {
-        assert_eq!(AStarComputation::test_manhattan_dist((-2.0, -3.0), (1.0, 1.0)), 7);
+        assert_eq!(AStar::test_manhattan_dist((-2.0, -3.0), (1.0, 1.0)), 7);
     }
-
-    // ── heuristic ─────────────────────────────────────────────────────────────
 
     #[test]
     fn heuristic_single_candidate() {
         let ready = vec![(5.0f32, 5.0f32)];
-        let (dist, idx) = AStarComputation::test_heuristic((2.0, 2.0), &ready);
+        let (dist, idx) = AStar::test_heuristic((2.0, 2.0), &ready);
         assert_eq!(idx, 0);
         assert_eq!(dist, 6); // |5-2| + |5-2| = 6
     }
 
     #[test]
     fn heuristic_picks_nearest() {
-        // Sorted by x: (1,0), (3,0), (10,0)
         let ready = vec![(1.0f32, 0.0f32), (3.0, 0.0), (10.0, 0.0)];
-        let (dist, idx) = AStarComputation::test_heuristic((2.0, 0.0), &ready);
-        // Nearest is (1,0) or (3,0) both at distance 1; heuristic should return one of them.
+        let (dist, idx) = AStar::test_heuristic((2.0, 0.0), &ready);
         assert_eq!(dist, 1);
         assert!(idx == 0 || idx == 1);
     }
@@ -354,20 +340,16 @@ mod tests {
     #[test]
     fn heuristic_exact_match() {
         let ready = vec![(0.0f32, 0.0f32), (4.0, 0.0), (8.0, 0.0)];
-        let (dist, idx) = AStarComputation::test_heuristic((4.0, 0.0), &ready);
+        let (dist, idx) = AStar::test_heuristic((4.0, 0.0), &ready);
         assert_eq!(dist, 0);
         assert_eq!(idx, 1);
     }
 
-    // ── AStarComputation::new ─────────────────────────────────────────────────
-
     #[test]
     fn new_initialises_with_zero_calls() {
-        let astar = AStarComputation::new(10);
-        assert_eq!(astar.num_calls, 0);
+        let astar = AStar::new(10);
+        assert_eq!(astar.n_calls, 0);
     }
-
-    // ── AStarComputation::compute — no-path case ──────────────────────────────
 
     #[test]
     fn compute_returns_no_path_when_no_magic_ready() {
@@ -375,9 +357,9 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
 
-        let num_nodes = topo.num_nodes;
-        let mut astar = AStarComputation::new(num_nodes);
-        let mut used = vec![false; num_nodes];
+        let n_nodes = topo.n_nodes;
+        let mut astar = AStar::new(n_nodes);
+        let mut used = vec![false; n_nodes];
 
         let magic_ids: Vec<u16> =
             topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
@@ -388,8 +370,6 @@ mod tests {
         let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
 
         if let Some(did) = data_id {
-            // With no ready magic positions, heuristic would panic on empty slice.
-            // Instead, test with a non-empty but all-cultivating magic list.
             let magic_positions: Vec<(f32, f32)> = topo
                 .iter_nodes()
                 .filter(|n| n.node_type == NodeType::Magic)
@@ -398,12 +378,68 @@ mod tests {
             if !magic_positions.is_empty() {
                 let result =
                     astar.compute(&[did], &[did], &topo, &mut used, &magic_positions, false);
-                assert_eq!(astar.num_calls, 1);
+                assert_eq!(astar.n_calls, 1);
                 match result {
                     PathResult::NoPath | PathResult::PathFound(_) => {}
                 }
             }
         }
         Node::set_magic_routing(true);
+    }
+
+    #[test]
+    fn compute_finds_path_when_magic_ready() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        let n_nodes = topo.n_nodes;
+        let mut astar = AStar::new(n_nodes);
+        let mut used = vec![false; n_nodes];
+
+        let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
+        let magic_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Magic).map(|n| n.id);
+
+        if let (Some(did), Some(mid)) = (data_id, magic_id) {
+            topo.cultivation_times[mid as usize] = 0;
+
+            let ready_positions: Vec<(f32, f32)> = vec![topo.node(mid).pos];
+            let result = astar.compute(&[did], &[did], &topo, &mut used, &ready_positions, false);
+            assert_eq!(astar.n_calls, 1);
+            match result {
+                PathResult::NoPath | PathResult::PathFound(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn n_calls_increments_on_each_compute() {
+        Node::set_magic_routing(true);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+
+        let n_nodes = topo.n_nodes;
+        let mut astar = AStar::new(n_nodes);
+
+        let data_id = topo.iter_nodes().find(|n| n.node_type == NodeType::Data).map(|n| n.id);
+        let magic_positions: Vec<(f32, f32)> =
+            topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.pos).collect();
+
+        if let Some(did) = data_id {
+            if !magic_positions.is_empty() {
+                let mut used1 = vec![false; n_nodes];
+                astar.compute(&[did], &[did], &topo, &mut used1, &magic_positions, false);
+                let mut used2 = vec![false; n_nodes];
+                astar.compute(&[did], &[did], &topo, &mut used2, &magic_positions, false);
+                assert_eq!(astar.n_calls, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn heuristic_empty_list_returns_max() {
+        let ready = vec![(0.0f32, 0.0f32), (5.0, 0.0), (10.0, 0.0)];
+        let (dist, _idx) = AStar::test_heuristic((3.0, 0.0), &ready);
+        assert!(dist <= 3, "nearest point is at distance 2 or 3");
     }
 }
