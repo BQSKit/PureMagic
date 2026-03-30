@@ -835,7 +835,7 @@ mod tests {
     // ── Tableau::len ──────────────────────────────────────────────────────────
 
     #[test]
-    fn tableau_len_matches_num_qubits() {
+    fn tableau_len_matches_n_qubits() {
         let t = Tableau::new(3);
         assert_eq!(t.len(), 3);
     }

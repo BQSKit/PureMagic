@@ -59,18 +59,18 @@ macro_rules! info_sched {
 
 struct AccumTimer {
     start_time: Option<Instant>,
-    total_elapsed: Duration,
+    tot_elapsed: Duration,
     max_interval: Duration,
-    num_intervals: usize,
+    n_intervals: usize,
 }
 
 impl AccumTimer {
     fn new() -> Self {
         AccumTimer {
             start_time: None,
-            total_elapsed: Duration::ZERO,
+            tot_elapsed: Duration::ZERO,
             max_interval: Duration::ZERO,
-            num_intervals: 0,
+            n_intervals: 0,
         }
     }
 
@@ -81,11 +81,11 @@ impl AccumTimer {
     fn stop(&mut self) {
         if let Some(start) = self.start_time.take() {
             let elapsed = start.elapsed();
-            self.total_elapsed += elapsed;
+            self.tot_elapsed += elapsed;
             if elapsed > self.max_interval {
                 self.max_interval = elapsed;
             }
-            self.num_intervals += 1;
+            self.n_intervals += 1;
         }
     }
 }
@@ -146,19 +146,19 @@ impl Drop for AccumTimers {
         };
         println!("{}", "Accumulated timings (ms):".cyan());
         for (name, t) in &self.timers {
-            if t.num_intervals == 0 {
+            if t.n_intervals == 0 {
                 continue;
             }
-            let avg = t.total_elapsed / t.num_intervals as u32;
+            let avg = t.tot_elapsed / t.n_intervals as u32;
             println!(
                 "{}",
                 format!(
                     "  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}",
                     name,
-                    format_dur(t.total_elapsed),
+                    format_dur(t.tot_elapsed),
                     format_dur(avg),
                     format_dur(t.max_interval),
-                    t.num_intervals,
+                    t.n_intervals,
                 )
                 .cyan()
             );
@@ -253,8 +253,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1));
         timers.stop(idx);
         let (_, t) = timers.timers.get_index(idx).unwrap();
-        assert_eq!(t.num_intervals, 1);
-        assert!(t.total_elapsed > Duration::ZERO);
+        assert_eq!(t.n_intervals, 1);
+        assert!(t.tot_elapsed > Duration::ZERO);
     }
 
     #[test]
@@ -263,7 +263,7 @@ mod tests {
         let idx = timers.add_or_get("t");
         timers.stop(idx); // should not panic
         let (_, t) = timers.timers.get_index(idx).unwrap();
-        assert_eq!(t.num_intervals, 0);
+        assert_eq!(t.n_intervals, 0);
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
             timers.stop(idx);
         }
         let (_, t) = timers.timers.get_index(idx).unwrap();
-        assert_eq!(t.num_intervals, 3);
+        assert_eq!(t.n_intervals, 3);
     }
 
     #[test]

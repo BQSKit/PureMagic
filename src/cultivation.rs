@@ -57,7 +57,7 @@ impl CultivationManager {
     /// The pool is pre-generated to amortise RNG cost; refilling mid-run is a
     /// fallback that should rarely occur if the initial pool was sized correctly.
     #[inline]
-    pub(crate) fn draw(&mut self, num_topo_nodes: usize) -> i32 {
+    pub(crate) fn draw(&mut self, n_topo_nodes: usize) -> i32 {
         if self.pool_index >= self.cultivation_time_pool.len() {
             if self.pool_index > 0 {
                 eprintln!(
@@ -69,7 +69,7 @@ impl CultivationManager {
                     .red()
                 );
             }
-            self.fill_pool(10 * self.t_products_remaining + num_topo_nodes);
+            self.fill_pool(10 * self.t_products_remaining + n_topo_nodes);
         }
         let t = self.cultivation_time_pool[self.pool_index];
         self.pool_index += 1;
@@ -84,10 +84,10 @@ impl CultivationManager {
             .collect();
         self.magic_node_positions =
             self.magic_node_ids.iter().map(|&id| topo.node(id).pos).collect();
-        let num_topo_nodes = topo.num_nodes;
+        let n_topo_nodes = topo.n_nodes;
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
-            topo.cultivation_times[id as usize] = self.draw(num_topo_nodes);
+            topo.cultivation_times[id as usize] = self.draw(n_topo_nodes);
             topo.busy_counts[id as usize] = 0;
         }
     }
@@ -98,13 +98,13 @@ impl CultivationManager {
     /// New cultivation times are drawn before the update loop to avoid
     /// interleaving RNG calls with the state mutation.
     pub(crate) fn update_cultivators(&mut self, topo: &mut TopoGraph, used: &[bool]) -> usize {
-        let num_topo_nodes = topo.num_nodes;
+        let n_topo_nodes = topo.n_nodes;
         // Pre-draw new times for all used nodes before mutating topo state.
         self.new_cultivation_times.clear();
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
             if used[id as usize] {
-                let t = self.draw(num_topo_nodes);
+                let t = self.draw(n_topo_nodes);
                 self.new_cultivation_times.push(t);
             }
         }
@@ -243,12 +243,12 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
 
-        let num_magic_before = topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).count();
+        let n_magic_before = topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).count();
 
         mgr.init_magic_nodes(&mut topo);
 
-        assert_eq!(mgr.magic_node_ids.len(), num_magic_before);
-        assert_eq!(mgr.magic_node_positions.len(), num_magic_before);
+        assert_eq!(mgr.magic_node_ids.len(), n_magic_before);
+        assert_eq!(mgr.magic_node_positions.len(), n_magic_before);
     }
 
     #[test]
@@ -286,9 +286,9 @@ mod tests {
             topo.cultivation_times[id as usize] = 0;
         }
 
-        let used = vec![false; topo.num_nodes];
-        let num_ready = mgr.update_cultivators(&mut topo, &used);
-        assert_eq!(num_ready, mgr.magic_node_ids.len());
+        let used = vec![false; topo.n_nodes];
+        let n_ready = mgr.update_cultivators(&mut topo, &used);
+        assert_eq!(n_ready, mgr.magic_node_ids.len());
     }
 
     #[test]
@@ -309,7 +309,7 @@ mod tests {
         }
 
         let first_id = mgr.magic_node_ids[0];
-        let mut used = vec![false; topo.num_nodes];
+        let mut used = vec![false; topo.n_nodes];
         used[first_id as usize] = true;
 
         topo.cultivation_times[first_id as usize] = 0;
@@ -340,7 +340,7 @@ mod tests {
         topo.cultivation_times[first_id as usize] = 5;
         topo.busy_counts[first_id as usize] = 0;
 
-        let used = vec![false; topo.num_nodes];
+        let used = vec![false; topo.n_nodes];
         mgr.update_cultivators(&mut topo, &used);
 
         assert_eq!(topo.busy_counts[first_id as usize], 1);
@@ -367,7 +367,7 @@ mod tests {
         topo.cultivation_times[first_id as usize] = 3;
         topo.busy_counts[first_id as usize] = 2;
 
-        let used = vec![false; topo.num_nodes];
+        let used = vec![false; topo.n_nodes];
         mgr.update_cultivators(&mut topo, &used);
 
         assert!(mgr.cultivation_times_log.contains(&3));
@@ -392,7 +392,7 @@ mod tests {
             topo.cultivation_times[id as usize] = 0;
         }
 
-        let used = vec![false; topo.num_nodes];
+        let used = vec![false; topo.n_nodes];
         mgr.update_cultivators(&mut topo, &used);
 
         let xs: Vec<f32> = mgr.ready_magic_positions.iter().map(|p| p.0).collect();

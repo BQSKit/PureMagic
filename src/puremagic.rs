@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit_fname = args.circuit_fname;
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
-    let n_products = circuit.num_products();
+    let n_products = circuit.n_products();
     let n_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
@@ -120,9 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut topo_graph = TopoGraph::new();
     let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
-    let num_data_qubits = circuit.num_qubits;
+    let n_data_qubits = circuit.n_qubits;
     topo_graph.set_topo(
-        num_data_qubits,
+        n_data_qubits,
         &circuit_fname.to_string(),
         &args.topo_fname,
         &rseed,
@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         topo_graph.plot(".topo", &[], "")?;
         topo_graph.print()?;
     }
-    let mut n_qubits = topo_graph.num_qubits;
+    let mut n_qubits = topo_graph.n_qubits;
     let mut sched = Scheduler::new(
         circuit,
         topo_graph,
@@ -152,9 +152,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     sched.print_schedule(&hdr)?;
     print!("Generating Pure Magic layout for comparison:\n  ");
     let mut best_magic_topo_graph = TopoGraph::new();
-    best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
+    best_magic_topo_graph.gen_pure_magic_topo(n_data_qubits, 1, false);
     best_magic_topo_graph.update_statistics();
-    n_qubits = best_magic_topo_graph.num_qubits;
+    n_qubits = best_magic_topo_graph.n_qubits;
     let (_, n_t_layers) = sched.input.circuit.count_t_stats();
     let optimal_n_layers = if args.no_t_failures { n_layers } else { n_layers + n_t_layers / 2 };
     let optimal_speedup = n_scheduled as f64 / optimal_n_layers as f64;

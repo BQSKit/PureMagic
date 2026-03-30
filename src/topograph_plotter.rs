@@ -24,7 +24,7 @@ pub(crate) struct DataGroup {
     pub z_right_id: u16,
 }
 
-/// Side of a data node a routing neighbor is on.
+/// Side of a data node a routing nb is on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataSide {
     Left,
@@ -62,7 +62,7 @@ impl<'a> TopoGraphPlotter<'a> {
 
         let root = BitMapBackend::new(
             &plot_fname,
-            (self.topo.num_cols as u32 * 90, self.topo.num_rows as u32 * 90),
+            (self.topo.n_cols as u32 * 90, self.topo.n_rows as u32 * 90),
         )
         .into_drawing_area();
         root.fill(&WHITE)?;
@@ -70,8 +70,8 @@ impl<'a> TopoGraphPlotter<'a> {
             .margin(10)
             .set_label_area_size(LabelAreaPosition::Bottom, 50)
             .build_cartesian_2d(
-                -1f32..self.topo.num_cols as f32,
-                -1f32..self.topo.num_rows as f32,
+                -1f32..self.topo.n_cols as f32,
+                -1f32..self.topo.n_rows as f32,
             )?;
 
         let product_label_positions = self.compute_product_label_positions(pp_paths);
@@ -242,9 +242,9 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    fn data_side_of_neighbor(data_pos: (f32, f32), nbor_pos: (f32, f32)) -> Option<DataSide> {
-        let dx = nbor_pos.0 - data_pos.0;
-        let dy = nbor_pos.1 - data_pos.1;
+    fn data_side_of_nb(data_pos: (f32, f32), nb_pos: (f32, f32)) -> Option<DataSide> {
+        let dx = nb_pos.0 - data_pos.0;
+        let dy = nb_pos.1 - data_pos.1;
         if dx.abs() > dy.abs() {
             if dx > 0.0 { Some(DataSide::Right) } else { Some(DataSide::Left) }
         } else if dy.abs() > 0.0 {
@@ -381,14 +381,14 @@ impl<'a> TopoGraphPlotter<'a> {
         &self, chart: &mut PlotChart, routing_id: u16, path_graph: &TreeGraph, color: RGBAColor,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let routing_node = self.topo.node(routing_id);
-        for &nb_id in path_graph.neighbors(routing_id) {
+        for &nb_id in path_graph.nbs(routing_id) {
             let nb = self.topo.node(nb_id);
             if nb.node_type != NodeType::Data {
                 continue;
             }
             let nb_label = &self.topo.labels[nb_id as usize];
             let is_x_node = nb_label.ends_with('X');
-            if let Some(side) = Self::data_side_of_neighbor(nb.pos, routing_node.pos) {
+            if let Some(side) = Self::data_side_of_nb(nb.pos, routing_node.pos) {
                 let group_outer_y = if side == DataSide::Top || side == DataSide::Bottom {
                     if let Some(&gi) = self.topo.node_to_group_map().get(&nb_id) {
                         let groups = self.topo.data_groups();
