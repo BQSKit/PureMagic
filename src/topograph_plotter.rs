@@ -53,7 +53,7 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 
     pub(crate) fn plot(
-        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
+        &self, fname_added: &str, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
@@ -74,7 +74,7 @@ impl<'a> TopoGraphPlotter<'a> {
                 -1f32..self.topo.num_rows as f32,
             )?;
 
-        let product_label_positions = self.compute_product_label_positions(pauli_product_paths);
+        let product_label_positions = self.compute_product_label_positions(pp_paths);
         let mut product_label_covered: std::collections::HashSet<(i32, i32)> =
             std::collections::HashSet::new();
         for opt in &product_label_positions {
@@ -94,11 +94,11 @@ impl<'a> TopoGraphPlotter<'a> {
             }
         }
 
-        self.draw_all_nodes_plain(&mut chart, pauli_product_paths, &product_label_covered)?;
+        self.draw_all_nodes_plain(&mut chart, pp_paths, &product_label_covered)?;
         self.draw_data_group_borders_plain(&mut chart, self.topo.data_groups())?;
-        self.draw_path_overlays(&mut chart, pauli_product_paths, &product_label_covered)?;
+        self.draw_path_overlays(&mut chart, pp_paths, &product_label_covered)?;
         self.draw_data_group_labels(&mut chart, self.topo.data_groups())?;
-        self.draw_product_labels(&mut chart, pauli_product_paths, &product_label_positions)?;
+        self.draw_product_labels(&mut chart, pp_paths, &product_label_positions)?;
 
         if !title_str.is_empty() {
             for (i, line) in title_str.split('\n').enumerate() {
@@ -130,11 +130,11 @@ impl<'a> TopoGraphPlotter<'a> {
     /// Magic nodes show: their label (no paths), nothing (in a path), remaining
     /// cultivation lcycles (cultivating), or "T" (ready).
     fn draw_all_nodes_plain(
-        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
+        &self, chart: &mut PlotChart, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let path_node_ids: std::collections::HashSet<u16> =
-            pauli_product_paths.iter().flat_map(|(_, tree, _)| tree.iter_nodes()).collect();
+            pp_paths.iter().flat_map(|(_, tree, _)| tree.iter_nodes()).collect();
 
         for node in self.topo.iter_nodes() {
             let (x, y) = node.pos;
@@ -158,7 +158,7 @@ impl<'a> TopoGraphPlotter<'a> {
                 let label = &self.topo.labels[node.id as usize];
                 let label_text = match node.node_type {
                     NodeType::Magic => {
-                        if pauli_product_paths.is_empty() {
+                        if pp_paths.is_empty() {
                             label.clone()
                         } else if path_node_ids.contains(&node.id) {
                             String::new() // Covered by path overlay.
@@ -172,7 +172,7 @@ impl<'a> TopoGraphPlotter<'a> {
                         }
                     }
                     NodeType::Bus => {
-                        if pauli_product_paths.is_empty() {
+                        if pp_paths.is_empty() {
                             label.clone()
                         } else {
                             String::new()
@@ -299,28 +299,28 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 
     fn draw_path_overlays(
-        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
+        &self, chart: &mut PlotChart, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for (pp, path_graph, _cycle) in pauli_product_paths.iter() {
+        for (pp, path_graph, _cycle) in pp_paths.iter() {
             let color = Self::product_color(pp.id);
             let is_t = pp.gate_type.is_t();
 
             let routing_ids: Vec<u16> = path_graph
                 .iter_nodes()
-                .filter(|&id| self.topo.get_node(id).node_type != NodeType::Data)
+                .filter(|&id| self.topo.node(id).node_type != NodeType::Data)
                 .collect();
 
             let routing_pos_set: std::collections::HashSet<(i32, i32)> = routing_ids
                 .iter()
                 .map(|&id| {
-                    let (px, py) = self.topo.get_node(id).pos;
+                    let (px, py) = self.topo.node(id).pos;
                     ((px * 10.0).round() as i32, (py * 10.0).round() as i32)
                 })
                 .collect();
 
             for &id in &routing_ids {
-                let node = self.topo.get_node(id);
+                let node = self.topo.node(id);
                 let is_root = path_graph.root_node_id == Some(id);
                 self.draw_routing_node_overlay(
                     chart,
@@ -380,31 +380,31 @@ impl<'a> TopoGraphPlotter<'a> {
     fn draw_data_node_connections(
         &self, chart: &mut PlotChart, routing_id: u16, path_graph: &TreeGraph, color: RGBAColor,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let routing_node = self.topo.get_node(routing_id);
-        for &nbor_id in path_graph.neighbors(routing_id) {
-            let nbor = self.topo.get_node(nbor_id);
-            if nbor.node_type != NodeType::Data {
+        let routing_node = self.topo.node(routing_id);
+        for &nb_id in path_graph.neighbors(routing_id) {
+            let nb = self.topo.node(nb_id);
+            if nb.node_type != NodeType::Data {
                 continue;
             }
-            let nbor_label = &self.topo.labels[nbor_id as usize];
-            let is_x_node = nbor_label.ends_with('X');
-            if let Some(side) = Self::data_side_of_neighbor(nbor.pos, routing_node.pos) {
+            let nb_label = &self.topo.labels[nb_id as usize];
+            let is_x_node = nb_label.ends_with('X');
+            if let Some(side) = Self::data_side_of_neighbor(nb.pos, routing_node.pos) {
                 let group_outer_y = if side == DataSide::Top || side == DataSide::Bottom {
-                    if let Some(&gi) = self.topo.node_to_group().get(&nbor_id) {
+                    if let Some(&gi) = self.topo.node_to_group_map().get(&nb_id) {
                         let groups = self.topo.data_groups();
                         let group = &groups[gi];
                         let y_top = group.y_x.max(group.y_z) + 0.5;
                         let y_bot = group.y_x.min(group.y_z) - 0.5;
                         if side == DataSide::Top { y_top } else { y_bot }
                     } else {
-                        if side == DataSide::Top { nbor.pos.1 + 0.5 } else { nbor.pos.1 - 0.5 }
+                        if side == DataSide::Top { nb.pos.1 + 0.5 } else { nb.pos.1 - 0.5 }
                     }
                 } else {
-                    if side == DataSide::Top { nbor.pos.1 + 0.5 } else { nbor.pos.1 - 0.5 }
+                    if side == DataSide::Top { nb.pos.1 + 0.5 } else { nb.pos.1 - 0.5 }
                 };
                 Self::draw_data_node_side_highlight(
                     chart,
-                    nbor.pos,
+                    nb.pos,
                     side,
                     color,
                     is_x_node,
@@ -412,9 +412,9 @@ impl<'a> TopoGraphPlotter<'a> {
                 )?;
                 let letter = if is_x_node { "X" } else { "Z" };
                 let (lx, ly) = match side {
-                    DataSide::Left => (nbor.pos.0 - 0.25, nbor.pos.1),
-                    DataSide::Right => (nbor.pos.0 + 0.25, nbor.pos.1),
-                    DataSide::Top | DataSide::Bottom => (nbor.pos.0, group_outer_y),
+                    DataSide::Left => (nb.pos.0 - 0.25, nb.pos.1),
+                    DataSide::Right => (nb.pos.0 + 0.25, nb.pos.1),
+                    DataSide::Top | DataSide::Bottom => (nb.pos.0, group_outer_y),
                 };
                 draw_boxed_label(chart, letter, lx, ly, color)?;
             }
@@ -458,14 +458,14 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 
     fn compute_product_label_positions(
-        &self, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
+        &self, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
     ) -> Vec<Option<(f32, f32, f32, usize)>> {
         let mut labeled_positions: std::collections::HashSet<(i32, i32)> =
             std::collections::HashSet::new();
-        for (pp, path_graph, _cycle) in pauli_product_paths.iter() {
+        for (pp, path_graph, _cycle) in pp_paths.iter() {
             if let Some(root_id) = path_graph.root_node_id {
                 if pp.gate_type.is_t() {
-                    let (px, py) = self.topo.get_node(root_id).pos;
+                    let (px, py) = self.topo.node(root_id).pos;
                     labeled_positions
                         .insert(((px * 10.0).round() as i32, (py * 10.0).round() as i32));
                 }
@@ -478,14 +478,14 @@ impl<'a> TopoGraphPlotter<'a> {
             }
         }
 
-        pauli_product_paths
+        pp_paths
             .iter()
             .enumerate()
             .map(|(i, (pp, path_graph, _cycle))| {
                 let mut row_map: std::collections::HashMap<i32, Vec<f32>> =
                     std::collections::HashMap::new();
                 for id in path_graph.iter_nodes() {
-                    let node = self.topo.get_node(id);
+                    let node = self.topo.node(id);
                     if node.node_type != NodeType::Data {
                         let (px, py) = node.pos;
                         row_map.entry((py * 10.0).round() as i32).or_default().push(px);
@@ -520,10 +520,10 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 
     fn draw_product_labels(
-        &self, chart: &mut PlotChart, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
+        &self, chart: &mut PlotChart, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         positions: &[Option<(f32, f32, f32, usize)>],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for (pos_opt, (pp, _path_graph, cycle)) in positions.iter().zip(pauli_product_paths.iter())
+        for (pos_opt, (pp, _path_graph, cycle)) in positions.iter().zip(pp_paths.iter())
         {
             if let Some(&(center_x, row_y, tw, _i)) = pos_opt.as_ref() {
                 draw_text(

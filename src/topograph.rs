@@ -21,8 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) struct TopoGraph {
     pub(crate) nodes: Vec<Node>,
     pub labels: Vec<String>,
-    pub(crate) node_ids_from_labels: IndexMap<String, u16>,
-    pub(crate) data_node_ids: Vec<[u16; 2]>,
+    pub(crate) label_to_id: IndexMap<String, u16>,
+    pub(crate) data_ids: Vec<[u16; 2]>,
     pub(crate) node_grid: Vec<Vec<Option<String>>>,
     pub(crate) num_cols: usize,
     pub(crate) num_rows: usize,
@@ -48,8 +48,8 @@ impl TopoGraph {
         TopoGraph {
             nodes: Vec::new(),
             labels: Vec::new(),
-            node_ids_from_labels: IndexMap::new(),
-            data_node_ids: Vec::new(),
+            label_to_id: IndexMap::new(),
+            data_ids: Vec::new(),
             node_grid: Vec::new(),
             num_cols: 0,
             num_rows: 0,
@@ -71,7 +71,7 @@ impl TopoGraph {
         }
     }
 
-    pub(crate) fn get_label(&self, id: u16) -> &str {
+    pub(crate) fn label(&self, id: u16) -> &str {
         &self.labels[id as usize]
     }
 
@@ -104,9 +104,9 @@ impl TopoGraph {
         // The paired node has the adjacent qubit number and the same basis suffix.
         let node_ids: Vec<u16> = self.nodes.iter().map(|node| node.id).collect();
         for node_id in node_ids {
-            let node = self.get_node(node_id);
+            let node = self.node(node_id);
             if node.node_type == NodeType::Data {
-                let label = self.get_label(node_id);
+                let label = self.label(node_id);
                 let qubit = label
                     .chars()
                     .skip(1)
@@ -119,29 +119,29 @@ impl TopoGraph {
                 // Even qubit pairs with qubit+1; odd qubit pairs with qubit-1.
                 let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
                 let paired_node_label = format!("d{}{}", pair_qubit, term);
-                self.get_node_mut(node_id).paired_data_id =
-                    self.node_ids_from_labels.get(&paired_node_label).copied();
+                self.node_mut(node_id).paired_data_id =
+                    self.label_to_id.get(&paired_node_label).copied();
             }
         }
-        self.data_node_ids.clear();
+        self.data_ids.clear();
         for node in &self.nodes {
             if node.node_type == NodeType::Data {
                 let label = &self.labels[node.id as usize];
                 let basis: char = label.chars().last().unwrap();
                 let qubit: usize = label[1..label.len() - 1].parse().unwrap();
                 let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
-                if qubit >= self.data_node_ids.len() {
-                    self.data_node_ids.resize(qubit + 1, [u16::MAX; 2]);
+                if qubit >= self.data_ids.len() {
+                    self.data_ids.resize(qubit + 1, [u16::MAX; 2]);
                 }
-                self.data_node_ids[qubit][basis_idx] = node.id;
+                self.data_ids[qubit][basis_idx] = node.id;
             }
         }
         self.update_statistics();
         self.print_statistics();
-        self.build_cached_plot_data();
+        self.build_plot_cache();
     }
 
-    pub(crate) fn build_cached_plot_data(&mut self) {
+    pub(crate) fn build_plot_cache(&mut self) {
         self.data_pos_map = self
             .nodes
             .iter()
@@ -288,11 +288,11 @@ impl TopoGraph {
         println!("  total:        {}", self.num_qubits);
     }
 
-    pub(crate) fn get_node(&self, id: u16) -> &Node {
+    pub(crate) fn node(&self, id: u16) -> &Node {
         &self.nodes[id as usize]
     }
 
-    pub(crate) fn get_node_mut(&mut self, id: u16) -> &mut Node {
+    pub(crate) fn node_mut(&mut self, id: u16) -> &mut Node {
         &mut self.nodes[id as usize]
     }
 
@@ -301,14 +301,14 @@ impl TopoGraph {
     }
 
     pub(crate) fn add_edge(&mut self, node_id1: u16, node_id2: u16) {
-        self.get_node_mut(node_id1).add_neighbor(node_id2);
-        self.get_node_mut(node_id2).add_neighbor(node_id1);
+        self.node_mut(node_id1).add_neighbor(node_id2);
+        self.node_mut(node_id2).add_neighbor(node_id1);
         self.num_edges += 1;
     }
 
     pub(crate) fn get_data_node_id(&self, qubit: u16, basis: char) -> u16 {
         let basis_idx: usize = if basis == 'X' { 0 } else { 1 };
-        self.data_node_ids[qubit as usize][basis_idx]
+        self.data_ids[qubit as usize][basis_idx]
     }
 
     /// Returns true if this magic node is actively cultivating (started but not yet ready).
@@ -327,31 +327,31 @@ impl TopoGraph {
         &self.data_groups
     }
 
-    pub(crate) fn node_to_group(&self) -> &HashMap<u16, usize> {
+    pub(crate) fn node_to_group_map(&self) -> &HashMap<u16, usize> {
         &self.node_to_group
     }
 
     pub(crate) fn print(&self) -> io::Result<()> {
         let topo_stem = self.circuit_stem();
         let output_fname = format!("{}.topo.txt", topo_stem);
-        let mut file = File::create(&output_fname)?;
+        let mut f = File::create(&output_fname)?;
 
         for row in 0..self.num_rows {
             for col in 0..self.num_cols {
                 if let Some(ref label) = self.node_grid[col][row] {
                     if label.starts_with('d') {
                         write!(
-                            file,
+                            f,
                             "{}{} ",
                             label.chars().nth(0).unwrap_or(' '),
                             label.chars().last().unwrap_or(' ')
                         )?;
                     } else {
-                        write!(file, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
+                        write!(f, "{}  ", label.chars().nth(0).unwrap_or(' '))?;
                     }
                 }
             }
-            writeln!(file)?;
+            writeln!(f)?;
         }
 
         println!("Wrote topology to {}", output_fname);
@@ -359,18 +359,18 @@ impl TopoGraph {
     }
 
     pub(crate) fn plot(
-        &self, fname_added: &str, pauli_product_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
+        &self, fname_added: &str, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        TopoGraphPlotter::new(self).plot(fname_added, pauli_product_paths, title_str)
+        TopoGraphPlotter::new(self).plot(fname_added, pp_paths, title_str)
     }
 
     fn read_topo_from_file(&mut self, rseed: &u32, sides_only: bool) -> io::Result<()> {
         use crate::fn_timer;
         let _timer = fn_timer!();
         let mut rows = Vec::new();
-        let file = File::open(&self.topo_fname)?;
-        for line in io::BufReader::new(file).lines() {
+        let f = File::open(&self.topo_fname)?;
+        for line in io::BufReader::new(f).lines() {
             let line = line?;
             let row: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
             if !row.is_empty() {
@@ -434,7 +434,6 @@ impl TopoGraph {
         }
         self.set_edges(sides_only);
         println!("Read topology with dimensions: {} {}", self.num_cols, self.num_rows);
-
         Ok(())
     }
 
@@ -573,7 +572,7 @@ impl TopoGraph {
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
-        let label1 = format!("d{}{}", q, op);
+        let fname1 = format!("d{}{}", q, op);
         let id1 = self.num_nodes as u16;
         let node1 = Node::new(
             id1,
@@ -583,13 +582,13 @@ impl TopoGraph {
             NodeType::Data,
         );
         self.nodes.push(node1);
-        self.labels.push(label1.clone());
+        self.labels.push(fname1.clone());
         self.busy_counts.push(0);
         self.cultivation_times.push(0);
-        self.node_ids_from_labels.insert(label1, id1);
+        self.label_to_id.insert(fname1, id1);
         self.num_nodes += 1;
         let id2 = self.num_nodes as u16;
-        let label2 = format!("d{}{}", q + 1, op);
+        let fname2 = format!("d{}{}", q + 1, op);
         let node2 = Node::new(
             id2,
             None,
@@ -598,10 +597,10 @@ impl TopoGraph {
             NodeType::Data,
         );
         self.nodes.push(node2);
-        self.labels.push(label2.clone());
+        self.labels.push(fname2.clone());
         self.busy_counts.push(0);
         self.cultivation_times.push(0);
-        self.node_ids_from_labels.insert(label2, id2);
+        self.label_to_id.insert(fname2, id2);
         let combined_label = format!("d{}/{}{}", q, q + 1, op);
         self.node_grid[col][row] = Some(combined_label.clone());
         self.num_nodes += 1;
@@ -626,7 +625,7 @@ impl TopoGraph {
         self.labels.push(label.clone());
         self.busy_counts.push(0);
         self.cultivation_times.push(0);
-        self.node_ids_from_labels.insert(label.clone(), self.num_nodes as u16);
+        self.label_to_id.insert(label.clone(), self.num_nodes as u16);
         self.num_nodes += 1;
         label
     }
@@ -714,20 +713,20 @@ impl TopoGraph {
         // connect only the left or right individual data node to the routing neighbor.
         for (label1, label2) in edges_to_add {
             if label1.starts_with('d') {
-                if let Some(d) = Self::get_data_label_side_static(&label1, true) {
-                    let n1 = *self.node_ids_from_labels.get(&d).unwrap();
-                    let n2 = *self.node_ids_from_labels.get(&label2).unwrap();
+                if let Some(d) = Self::data_label_side(&label1, true) {
+                    let n1 = *self.label_to_id.get(&d).unwrap();
+                    let n2 = *self.label_to_id.get(&label2).unwrap();
                     self.add_edge(n1, n2);
                 }
             } else if label2.starts_with('d') {
-                if let Some(d) = Self::get_data_label_side_static(&label2, false) {
-                    let n1 = *self.node_ids_from_labels.get(&d).unwrap();
-                    let n2 = *self.node_ids_from_labels.get(&label1).unwrap();
+                if let Some(d) = Self::data_label_side(&label2, false) {
+                    let n1 = *self.label_to_id.get(&d).unwrap();
+                    let n2 = *self.label_to_id.get(&label1).unwrap();
                     self.add_edge(n2, n1);
                 }
             } else {
-                let n1 = *self.node_ids_from_labels.get(&label1).unwrap();
-                let n2 = *self.node_ids_from_labels.get(&label2).unwrap();
+                let n1 = *self.label_to_id.get(&label1).unwrap();
+                let n2 = *self.label_to_id.get(&label2).unwrap();
                 self.add_edge(n1, n2);
             }
         }
@@ -737,19 +736,19 @@ impl TopoGraph {
         for (label1, label2) in vert_data_edges_to_add {
             let (data_label, bus_label) =
                 if label1.starts_with('d') { (label1, label2) } else { (label2, label1) };
-            let (data_label1, data_label2) = Self::get_data_labels_static(&data_label).unwrap();
-            let data_node_id1 = *self.node_ids_from_labels.get(&data_label1).unwrap();
-            let data_node_id2 = *self.node_ids_from_labels.get(&data_label2).unwrap();
-            let bus_node_id = *self.node_ids_from_labels.get(&bus_label).unwrap();
-            self.get_node_mut(bus_node_id).add_neighbor(data_node_id1);
-            self.get_node_mut(bus_node_id).add_neighbor(data_node_id2);
-            self.get_node_mut(data_node_id1).add_neighbor(bus_node_id);
-            self.get_node_mut(data_node_id2).add_neighbor(bus_node_id);
+            let (data_label1, data_label2) = Self::data_labels(&data_label).unwrap();
+            let data_node_id1 = *self.label_to_id.get(&data_label1).unwrap();
+            let data_node_id2 = *self.label_to_id.get(&data_label2).unwrap();
+            let bus_node_id = *self.label_to_id.get(&bus_label).unwrap();
+            self.node_mut(bus_node_id).add_neighbor(data_node_id1);
+            self.node_mut(bus_node_id).add_neighbor(data_node_id2);
+            self.node_mut(data_node_id1).add_neighbor(bus_node_id);
+            self.node_mut(data_node_id2).add_neighbor(bus_node_id);
         }
     }
 
     /// Parses a combined double-data-qubit label like `"d0/1X"` into its parts.
-    fn get_data_label_parts(label: &str) -> Option<(&str, &str, &str)> {
+    fn parse_data_label_parts(label: &str) -> Option<(&str, &str, &str)> {
         let d_pos = label.find('d')?;
         let slash_pos = label.find('/')?;
         let op_pos = label.find(|c: char| c == 'X' || c == 'Z')?;
@@ -760,8 +759,8 @@ impl TopoGraph {
     }
 
     /// Extracts the left (`left=true`) or right (`left=false`) individual data node label.
-    fn get_data_label_side_static(label: &str, left: bool) -> Option<String> {
-        let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
+    fn data_label_side(label: &str, left: bool) -> Option<String> {
+        let (first_num, second_num, operator) = Self::parse_data_label_parts(label)?;
         if left {
             Some(format!("d{}{}", first_num, operator))
         } else {
@@ -770,8 +769,8 @@ impl TopoGraph {
     }
 
     /// Extracts both individual data node labels from a double data qubit label.
-    fn get_data_labels_static(label: &str) -> Option<(String, String)> {
-        let (first_num, second_num, operator) = Self::get_data_label_parts(label)?;
+    fn data_labels(label: &str) -> Option<(String, String)> {
+        let (first_num, second_num, operator) = Self::parse_data_label_parts(label)?;
         Some((format!("d{}{}", first_num, operator), format!("d{}{}", second_num, operator)))
     }
 }
@@ -851,7 +850,7 @@ mod tests {
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         let magic_ids: Vec<u16> =
             topo.iter_nodes().filter(|n| n.node_type == NodeType::Magic).map(|n| n.id).collect();
-        let has_nbors = magic_ids.iter().any(|&id| !topo.get_node(id).nbors_slice().is_empty());
+        let has_nbors = magic_ids.iter().any(|&id| !topo.node(id).nbors_slice().is_empty());
         assert!(has_nbors);
     }
 
@@ -861,7 +860,7 @@ mod tests {
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         for node in topo.iter_nodes() {
             for &nb_id in node.nbors_slice() {
-                let nb = topo.get_node(nb_id);
+                let nb = topo.node(nb_id);
                 assert!(
                     nb.nbors_slice().contains(&node.id),
                     "edge {}->{} is not symmetric",
@@ -881,8 +880,8 @@ mod tests {
         assert_ne!(x_id, u16::MAX);
         assert_ne!(z_id, u16::MAX);
         assert_ne!(x_id, z_id);
-        assert_eq!(topo.get_node(x_id).node_type, NodeType::Data);
-        assert_eq!(topo.get_node(z_id).node_type, NodeType::Data);
+        assert_eq!(topo.node(x_id).node_type, NodeType::Data);
+        assert_eq!(topo.node(z_id).node_type, NodeType::Data);
     }
 
     #[test]
@@ -936,7 +935,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         for node in topo.iter_nodes() {
-            let label = topo.get_label(node.id);
+            let label = topo.label(node.id);
             assert!(!label.is_empty());
         }
     }
@@ -947,7 +946,7 @@ mod tests {
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         for node in topo.iter_nodes() {
             if node.node_type == NodeType::Data {
-                let label = topo.get_label(node.id);
+                let label = topo.label(node.id);
                 assert!(label.ends_with('X') || label.ends_with('Z'));
             }
         }
@@ -1042,7 +1041,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(2, &"test".to_string(), &"".to_string(), &0, true, 1, false);
         for node in topo.iter_nodes() {
-            let fetched = topo.get_node(node.id);
+            let fetched = topo.node(node.id);
             assert_eq!(fetched.id, node.id);
         }
     }

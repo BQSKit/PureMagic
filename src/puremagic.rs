@@ -105,8 +105,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit_fname = args.circuit_fname;
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
-    let num_products = circuit.num_products();
-    let num_layers = circuit.print_statistics();
+    let n_products = circuit.num_products();
+    let n_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
     if args.plot.contains(&"circuit".to_string()) {
@@ -134,8 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         topo_graph.plot(".topo", &[], "")?;
         topo_graph.print()?;
     }
-    let mut num_qubits = topo_graph.num_qubits;
-    let mut scheduler = Scheduler::new(
+    let mut n_qubits = topo_graph.num_qubits;
+    let mut sched = Scheduler::new(
         circuit,
         topo_graph,
         args.magic_state_lambda,
@@ -145,29 +145,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.no_t_failures,
     );
 
-    let (tot_num_lcycles, num_scheduled) = scheduler.schedule_circuit()?;
-    assert!(num_scheduled >= num_products);
-    let volume = num_qubits * tot_num_lcycles;
-    println!(
-        "Scheduled {} in {} logical cycles, volume {}",
-        num_scheduled, tot_num_lcycles, volume
-    );
-    scheduler.print_schedule(&hdr)?;
+    let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
+    assert!(n_scheduled >= n_products);
+    let volume = n_qubits * tot_lcycles;
+    println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
+    sched.print_schedule(&hdr)?;
     print!("Generating Pure Magic layout for comparison:\n  ");
     let mut best_magic_topo_graph = TopoGraph::new();
     best_magic_topo_graph.gen_pure_magic_topo(num_data_qubits, 1, false);
     best_magic_topo_graph.update_statistics();
-    num_qubits = best_magic_topo_graph.num_qubits;
-    let (_, num_t_layers) = scheduler.input.circuit.count_t_stats();
-    let optimal_num_layers =
-        if args.no_t_failures { num_layers } else { num_layers + num_t_layers / 2 };
-    let optimal_speedup = num_scheduled as f64 / optimal_num_layers as f64;
-    let optimal_volume = num_qubits * optimal_num_layers;
+    n_qubits = best_magic_topo_graph.num_qubits;
+    let (_, n_t_layers) = sched.input.circuit.count_t_stats();
+    let optimal_n_layers = if args.no_t_failures { n_layers } else { n_layers + n_t_layers / 2 };
+    let optimal_speedup = n_scheduled as f64 / optimal_n_layers as f64;
+    let optimal_volume = n_qubits * optimal_n_layers;
     println!(
         "Optimal logical cycles {} ({:.3} speedup) volume {}",
-        optimal_num_layers, optimal_speedup, optimal_volume
+        optimal_n_layers, optimal_speedup, optimal_volume
     );
-    let speedup = num_scheduled as f64 / tot_num_lcycles as f64;
+    let speedup = n_scheduled as f64 / tot_lcycles as f64;
     println!("Parallelism: {:.3}x", speedup);
     println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
     println!("Parallel efficiency: {:.3}", speedup / optimal_speedup);
