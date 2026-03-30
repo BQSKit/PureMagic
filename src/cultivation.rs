@@ -83,7 +83,7 @@ impl CultivationManager {
             .map(|node| node.id)
             .collect();
         self.magic_node_positions =
-            self.magic_node_ids.iter().map(|&id| topo.get_node(id).pos).collect();
+            self.magic_node_ids.iter().map(|&id| topo.node(id).pos).collect();
         let num_topo_nodes = topo.num_nodes;
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
@@ -108,7 +108,7 @@ impl CultivationManager {
                 self.new_cultivation_times.push(t);
             }
         }
-        let mut num_avail_magic = 0;
+        let mut n_ready = 0;
         let mut cultivation_time_index = 0;
         self.ready_magic_positions.clear();
         for i in 0..self.magic_node_ids.len() {
@@ -129,13 +129,13 @@ impl CultivationManager {
                 }
             }
             if topo.cultivation_times[id as usize] == 0 {
-                num_avail_magic += 1;
+                n_ready += 1;
                 self.ready_magic_positions.push(self.magic_node_positions[i]);
             }
         }
         self.ready_magic_positions
             .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        num_avail_magic
+        n_ready
     }
 }
 

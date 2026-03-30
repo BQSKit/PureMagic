@@ -19,7 +19,7 @@ use std::{
 /// the next one on that qubit). Layers are lazily computed via topological sort
 /// and cached after the first call to avoid repeated recomputation.
 pub(crate) struct Circuit {
-    pub(crate) products: Vec<PauliProduct>,
+    pub(crate) pps: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
     pub(crate) circuit_fname: String,
     pub(crate) num_qubits: usize,
@@ -27,13 +27,12 @@ pub(crate) struct Circuit {
 
 impl Circuit {
     pub(crate) fn new(fname: &String) -> Self {
-        let circuit = Circuit {
-            products: Vec::new(),
+        Circuit {
+            pps: Vec::new(),
             circuit_fname: fname.to_string(),
             num_qubits: 0,
             layers: RefCell::new(None),
-        };
-        circuit
+        }
     }
 
     /// Loads Pauli products from file, skipping X and Z gates.
@@ -42,8 +41,8 @@ impl Circuit {
     pub(crate) fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
-        let file = File::open(&self.circuit_fname)?;
-        let reader = BufReader::new(file);
+        let f = File::open(&self.circuit_fname)?;
+        let reader = BufReader::new(f);
         let mut product_id: i32 = 0;
         for line in reader.lines() {
             let product_string = line?.trim().to_string();
@@ -54,51 +53,46 @@ impl Circuit {
             if product.gate_type.is_x() || product.gate_type.is_z() {
                 continue;
             }
-            self.products.push(product);
+            self.pps.push(product);
             product_id += 1;
         }
-        self.num_qubits =
-            self.products.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
+        self.num_qubits = self.pps.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
 
-        println!(
-            "Loaded circuit with {} products and {} qubits",
-            self.products.len(),
-            self.num_qubits
-        );
+        println!("Loaded circuit with {} products and {} qubits", self.pps.len(), self.num_qubits);
 
-        self.generate_dependencies();
+        self.gen_deps();
         Ok(())
     }
 
-    pub(crate) fn generate_dependencies(&mut self) {
-        let mut relationships = Vec::new();
+    pub(crate) fn gen_deps(&mut self) {
+        let mut deps = Vec::new();
         let mut current_pps = vec![-1; self.num_qubits];
 
-        for pp in self.products.iter() {
+        for pp in self.pps.iter() {
             for op in &pp.operators {
                 let current_id = current_pps[op.qubit as usize];
                 if current_id != -1 {
-                    relationships.push((pp.id as i32, current_id));
+                    deps.push((pp.id as i32, current_id));
                 }
                 current_pps[op.qubit as usize] = pp.id as i32;
             }
         }
-        for (child_id, parent_id) in relationships {
-            self.products[child_id as usize].parents.push(parent_id);
-            self.products[parent_id as usize].children.push(child_id);
+        for (child_id, parent_id) in deps {
+            self.pps[child_id as usize].parents.push(parent_id);
+            self.pps[parent_id as usize].children.push(child_id);
         }
     }
 
     pub(crate) fn initial_products(&self) -> impl Iterator<Item = &PauliProduct> {
-        self.products.iter().filter(|pp| pp.parents.is_empty())
+        self.pps.iter().filter(|pp| pp.parents.is_empty())
     }
 
-    pub(crate) fn get_product(&self, id: i32) -> &PauliProduct {
-        &self.products[id as usize]
+    pub(crate) fn product(&self, id: i32) -> &PauliProduct {
+        &self.pps[id as usize]
     }
 
     pub(crate) fn num_products(&self) -> usize {
-        self.products.len()
+        self.pps.len()
     }
 
     pub(crate) fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -108,7 +102,7 @@ impl Circuit {
         let plot_dir = format!("{}.circuit", circuit_stem);
         create_dir_all(&plot_dir)?;
 
-        let layers = self.get_layers();
+        let layers = self.layers();
         let min_layer = 0;
         let max_layer = layers.len();
         const LAYERS_PER_FILE: usize = 1000;
@@ -148,9 +142,9 @@ impl Circuit {
                 .disable_mesh()
                 .draw()?;
             for (col, layer) in layers[chunk_start..chunk_end].iter().enumerate() {
-                let mut sorted_layer: Vec<&PauliProduct> = layer.clone();
-                sorted_layer.sort_by_key(|pp| pp.get_qubits()[0]);
-                for (i, pp) in sorted_layer.iter().enumerate() {
+                let mut sorted_pps: Vec<&PauliProduct> = layer.clone();
+                sorted_pps.sort_by_key(|pp| pp.get_qubits()[0]);
+                for (i, pp) in sorted_pps.iter().enumerate() {
                     let col = col + chunk_start;
                     let start_pos = pp.get_qubits()[0];
                     let end_pos = *pp.get_qubits().last().unwrap();
@@ -231,7 +225,7 @@ impl Circuit {
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
         let plot_dir = format!("{}.circuit", circuit_stem);
         create_dir_all(&plot_dir)?;
-        let layers = self.get_layers();
+        let layers = self.layers();
         let plot_fname = format!("{}.layer_stats.svg", circuit_stem);
         let root = SVGBackend::new(&plot_fname, (1800, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
@@ -270,8 +264,8 @@ impl Circuit {
             &layers,
             window_size,
             |window| {
-                let sum: usize = window.iter().map(|layer| layer.len()).sum();
-                sum as f64 / window.len() as f64
+                let tot: usize = window.iter().map(|layer| layer.len()).sum();
+                tot as f64 / window.len() as f64
             },
             RGBColor(0, 0, 255),
             "avg products/layer",
@@ -291,7 +285,7 @@ impl Circuit {
             &layers,
             window_size,
             |window| {
-                let (total_ops, total_products): (usize, usize) = window
+                let (tot_ops, tot_products): (usize, usize) = window
                     .iter()
                     .map(|layer| {
                         let ops: usize = layer.iter().map(|pp| pp.operators.len()).sum();
@@ -301,7 +295,7 @@ impl Circuit {
                         (acc_ops + ops, acc_prods + prods)
                     });
 
-                if total_products > 0 { total_ops as f64 / total_products as f64 } else { 0.0 }
+                if tot_products > 0 { tot_ops as f64 / tot_products as f64 } else { 0.0 }
             },
             RGBColor(255, 0, 0),
             "avg product size",
@@ -377,38 +371,38 @@ impl Circuit {
     }
 
     pub(crate) fn count_t_stats(&self) -> (usize, usize) {
-        let layers = self.get_layers();
-        let num_t_gates = self.products.iter().filter(|pp| pp.gate_type.is_t()).count();
+        let layers = self.layers();
+        let num_t_gates = self.pps.iter().filter(|pp| pp.gate_type.is_t()).count();
         let num_t_layers =
             layers.iter().filter(|layer| layer.iter().any(|pp| pp.gate_type.is_t())).count();
         (num_t_gates, num_t_layers)
     }
 
     pub(crate) fn print_statistics(&self) -> usize {
-        let layers = self.get_layers();
-        let mut num_cliffords = 0;
-        let mut num_products = vec![0; layers.len()];
+        let layers = self.layers();
+        let mut n_cliffords = 0;
+        let mut n_products = vec![0; layers.len()];
 
         for (i, layer) in layers.iter().enumerate() {
-            num_products[i] += layer.len();
+            n_products[i] += layer.len();
             for pp in layer {
                 if pp.gate_type.is_clifford() {
-                    num_cliffords += 1;
+                    n_cliffords += 1;
                 }
             }
         }
-        let num_layers = layers.len();
-        let avg_products = self.products.len() as f64 / num_layers as f64;
-        let max_products = *num_products.iter().max().unwrap_or(&0);
+        let n_layers = layers.len();
+        let avg_products = self.pps.len() as f64 / n_layers as f64;
+        let max_products = *n_products.iter().max().unwrap_or(&0);
         println!("Circuit statistics:");
-        println!("  Number of products:               {}", self.products.len());
-        println!("  Number of Cliffords:              {}", num_cliffords);
-        println!("  Layers:                           {}", num_layers);
+        println!("  Number of products:               {}", self.pps.len());
+        println!("  Number of Cliffords:              {}", n_cliffords);
+        println!("  Layers:                           {}", n_layers);
         println!(
             "  Products per layer:               {:.2} avg, {} max",
             avg_products, max_products
         );
-        num_layers
+        n_layers
     }
 
     #[cfg(debug_assertions)]
@@ -417,17 +411,17 @@ impl Circuit {
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
         let output_fname = format!("{}.circuit.txt", circuit_stem);
-        let file = File::create(&output_fname)?;
-        let mut buf_file = BufWriter::new(file);
+        let f = File::create(&output_fname)?;
+        let mut buf_f = BufWriter::new(f);
 
-        let layers = self.get_layers();
+        let layers = self.layers();
 
-        writeln!(buf_file, "layer id product ancilla? ES? clifford? children parents")?;
+        writeln!(buf_f, "layer id product ancilla? ES? clifford? children parents")?;
         for (i, layer) in layers.iter().enumerate() {
-            let mut sorted_layer = layer.clone();
-            sorted_layer.sort_by_key(|pp| pp.id);
-            for pp in sorted_layer {
-                writeln!(buf_file, "{}: {}", i, pp)?;
+            let mut sorted_pps = layer.clone();
+            sorted_pps.sort_by_key(|pp| pp.id);
+            for pp in sorted_pps {
+                writeln!(buf_f, "{}: {}", i, pp)?;
             }
         }
         println!("Wrote circuit to {}", output_fname);
@@ -436,14 +430,14 @@ impl Circuit {
 
     /// Computes circuit layers using Kahn's topological sort (cached after first call).
     /// Each layer contains all products whose parents have all been placed in earlier layers.
-    fn get_layers(&self) -> Vec<Vec<&PauliProduct>> {
+    fn layers(&self) -> Vec<Vec<&PauliProduct>> {
         if let Some(cached) = self.layers.borrow().as_ref() {
             return cached
                 .iter()
-                .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
+                .map(|layer| layer.iter().map(|&idx| &self.pps[idx]).collect())
                 .collect();
         }
-        let mut in_degrees: Vec<usize> = self.products.iter().map(|pp| pp.parents.len()).collect();
+        let mut in_degrees: Vec<usize> = self.pps.iter().map(|pp| pp.parents.len()).collect();
         let mut ready: Vec<usize> = in_degrees
             .iter()
             .enumerate()
@@ -451,14 +445,14 @@ impl Circuit {
             .map(|(idx, _)| idx)
             .collect();
 
-        let mut index_layers = Vec::new();
+        let mut idx_layers = Vec::new();
         let mut processed = 0;
         while !ready.is_empty() {
-            index_layers.push(ready.clone());
+            idx_layers.push(ready.clone());
             processed += ready.len();
             let mut next_ready = Vec::new();
             for &current in &ready {
-                for &child_id in &self.products[current].children {
+                for &child_id in &self.pps[current].children {
                     let child_idx = child_id as usize;
                     in_degrees[child_idx] -= 1;
                     if in_degrees[child_idx] == 0 {
@@ -468,16 +462,9 @@ impl Circuit {
             }
             ready = next_ready;
         }
-        assert_eq!(
-            processed,
-            self.products.len(),
-            "Circuit contains cycles or unreachable products"
-        );
-        *self.layers.borrow_mut() = Some(index_layers.clone());
-        index_layers
-            .iter()
-            .map(|layer| layer.iter().map(|&idx| &self.products[idx]).collect())
-            .collect()
+        assert_eq!(processed, self.pps.len(), "Circuit contains cycles or unreachable products");
+        *self.layers.borrow_mut() = Some(idx_layers.clone());
+        idx_layers.iter().map(|layer| layer.iter().map(|&idx| &self.pps[idx]).collect()).collect()
     }
 
     pub(crate) fn plot_qubit_coupling(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -538,8 +525,8 @@ impl Circuit {
 
     fn build_coupling_matrix(&self) -> Vec<Vec<usize>> {
         let mut matrix = vec![vec![0; self.num_qubits]; self.num_qubits];
-        for product in &self.products {
-            let qubits: Vec<u16> = product.get_qubits();
+        for pp in &self.pps {
+            let qubits: Vec<u16> = pp.get_qubits();
             for i in 0..qubits.len() {
                 for j in 0..qubits.len() {
                     let qubit_i = qubits[i] / 2;
@@ -606,7 +593,7 @@ mod tests {
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_products(), 1);
-        assert!(c.get_product(0).gate_type.is_t());
+        assert!(c.product(0).gate_type.is_t());
     }
 
     #[test]
@@ -622,8 +609,8 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.get_product(0).id, 0);
-        assert_eq!(c.get_product(1).id, 1);
+        assert_eq!(c.product(0).id, 0);
+        assert_eq!(c.product(1).id, 1);
     }
 
     #[test]
@@ -637,8 +624,8 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert!(c.get_product(0).parents.is_empty());
-        assert!(c.get_product(1).parents.is_empty());
+        assert!(c.product(0).parents.is_empty());
+        assert!(c.product(1).parents.is_empty());
     }
 
     #[test]
@@ -646,8 +633,8 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let pp0 = c.get_product(0);
-        let pp1 = c.get_product(1);
+        let pp0 = c.product(0);
+        let pp1 = c.product(1);
         assert!(pp0.parents.is_empty());
         assert_eq!(pp1.parents, vec![0]);
         assert_eq!(pp0.children, vec![1]);
@@ -659,12 +646,12 @@ mod tests {
         let f = make_circuit_file(&["+X__<T>", "+X__<T>", "+X__<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert!(c.get_product(0).parents.is_empty());
-        assert_eq!(c.get_product(1).parents, vec![0]);
-        assert_eq!(c.get_product(2).parents, vec![1]);
-        assert_eq!(c.get_product(0).children, vec![1]);
-        assert_eq!(c.get_product(1).children, vec![2]);
-        assert!(c.get_product(2).children.is_empty());
+        assert!(c.product(0).parents.is_empty());
+        assert_eq!(c.product(1).parents, vec![0]);
+        assert_eq!(c.product(2).parents, vec![1]);
+        assert_eq!(c.product(0).children, vec![1]);
+        assert_eq!(c.product(1).children, vec![2]);
+        assert!(c.product(2).children.is_empty());
     }
 
     #[test]
@@ -683,8 +670,8 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<M>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert!(c.get_product(0).gate_type.is_t());
-        assert!(c.get_product(1).gate_type.is_m());
+        assert!(c.product(0).gate_type.is_t());
+        assert!(c.product(1).gate_type.is_m());
     }
 
     #[test]
@@ -783,7 +770,7 @@ mod tests {
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_products(), 1);
-        assert!(c.get_product(0).gate_type.is_m());
+        assert!(c.product(0).gate_type.is_m());
     }
 
     #[test]
@@ -792,7 +779,7 @@ mod tests {
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_products(), 1);
-        assert!(c.get_product(0).gate_type.is_s());
+        assert!(c.product(0).gate_type.is_s());
     }
 
     #[test]
@@ -801,6 +788,6 @@ mod tests {
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
         assert_eq!(c.num_products(), 1);
-        assert!(c.get_product(0).gate_type.is_cx());
+        assert!(c.product(0).gate_type.is_cx());
     }
 }

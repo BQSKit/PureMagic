@@ -23,7 +23,7 @@ impl Circuit {
         &mut self, num_products: usize, num_qubits: usize, spread_probability: f64,
         decay_factor: f64, rng: &mut StdRng,
     ) {
-        self.products.extend((0..num_products).map(|product_id| {
+        self.pps.extend((0..num_products).map(|product_id| {
             PauliProduct::gen_rnd_t(
                 product_id as i32,
                 num_qubits,
@@ -32,14 +32,13 @@ impl Circuit {
                 rng,
             )
         }));
-        self.num_qubits =
-            self.products.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
+        self.num_qubits = self.pps.iter().map(|pp| pp.max_qubit as usize).max().unwrap_or(0) + 1;
         println!(
             "Generated random circuit with {} products and {} qubits",
-            self.products.len(),
+            self.pps.len(),
             self.num_qubits
         );
-        self.generate_dependencies();
+        self.gen_deps();
     }
 
     /// Writes all products to a circuit file in standard format.
@@ -48,10 +47,10 @@ impl Circuit {
         &self, circuit_fname: String, rng: &mut StdRng,
     ) -> io::Result<()> {
         let _timer = fn_timer!();
-        let mut file = File::create(&circuit_fname)?;
-        for product in &self.products {
-            let circuit_line = product.to_circuit_format(self.num_qubits, rng);
-            writeln!(file, "{}", circuit_line)?;
+        let mut f = File::create(&circuit_fname)?;
+        for pp in &self.pps {
+            let circuit_line = pp.to_circuit_format(self.num_qubits, rng);
+            writeln!(f, "{}", circuit_line)?;
         }
         println!("Saved circuit to {}", circuit_fname);
         Ok(())
