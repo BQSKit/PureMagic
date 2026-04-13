@@ -18,7 +18,9 @@ Arguments:
                    pdflatex/xelatex/lualatex (preferred) or pandoc as fallback
 
 Output:
-    LaTeX-formatted table with: circuit name, number of qubits, circuit length
+    LaTeX-formatted table with: circuit name (with qubit count), number of unitary
+    gates, compiled gates, transpiled T gates, transpiled Cliffords, and transpiled
+    depth columns (one per --puremagic file).
     (circuit length = number of unitary gate instruction lines, excluding
      whitespace, comments, QASM header declarations, measurements, resets,
      barriers, and identity gates)
@@ -273,32 +275,49 @@ def generate_pdf(latex_table: str, pdf_path: str) -> None:
     raise RuntimeError("No PDF renderer found. Install pdflatex, xelatex, lualatex, or pandoc.")
 
 
-def pretty_name(name):
+def pretty_name(name, num_qubits):
     """
-    Apply human-readable substitutions to raw circuit names.
+    Apply human-readable substitutions to raw circuit names, appending the
+    qubit count in parentheses.
 
     Rules (applied in order):
-      square_heisenberg_N<k>  ->  Heisenberg
-      qaoa_barabasi_albert_N<k>_3reps  ->  QAOA
+      square_heisenberg_N<k>  ->  Heis.(<k>)
+      qaoa_barabasi_albert_N<k>_3reps  ->  QAOA(<k>)
       Truncate at first '_' or ' '
       dnn/knn/qft/qv  ->  uppercase
       everything else ->  title-case first letter
+    Then append (<num_qubits>) unless the size was already extracted from name.
     """
     m = re.fullmatch(r"square_heisenberg_[Nn](\d+)", name)
     if m:
-        return "Heisenberg"
+        return f"Heis.({m.group(1)})"
 
     m = re.fullmatch(r"qaoa_barabasi_albert_[Nn](\d+)_3reps", name)
     if m:
-        return "QAOA"
+        return f"QAOA({m.group(1)})"
+
+    # Try to extract a size number from the name.
+    # Prefer an explicit _N<digits> or _n<digits> segment (strip leading zeros).
+    # For names like qv_N008_12345 we want the first such segment, not the last.
+    m = re.search(r"_[Nn](\d+)", name)
+    if m:
+        size = str(int(m.group(1)))  # strip leading zeros
+    elif num_qubits is not None:
+        size = str(num_qubits)
+    else:
+        size = None
 
     # Truncate at first underscore or space
     prefix = re.split(r"[_ ]", name)[0]
 
     if prefix.lower() in _UPPERCASE_NAMES:
-        return prefix.upper()
+        base = prefix.upper()
+    else:
+        base = prefix.capitalize()
 
-    return prefix.capitalize()
+    if size is not None:
+        return f"{base}({size})"
+    return base
 
 
 def main():
@@ -324,7 +343,7 @@ def main():
         "--transpiled",
         metavar="FILE",
         default=None,
-        help="Transpiler 'out' file; adds Compiled Depth, Transpiled Depth, and Cliffords columns",
+        help="Transpiler 'out' file; adds Compiled Gates, T Gates, and Cliffords columns",
     )
     parser.add_argument(
         "-m",
@@ -333,8 +352,8 @@ def main():
         action="append",
         default=[],
         help=(
-            "PureMagic 'out' file; adds a Circuit Depth column. "
-            "Append :LABEL to set the column header (e.g. file.out:w=1). "
+            "PureMagic 'out' file; adds a Transpiled Depth column. "
+            "Append :LABEL to set the sub-header label (e.g. file.out:W0). "
             "May be repeated to add multiple columns."
         ),
     )
@@ -362,7 +381,7 @@ def main():
             filepath, label = spec.rsplit(":", 1)
         else:
             filepath = spec
-            label = "Circuit Depth"
+            label = "W?"
         puremagic_entries.append((label, parse_puremagic_file(filepath)))
 
     # Read circuit names
@@ -379,8 +398,8 @@ def main():
         num_qubits, circuit_length = parse_qasm(qasm_path)
 
         trans = transpiled_data.get(name)
-        compiled_depth = trans[0] if trans else None
-        transpiled_depth = trans[1] if trans else None
+        compiled_gates = trans[0] if trans else None
+        transpiled_total = trans[1] if trans else None
         cliffords = trans[2] if trans else None
         pm_depths = [data.get(name) for _, data in puremagic_entries]
 
@@ -389,89 +408,126 @@ def main():
                 name,
                 num_qubits,
                 circuit_length,
-                compiled_depth,
-                transpiled_depth,
+                compiled_gates,
+                transpiled_total,
                 cliffords,
                 pm_depths,
             )
         )
 
     use_transpiled = bool(args.transpiled)
+    num_pm = len(puremagic_entries)
 
-    # Build header tuple
-    header_list = ["Circuit", "Qubits", "Unitary Gates"]
+    # ------------------------------------------------------------------ #
+    # Build the LaTeX table                                                #
+    # ------------------------------------------------------------------ #
+
+    # Column spec: |l|r|r|...|
+    num_cols = 2  # Circuit + Unitary Gates
     if use_transpiled:
-        header_list += ["Compiled Gates", "Transpiled T Gates", "Transpiled Cliffords"]
-    for label, _ in puremagic_entries:
-        header_list.append(label)
-    header = tuple(header_list)
+        num_cols += 3  # Compiled Gates, T Gates, Cliffords
+    num_cols += num_pm  # depth columns
 
+    col_spec = "|l|" + "r|" * (num_cols - 1)
+
+    # ---- header row 1 ----
+    # Fixed columns: Circuit, Unitary Gates
+    # Transpiled columns: Compiled Gates, Transpiled T Gates, Transpiled Cliffords
+    # PureMagic columns: grouped under \multicolumn{N}{c|}{Transpiled Depth} if >1
+    #                    or a single header if only 1
+
+    # We need to compute column widths for alignment.
+    # Collect all data cells first.
     formatted_rows = []
     for (
         name,
         num_qubits,
         circuit_length,
-        compiled_depth,
-        transpiled_depth,
+        compiled_gates,
+        transpiled_total,
         cliffords,
         pm_depths,
     ) in rows:
+        t_gates = (
+            (transpiled_total - cliffords - (num_qubits or 0))
+            if (transpiled_total is not None and cliffords is not None)
+            else None
+        )
         cells = [
-            latex_escape(pretty_name(name)),
-            str(num_qubits) if num_qubits is not None else "?",
+            pretty_name(name, num_qubits),
             format_number(circuit_length),
         ]
         if use_transpiled:
-            cells.append(format_number(compiled_depth) if compiled_depth is not None else "—")
-            t_gates = (
-                (transpiled_depth - cliffords - (num_qubits or 0))
-                if (transpiled_depth is not None and cliffords is not None)
-                else None
-            )
+            cells.append(format_number(compiled_gates) if compiled_gates is not None else "—")
             cells.append(format_number(t_gates) if t_gates is not None else "—")
             cells.append(format_number(cliffords) if cliffords is not None else "—")
         for depth in pm_depths:
             cells.append(format_number(depth) if depth is not None else "—")
         formatted_rows.append(tuple(cells))
 
-    # Split each header into (top_word, bottom_word); single-word headers have bottom=""
-    header_top = []
-    header_bot = []
-    for h in header:
-        if " " in h:
-            top, bot = h.split(" ", 1)
-        else:
-            top, bot = h, ""
-        header_top.append(top)
-        header_bot.append(bot)
+    # Column header labels (bottom row of the two-row header)
+    # For the puremagic columns we use the per-entry labels.
+    # The top row uses \multicolumn for the depth group.
+    col_labels_top = ["Circuit", "Unitary"]
+    col_labels_bot = ["", "Gates"]
+    if use_transpiled:
+        col_labels_top += ["Compiled", "Transpiled", "Cliffords"]
+        col_labels_bot += ["Gates", "T Gates", "Weight 1"]
+    # PureMagic depth columns
+    if num_pm == 1:
+        col_labels_top.append("Transpiled")
+        col_labels_bot.append(puremagic_entries[0][0])
+    elif num_pm > 1:
+        # Top row: multicolumn spanning all pm columns; bottom row: individual labels
+        # We handle this specially during table assembly.
+        for label, _ in puremagic_entries:
+            col_labels_top.append("")  # placeholder; replaced by multicolumn
+            col_labels_bot.append(label)
 
-    # Compute column widths: max of top word, bottom word, and all data cells
-    col_widths = [max(len(header_top[i]), len(header_bot[i])) for i in range(len(header))]
+    # Compute column widths
+    col_widths = [max(len(col_labels_top[i]), len(col_labels_bot[i])) for i in range(num_cols)]
     for row in formatted_rows:
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(cell))
 
-    def fmt_row(cells, widths):
-        # Left-align col 0, right-align all numeric columns
+    def fmt_data_row(cells, widths):
+        """Format a data row: left-align col 0, right-align the rest."""
         parts = [cells[0].ljust(widths[0])]
         for i in range(1, len(cells)):
             parts.append(cells[i].rjust(widths[i]))
         return "    " + " & ".join(parts) + " \\\\"
 
-    # Build tabular column spec: l for name, r for all others
-    col_spec = "l" + "r" * (len(header) - 1)
+    # ---- Assemble header rows ----
+    # Row 1 (top labels)
+    top_parts = [col_labels_top[0].ljust(col_widths[0])]
+    for i in range(1, num_cols):
+        if num_pm > 1 and i == num_cols - num_pm:
+            # Replace the pm placeholder columns with a single multicolumn
+            pm_labels = [puremagic_entries[j][0] for j in range(num_pm)]
+            top_parts.append(f"\\multicolumn{{{num_pm}}}{{c|}}{{Transpiled Depth}}")
+            break
+        else:
+            top_parts.append(col_labels_top[i].rjust(col_widths[i]))
+    header_row1 = "    " + " & ".join(top_parts) + " \\\\"
 
-    # Assemble LaTeX table string
+    # Row 2 (bottom labels)
+    bot_parts = [col_labels_bot[0].ljust(col_widths[0])]
+    for i in range(1, num_cols):
+        bot_parts.append(col_labels_bot[i].rjust(col_widths[i]))
+    header_row2 = "    " + " & ".join(bot_parts) + " \\\\"
+
+    # ---- Assemble full table ----
     lines = []
     lines.append(r"\begin{table}[ht]")
     lines.append(r"  \centering")
+    lines.append(r"  \setlength{\tabcolsep}{2pt}")
     lines.append(f"  \\begin{{tabular}}{{{col_spec}}}")
-    lines.append(r"    \hline\hline")
-    lines.append(fmt_row(header_top, col_widths))
-    lines.append(fmt_row(header_bot, col_widths))
-    lines.append(r"    \hline\hline")
+    lines.append(r"    \hline")
+    lines.append(header_row1)
+    lines.append(header_row2)
+    lines.append(r"    \hline")
     for row in formatted_rows:
-        lines.append(fmt_row(row, col_widths))
+        lines.append(fmt_data_row(row, col_widths))
     lines.append(r"    \hline")
     lines.append(r"  \end{tabular}")
     lines.append(r"  \caption{Circuit benchmark statistics.}")
