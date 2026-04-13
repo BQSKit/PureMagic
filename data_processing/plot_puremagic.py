@@ -4,6 +4,7 @@ Unified PureMagic results plotter.
 """
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ _COLOURS = [
     "teal",
 ]
 
+_MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
+
 # Conversion factors to microseconds (for schedule_lcycle timing)
 _TO_US = {"μs": 1.0, "us": 1.0, "ms": 1e3, "s": 1e6}
 
@@ -41,18 +44,32 @@ _X_AXES = {
     "weight": ("weight", "Max. Transpilation Weight"),
 }
 
-# Y-axis: key -> display label  (column name == key)
+# Y-axis: key -> display label  (column name == key, unless overridden in _Y_FIELD)
 _Y_AXES = {
     "scheduling_efficiency": "Scheduling Efficiency",
+    "scheduling_efficiency_loss": "Scheduling Efficiency Loss",
     "parallel_efficiency": "Parallel Efficiency",
     "cliffords": "Number of Cliffords",
     "lcycles": "Scheduled Logical Cycles",
     "parallelism": "Parallelism",
     "timing": "Average Time per Cycle (μs)",
     "total_qubits": "Total Qubits",
-    "volume": "Volume (Cycles × Qubits)",
+    "ancilla_qubits": "Area",
+    "volume": "Volume",
     "max_parallelism": "Max Parallelism",
+    "cultivation": "Average Cultivation Time (cycles)",
 }
+
+# Y-axis keys whose DataFrame column name differs from the key itself
+_Y_FIELD = {
+    "cultivation": "avg_cultivation_time",
+    # scheduling_efficiency_loss reads the same column but applies 1-x (see _Y_INVERT)
+    "scheduling_efficiency_loss": "scheduling_efficiency",
+}
+
+# Y-axis keys whose plotted value is (1 - raw_value) in non-ratio mode, or
+# (1 - ratio) in ratio mode.
+_Y_INVERT = {"scheduling_efficiency_loss"}
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +77,7 @@ _Y_AXES = {
 # ---------------------------------------------------------------------------
 @dataclass
 class Series:
-    label: str
+    label: Optional[str]
     xs: list
     ys: list
     circuits: list
@@ -80,25 +97,30 @@ def parse_output_file(filepath):
         circuit, weight, magic_state_lambda, scheduling_efficiency,
         parallel_efficiency, parallelism, cliffords, lcycles,
         data_qubits, total_qubits, magic_qubits, loaded_qubits, timing,
-        inv_lambda, ancilla_qubits, volume, max_parallelism
+        avg_cultivation_time, inv_lambda, ancilla_qubits, volume, max_parallelism
     """
     rows = []
     cur = {}  # mutable state for the current run
     in_qubit_block = False
+    in_cultivation_block = False
 
     def _flush():
-        nonlocal in_qubit_block
+        nonlocal in_qubit_block, in_cultivation_block
         if not cur.get("circuit"):
             return
         pe = cur.get("parallel_efficiency")
         if pe is None and cur.get("parallelism") and cur.get("optimal_speedup"):
             pe = cur["parallelism"] / cur["optimal_speedup"]
+        # Compute scheduling efficiency as optimal_lcycles / lcycles (ignore parsed value).
+        se = None
+        if cur.get("optimal_lcycles") is not None and cur.get("lcycles"):
+            se = cur["optimal_lcycles"] / cur["lcycles"]
         rows.append(
             {
                 "circuit": cur.get("circuit"),
                 "weight": cur.get("weight"),
                 "magic_state_lambda": cur.get("lambda"),
-                "scheduling_efficiency": cur.get("scheduling_efficiency"),
+                "scheduling_efficiency": se,
                 "parallel_efficiency": pe,
                 "parallelism": cur.get("parallelism"),
                 "cliffords": cur.get("cliffords"),
@@ -108,21 +130,25 @@ def parse_output_file(filepath):
                 "magic_qubits": cur.get("magic_qubits"),
                 "loaded_qubits": cur.get("loaded_qubits"),
                 "timing": cur.get("timing"),
+                "avg_cultivation_time": cur.get("avg_cultivation_time"),
             }
         )
         for k in (
             "circuit",
             "parallelism",
             "optimal_speedup",
+            "optimal_lcycles",
             "parallel_efficiency",
             "scheduling_efficiency",
             "lcycles",
             "cliffords",
             "timing",
             "loaded_qubits",
+            "avg_cultivation_time",
         ):
             cur.pop(k, None)
         in_qubit_block = False
+        in_cultivation_block = False
 
     with open(filepath) as f:
         for line in f:
@@ -169,9 +195,19 @@ def parse_output_file(filepath):
             if m := re.match(r"Scheduled \d+ in (\d+) logical cycles", s):
                 cur["lcycles"] = int(m.group(1))
 
+            if s == "Magic state cultivation time:":
+                in_cultivation_block = True
+                continue
+
+            if in_cultivation_block:
+                if m := re.match(r"average:\s+([0-9.eE+\-]+)", s):
+                    cur["avg_cultivation_time"] = float(m.group(1))
+                    in_cultivation_block = False
+
             if cur.get("circuit"):
-                if m := re.match(r"Optimal logical cycles \d+ \(([0-9.eE+\-]+) speedup\)", s):
-                    cur["optimal_speedup"] = float(m.group(1))
+                if m := re.match(r"Optimal logical cycles (\d+) \(([0-9.eE+\-]+) speedup\)", s):
+                    cur["optimal_lcycles"] = int(m.group(1))
+                    cur["optimal_speedup"] = float(m.group(2))
                 if m := re.match(r"Parallelism:\s+([0-9.eE+\-]+)x", s):
                     cur["parallelism"] = float(m.group(1))
                 if m := re.match(r"Scheduling efficiency:\s+([0-9.eE+\-]+)", s):
@@ -216,8 +252,8 @@ def split_file_arg(arg, default_label):
     if "," not in arg:
         if ":" in arg:
             idx = arg.rfind(":")
-            return arg[:idx].strip(), None, arg[idx + 1 :].strip() or default_label, None
-        return arg.strip(), None, default_label, None
+            return arg[:idx].strip(), None, arg[idx + 1 :].strip() or None, None
+        return arg.strip(), None, None, None
 
     comma_idx = arg.index(",")
     part1, rest = arg[:comma_idx].strip(), arg[comma_idx + 1 :].strip()
@@ -247,28 +283,70 @@ def split_file_arg(arg, default_label):
 
     ratio_label = f"{label1}/{label2}" if label1 and label2 else None
     if series_label is None:
-        series_label = ratio_label or default_label
+        series_label = ratio_label if ratio_label is not None else default_label
     return path1, path2, series_label, ratio_label
 
 
 def prettify_circuit_name(name):
     """Apply display-friendly substitutions to a circuit name."""
-    if name.startswith("qaoa_barabasi_albert"):
-        name = "QAOA" + name[len("qaoa_barabasi_albert") :]
+    # Strip leading path components (keep only the basename without extension)
+    name = os.path.basename(name)
+    # Strip all known intermediate extensions (e.g. "foo.pkl" -> "foo")
+    while True:
+        root, ext = os.path.splitext(name)
+        if ext.lower() in (".pkl", ".qasm", ".trans", ".schedule", ".txt"):
+            name = root
+        else:
+            break
+    # Strip leading weight prefix "mN." (e.g. "m1.", "m23.")
+    name = re.sub(r"^m\d+\.", "", name)
+
+    # qaoa_barabasi_albert_N<n>_3reps -> QAOA(<n>)
+    m = re.match(r"qaoa_barabasi_albert_N(\d+)_3reps(.*)", name, re.IGNORECASE)
+    if m:
+        return f"QAOA({m.group(1)}){m.group(2)}"
+
+    # qv_N<n>_12345 -> QV(<n>)
+    m = re.match(r"qv_N(\d+)_\d+(.*)", name, re.IGNORECASE)
+    if m:
+        return f"QV({m.group(1)}){m.group(2)}"
+
+    # strip square_ prefix
     if name.startswith("square_"):
         name = name[len("square_") :]
+
+    # Simple prefix/whole-name uppercasing substitutions (case-insensitive)
+    _PREFIX_MAP = [
+        (r"dnn", "DNN"),
+        (r"qft", "QFT"),
+        (r"knn", "KNN"),
+        (r"ghz(?:_state)?", "GHZ"),
+        (r"vqe_uccsd", "VQE"),
+    ]
+    for pattern, replacement in _PREFIX_MAP:
+        name = re.sub(rf"(?i)^{pattern}(?=_|$)", replacement, name)
+
+    # heisenberg -> heis
+    name = re.sub(r"(?i)heisenberg", "heis", name)
+
+    # separate trailing _n<digits> or _N<digits> qubit count: foo_n8 -> foo(8)
+    name = re.sub(r"[_-][nN](\d+)$", lambda mo: f"({mo.group(1)})", name)
+
     return name
 
 
-def _y_axis_label(y_key, any_ratio):
+def _y_axis_label(y_key, any_ratio, pct_improvement=False):
     label = _Y_AXES[y_key]
     if any_ratio:
-        label += " Ratio"
+        if pct_improvement:
+            label += " % Improvement"
+        else:
+            label += " Ratio"
     return label
 
 
-def _axis_label(yk_list, any_ratio):
-    return " / ".join(_y_axis_label(yk, any_ratio) for yk in yk_list)
+def _axis_label(yk_list, any_ratio, pct_improvement=False):
+    return " / ".join(_y_axis_label(yk, any_ratio, pct_improvement) for yk in yk_list)
 
 
 def _ordered_union_xs(series_list):
@@ -280,6 +358,11 @@ def _ordered_union_xs(series_list):
     return list(seen.keys())
 
 
+_LABEL_FONTSIZE = 15  # ~50 % larger than the default 10 pt
+_TICK_FONTSIZE = 15  # ~50 % larger than the default 10 pt
+_LEGEND_FONTSIZE = 15  # ~50 % larger than the default 10 pt
+
+
 def _combine_legend(ax, ax2=None):
     """Collect handles+labels from ax (and optionally ax2) and attach to ax."""
     handles, labels = ax.get_legend_handles_labels()
@@ -287,7 +370,13 @@ def _combine_legend(ax, ax2=None):
         h2, l2 = ax2.get_legend_handles_labels()
         handles += h2
         labels += l2
-    ax.legend(handles, labels)
+    # Filter out entries explicitly marked as no-legend
+    filtered = [(h, l) for h, l in zip(handles, labels) if l != "_nolegend_"]
+    if filtered:
+        handles, labels = zip(*filtered)
+        ax.legend(handles, labels, fontsize=_LEGEND_FONTSIZE)
+    else:
+        ax.legend(handles, labels, fontsize=_LEGEND_FONTSIZE)
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +408,14 @@ def main():
         metavar="FILE[:LABEL] or FILE1,FILE2[:LABEL]",
     )
     parser.add_argument("-o", "--output", required=True)
+    parser.add_argument(
+        "-c",
+        "--circuits",
+        dest="circuits_file",
+        required=True,
+        metavar="CIRCUITS_FILE",
+        help="Path to a file listing allowed circuit names (one per line, basenames without extension). Only data for circuits in this file will be plotted.",
+    )
     parser.add_argument("-s", "--select", default=None, metavar="SUBSTRING")
     parser.add_argument("--lines", action="store_true", default=False)
     parser.add_argument(
@@ -338,12 +435,26 @@ def main():
         "--xlim", default=None, metavar="MIN,MAX", help="Set the x-axis range, e.g. --xlim 0,100."
     )
     parser.add_argument(
+        "--xlabel", default=None, metavar="LABEL", help="Override the x-axis label."
+    )
+    parser.add_argument(
         "--ylabel", default=None, metavar="LABEL", help="Override the left y-axis label."
     )
     parser.add_argument("--ylim", default=None, metavar="MIN,MAX")
     parser.add_argument("--y2lim", default=None, metavar="MIN,MAX")
     parser.add_argument(
         "--label-data-qubits", dest="label_data_qubits", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--percent-improvement",
+        dest="percent_improvement",
+        action="store_true",
+        default=False,
+        help=(
+            "When plotting a ratio (file1,file2 form), show %% improvement on the y-axis "
+            "instead of the raw ratio. Computed as (1 - file1/file2) * 100, so positive "
+            "values mean file2 is better (smaller metric)."
+        ),
     )
     parser.add_argument(
         "--stackedbar",
@@ -356,8 +467,20 @@ def main():
     )
     args = parser.parse_args()
 
+    # Load the allowed circuits set from the -c file
+    try:
+        with open(args.circuits_file) as _cf:
+            _allowed_circuits = {
+                line.strip() for line in _cf if line.strip() and not line.startswith("#")
+            }
+    except OSError as e:
+        print(f"Error: cannot read circuits file '{args.circuits_file}': {e}", file=sys.stderr)
+        sys.exit(1)
+
     x_key = args.x_axis
     x_field, x_label = _X_AXES[x_key]
+    if args.xlabel:
+        x_label = args.xlabel
     is_circuit_x = x_key == "circuit"
     is_cultivation_x = x_key == "cultivation"
     is_weight_x = x_key == "weight"
@@ -394,6 +517,20 @@ def main():
             sys.exit(1)
         multi_y_keys = [[y_raw]]
 
+    # When -y uses slash form (multiple keys on the same axis), each key is paired
+    # with its own -f argument.  Validate that the counts match.
+    slash_y = not dual_y and len(multi_y_keys) == 1 and len(multi_y_keys[0]) > 1
+    if slash_y:
+        n_keys = len(multi_y_keys[0])
+        n_files = len(args.files)
+        if n_files != n_keys:
+            print(
+                f"Error: -y has {n_keys} slash-separated keys but {n_files} -f argument(s) "
+                f"were given.  Provide exactly one -f per key.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     def _load_df(path):
         df = parse_output_file(path)
         if df.empty:
@@ -401,6 +538,24 @@ def main():
             return None
         if args.select:
             df = df[df["circuit"].str.contains(args.select, na=False)]
+
+        # Filter to only circuits listed in the -c circuits file.
+        # Strip all extensions (e.g. "m1.square_heisenberg_N64.pkl" -> strip ".pkl" -> "m1.square_heisenberg_N64")
+        # and also strip a leading weight prefix like "m1." or "m23." before comparing.
+        def _canonical_circuit_name(c):
+            name = os.path.basename(str(c))
+            # Strip all dot-separated extensions that are not part of the circuit name
+            while True:
+                root, ext = os.path.splitext(name)
+                if ext.lower() in (".pkl", ".qasm", ".trans", ".schedule", ".txt"):
+                    name = root
+                else:
+                    break
+            # Strip leading weight prefix "mN." (e.g. "m1.", "m23.")
+            name = re.sub(r"^m\d+\.", "", name)
+            return name
+
+        df = df[df["circuit"].apply(lambda c: _canonical_circuit_name(c) in _allowed_circuits)]
         if df.empty:
             print(f"Warning: no matching records in {path}", file=sys.stderr)
             return None
@@ -409,13 +564,26 @@ def main():
     def load_series(y_keys_for_axis, label_suffix=None):
         """
         Build Series objects for one axis.  y_keys_for_axis is a list of one or more
-        y-axis column names.  When multiple keys are given, each (file × key) pair
-        produces its own Series on the same axis.
+        y-axis column names.
+
+        Normal mode (single key, or dual-y): each (file × key) pair produces its own
+        Series on the same axis.
+
+        Slash mode (multiple keys on the same axis, slash_y=True): each key is paired
+        with its own -f argument (key[i] reads from files[i]).  The number of -f
+        arguments must equal the number of keys (validated above).
         """
         series_list, any_ratio, ratio_labels = [], False, []
 
-        for i, file_arg in enumerate(args.files):
-            path1, path2, file_label, ratio_label = split_file_arg(file_arg, f"file{i + 1}")
+        if slash_y:
+            # Pair each key with its corresponding file argument.
+            pairs = list(zip(y_keys_for_axis, args.files))
+        else:
+            # Original behaviour: every file × every key.
+            pairs = [(y_key, file_arg) for file_arg in args.files for y_key in y_keys_for_axis]
+
+        for y_key, file_arg in pairs:
+            path1, path2, file_label, ratio_label = split_file_arg(file_arg, "")
             is_ratio = path2 is not None
 
             df1 = _load_df(path1)
@@ -428,73 +596,86 @@ def main():
                 if df2 is None:
                     continue
 
-            for y_key in y_keys_for_axis:
-                # Build a per-series label: include y-key name when multiple keys share an axis
-                multi_key = len(y_keys_for_axis) > 1
-                if multi_key and label_suffix:
-                    label = f"{file_label} {_Y_AXES[y_key]} ({label_suffix})"
-                elif multi_key:
-                    label = f"{file_label} {_Y_AXES[y_key]}"
-                elif label_suffix:
-                    label = f"{file_label} ({label_suffix})"
-                else:
-                    label = file_label
+            # Build a per-series label: include y-key name when multiple keys share an axis
+            multi_key = len(y_keys_for_axis) > 1
+            if file_label is None:
+                label = None
+            elif multi_key and label_suffix:
+                label = f"{file_label} {_Y_AXES[y_key]} ({label_suffix})"
+            elif multi_key:
+                label = f"{file_label} {_Y_AXES[y_key]}"
+            elif label_suffix:
+                label = f"{file_label} ({label_suffix})"
+            else:
+                label = file_label
 
-                d1 = df1.dropna(subset=[x_field, y_key])
+            y_field = _Y_FIELD.get(y_key, y_key)
+            d1 = df1.dropna(subset=[x_field, y_field])
 
-                if is_ratio:
-                    any_ratio = True
-                    if ratio_label and ratio_label not in ratio_labels:
-                        ratio_labels.append(ratio_label)
-                    assert (
-                        df2 is not None
-                    )  # guaranteed: is_ratio=True and _load_df returned non-None (else continued)
-                    d2 = df2.dropna(subset=[x_field, y_key])
-                    merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
-                    merged = d1.merge(
-                        d2[merge_keys + [y_key]], on=merge_keys, suffixes=("_1", "_2")
+            if is_ratio:
+                any_ratio = True
+                if ratio_label and ratio_label not in ratio_labels:
+                    ratio_labels.append(ratio_label)
+                assert (
+                    df2 is not None
+                )  # guaranteed: is_ratio=True and _load_df returned non-None (else continued)
+                d2 = df2.dropna(subset=[x_field, y_field])
+                merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
+                merged = d1.merge(d2[merge_keys + [y_field]], on=merge_keys, suffixes=("_1", "_2"))
+                merged = merged[merged[f"{y_field}_2"] != 0.0]
+                if merged.empty:
+                    print(
+                        f"Warning: no matching points between {path1} and {path2} for y={y_key}",
+                        file=sys.stderr,
                     )
-                    merged = merged[merged[f"{y_key}_2"] != 0.0]
-                    if merged.empty:
-                        print(
-                            f"Warning: no matching points between {path1} and {path2} for y={y_key}",
-                            file=sys.stderr,
-                        )
-                        continue
-                    merged["_ratio"] = merged[f"{y_key}_1"] / merged[f"{y_key}_2"]
-                    series_list.append(
-                        Series(
-                            label=label,
-                            xs=merged[x_field].tolist(),
-                            ys=merged["_ratio"].tolist(),
-                            circuits=merged["circuit"].tolist(),
-                            is_ratio=True,
-                            ratio_label=ratio_label,
-                        )
-                    )
+                    continue
+                merged["_ratio"] = merged[f"{y_field}_1"] / merged[f"{y_field}_2"]
+                if y_key in _Y_INVERT:
+                    # For loss keys: plot 1 - ratio
+                    ys_values = (1.0 - merged["_ratio"]).tolist()
+                elif args.percent_improvement:
+                    # ys_values = ((1.0 - merged["_ratio"]) * 100.0).tolist()
+                    ys_values = ((merged["_ratio"] - 1) * 100.0).tolist()
                 else:
-                    if d1.empty:
-                        print(
-                            f"Warning: no usable ({x_key}, {y_key}) data in {path1}",
-                            file=sys.stderr,
-                        )
-                        continue
-                    pt_labels = None
-                    if args.label_data_qubits and is_parallelism_x:
-                        pt_map = d1.set_index(x_field)["loaded_qubits"].to_dict()
-                        pt_labels = [
-                            str(int(pt_map[x])) if x in pt_map and pd.notna(pt_map[x]) else ""
-                            for x in d1[x_field]
-                        ]
-                    series_list.append(
-                        Series(
-                            label=label,
-                            xs=d1[x_field].tolist(),
-                            ys=d1[y_key].tolist(),
-                            circuits=d1["circuit"].fillna("").tolist(),
-                            point_labels=pt_labels,
-                        )
+                    ys_values = merged["_ratio"].tolist()
+                series_list.append(
+                    Series(
+                        label=label,
+                        xs=merged[x_field].tolist(),
+                        ys=ys_values,
+                        circuits=merged["circuit"].tolist(),
+                        is_ratio=True,
+                        ratio_label=ratio_label,
                     )
+                )
+            else:
+                if d1.empty:
+                    print(
+                        f"Warning: no usable ({x_key}, {y_key}) data in {path1}",
+                        file=sys.stderr,
+                    )
+                    continue
+                pt_labels = None
+                if args.label_data_qubits and is_parallelism_x:
+                    pt_map = d1.set_index(x_field)["loaded_qubits"].to_dict()
+                    pt_labels = [
+                        str(int(pt_map[x])) if x in pt_map and pd.notna(pt_map[x]) else ""
+                        for x in d1[x_field]
+                    ]
+                raw_ys = d1[y_field].tolist()
+                if y_key in _Y_INVERT:
+                    ys_vals = [1.0 - v for v in raw_ys]
+                else:
+                    ys_vals = raw_ys
+                series_list.append(
+                    Series(
+                        label=label,
+                        xs=d1[x_field].tolist(),
+                        ys=ys_vals,
+                        circuits=d1["circuit"].fillna("").tolist(),
+                        point_labels=pt_labels,
+                    )
+                )
 
         if not series_list:
             print(f"Error: no data to plot for y={y_keys_for_axis}.", file=sys.stderr)
@@ -505,18 +686,23 @@ def main():
             sys.exit(1)
         return series_list, any_ratio, ratio_labels
 
-    def draw_series(ax, series_list, y_key, colour_offset=0):
+    def draw_series(ax, series_list, yk_list, colour_offset=0):
+        y_key = yk_list[0] if isinstance(yk_list, list) else yk_list
         draw_lines = args.lines or args.lines_with_markers or is_cultivation_x or is_weight_x
         show_markers = args.lines_with_markers or (
             not args.lines and (is_cultivation_x or is_weight_x)
         )
         is_timing_y = y_key == "timing"
         is_total_qubits_y = y_key == "total_qubits"
+        is_ancilla_qubits_y = "ancilla_qubits" in (
+            yk_list if isinstance(yk_list, list) else [yk_list]
+        )
         is_data_qubits_x = x_key == "data_qubits"
         colour_idx = colour_offset
 
         for s in series_list:
             colour = _COLOURS[colour_idx % len(_COLOURS)]
+            marker = _MARKERS[colour_idx % len(_MARKERS)]
             colour_idx += 1
 
             if draw_lines:
@@ -525,6 +711,7 @@ def main():
                     ax.scatter(
                         xs_plot,
                         ys_plot,
+                        marker=marker,
                         color=colour,
                         edgecolors="black",
                         linewidths=0.5,
@@ -535,17 +722,22 @@ def main():
                     xs_plot,
                     ys_plot,
                     color=colour,
-                    linewidth=1.8,
+                    linewidth=2.7 if not show_markers else 1.8,
                     alpha=0.8,
                     linestyle="-",
+                    marker=marker if show_markers else None,
+                    markersize=6,
+                    markeredgecolor="black",
+                    markeredgewidth=0.5,
                     zorder=2,
-                    label=s.label,
+                    label=s.label if s.label is not None else "_nolegend_",
                 )
             else:
                 ax.scatter(
                     s.xs,
                     s.ys,
-                    label=s.label,
+                    label=s.label if s.label is not None else "_nolegend_",
+                    marker=marker,
                     color=colour,
                     edgecolors="black",
                     linewidths=0.5,
@@ -561,7 +753,7 @@ def main():
                             (xv, yv),
                             textcoords="offset points",
                             xytext=(4, 4),
-                            fontsize=7,
+                            fontsize=12,
                             color=colour,
                         )
 
@@ -577,6 +769,9 @@ def main():
                     ss_tot = np.sum((ly - ly.mean()) ** 2)
                     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
                     xf = np.linspace(xa[mask].min(), xa[mask].max(), 200)
+                    print(
+                        f"{s.label} fit ($c \\cdot x^{{{a:.2f}}}$, c={np.exp(b):.2f}, R²={r2:.3f})"
+                    )
                     ax.plot(
                         xf,
                         np.exp(b) * xf**a,
@@ -585,7 +780,63 @@ def main():
                         linestyle="--",
                         alpha=0.7,
                         zorder=2,
-                        label=f"{s.label} fit ($x^{{{a:.2f}}}$, R²={r2:.3f})",
+                        label=f"Fit ($c \\cdot x^{{{a:.2f}}}$, c={np.exp(b):.2f}, R²={r2:.3f})",
+                    )
+
+        # Fit y = A * x^(-0.5) on the ancilla_qubits ratio for data_qubits x-axis.
+        # Works for any y-axis that includes ancilla_qubits (e.g. ancilla_qubits, volume/ancilla_qubits).
+        # The fit is always applied to the ratio of ancilla_qubits between two series (or the
+        # already-computed ratio/percent-improvement values when a ratio series is present).
+        if is_data_qubits_x and is_ancilla_qubits_y:
+            rx = ry = None
+            # Case 1: a pre-computed ratio series exists (file1,file2 form) — ys are already
+            # the ratio or percent-improvement values.
+            ratio_series = [s for s in series_list if s.is_ratio]
+            non_ratio_series = [s for s in series_list if not s.is_ratio]
+            if ratio_series:
+                # Use the first ratio series (there is typically only one per axis)
+                s = ratio_series[0]
+                rx = np.array(s.xs, float)
+                ry = np.array(s.ys, float)
+            elif len(non_ratio_series) >= 2:
+                # Compute the ancilla_qubits ratio from the first two non-ratio series,
+                # matching on x (data_qubits).
+                s0, s1 = non_ratio_series[0], non_ratio_series[1]
+                mf = pd.DataFrame({"x": s0.xs, "y": s0.ys}).merge(
+                    pd.DataFrame({"x": s1.xs, "y": s1.ys}), on="x", suffixes=("_0", "_1")
+                )
+                mf = mf[mf["y_1"] != 0.0]
+                if len(mf) >= 2:
+                    rx = mf["x"].to_numpy(float)
+                    raw_ratio = (mf["y_0"] / mf["y_1"]).to_numpy(float)
+                    if args.percent_improvement:
+                        ry = (raw_ratio - 1.0) * 100.0
+                    else:
+                        ry = raw_ratio
+            if rx is not None and ry is not None and len(rx) >= 2:
+                mask = (rx > 0) & np.isfinite(ry)
+                if mask.sum() >= 2:
+                    sx, sy = rx[mask], ry[mask]
+                    # Least-squares fit for y = A / sqrt(x):
+                    # minimise sum((y - A/sqrt(x))^2)  =>  A = sum(y/sqrt(x)) / sum(1/x)
+                    A = np.sum(sy / np.sqrt(sx)) / np.sum(1.0 / sx)
+                    # A *= 0.48
+                    y_pred = A / np.sqrt(sx)
+                    ss_res = np.sum((sy - y_pred) ** 2)
+                    ss_tot = np.sum((sy - sy.mean()) ** 2)
+                    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+                    xf = np.linspace(sx.min(), sx.max(), 200)
+                    print(f"fit ($A/\\sqrt{{x}}$, A={A:.2f}, R²={r2:.3f})")
+                    ax.plot(
+                        xf,
+                        A / np.sqrt(xf),
+                        color="black",
+                        linewidth=2.0,
+                        linestyle="--",
+                        alpha=0.8,
+                        zorder=2,
+                        label=f"Area fit $\\alpha/\\sqrt{{x}}$",
+                        # label="_nolegend_",
                     )
 
         # Sqrt ratio fit for data_qubits × total_qubits
@@ -669,7 +920,7 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 5))
     ax2 = ax.twinx() if dual_y else None
     axes = [ax, ax2] if dual_y else [ax]
 
@@ -702,25 +953,32 @@ def main():
                     np.arange(n_circuits) + offsets[j],
                     heights,
                     width=bar_width * 0.9,
-                    label=s.label,
+                    label=s.label if s.label is not None else "_nolegend_",
                     color=colour,
                     edgecolor="black",
                     linewidth=0.4,
                 )
 
             cur_ax.set_ylabel(
-                args.ylabel if (axis_idx == 0 and args.ylabel) else _axis_label(yk_list, any_ratio)
+                (
+                    args.ylabel
+                    if (axis_idx == 0 and args.ylabel)
+                    else _axis_label(yk_list, any_ratio, args.percent_improvement)
+                ),
+                fontsize=_LABEL_FONTSIZE,
             )
+            cur_ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
 
         x_pos = np.arange(len(all_circuits))
         ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
         ax.set_xticks(x_pos)
         ax.set_xticklabels(
-            [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=8
+            [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=12
         )
-        ax.set_xlabel(x_label)
+        ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
         if args.hline:
-            ax.axhline(y=1.0, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
+            hline_y = 0.0 if args.percent_improvement else 1.0
+            ax.axhline(y=hline_y, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
         _combine_legend(ax, ax2)
 
     else:
@@ -732,7 +990,9 @@ def main():
 
         if is_stacked_ratio:
             # --- Stacked bar chart for multi-key ratio, non-circuit x-axis ---
-            # series_list is ordered [file0_key0, file0_key1, ..., file1_key0, ...].
+            # In normal mode series_list is ordered [file0_key0, file0_key1, ..., file1_key0, ...].
+            # In slash mode each key is paired with its own file, so series_list is ordered
+            # [key0_file0, key1_file1, ...] — one entry per key, treated as n_files=1 group.
             # Each Series has xs = x-axis values, ys = ratio values.
             # We draw one group of stacked bars per unique x value.
             series_list = _series_0
@@ -740,8 +1000,13 @@ def main():
             any_ratio = _any_ratio_0
             ratio_labels = _ratio_labels_0
 
-            n_files = len(args.files)
-            n_keys = len(yk_list)
+            if slash_y:
+                # One series per key; treat as a single file-group with all keys stacked.
+                n_files = 1
+                n_keys = len(yk_list)
+            else:
+                n_files = len(args.files)
+                n_keys = len(yk_list)
 
             all_x_vals = _ordered_union_xs(series_list)
             n_x = len(all_x_vals)
@@ -768,7 +1033,11 @@ def main():
                     # Each segment's drawn height = this key's value minus the previous key's
                     # value, so the total bar top equals the last key's ratio value.
                     seg_heights = heights - prev_heights
-                    seg_label = _y_axis_label(y_key, any_ratio) if fi == 0 else "_nolegend_"
+                    seg_label = (
+                        _y_axis_label(y_key, any_ratio, args.percent_improvement)
+                        if fi == 0
+                        else "_nolegend_"
+                    )
                     ax.bar(
                         np.arange(n_x) + file_offsets[fi],
                         seg_heights,
@@ -792,19 +1061,30 @@ def main():
                         edgecolor="black",
                         linewidth=0.4,
                         hatch=_HATCHES[fi % len(_HATCHES)],
-                        label=file_label,
+                        label=file_label if file_label is not None else "_nolegend_",
                     )
 
-            ax.set_ylabel(args.ylabel if args.ylabel else _axis_label(yk_list, any_ratio))
+            ax.set_ylabel(
+                (
+                    args.ylabel
+                    if args.ylabel
+                    else _axis_label(yk_list, any_ratio, args.percent_improvement)
+                ),
+                fontsize=_LABEL_FONTSIZE,
+            )
+            ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
 
             # X-axis: use the actual x values as tick labels.
             ax.set_xticks(np.arange(n_x))
             x_tick_labels = [str(xv) for xv in all_x_vals]
-            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right", fontsize=8)
+            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right", fontsize=_TICK_FONTSIZE)
             ax.set_xlim(-0.6, n_x - 0.4)
-            ax.set_xlabel(x_label)
+            ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
             if args.hline:
-                ax.axhline(y=1.0, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_")
+                hline_y = 0.0 if args.percent_improvement else 1.0
+                ax.axhline(
+                    y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
+                )
             _combine_legend(ax, ax2)
 
         else:
@@ -816,12 +1096,16 @@ def main():
                 cur_ax = axes[axis_idx]
                 # draw_series uses y_key only for special trendline logic; pass the first key
                 # (trendlines are per-series and keyed by the series' own y_key name)
-                colour_offset = draw_series(cur_ax, series_list, yk_list[0], colour_offset)
+                colour_offset = draw_series(cur_ax, series_list, yk_list, colour_offset)
                 cur_ax.set_ylabel(
-                    args.ylabel
-                    if (axis_idx == 0 and args.ylabel)
-                    else _axis_label(yk_list, any_ratio)
+                    (
+                        args.ylabel
+                        if (axis_idx == 0 and args.ylabel)
+                        else _axis_label(yk_list, any_ratio, args.percent_improvement)
+                    ),
+                    fontsize=_LABEL_FONTSIZE,
                 )
+                cur_ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
 
             if is_cultivation_x:
                 ax.set_xscale("log", base=2)
@@ -830,14 +1114,26 @@ def main():
             elif args.logx:
                 ax.set_xscale("log")
 
-            if args.logy:
-                ax.set_yscale("log")
-                if ax2 is not None:
-                    ax2.set_yscale("log")
+            # Apply log2 scale to any y-axis whose key is "cultivation";
+            # otherwise honour --logy for that axis.
+            for axis_idx, yk_list in enumerate(multi_y_keys):
+                cur_ax = axes[axis_idx]
+                if "cultivation" in yk_list:
+                    cur_ax.set_yscale("log", base=2)
+                    cur_ax.yaxis.set_major_formatter(
+                        ticker.FuncFormatter(lambda y, _: f"{int(round(y))}")
+                    )
+                    cur_ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+                elif args.logy:
+                    cur_ax.set_yscale("log")
 
-            ax.set_xlabel(x_label)
+            ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
+            ax.tick_params(axis="x", labelsize=_TICK_FONTSIZE)
             if args.hline:
-                ax.axhline(y=1.0, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_")
+                hline_y = 0.0 if args.percent_improvement else 1.0
+                ax.axhline(
+                    y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
+                )
             _combine_legend(ax, ax2)
 
     # Y-axis limits
