@@ -386,32 +386,51 @@ def _combine_legend(ax, ax2=None):
 
 def parse_flasq_file(filepath):
     """
-    Parse a concatenated FLASQ output file and return a list of
-    (circuit_name, flasq_vol_puremagic, flasq_vol_bus) tuples.
+    Parse a concatenated FLASQ output file (produced by flasq_lower_bound.py)
+    and return a list of (circuit_name, vol_conservative, vol_optimistic) tuples.
 
-    Each entry is produced by the summary line emitted by flasq_lower_bound.py:
-        <filepath>  <vol_puremagic>  <vol_bus>
+    The file consists of blocks of the form:
+        ========================================================================
+        FLASQ Lower Bound for <filepath>
+          Layout: ...
+        ========================================================================
+          ...
+          FLASQ spacetime volume (S, blocks)        :      <cons>       <opt>
+        ========================================================================
+
+    The circuit name is taken from the "FLASQ Lower Bound for" header line and
+    the two volumes from the "FLASQ spacetime volume" row.
     """
     entries = []
+    current_circuit = None
     with open(filepath) as f:
         for line in f:
-            line = line.strip()
-            parts = line.split()
-            if len(parts) == 3:
+            s = line.strip()
+            # Header: "FLASQ Lower Bound for <path>"
+            m = re.match(r"^FLASQ Lower Bound for\s+(.+)$", s)
+            if m:
+                current_circuit = m.group(1).strip()
+                continue
+            # Volume row: "FLASQ spacetime volume (S, blocks)  :  <cons>  <opt>"
+            m = re.match(
+                r"FLASQ spacetime volume \(S, blocks\)\s*:\s*([0-9.eE+\-]+)\s+([0-9.eE+\-]+)",
+                s,
+            )
+            if m and current_circuit is not None:
                 try:
-                    vol_pm = float(parts[1])
-                    vol_bus = float(parts[2])
-                    circuit = parts[0]
-                    entries.append((circuit, vol_pm, vol_bus))
+                    vol_cons = float(m.group(1))
+                    vol_opt = float(m.group(2))
+                    entries.append((current_circuit, vol_cons, vol_opt))
                 except ValueError:
                     pass
+                current_circuit = None
     return entries
 
 
 def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
     """
     Parse *flasq_file* and produce a scatter plot of FLASQ spacetime volumes
-    (PureMagic layout and bus-routing layout) with circuit names on the x-axis.
+    (conservative and optimistic models) with circuit names on the x-axis.
     Only circuits listed in *circuits_file* are included.
     """
     # Load allowed circuit names from the -c file
@@ -451,16 +470,16 @@ def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
         sys.exit(1)
 
     circuits = [prettify_circuit_name(_canonical(e[0])) for e in entries]
-    vols_pm = [e[1] for e in entries]
-    vols_bus = [e[2] for e in entries]
+    vols_cons = [e[1] for e in entries]
+    vols_opt = [e[2] for e in entries]
     x_pos = np.arange(len(circuits))
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
     ax.scatter(
         x_pos,
-        vols_pm,
-        label="PureMagic layout",
+        vols_cons,
+        label="Conservative",
         marker="o",
         color=_COLOURS[0],
         edgecolors="black",
@@ -470,8 +489,8 @@ def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
     )
     ax.scatter(
         x_pos,
-        vols_bus,
-        label="Bus-routing layout",
+        vols_opt,
+        label="Optimistic",
         marker="s",
         color=_COLOURS[1],
         edgecolors="black",
