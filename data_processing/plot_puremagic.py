@@ -380,16 +380,148 @@ def _combine_legend(ax, ax2=None):
 
 
 # ---------------------------------------------------------------------------
+# FLASQ plot
+# ---------------------------------------------------------------------------
+
+
+def parse_flasq_file(filepath):
+    """
+    Parse a concatenated FLASQ output file and return a list of
+    (circuit_name, flasq_vol_puremagic, flasq_vol_bus) tuples.
+
+    Each entry is produced by the summary line emitted by flasq_lower_bound.py:
+        <filepath>  <vol_puremagic>  <vol_bus>
+    """
+    entries = []
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            parts = line.split()
+            if len(parts) == 3:
+                try:
+                    vol_pm = float(parts[1])
+                    vol_bus = float(parts[2])
+                    circuit = parts[0]
+                    entries.append((circuit, vol_pm, vol_bus))
+                except ValueError:
+                    pass
+    return entries
+
+
+def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
+    """
+    Parse *flasq_file* and produce a scatter plot of FLASQ spacetime volumes
+    (PureMagic layout and bus-routing layout) with circuit names on the x-axis.
+    Only circuits listed in *circuits_file* are included.
+    """
+    # Load allowed circuit names from the -c file
+    try:
+        with open(circuits_file) as cf:
+            allowed = {line.strip() for line in cf if line.strip() and not line.startswith("#")}
+    except OSError as e:
+        print(f"Error: cannot read circuits file '{circuits_file}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    def _canonical(path):
+        name = os.path.basename(path)
+        while True:
+            root, ext = os.path.splitext(name)
+            if ext.lower() in (
+                ".pkl",
+                ".qasm",
+                ".trans",
+                ".schedule",
+                ".txt",
+                ".cliffordt",
+                ".compiled",
+            ):
+                name = root
+            else:
+                break
+        name = re.sub(r"^m\d+\.", "", name)
+        return name
+
+    all_entries = parse_flasq_file(flasq_file)
+    entries = [e for e in all_entries if _canonical(e[0]) in allowed]
+    if not entries:
+        print(
+            f"Error: no FLASQ summary lines found in '{flasq_file}' matching circuits in '{circuits_file}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    circuits = [prettify_circuit_name(_canonical(e[0])) for e in entries]
+    vols_pm = [e[1] for e in entries]
+    vols_bus = [e[2] for e in entries]
+    x_pos = np.arange(len(circuits))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ax.scatter(
+        x_pos,
+        vols_pm,
+        label="PureMagic layout",
+        marker="o",
+        color=_COLOURS[0],
+        edgecolors="black",
+        linewidths=0.5,
+        s=70,
+        zorder=3,
+    )
+    ax.scatter(
+        x_pos,
+        vols_bus,
+        label="Bus-routing layout",
+        marker="s",
+        color=_COLOURS[1],
+        edgecolors="black",
+        linewidths=0.5,
+        s=70,
+        zorder=3,
+    )
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(circuits, rotation=45, ha="right", fontsize=12)
+    ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
+    ax.set_xlabel("Circuit", fontsize=_LABEL_FONTSIZE)
+    ax.set_ylabel(
+        ylabel if ylabel else "FLASQ Spacetime Volume (blocks)",
+        fontsize=_LABEL_FONTSIZE,
+    )
+    ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+    if logy:
+        ax.set_yscale("log")
+    _combine_legend(ax)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    print(f"FLASQ plot saved to {output_path}")
+    plt.show()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Unified PureMagic results plotter.")
-    parser.add_argument("-x", "--xaxis", dest="x_axis", choices=list(_X_AXES), required=True)
+    parser.add_argument(
+        "--flasq",
+        dest="flasq_file",
+        default=None,
+        metavar="FLASQ_FILE",
+        help=(
+            "Path to a concatenated FLASQ output file (produced by running "
+            "flasq_lower_bound.py on multiple circuits and concatenating the output). "
+            "When given, a FLASQ volume plot is produced and all other arguments "
+            "except -o / --output, --logy, and --ylabel are ignored."
+        ),
+    )
+    parser.add_argument("-x", "--xaxis", dest="x_axis", choices=list(_X_AXES))
     parser.add_argument(
         "-y",
         "--yaxis",
         dest="y_axis",
-        required=True,
+        default=None,
         metavar=f"KEY[/KEY...] or KEY,KEY",
         help=(
             "Y-axis key(s).  Three forms are accepted:\n"
@@ -404,15 +536,15 @@ def main():
         "--file",
         dest="files",
         action="append",
-        required=True,
+        default=None,
         metavar="FILE[:LABEL] or FILE1,FILE2[:LABEL]",
     )
-    parser.add_argument("-o", "--output", required=True)
+    parser.add_argument("-o", "--output", required=True, help="Output plot file path.")
     parser.add_argument(
         "-c",
         "--circuits",
         dest="circuits_file",
-        required=True,
+        default=None,
         metavar="CIRCUITS_FILE",
         help="Path to a file listing allowed circuit names (one per line, basenames without extension). Only data for circuits in this file will be plotted.",
     )
@@ -466,6 +598,47 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    # -----------------------------------------------------------------------
+    # Validate -c (always required)
+    # -----------------------------------------------------------------------
+    if args.circuits_file is None:
+        parser.error("-c/--circuits is required.")
+
+    # -----------------------------------------------------------------------
+    # FLASQ-only mode
+    # -----------------------------------------------------------------------
+    if args.flasq_file is not None:
+        plot_flasq(
+            flasq_file=args.flasq_file,
+            output_path=args.output,
+            circuits_file=args.circuits_file,
+            logy=args.logy,
+            ylabel=args.ylabel,
+        )
+        return
+
+    # -----------------------------------------------------------------------
+    # Normal mode — validate remaining required args
+    # -----------------------------------------------------------------------
+    if args.x_axis is None:
+        parser.error("-x/--xaxis is required when --flasq is not given.")
+    if args.y_axis is None:
+        parser.error("-y/--yaxis is required when --flasq is not given.")
+    if not args.files:
+        parser.error("-f/--file is required when --flasq is not given.")
+
+    # -----------------------------------------------------------------------
+    # Normal mode — validate required args that are optional in FLASQ mode
+    # -----------------------------------------------------------------------
+    if args.x_axis is None:
+        parser.error("-x/--xaxis is required when --flasq is not given.")
+    if args.y_axis is None:
+        parser.error("-y/--yaxis is required when --flasq is not given.")
+    if not args.files:
+        parser.error("-f/--file is required when --flasq is not given.")
+    if args.circuits_file is None:
+        parser.error("-c/--circuits is required when --flasq is not given.")
 
     # Load the allowed circuits set from the -c file
     try:
