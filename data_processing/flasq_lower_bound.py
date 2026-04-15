@@ -683,6 +683,8 @@ def main():
 
     n_qubits, gates = parse_qasm(text)
 
+    print(f"\nFile: {args.qasm_file}")
+
     # Run both PureMagic and bus-routing layouts.
     # Both use ancilla_rows=1 (the PureMagic default).
     n_tot_pm = puremagic_ntot(n_qubits, ancilla_rows=1)
@@ -728,6 +730,10 @@ def main():
         print(f"      S = L*Q + V = {result['L']:.1f}*{result['Q']} + {result['V']:.1f}")
         print(f"{'='*60}\n")
         results.append(result)
+
+    s_pm = results[0]["S"]
+    s_bus = results[1]["S"]
+    print(f"{args.qasm_file}  {s_pm:.1f}  {s_bus:.1f}")
 
     return results
 
