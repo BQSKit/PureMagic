@@ -976,6 +976,10 @@ def main():
             [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=12
         )
         ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
+        if args.logy:
+            ax.set_yscale("log")
+            if ax2 is not None:
+                ax2.set_yscale("log")
         if args.hline:
             hline_y = 0.0 if args.percent_improvement else 1.0
             ax.axhline(y=hline_y, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
