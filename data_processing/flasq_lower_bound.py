@@ -626,6 +626,7 @@ def flasq(
         "M": M,
         "n_tot": n_tot,
         "vol_cultivate": vol_cultivate,
+        "vol_cultivate_eff": CULT_MULT[model] * vol_cultivate,
         "t_react": t_react,
         "model": model,
         "n_gates": len(gates),
@@ -668,10 +669,15 @@ def main():
         ),
     )
     parser.add_argument(
-        "--model",
-        choices=["conservative", "optimistic"],
-        default="conservative",
-        help="Gate cost model (default: conservative)",
+        "--layout",
+        dest="layout",
+        choices=["puremagic", "bus"],
+        default="puremagic",
+        help=(
+            "Which device layout to evaluate (default: puremagic). "
+            "'puremagic' uses the magic-routing layout (gen_pure_magic_topo, ancilla_rows=1); "
+            "'bus' uses the bus-routing layout (gen_bus_routing_topo, ancilla_rows=1)."
+        ),
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Print per-gate ancilla volume breakdown"
@@ -683,59 +689,66 @@ def main():
 
     n_qubits, gates = parse_qasm(text)
 
-    print(f"\nFile: {args.qasm_file}")
+    # Select layout.
+    if args.layout == "puremagic":
+        n_tot = puremagic_ntot(n_qubits, ancilla_rows=1)
+        n_tot_source = f"PureMagic layout ({n_qubits} data qubits, ancilla_rows=1)"
+    else:
+        n_tot = busrouting_ntot(n_qubits, ancilla_rows=1)
+        n_tot_source = f"Bus-routing layout ({n_qubits} data qubits, ancilla_rows=1)"
 
-    # Run both PureMagic and bus-routing layouts.
-    # Both use ancilla_rows=1 (the PureMagic default).
-    n_tot_pm = puremagic_ntot(n_qubits, ancilla_rows=1)
-    n_tot_bus = busrouting_ntot(n_qubits, ancilla_rows=1)
-    scenarios = [
-        (n_tot_pm, f"PureMagic layout   ({n_qubits} data qubits, ancilla_rows=1)"),
-        (n_tot_bus, f"Bus-routing layout ({n_qubits} data qubits, ancilla_rows=1)"),
-    ]
+    # Run both models.
+    rc = flasq(
+        n_qubits=n_qubits,
+        gates=gates,
+        n_tot=n_tot,
+        t_react=args.treact,
+        vol_cultivate=args.vcult,
+        model="conservative",
+        verbose=args.verbose,
+    )
+    ro = flasq(
+        n_qubits=n_qubits,
+        gates=gates,
+        n_tot=n_tot,
+        t_react=args.treact,
+        vol_cultivate=args.vcult,
+        model="optimistic",
+        verbose=False,
+    )
 
-    results = []
-    for n_tot, n_tot_source in scenarios:
-        result = flasq(
-            n_qubits=n_qubits,
-            gates=gates,
-            n_tot=n_tot,
-            t_react=args.treact,
-            vol_cultivate=args.vcult,
-            model=args.model,
-            verbose=args.verbose,
-        )
+    W = 14  # column width for model-dependent values
+    print(f"{'='*72}")
+    print(f"FLASQ Lower Bound for {args.qasm_file}")
+    print(f"  Layout: {n_tot_source}")
+    print(f"{'='*72}")
+    # Model-independent rows
+    print(f"  {'Circuit qubits (n_qubits)':<42}: {n_qubits}")
+    print(f"  {'Gates parsed':<42}: {rc['n_gates']}")
+    print(f"  {'T-count (M)':<42}: {rc['M']}")
+    print(f"  {'Max simultaneous qubit usage (Q)':<42}: {rc['Q']}")
+    print(f"  {'Total device qubits (N_tot)':<42}: {rc['n_tot']}")
+    print(f"  {'Fluid ancilla available (A)':<42}: {rc['A']}")
+    print(f"  {'Reaction time (t_react, timesteps)':<42}: {rc['t_react']:.1f}")
+    print(f"  {'':42s} {'conserv':>{W}}  {'optimist':>{W}}")
+    print(f"  {'-'*42} {'-'*W}  {'-'*W}")
+    print(
+        f"  {'Cultivation volume per T (v_cult, blocks)':<42}: {rc['vol_cultivate_eff']:>{W}.1f}  {ro['vol_cultivate_eff']:>{W}.1f}"
+    )
+    # Model-dependent rows
+    print(f"  {'Total ancilla volume (V, blocks)':<42}: {rc['V']:>{W}.1f}  {ro['V']:>{W}.1f}")
+    print(f"  {'Measurement depth bound (D, timesteps)':<42}: {rc['D']:>{W}}  {ro['D']:>{W}}")
+    print(
+        f"  {'Spacetime-limited timesteps (V/A)':<42}: {rc['L_space']:>{W}.1f}  {ro['L_space']:>{W}.1f}"
+    )
+    print(
+        f"  {'Reaction-limited timesteps (t*D)':<42}: {rc['L_react']:>{W}.1f}  {ro['L_react']:>{W}.1f}"
+    )
+    print(f"  {'Logical timesteps (L = max above)':<42}: {rc['L']:>{W}.1f}  {ro['L']:>{W}.1f}")
+    print(f"  {'FLASQ spacetime volume (S, blocks)':<42}: {rc['S']:>{W}.1f}  {ro['S']:>{W}.1f}")
+    print(f"{'='*72}")
 
-        print(f"\n{'='*60}")
-        print(f"FLASQ Lower Bound  [{result['model']} model, grid layout]")
-        print(f"  Layout: {n_tot_source}")
-        print(f"{'='*60}")
-        print(f"  Circuit qubits (n_qubits)          : {n_qubits}")
-        print(f"  Gates parsed                        : {result['n_gates']}")
-        print(f"  T-count (M)                         : {result['M']}")
-        print(f"  Max simultaneous qubit usage (Q)    : {result['Q']}")
-        print(f"  Total device qubits (N_tot)         : {result['n_tot']}")
-        print(f"  Fluid ancilla available (A)         : {result['A']}")
-        print(f"  Cultivation volume per T (v_cult)   : {result['vol_cultivate']:.1f} blocks")
-        print(f"  Reaction time (t_react)             : {result['t_react']:.1f} timesteps")
-        print(f"")
-        print(f"  Total ancilla volume (V)            : {result['V']:.1f} blocks")
-        print(f"  Measurement depth bound (D)         : {result['D']} timesteps")
-        print(f"")
-        print(f"  Spacetime-limited timesteps (V/A)   : {result['L_space']:.1f}")
-        print(f"  Reaction-limited timesteps (t*D)    : {result['L_react']:.1f}")
-        print(f"  Logical timesteps (L = max above)   : {result['L']:.1f}")
-        print(f"")
-        print(f"  *** FLASQ spacetime volume (S)      : {result['S']:.1f} blocks ***")
-        print(f"      S = L*Q + V = {result['L']:.1f}*{result['Q']} + {result['V']:.1f}")
-        print(f"{'='*60}\n")
-        results.append(result)
-
-    s_pm = results[0]["S"]
-    s_bus = results[1]["S"]
-    print(f"{args.qasm_file}  {s_pm:.1f}  {s_bus:.1f}")
-
-    return results
+    return rc, ro
 
 
 if __name__ == "__main__":
