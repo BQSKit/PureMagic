@@ -387,22 +387,25 @@ def _combine_legend(ax, ax2=None):
 def parse_flasq_file(filepath):
     """
     Parse a concatenated FLASQ output file (produced by flasq_lower_bound.py)
-    and return a list of (circuit_name, vol_conservative, vol_optimistic) tuples.
+    and return a list of (circuit_name, vol_conservative, vol_optimistic, n_data_qubits) tuples.
 
     The file consists of blocks of the form:
         ========================================================================
         FLASQ Lower Bound for <filepath>
           Layout: ...
         ========================================================================
+          Max simultaneous qubit usage (Q)          : <Q>
           ...
           FLASQ spacetime volume (S, blocks)        :      <cons>       <opt>
         ========================================================================
 
-    The circuit name is taken from the "FLASQ Lower Bound for" header line and
-    the two volumes from the "FLASQ spacetime volume" row.
+    The circuit name is taken from the "FLASQ Lower Bound for" header line,
+    Q from the "Max simultaneous qubit usage" row, and the two volumes from
+    the "FLASQ spacetime volume" row.
     """
     entries = []
     current_circuit = None
+    current_q = None
     with open(filepath) as f:
         for line in f:
             s = line.strip()
@@ -410,6 +413,12 @@ def parse_flasq_file(filepath):
             m = re.match(r"^FLASQ Lower Bound for\s+(.+)$", s)
             if m:
                 current_circuit = m.group(1).strip()
+                current_q = None
+                continue
+            # Q row: "Max simultaneous qubit usage (Q)  :  <Q>"
+            m = re.match(r"Max simultaneous qubit usage \(Q\)\s*:\s*(\d+)", s)
+            if m and current_circuit is not None:
+                current_q = int(m.group(1))
                 continue
             # Volume row: "FLASQ spacetime volume (S, blocks)  :  <cons>  <opt>"
             m = re.match(
@@ -420,18 +429,25 @@ def parse_flasq_file(filepath):
                 try:
                     vol_cons = float(m.group(1))
                     vol_opt = float(m.group(2))
-                    entries.append((current_circuit, vol_cons, vol_opt))
+                    entries.append((current_circuit, vol_cons, vol_opt, current_q))
                 except ValueError:
                     pass
                 current_circuit = None
+                current_q = None
     return entries
 
 
-def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
+def plot_flasq(
+    flasq_file, output_path, circuits_file, sched_files=None, select=None, logy=False, ylabel=None
+):
     """
     Parse *flasq_file* and produce a scatter plot of FLASQ spacetime volumes
     (conservative and optimistic models) with circuit names on the x-axis.
+    If *sched_files* is given (a list of (path, label) tuples), the scheduled
+    volume from each PureMagic output file is added as an additional series.
     Only circuits listed in *circuits_file* are included.
+    If *select* is given, only circuits whose canonical name contains that
+    substring are included.
     """
     # Load allowed circuit names from the -c file
     try:
@@ -462,6 +478,8 @@ def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
 
     all_entries = parse_flasq_file(flasq_file)
     entries = [e for e in all_entries if _canonical(e[0]) in allowed]
+    if select:
+        entries = [e for e in entries if select in _canonical(e[0])]
     if not entries:
         print(
             f"Error: no FLASQ summary lines found in '{flasq_file}' matching circuits in '{circuits_file}'.",
@@ -470,16 +488,30 @@ def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
         sys.exit(1)
 
     circuits = [prettify_circuit_name(_canonical(e[0])) for e in entries]
+    canon_names = [_canonical(e[0]) for e in entries]
     vols_cons = [e[1] for e in entries]
     vols_opt = [e[2] for e in entries]
     x_pos = np.arange(len(circuits))
+
+    # Load scheduled volumes from each PureMagic output file if provided.
+    sched_series = []  # list of (label, {canon_name: volume})
+    for sched_path, sched_label in sched_files or []:
+        df_sched = parse_output_file(sched_path)
+        vol_map = {}
+        if not df_sched.empty and "volume" in df_sched.columns:
+            for _, row in df_sched.iterrows():
+                c = _canonical(str(row["circuit"]))
+                if pd.notna(row["volume"]):
+                    vol_map[c] = float(row["volume"])
+        if vol_map:
+            sched_series.append((sched_label, vol_map))
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
     ax.scatter(
         x_pos,
         vols_cons,
-        label="Conservative",
+        label="FLASQ conservative",
         marker="o",
         color=_COLOURS[0],
         edgecolors="black",
@@ -490,7 +522,7 @@ def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
     ax.scatter(
         x_pos,
         vols_opt,
-        label="Optimistic",
+        label="FLASQ optimistic",
         marker="s",
         color=_COLOURS[1],
         edgecolors="black",
@@ -499,12 +531,31 @@ def plot_flasq(flasq_file, output_path, circuits_file, logy=False, ylabel=None):
         zorder=3,
     )
 
+    for si, (sched_label, vol_map) in enumerate(sched_series):
+        sched_vols = [vol_map.get(c) for c in canon_names]
+        valid_x = [x for x, v in zip(x_pos, sched_vols) if v is not None]
+        valid_v = [v for v in sched_vols if v is not None]
+        if valid_x:
+            colour = _COLOURS[(2 + si) % len(_COLOURS)]
+            marker = _MARKERS[(2 + si) % len(_MARKERS)]
+            ax.scatter(
+                valid_x,
+                valid_v,
+                label=sched_label,
+                marker=marker,
+                color=colour,
+                edgecolors="black",
+                linewidths=0.5,
+                s=70,
+                zorder=3,
+            )
+
     ax.set_xticks(x_pos)
     ax.set_xticklabels(circuits, rotation=45, ha="right", fontsize=12)
     ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
     ax.set_xlabel("Circuit", fontsize=_LABEL_FONTSIZE)
     ax.set_ylabel(
-        ylabel if ylabel else "FLASQ Spacetime Volume (blocks)",
+        ylabel if ylabel else "Spacetime Volume (blocks)",
         fontsize=_LABEL_FONTSIZE,
     )
     ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
@@ -625,17 +676,14 @@ def main():
         parser.error("-c/--circuits is required.")
 
     # -----------------------------------------------------------------------
-    # FLASQ-only mode
+    # FLASQ mode: force -y volume, default -x to circuit if not given
     # -----------------------------------------------------------------------
     if args.flasq_file is not None:
-        plot_flasq(
-            flasq_file=args.flasq_file,
-            output_path=args.output,
-            circuits_file=args.circuits_file,
-            logy=args.logy,
-            ylabel=args.ylabel,
-        )
-        return
+        if not args.files:
+            parser.error("-f/--file is required when --flasq is given (provides scheduled volume).")
+        if args.x_axis is None:
+            args.x_axis = "circuit"
+        args.y_axis = "volume"
 
     # -----------------------------------------------------------------------
     # Normal mode — validate remaining required args
@@ -645,19 +693,7 @@ def main():
     if args.y_axis is None:
         parser.error("-y/--yaxis is required when --flasq is not given.")
     if not args.files:
-        parser.error("-f/--file is required when --flasq is not given.")
-
-    # -----------------------------------------------------------------------
-    # Normal mode — validate required args that are optional in FLASQ mode
-    # -----------------------------------------------------------------------
-    if args.x_axis is None:
-        parser.error("-x/--xaxis is required when --flasq is not given.")
-    if args.y_axis is None:
-        parser.error("-y/--yaxis is required when --flasq is not given.")
-    if not args.files:
-        parser.error("-f/--file is required when --flasq is not given.")
-    if args.circuits_file is None:
-        parser.error("-c/--circuits is required when --flasq is not given.")
+        parser.error("-f/--file is required.")
 
     # Load the allowed circuits set from the -c file
     try:
@@ -1115,10 +1151,10 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 5))
     ax2 = ax.twinx() if dual_y else None
     axes = [ax, ax2] if dual_y else [ax]
+    all_circuits: list = []  # populated in the circuit-x branch; used by FLASQ overlay
 
     if is_circuit_x:
         # --- Grouped bar chart ---
-        all_circuits: list = []
         for axis_idx, (yk_list, (series_list, any_ratio, ratio_labels)) in enumerate(
             zip(multi_y_keys, all_series)
         ):
@@ -1331,6 +1367,95 @@ def main():
                     y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
                 )
             _combine_legend(ax, ax2)
+
+    # -----------------------------------------------------------------------
+    # FLASQ overlay: add conservative and optimistic series on top of the plot
+    # -----------------------------------------------------------------------
+    if args.flasq_file is not None:
+
+        def _flasq_canonical(path):
+            name = os.path.basename(path)
+            while True:
+                root, ext = os.path.splitext(name)
+                if ext.lower() in (
+                    ".pkl",
+                    ".qasm",
+                    ".trans",
+                    ".schedule",
+                    ".txt",
+                    ".cliffordt",
+                    ".compiled",
+                ):
+                    name = root
+                else:
+                    break
+            name = re.sub(r"^m\d+\.", "", name)
+            return name
+
+        flasq_entries = parse_flasq_file(args.flasq_file)
+        # Filter by allowed circuits and --select
+        try:
+            with open(args.circuits_file) as _cf:
+                _flasq_allowed = {l.strip() for l in _cf if l.strip() and not l.startswith("#")}
+        except OSError:
+            _flasq_allowed = set()
+        flasq_entries = [e for e in flasq_entries if _flasq_canonical(e[0]) in _flasq_allowed]
+        if args.select:
+            flasq_entries = [e for e in flasq_entries if args.select in _flasq_canonical(e[0])]
+
+        colour_cons = _COLOURS[len(args.files) % len(_COLOURS)]
+        colour_opt = _COLOURS[(len(args.files) + 1) % len(_COLOURS)]
+
+        def _plot_flasq_series(xs, ys, label, colour):
+            """Draw FLASQ series as a dashed line (no markers), sorted by x."""
+            if not xs:
+                return
+            pairs = sorted(zip(xs, ys))
+            xp, yp = zip(*pairs)
+            ax.plot(
+                xp,
+                yp,
+                color=colour,
+                linewidth=2.0,
+                alpha=0.85,
+                linestyle="--",
+                zorder=3,
+                label=label,
+            )
+
+        if flasq_entries and is_circuit_x:
+            flasq_map = {_flasq_canonical(e[0]): (e[1], e[2]) for e in flasq_entries}
+            xs_cons, ys_cons, xs_opt, ys_opt = [], [], [], []
+            for xi, c in enumerate(all_circuits):
+                entry = flasq_map.get(c) or flasq_map.get(_flasq_canonical(c))
+                if entry:
+                    xs_cons.append(xi)
+                    ys_cons.append(entry[0])
+                    xs_opt.append(xi)
+                    ys_opt.append(entry[1])
+            _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons)
+            _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt)
+            _combine_legend(ax, ax2)
+
+        elif flasq_entries and x_key == "data_qubits":
+            xs_cons, ys_cons, xs_opt, ys_opt = [], [], [], []
+            for e in flasq_entries:
+                q = e[3]
+                if q is not None:
+                    xs_cons.append(q)
+                    ys_cons.append(e[1])
+                    xs_opt.append(q)
+                    ys_opt.append(e[2])
+            _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons)
+            _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt)
+            _combine_legend(ax, ax2)
+
+        elif flasq_entries:
+            print(
+                f"Warning: FLASQ overlay is not supported for x-axis '{x_key}'. "
+                "Use 'circuit' or 'data_qubits'.",
+                file=sys.stderr,
+            )
 
     # Y-axis limits
     if args.xlim:
