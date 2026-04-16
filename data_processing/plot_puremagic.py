@@ -56,6 +56,7 @@ _Y_AXES = {
     "total_qubits": "Total Qubits",
     "ancilla_qubits": "Area",
     "volume": "Volume",
+    "volume_loss": "Volume Loss",
     "max_parallelism": "Max Parallelism",
     "cultivation": "Average Cultivation Time (cycles)",
 }
@@ -65,11 +66,12 @@ _Y_FIELD = {
     "cultivation": "avg_cultivation_time",
     # scheduling_efficiency_loss reads the same column but applies 1-x (see _Y_INVERT)
     "scheduling_efficiency_loss": "scheduling_efficiency",
+    "volume_loss": "volume",
 }
 
 # Y-axis keys whose plotted value is (1 - raw_value) in non-ratio mode, or
 # (1 - ratio) in ratio mode.
-_Y_INVERT = {"scheduling_efficiency_loss"}
+_Y_INVERT = {"scheduling_efficiency_loss", "volume_loss"}
 
 
 # ---------------------------------------------------------------------------
