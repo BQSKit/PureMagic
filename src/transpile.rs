@@ -356,12 +356,247 @@ fn try_parse_1q(line: &str) -> Option<QasmGate> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Clifford sequence optimizer
+// Single-qubit Clifford optimizer
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Each of the 24 single-qubit Cliffords is identified by the pair
+// (X-image, Z-image) under conjugation, where each image is one of the 8
+// signed Paulis {±X, ±Y, ±Z}.  We encode a signed Pauli as a u8:
+//   bits [1:0] = Pauli type: 0=X, 1=Y, 2=Z
+//   bit  [2]   = sign: 0=+, 1=−
+// giving 6 valid values (0..=5) per axis.  The pair (x_img, z_img) uniquely
+// identifies the Clifford (not all 36 pairs are valid; exactly 24 are).
+//
+// The minimal output gate sequences (matching Python's `unitaries_to_gates`)
+// use only {S, Sdg, SX, SXdg, X, Z} — the gates that appear in the .trans
+// format plus X and Z (which are dropped by `TransClifford::from_qasm_gate`).
 
-/// Filter the clifford queue down to gates that appear in the .trans format.
+/// Encode a signed single-qubit Pauli as a u8.
+/// Pauli: 0=X, 1=Y, 2=Z.  Sign bit: 0=+, 1=−.
+#[inline]
+fn pauli_code(pauli: u8, neg: bool) -> u8 {
+    pauli | ((neg as u8) << 2)
+}
+
+/// Apply a single-qubit gate to the (x_img, z_img) state, returning the new state.
+/// Each image is a pauli_code.
+fn apply_1q_to_state(gate: Gate1Q, x_img: u8, z_img: u8) -> (u8, u8) {
+    // Conjugation rules for each gate on X and Z:
+    //   H:    X→Z,  Z→X
+    //   S:    X→Y,  Z→Z
+    //   Sdg:  X→-Y, Z→Z
+    //   SX:   X→X,  Z→-Y
+    //   SXdg: X→X,  Z→Y
+    //   X:    X→X,  Z→-Z
+    //   Y:    X→-X, Z→-Z
+    //   Z:    X→-X, Z→Z
+    //
+    // For a composed state (x_img, z_img), applying gate G means:
+    //   new_x_img = G(x_img)
+    //   new_z_img = G(z_img)
+    // where G acts on a signed Pauli by permuting/negating.
+    fn apply_gate_to_pauli(gate: Gate1Q, p: u8) -> u8 {
+        let pauli = p & 0x3; // 0=X,1=Y,2=Z
+        let neg = (p >> 2) & 1 != 0;
+        let (new_pauli, extra_neg) = match gate {
+            Gate1Q::H => match pauli {
+                0 => (2, false), // X→Z
+                1 => (1, true),  // Y→-Y
+                2 => (0, false), // Z→X
+                _ => unreachable!(),
+            },
+            Gate1Q::S => match pauli {
+                0 => (1, false), // X→Y
+                1 => (0, true),  // Y→-X
+                2 => (2, false), // Z→Z
+                _ => unreachable!(),
+            },
+            Gate1Q::Sdg => match pauli {
+                0 => (1, true),  // X→-Y
+                1 => (0, false), // Y→X
+                2 => (2, false), // Z→Z
+                _ => unreachable!(),
+            },
+            Gate1Q::SX => match pauli {
+                0 => (0, false), // X→X
+                1 => (2, true),  // Y→-Z
+                2 => (1, true),  // Z→-Y
+                _ => unreachable!(),
+            },
+            Gate1Q::SXdg => match pauli {
+                0 => (0, false), // X→X
+                1 => (2, false), // Y→Z
+                2 => (1, false), // Z→Y
+                _ => unreachable!(),
+            },
+            Gate1Q::X => match pauli {
+                0 => (0, false), // X→X
+                1 => (1, true),  // Y→-Y
+                2 => (2, true),  // Z→-Z
+                _ => unreachable!(),
+            },
+            Gate1Q::Y => match pauli {
+                0 => (0, true),  // X→-X
+                1 => (1, false), // Y→Y
+                2 => (2, true),  // Z→-Z
+                _ => unreachable!(),
+            },
+            Gate1Q::Z => match pauli {
+                0 => (0, true),  // X→-X
+                1 => (1, true),  // Y→-Y
+                2 => (2, false), // Z→Z
+                _ => unreachable!(),
+            },
+        };
+        pauli_code(new_pauli, neg ^ extra_neg)
+    }
+    (apply_gate_to_pauli(gate, x_img), apply_gate_to_pauli(gate, z_img))
+}
+
+/// Simulate a sequence of Gate1Q on the identity state (X+,Z+) and return
+/// the resulting (x_img, z_img).
+fn simulate_gate_sequence(gates: &[Gate1Q]) -> (u8, u8) {
+    let mut x_img = pauli_code(0, false); // X+
+    let mut z_img = pauli_code(2, false); // Z+
+    for &g in gates {
+        let (nx, nz) = apply_1q_to_state(g, x_img, z_img);
+        x_img = nx;
+        z_img = nz;
+    }
+    (x_img, z_img)
+}
+
+/// Build the complete lookup table: (x_img, z_img) → minimal gate sequence.
+/// This is computed once at startup by simulating all 24 Python gate sequences.
+fn build_clifford_table() -> std::collections::HashMap<(u8, u8), Vec<Gate1Q>> {
+    use Gate1Q::*;
+    // All 24 minimal sequences from Python's unitaries_to_gates, translated to Gate1Q.
+    // Python uses 'H' in some sequences but H is not in the .trans format.
+    // However, Python's optimize_sequence only processes gates that went through
+    // the clifford_queue, which includes H. The output sequences from
+    // _optimize_single_qubit_sequence use only {S, Sdg, SX, SXdg, X, Z} — no H.
+    // (H = S·SX·S up to global phase, which is the entry ('S','SX','S') in the table.)
+    let sequences: &[&[Gate1Q]] = &[
+        &[],             // I
+        &[X],            // X
+        &[X, Z],         // X,Z  (= Y up to phase)
+        &[Z],            // Z
+        &[S, SX, S],     // H (= S·SX·S)
+        &[S],            // S
+        &[Sdg],          // Sdg
+        &[S, X],         // S·X
+        &[Sdg, X],       // Sdg·X
+        &[Z, SX, S],     // Z·SX·S
+        &[SX, S],        // SX·S
+        &[S, SX, Z],     // S·SX·Z
+        &[Z, SX, Z],     // Z·SX·Z
+        &[Z, SX, Z, X],  // Z·SX·Z·X
+        &[Z, SXdg],      // Z·SXdg
+        &[Z, SX],        // Z·SX
+        &[Sdg, SX, S],   // Sdg·SX·S
+        &[Sdg, SX, Sdg], // Sdg·SX·Sdg
+        &[S, SX, Sdg],   // S·SX·Sdg
+        &[S, SXdg, Z],   // S·SXdg·Z
+        &[S, SXdg],      // S·SXdg
+        &[S, SX],        // S·SX
+        &[SX, Sdg],      // SX·Sdg
+        &[Z, SX, Sdg],   // Z·SX·Sdg
+    ];
+    let mut table = std::collections::HashMap::new();
+    for seq in sequences {
+        let state = simulate_gate_sequence(seq);
+        table.insert(state, seq.to_vec());
+    }
+    table
+}
+
+/// Optimize a sequence of single-qubit Clifford gates on one qubit into the
+/// minimal equivalent sequence (matching Python's `_optimize_single_qubit_sequence`).
+/// Returns the minimal gate list (may be empty for identity).
+fn optimize_single_qubit_sequence(gates: &[Gate1Q]) -> Vec<Gate1Q> {
+    if gates.is_empty() {
+        return vec![];
+    }
+    // Compose all gates into a single Clifford state.
+    let state = simulate_gate_sequence(gates);
+    // Look up the minimal sequence.
+    // We build the table lazily using a thread-local.
+    use std::cell::RefCell;
+    thread_local! {
+        static TABLE: RefCell<Option<std::collections::HashMap<(u8, u8), Vec<Gate1Q>>>> =
+            RefCell::new(None);
+    }
+    TABLE.with(|t| {
+        let mut borrow = t.borrow_mut();
+        if borrow.is_none() {
+            *borrow = Some(build_clifford_table());
+        }
+        borrow.as_ref().unwrap().get(&state).cloned().unwrap_or_default()
+    })
+}
+
+/// Optimize a sequence of Clifford gates (from the clifford_queue) into a
+/// minimal equivalent sequence, matching Python's `CliffordOperation.optimize_sequence`.
+///
+/// Strategy:
+///   - Single-qubit gates on the same qubit are accumulated and compressed
+///     into a minimal sequence using the 24-element Clifford group lookup.
+///   - When a 2-qubit gate is encountered, all pending single-qubit sequences
+///     on its qubits are flushed first, then the 2-qubit gate is emitted.
+///   - At the end, remaining single-qubit sequences are flushed.
+///   - Only gates that appear in the .trans format are emitted
+///     (X and Z are dropped by `TransClifford::from_qasm_gate`).
 fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransClifford> {
-    gates.iter().filter_map(|g| TransClifford::from_qasm_gate(g, n_qubits)).collect()
+    // Per-qubit accumulator of single-qubit Gate1Q values.
+    let mut per_qubit: Vec<Vec<Gate1Q>> = vec![Vec::new(); n_qubits];
+    let mut result: Vec<TransClifford> = Vec::new();
+
+    /// Flush the accumulated single-qubit sequence for `qubit`, appending
+    /// the minimal TransClifford items to `result`.
+    fn flush_qubit(
+        qubit: usize, per_qubit: &mut Vec<Vec<Gate1Q>>, result: &mut Vec<TransClifford>,
+        n_qubits: usize,
+    ) {
+        let seq = std::mem::take(&mut per_qubit[qubit]);
+        if seq.is_empty() {
+            return;
+        }
+        let minimal = optimize_single_qubit_sequence(&seq);
+        for g in minimal {
+            let qasm_gate = QasmGate::Clifford1Q { gate: g, qubit };
+            if let Some(tc) = TransClifford::from_qasm_gate(&qasm_gate, n_qubits) {
+                result.push(tc);
+            }
+            // X and Z are dropped by from_qasm_gate (returns None).
+        }
+    }
+
+    for gate in gates {
+        match gate {
+            QasmGate::Clifford1Q { gate: g, qubit } => {
+                per_qubit[*qubit].push(*g);
+            }
+            QasmGate::Clifford2Q { gate: g2, control, target } => {
+                // Flush single-qubit sequences on both qubits before the 2Q gate.
+                flush_qubit(*control, &mut per_qubit, &mut result, n_qubits);
+                flush_qubit(*target, &mut per_qubit, &mut result, n_qubits);
+                // Emit the 2-qubit gate directly (no single-qubit optimization).
+                let qasm_gate =
+                    QasmGate::Clifford2Q { gate: *g2, control: *control, target: *target };
+                if let Some(tc) = TransClifford::from_qasm_gate(&qasm_gate, n_qubits) {
+                    result.push(tc);
+                }
+            }
+            _ => {} // Barrier, T, Tdg, Measure — not in clifford_queue
+        }
+    }
+
+    // Flush remaining single-qubit sequences.
+    for qubit in 0..n_qubits {
+        flush_qubit(qubit, &mut per_qubit, &mut result, n_qubits);
+    }
+
+    result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -454,8 +689,9 @@ fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransI
                 }
                 let pre_pauli = make_z_pauli(n_qubits, *qubit, false);
                 let conjugated = tableau.conjugate(&pre_pauli);
-                let should_flush = last_weight.map_or(false, |w| w > effective_max_weight)
-                    || conjugated.weight() > effective_max_weight;
+                // Match Python behaviour: flush only if the *last T gate's* weight
+                // exceeded max_weight, not the measurement's own conjugated weight.
+                let should_flush = last_weight.map_or(false, |w| w > effective_max_weight);
                 if should_flush {
                     flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, n_qubits);
                     let fresh_pauli = make_z_pauli(n_qubits, *qubit, false);
@@ -586,10 +822,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clifford_delta = clifford_gates as i64 - n_cliffords as i64;
 
     if tot_gates > 0 {
-        println!(
-            "Circuit length:    {} (before) -> {} (after transpilation)",
-            tot_gates, tot_post
-        );
+        println!("Circuit length:    {} (before) -> {} (after transpilation)", tot_gates, tot_post);
         println!(
             "  Overall reduction: {} operations removed ({:.1}% reduction)",
             tot_delta,
