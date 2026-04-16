@@ -80,7 +80,7 @@ def main() -> None:
     #    )
     #    use_gpu = False
 
-    instantiate_options: dict = {}
+    #instantiate_options: dict = {}
     # if use_gpu:
     #    instantiate_options = {"method": "qfactor", "device": "cuda"}
     #    print("Using GPU-accelerated QFactor instantiation.")
@@ -90,7 +90,8 @@ def main() -> None:
     print("Compiling to Clifford+T...")
     compile_start: float = timer()
     machine: CliffordTModel = CliffordTModel(circuit.num_qudits)
-    circuit = compile(circuit, model=machine, instantiate_options=instantiate_options or None)
+    #circuit = compile(circuit, model=machine, instantiate_options=instantiate_options or None)
+    circuit = compile(circuit, model=machine)
     compile_end: float = timer()
     print(f"Compilation took {(compile_end - compile_start):.2f} seconds")
 
