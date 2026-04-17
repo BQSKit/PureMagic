@@ -4,6 +4,32 @@
 import json
 import sys
 import os
+import math
+
+
+def dascot_square_sparse_qubit_count(n: int) -> dict:
+    """
+    Returns the total logical qubit count for the DASCOT Square Sparse
+    architecture for a circuit with `n` logical data qubits.
+    """
+    s = math.ceil(math.sqrt(n))  # ceil(sqrt(N))
+    inner_side = 2 * s + 1
+    inner_total = inner_side * inner_side
+    data_slots = s * s
+    final_side = inner_side + 2  # = 2s + 3
+    final_total = final_side * final_side
+    border_cells = final_total - inner_total
+    magic = border_cells // 2
+    routing = (inner_total - data_slots) + (border_cells - magic)
+    total = data_slots + routing + magic
+    assert total == final_total
+    return {
+        "data": data_slots,
+        "routing": routing,
+        "magic": magic,
+        "total": total,
+        "grid_side": final_side,
+    }
 
 
 def analyze_wisq_json(filepath):
@@ -17,12 +43,20 @@ def analyze_wisq_json(filepath):
     all_ids = [entry["id"] for step in steps for entry in step]
     num_ids = len(all_ids)
 
-    ids_per_step = [len(step) for step in steps]
     avg_ids_per_step = num_ids / num_steps if num_steps > 0 else 0
+
+    # Number of logical data qubits from the qubit map
+    n_data = len(data["map"])
+    ss = dascot_square_sparse_qubit_count(n_data)
+    area = ss["total"]
+    wisq_volume = area * num_steps
 
     print(f"  Number of steps:              {num_steps}")
     print(f"  Total number of IDs:          {num_ids}")
     print(f"  Average IDs per step:         {avg_ids_per_step:.2f}")
+    print(f"  Logical data qubits (n):      {n_data}")
+    print(f"  Square sparse total area:     {area}  (grid {ss['grid_side']}x{ss['grid_side']})")
+    print(f"  WISQ volume (area × steps):   {wisq_volume}")
     print()
 
 
