@@ -1315,7 +1315,7 @@ def main():
         _deferred_circuit_x_setup = False
 
     # -----------------------------------------------------------------------
-    # WISQ overlay: add WISQ volume series on top of the plot
+    # WISQ overlay / ratio mode
     # -----------------------------------------------------------------------
     if args.wisq_dir is not None:
         wisq_entries = parse_wisq_dir(args.wisq_dir)
@@ -1330,108 +1330,259 @@ def main():
         if args.select:
             wisq_entries = [e for e in wisq_entries if args.select in _wisq_canonical(e[0])]
 
-        if wisq_entries:
-            # Pick a colour after all the -f series
-            wisq_colour = _COLOURS[len(args.files) % len(_COLOURS)]
-            wisq_marker = _MARKERS[len(args.files) % len(_MARKERS)]
-
-            if is_circuit_x:
-                # When no -f series were given, populate all_circuits from WISQ entries
-                if not all_circuits:
-                    all_circuits = [_wisq_canonical(e[0]) for e in wisq_entries]
-
-                wisq_map = {_wisq_canonical(e[0]): e[1] for e in wisq_entries}
-                heights = [wisq_map.get(c, 0.0) for c in all_circuits]
-                # Determine bar offset: place after existing bars
-                n_existing = sum(len(sl) for sl, _, _ in all_series)
-                total_count_wisq = n_existing + 1
-                bar_width_wisq = 0.8 / max(total_count_wisq, 1)
-                all_offsets_wisq = (
-                    np.linspace(
-                        -(total_count_wisq - 1) / 2,
-                        (total_count_wisq - 1) / 2,
-                        total_count_wisq,
-                    )
-                    * bar_width_wisq
-                )
-                wisq_offset = all_offsets_wisq[-1]
-                ax.bar(
-                    np.arange(len(all_circuits)) + wisq_offset,
-                    heights,
-                    width=bar_width_wisq * 0.9,
-                    label="WISQ",
-                    color=wisq_colour,
-                    edgecolor="black",
-                    linewidth=0.4,
-                )
-            else:
-                # Scatter / line: x = data_qubits (n), y = volume
-                xs_w = [e[1] for e in wisq_entries]  # volumes
-                # We need n_data for x; re-read from the directory
-                wisq_entries_full = []
-                for fname in sorted(os.listdir(args.wisq_dir)):
-                    if not fname.endswith(".json"):
-                        continue
-                    fpath = os.path.join(args.wisq_dir, fname)
-                    try:
-                        with open(fpath) as f:
-                            data = json.load(f)
-                        stem = fname[: -len(".json")]
-                        stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
-                        if _wisq_canonical(stem) not in _allowed_circuits:
-                            continue
-                        if args.select and args.select not in _wisq_canonical(stem):
-                            continue
-                        n_data = len(data["map"])
-                        n_steps = len(data["steps"])
-                        area = _dascot_square_sparse_total(n_data)
-                        volume = area * n_steps
-                        wisq_entries_full.append((stem, n_data, volume))
-                    except Exception:
-                        pass
-
-                if x_key == "data_qubits":
-                    xs_w = [e[1] for e in wisq_entries_full]
-                    ys_w = [e[2] for e in wisq_entries_full]
-                else:
-                    # Fall back to circuit-name x (use index)
-                    xs_w = [e[0] for e in wisq_entries_full]
-                    ys_w = [e[2] for e in wisq_entries_full]
-
-                draw_lines_wisq = args.lines or args.lines_with_markers
-                if draw_lines_wisq:
-                    pairs_w = sorted(zip(xs_w, ys_w))
-                    xp_w, yp_w = zip(*pairs_w) if pairs_w else ([], [])
-                    ax.plot(
-                        xp_w,
-                        yp_w,
-                        color=wisq_colour,
-                        linewidth=2.7,
-                        alpha=0.8,
-                        linestyle="-",
-                        marker=wisq_marker if args.lines_with_markers else None,
-                        markersize=6,
-                        markeredgecolor="black",
-                        markeredgewidth=0.5,
-                        zorder=2,
-                        label="WISQ",
-                    )
-                else:
-                    ax.scatter(
-                        xs_w,
-                        ys_w,
-                        label="WISQ",
-                        marker=wisq_marker,
-                        color=wisq_colour,
-                        edgecolors="black",
-                        linewidths=0.5,
-                        s=60,
-                        zorder=3,
-                    )
-
-            _combine_legend(ax, ax2)
-        else:
+        if not wisq_entries:
             print("Warning: no WISQ entries matched the allowed circuits.", file=sys.stderr)
+        else:
+            wisq_map = {_wisq_canonical(e[0]): e[1] for e in wisq_entries}
+
+            has_f_series = any(len(sl) > 0 for sl, _, _ in all_series)
+
+            if has_f_series:
+                # -----------------------------------------------------------------
+                # Ratio mode: replace each -f series with wisq_volume / series_volume
+                # Only circuits present in both the series and wisq_map are shown.
+                # Clear the axes and redraw.
+                # -----------------------------------------------------------------
+                ax.cla()
+                if ax2 is not None:
+                    ax2.cla()
+
+                if args.percent_improvement:
+                    ratio_y_label = args.ylabel if args.ylabel else "WISQ Volume % Overhead"
+                else:
+                    ratio_y_label = args.ylabel if args.ylabel else "WISQ Volume / Volume"
+
+                def _apply_pct(ratio):
+                    """Convert raw ratio to percent improvement if requested."""
+                    return (ratio - 1.0) * 100.0 if args.percent_improvement else ratio
+
+                if is_circuit_x:
+                    # Collect ratio series: for each -f series, compute per-circuit ratios
+                    ratio_series_data = []  # list of (label, {circuit: ratio})
+                    for yk_list, (series_list, any_ratio, ratio_labels) in zip(
+                        multi_y_keys, all_series
+                    ):
+                        for s in series_list:
+                            lookup = dict(zip(s.xs, s.ys))
+                            ratio_map = {}
+                            for c, vol in lookup.items():
+                                wisq_vol = wisq_map.get(c)
+                                if wisq_vol is not None and vol and vol != 0:
+                                    ratio_map[c] = _apply_pct(wisq_vol / vol)
+                            ratio_series_data.append((s.label, ratio_map))
+
+                    # all_circuits: union of circuits present in all ratio series AND wisq_map
+                    ratio_circuits = [
+                        c
+                        for c in (all_circuits if all_circuits else list(wisq_map.keys()))
+                        if any(c in rd for _, rd in ratio_series_data)
+                    ]
+                    all_circuits[:] = ratio_circuits  # update in-place for deferred setup
+
+                    n_c = len(ratio_circuits)
+                    n_s = len(ratio_series_data)
+                    bar_width_r = 0.8 / max(n_s, 1)
+                    offsets_r = (
+                        np.linspace(-(n_s - 1) / 2, (n_s - 1) / 2, n_s) * bar_width_r
+                        if n_s > 1
+                        else np.array([0.0])
+                    )
+                    for j, (lbl, ratio_map) in enumerate(ratio_series_data):
+                        colour = _COLOURS[j % len(_COLOURS)]
+                        heights_r = [ratio_map.get(c, 0.0) for c in ratio_circuits]
+                        ax.bar(
+                            np.arange(n_c) + offsets_r[j],
+                            heights_r,
+                            width=bar_width_r * 0.9,
+                            label=lbl if lbl is not None else "_nolegend_",
+                            color=colour,
+                            edgecolor="black",
+                            linewidth=0.4,
+                        )
+
+                    ax.set_ylabel(ratio_y_label, fontsize=_LABEL_FONTSIZE)
+                    ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+                    if args.logy:
+                        ax.set_yscale("log")
+                    if args.hline:
+                        hline_y = 0.0 if args.percent_improvement else 1.0
+                        ax.axhline(
+                            y=hline_y,
+                            color="black",
+                            linestyle="-",
+                            linewidth=1.0,
+                            label="_nolegend_",
+                        )
+
+                else:
+                    # Scatter / line ratio mode for non-circuit x-axis
+                    draw_lines_r = args.lines or args.lines_with_markers
+                    colour_idx = 0
+                    for yk_list, (series_list, any_ratio_f, ratio_labels) in zip(
+                        multi_y_keys, all_series
+                    ):
+                        for s in series_list:
+                            colour = _COLOURS[colour_idx % len(_COLOURS)]
+                            marker = _MARKERS[colour_idx % len(_MARKERS)]
+                            colour_idx += 1
+                            xs_r, ys_r = [], []
+                            for xv, yv, circ in zip(s.xs, s.ys, s.circuits):
+                                wisq_vol = wisq_map.get(circ)
+                                if wisq_vol is not None and yv and yv != 0:
+                                    xs_r.append(xv)
+                                    ys_r.append(_apply_pct(wisq_vol / yv))
+                            if not xs_r:
+                                continue
+                            if draw_lines_r:
+                                pairs_r = sorted(zip(xs_r, ys_r))
+                                xp_r, yp_r = zip(*pairs_r)
+                                ax.plot(
+                                    xp_r,
+                                    yp_r,
+                                    color=colour,
+                                    linewidth=2.7 if not args.lines_with_markers else 1.8,
+                                    alpha=0.8,
+                                    linestyle="-",
+                                    marker=marker if args.lines_with_markers else None,
+                                    markersize=6,
+                                    markeredgecolor="black",
+                                    markeredgewidth=0.5,
+                                    zorder=2,
+                                    label=s.label if s.label is not None else "_nolegend_",
+                                )
+                            else:
+                                ax.scatter(
+                                    xs_r,
+                                    ys_r,
+                                    label=s.label if s.label is not None else "_nolegend_",
+                                    marker=marker,
+                                    color=colour,
+                                    edgecolors="black",
+                                    linewidths=0.5,
+                                    s=60,
+                                    zorder=3,
+                                )
+
+                    ax.set_ylabel(ratio_y_label, fontsize=_LABEL_FONTSIZE)
+                    ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+                    ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
+                    ax.tick_params(axis="x", labelsize=_TICK_FONTSIZE)
+                    if args.logy:
+                        ax.set_yscale("log")
+                    if args.hline:
+                        hline_y = 0.0 if args.percent_improvement else 1.0
+                        ax.axhline(
+                            y=hline_y,
+                            color="grey",
+                            linestyle=":",
+                            linewidth=1.0,
+                            label="_nolegend_",
+                        )
+
+                _combine_legend(ax, ax2)
+
+            else:
+                # -----------------------------------------------------------------
+                # WISQ-only mode: plot absolute WISQ volumes
+                # -----------------------------------------------------------------
+                wisq_colour = _COLOURS[0]
+                wisq_marker = _MARKERS[0]
+
+                if is_circuit_x:
+                    if not all_circuits:
+                        all_circuits = [_wisq_canonical(e[0]) for e in wisq_entries]
+                    heights = [wisq_map.get(c, 0.0) for c in all_circuits]
+                    ax.bar(
+                        np.arange(len(all_circuits)),
+                        heights,
+                        width=0.8,
+                        label="WISQ",
+                        color=wisq_colour,
+                        edgecolor="black",
+                        linewidth=0.4,
+                    )
+                    ax.set_ylabel(
+                        args.ylabel if args.ylabel else _Y_AXES["volume"],
+                        fontsize=_LABEL_FONTSIZE,
+                    )
+                    ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+                    if args.logy:
+                        ax.set_yscale("log")
+                    if args.hline:
+                        ax.axhline(
+                            y=1.0, color="black", linestyle="-", linewidth=1.0, label="_nolegend_"
+                        )
+                else:
+                    wisq_entries_full = []
+                    for fname in sorted(os.listdir(args.wisq_dir)):
+                        if not fname.endswith(".json"):
+                            continue
+                        fpath = os.path.join(args.wisq_dir, fname)
+                        try:
+                            with open(fpath) as f:
+                                data = json.load(f)
+                            stem = fname[: -len(".json")]
+                            stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
+                            if _wisq_canonical(stem) not in _allowed_circuits:
+                                continue
+                            if args.select and args.select not in _wisq_canonical(stem):
+                                continue
+                            n_data = len(data["map"])
+                            n_steps = len(data["steps"])
+                            area = _dascot_square_sparse_total(n_data)
+                            volume = area * n_steps
+                            wisq_entries_full.append((stem, n_data, volume))
+                        except Exception:
+                            pass
+
+                    if x_key == "data_qubits":
+                        xs_w = [e[1] for e in wisq_entries_full]
+                        ys_w = [e[2] for e in wisq_entries_full]
+                    else:
+                        xs_w = [e[0] for e in wisq_entries_full]
+                        ys_w = [e[2] for e in wisq_entries_full]
+
+                    draw_lines_wisq = args.lines or args.lines_with_markers
+                    if draw_lines_wisq:
+                        pairs_w = sorted(zip(xs_w, ys_w))
+                        xp_w, yp_w = zip(*pairs_w) if pairs_w else ([], [])
+                        ax.plot(
+                            xp_w,
+                            yp_w,
+                            color=wisq_colour,
+                            linewidth=2.7,
+                            alpha=0.8,
+                            linestyle="-",
+                            marker=wisq_marker if args.lines_with_markers else None,
+                            markersize=6,
+                            markeredgecolor="black",
+                            markeredgewidth=0.5,
+                            zorder=2,
+                            label="WISQ",
+                        )
+                    else:
+                        ax.scatter(
+                            xs_w,
+                            ys_w,
+                            label="WISQ",
+                            marker=wisq_marker,
+                            color=wisq_colour,
+                            edgecolors="black",
+                            linewidths=0.5,
+                            s=60,
+                            zorder=3,
+                        )
+                    ax.set_ylabel(
+                        args.ylabel if args.ylabel else _Y_AXES["volume"],
+                        fontsize=_LABEL_FONTSIZE,
+                    )
+                    ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+                    ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
+                    ax.tick_params(axis="x", labelsize=_TICK_FONTSIZE)
+                    if args.logy:
+                        ax.set_yscale("log")
+
+                _combine_legend(ax, ax2)
 
     # -----------------------------------------------------------------------
     # Deferred circuit-x axis setup (applied after WISQ overlay so all_circuits is final)
