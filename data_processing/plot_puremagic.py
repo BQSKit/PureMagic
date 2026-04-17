@@ -4,6 +4,8 @@ Unified PureMagic results plotter.
 """
 
 import argparse
+import json
+import math
 import os
 import re
 import sys
@@ -382,6 +384,48 @@ def _combine_legend(ax, ax2=None):
 
 
 # ---------------------------------------------------------------------------
+# WISQ helpers
+# ---------------------------------------------------------------------------
+
+
+def _dascot_square_sparse_total(n: int) -> int:
+    """Return the total logical qubit count for the Square Sparse layout with n data qubits."""
+    s = math.ceil(math.sqrt(n))
+    inner_side = 2 * s + 1
+    final_side = inner_side + 2  # = 2s + 3
+    return final_side * final_side
+
+
+def parse_wisq_dir(directory: str) -> list:
+    """
+    Read all *.json files in *directory* and return a list of
+    (circuit_name, volume) tuples, where:
+      circuit_name  = filename stem stripped of '-wisq' suffix
+      volume        = dascot_square_sparse_total(n_data) * len(steps)
+    """
+    entries = []
+    for fname in sorted(os.listdir(directory)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(directory, fname)
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+            n_data = len(data["map"])
+            n_steps = len(data["steps"])
+            area = _dascot_square_sparse_total(n_data)
+            volume = area * n_steps
+            # Derive a canonical circuit name from the filename
+            stem = fname[: -len(".json")]
+            # Strip trailing "-wisq" or "_wisq" suffix if present
+            stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
+            entries.append((stem, volume))
+        except Exception as exc:
+            print(f"Warning: could not parse WISQ file {fpath}: {exc}", file=sys.stderr)
+    return entries
+
+
+# ---------------------------------------------------------------------------
 # FLASQ plot
 # ---------------------------------------------------------------------------
 
@@ -454,6 +498,18 @@ def main():
             "flasq_lower_bound.py on multiple circuits and concatenating the output). "
             "When given, a FLASQ volume plot is produced and all other arguments "
             "except -o / --output, --logy, and --ylabel are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--wisq",
+        dest="wisq_dir",
+        default=None,
+        metavar="WISQ_DIR",
+        help=(
+            "Path to a directory containing WISQ *.json output files. "
+            "When given, the WISQ volume (square-sparse area × steps) is computed "
+            "for each circuit and plotted as an additional series. "
+            "Forces the y-axis to 'volume'."
         ),
     )
     parser.add_argument("-x", "--xaxis", dest="x_axis", choices=list(_X_AXES))
@@ -556,14 +612,25 @@ def main():
         args.y_axis = "volume"
 
     # -----------------------------------------------------------------------
+    # WISQ mode: force -y volume
+    # -----------------------------------------------------------------------
+    if args.wisq_dir is not None:
+        args.y_axis = "volume"
+        if args.x_axis is None:
+            args.x_axis = "circuit"
+
+    # -----------------------------------------------------------------------
     # Normal mode — validate remaining required args
     # -----------------------------------------------------------------------
     if args.x_axis is None:
-        parser.error("-x/--xaxis is required when --flasq is not given.")
+        parser.error("-x/--xaxis is required when --flasq/--wisq is not given.")
     if args.y_axis is None:
-        parser.error("-y/--yaxis is required when --flasq is not given.")
+        parser.error("-y/--yaxis is required when --flasq/--wisq is not given.")
+    if not args.files and args.wisq_dir is None:
+        parser.error("-f/--file is required (or use --wisq to supply a WISQ directory).")
+    # Allow --wisq-only mode (no -f files)
     if not args.files:
-        parser.error("-f/--file is required.")
+        args.files = []
 
     # Load the allowed circuits set from the -c file
     try:
@@ -783,6 +850,12 @@ def main():
                 )
 
         if not series_list:
+            if args.wisq_dir is not None:
+                print(
+                    f"Warning: no -f data to plot for y={y_keys_for_axis}; will plot WISQ only.",
+                    file=sys.stderr,
+                )
+                return [], False, []
             print(f"Error: no data to plot for y={y_keys_for_axis}.", file=sys.stderr)
             sys.exit(1)
         ratio_flags = [s.is_ratio for s in series_list]
@@ -983,10 +1056,15 @@ def main():
 
     # multi_y_keys[axis_idx] = list of y-keys for that axis;
     # for dual-y each list has one key; for multi-key same-axis the list has many keys.
-    all_series = [
-        load_series(yk_list, label_suffix=_Y_AXES[yk_list[0]] if dual_y else None)
-        for yk_list in multi_y_keys
-    ]
+    # When --wisq is used without any -f files, skip load_series entirely.
+    if args.files:
+        all_series = [
+            load_series(yk_list, label_suffix=_Y_AXES[yk_list[0]] if dual_y else None)
+            for yk_list in multi_y_keys
+        ]
+    else:
+        # wisq-only mode: no -f series; create empty placeholders
+        all_series = [([], False, []) for _ in multi_y_keys]
 
     # Print data table
     table_frames, col_names = [], []
@@ -1037,8 +1115,9 @@ def main():
         ):
             cur_ax = axes[axis_idx]
 
-            all_circuits = _ordered_union_xs(series_list)
-            n_circuits = len(all_circuits)
+            if series_list:
+                all_circuits = _ordered_union_xs(series_list)
+            # (if series_list is empty, all_circuits stays [] until WISQ overlay fills it)
 
             left_count = len(all_series[0][0]) if dual_y else len(series_list)
             right_count = len(all_series[1][0]) if dual_y else 0
@@ -1046,6 +1125,8 @@ def main():
             bar_width = 0.8 / max(total_count, 1)
             all_offsets = (
                 np.linspace(-(total_count - 1) / 2, (total_count - 1) / 2, total_count) * bar_width
+                if total_count > 0
+                else np.array([0.0])
             )
             offsets = all_offsets[:left_count] if axis_idx == 0 else all_offsets[left_count:]
             colour_start = 0 if axis_idx == 0 else left_count
@@ -1055,7 +1136,7 @@ def main():
                 lookup = dict(zip(s.xs, s.ys))
                 heights = [lookup.get(c, 0.0) for c in all_circuits]
                 cur_ax.bar(
-                    np.arange(n_circuits) + offsets[j],
+                    np.arange(len(all_circuits)) + offsets[j],
                     heights,
                     width=bar_width * 0.9,
                     label=s.label if s.label is not None else "_nolegend_",
@@ -1074,21 +1155,8 @@ def main():
             )
             cur_ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
 
-        x_pos = np.arange(len(all_circuits))
-        ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(
-            [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=12
-        )
-        ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
-        if args.logy:
-            ax.set_yscale("log")
-            if ax2 is not None:
-                ax2.set_yscale("log")
-        if args.hline:
-            hline_y = 0.0 if args.percent_improvement else 1.0
-            ax.axhline(y=hline_y, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
-        _combine_legend(ax, ax2)
+        # x-axis ticks are set after WISQ overlay (which may populate all_circuits)
+        _deferred_circuit_x_setup = True
 
     else:
         # Check whether to use a stacked bar chart:
@@ -1244,6 +1312,146 @@ def main():
                     y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
                 )
             _combine_legend(ax, ax2)
+        _deferred_circuit_x_setup = False
+
+    # -----------------------------------------------------------------------
+    # WISQ overlay: add WISQ volume series on top of the plot
+    # -----------------------------------------------------------------------
+    if args.wisq_dir is not None:
+        wisq_entries = parse_wisq_dir(args.wisq_dir)
+
+        # Filter by allowed circuits
+        def _wisq_canonical(stem):
+            name = stem
+            name = re.sub(r"^m\d+\.", "", name)
+            return name
+
+        wisq_entries = [e for e in wisq_entries if _wisq_canonical(e[0]) in _allowed_circuits]
+        if args.select:
+            wisq_entries = [e for e in wisq_entries if args.select in _wisq_canonical(e[0])]
+
+        if wisq_entries:
+            # Pick a colour after all the -f series
+            wisq_colour = _COLOURS[len(args.files) % len(_COLOURS)]
+            wisq_marker = _MARKERS[len(args.files) % len(_MARKERS)]
+
+            if is_circuit_x:
+                # When no -f series were given, populate all_circuits from WISQ entries
+                if not all_circuits:
+                    all_circuits = [_wisq_canonical(e[0]) for e in wisq_entries]
+
+                wisq_map = {_wisq_canonical(e[0]): e[1] for e in wisq_entries}
+                heights = [wisq_map.get(c, 0.0) for c in all_circuits]
+                # Determine bar offset: place after existing bars
+                n_existing = sum(len(sl) for sl, _, _ in all_series)
+                total_count_wisq = n_existing + 1
+                bar_width_wisq = 0.8 / max(total_count_wisq, 1)
+                all_offsets_wisq = (
+                    np.linspace(
+                        -(total_count_wisq - 1) / 2,
+                        (total_count_wisq - 1) / 2,
+                        total_count_wisq,
+                    )
+                    * bar_width_wisq
+                )
+                wisq_offset = all_offsets_wisq[-1]
+                ax.bar(
+                    np.arange(len(all_circuits)) + wisq_offset,
+                    heights,
+                    width=bar_width_wisq * 0.9,
+                    label="WISQ",
+                    color=wisq_colour,
+                    edgecolor="black",
+                    linewidth=0.4,
+                )
+            else:
+                # Scatter / line: x = data_qubits (n), y = volume
+                xs_w = [e[1] for e in wisq_entries]  # volumes
+                # We need n_data for x; re-read from the directory
+                wisq_entries_full = []
+                for fname in sorted(os.listdir(args.wisq_dir)):
+                    if not fname.endswith(".json"):
+                        continue
+                    fpath = os.path.join(args.wisq_dir, fname)
+                    try:
+                        with open(fpath) as f:
+                            data = json.load(f)
+                        stem = fname[: -len(".json")]
+                        stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
+                        if _wisq_canonical(stem) not in _allowed_circuits:
+                            continue
+                        if args.select and args.select not in _wisq_canonical(stem):
+                            continue
+                        n_data = len(data["map"])
+                        n_steps = len(data["steps"])
+                        area = _dascot_square_sparse_total(n_data)
+                        volume = area * n_steps
+                        wisq_entries_full.append((stem, n_data, volume))
+                    except Exception:
+                        pass
+
+                if x_key == "data_qubits":
+                    xs_w = [e[1] for e in wisq_entries_full]
+                    ys_w = [e[2] for e in wisq_entries_full]
+                else:
+                    # Fall back to circuit-name x (use index)
+                    xs_w = [e[0] for e in wisq_entries_full]
+                    ys_w = [e[2] for e in wisq_entries_full]
+
+                draw_lines_wisq = args.lines or args.lines_with_markers
+                if draw_lines_wisq:
+                    pairs_w = sorted(zip(xs_w, ys_w))
+                    xp_w, yp_w = zip(*pairs_w) if pairs_w else ([], [])
+                    ax.plot(
+                        xp_w,
+                        yp_w,
+                        color=wisq_colour,
+                        linewidth=2.7,
+                        alpha=0.8,
+                        linestyle="-",
+                        marker=wisq_marker if args.lines_with_markers else None,
+                        markersize=6,
+                        markeredgecolor="black",
+                        markeredgewidth=0.5,
+                        zorder=2,
+                        label="WISQ",
+                    )
+                else:
+                    ax.scatter(
+                        xs_w,
+                        ys_w,
+                        label="WISQ",
+                        marker=wisq_marker,
+                        color=wisq_colour,
+                        edgecolors="black",
+                        linewidths=0.5,
+                        s=60,
+                        zorder=3,
+                    )
+
+            _combine_legend(ax, ax2)
+        else:
+            print("Warning: no WISQ entries matched the allowed circuits.", file=sys.stderr)
+
+    # -----------------------------------------------------------------------
+    # Deferred circuit-x axis setup (applied after WISQ overlay so all_circuits is final)
+    # -----------------------------------------------------------------------
+    if _deferred_circuit_x_setup and all_circuits:
+        x_pos = np.arange(len(all_circuits))
+        ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(
+            [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=12
+        )
+        ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
+        if args.logy:
+            ax.set_yscale("log")
+            if ax2 is not None:
+                ax2.set_yscale("log")
+        if args.hline:
+            hline_y = 0.0 if args.percent_improvement else 1.0
+            ax.axhline(y=hline_y, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
+        _combine_legend(ax, ax2)
 
     # -----------------------------------------------------------------------
     # FLASQ overlay: add conservative and optimistic series on top of the plot
