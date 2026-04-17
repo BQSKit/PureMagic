@@ -1150,7 +1150,7 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     ax2 = ax.twinx() if dual_y else None
     axes = [ax, ax2] if dual_y else [ax]
     all_circuits: list = []  # populated in the circuit-x branch; used by FLASQ overlay
