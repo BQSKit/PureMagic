@@ -439,138 +439,6 @@ def parse_flasq_file(filepath):
     return entries
 
 
-def plot_flasq(
-    flasq_file, output_path, circuits_file, sched_files=None, select=None, logy=False, ylabel=None
-):
-    """
-    Parse *flasq_file* and produce a scatter plot of FLASQ spacetime volumes
-    (conservative and optimistic models) with circuit names on the x-axis.
-    If *sched_files* is given (a list of (path, label) tuples), the scheduled
-    volume from each PureMagic output file is added as an additional series.
-    Only circuits listed in *circuits_file* are included.
-    If *select* is given, only circuits whose canonical name contains that
-    substring are included.
-    """
-    # Load allowed circuit names from the -c file
-    try:
-        with open(circuits_file) as cf:
-            allowed = {line.strip() for line in cf if line.strip() and not line.startswith("#")}
-    except OSError as e:
-        print(f"Error: cannot read circuits file '{circuits_file}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-    def _canonical(path):
-        name = os.path.basename(path)
-        while True:
-            root, ext = os.path.splitext(name)
-            if ext.lower() in (
-                ".pkl",
-                ".qasm",
-                ".trans",
-                ".schedule",
-                ".txt",
-                ".cliffordt",
-                ".compiled",
-            ):
-                name = root
-            else:
-                break
-        name = re.sub(r"^m\d+\.", "", name)
-        return name
-
-    all_entries = parse_flasq_file(flasq_file)
-    entries = [e for e in all_entries if _canonical(e[0]) in allowed]
-    if select:
-        entries = [e for e in entries if select in _canonical(e[0])]
-    if not entries:
-        print(
-            f"Error: no FLASQ summary lines found in '{flasq_file}' matching circuits in '{circuits_file}'.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    circuits = [prettify_circuit_name(_canonical(e[0])) for e in entries]
-    canon_names = [_canonical(e[0]) for e in entries]
-    vols_cons = [e[1] for e in entries]
-    vols_opt = [e[2] for e in entries]
-    x_pos = np.arange(len(circuits))
-
-    # Load scheduled volumes from each PureMagic output file if provided.
-    sched_series = []  # list of (label, {canon_name: volume})
-    for sched_path, sched_label in sched_files or []:
-        df_sched = parse_output_file(sched_path)
-        vol_map = {}
-        if not df_sched.empty and "volume" in df_sched.columns:
-            for _, row in df_sched.iterrows():
-                c = _canonical(str(row["circuit"]))
-                if pd.notna(row["volume"]):
-                    vol_map[c] = float(row["volume"])
-        if vol_map:
-            sched_series.append((sched_label, vol_map))
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-
-    ax.scatter(
-        x_pos,
-        vols_cons,
-        label="FLASQ conservative",
-        marker="o",
-        color=_COLOURS[0],
-        edgecolors="black",
-        linewidths=0.5,
-        s=70,
-        zorder=3,
-    )
-    ax.scatter(
-        x_pos,
-        vols_opt,
-        label="FLASQ optimistic",
-        marker="s",
-        color=_COLOURS[1],
-        edgecolors="black",
-        linewidths=0.5,
-        s=70,
-        zorder=3,
-    )
-
-    for si, (sched_label, vol_map) in enumerate(sched_series):
-        sched_vols = [vol_map.get(c) for c in canon_names]
-        valid_x = [x for x, v in zip(x_pos, sched_vols) if v is not None]
-        valid_v = [v for v in sched_vols if v is not None]
-        if valid_x:
-            colour = _COLOURS[(2 + si) % len(_COLOURS)]
-            marker = _MARKERS[(2 + si) % len(_MARKERS)]
-            ax.scatter(
-                valid_x,
-                valid_v,
-                label=sched_label,
-                marker=marker,
-                color=colour,
-                edgecolors="black",
-                linewidths=0.5,
-                s=70,
-                zorder=3,
-            )
-
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(circuits, rotation=45, ha="right", fontsize=12)
-    ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
-    ax.set_xlabel("Circuit", fontsize=_LABEL_FONTSIZE)
-    ax.set_ylabel(
-        ylabel if ylabel else "Spacetime Volume (blocks)",
-        fontsize=_LABEL_FONTSIZE,
-    )
-    ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
-    if logy:
-        ax.set_yscale("log")
-    _combine_legend(ax)
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
-    print(f"FLASQ plot saved to {output_path}")
-    plt.show()
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -826,10 +694,17 @@ def main():
                 if df2 is None:
                     continue
 
-            # Build a per-series label: include y-key name when multiple keys share an axis
+            # Build a per-series label: include y-key name when multiple keys share an axis,
+            # but in slash mode each key has its own file label so just use that label directly.
             multi_key = len(y_keys_for_axis) > 1
             if file_label is None:
                 label = None
+            elif slash_y:
+                # In slash mode each key is paired with its own -f; use the file label as-is.
+                if label_suffix:
+                    label = f"{file_label} ({label_suffix})"
+                else:
+                    label = file_label
             elif multi_key and label_suffix:
                 label = f"{file_label} {_Y_AXES[y_key]} ({label_suffix})"
             elif multi_key:
