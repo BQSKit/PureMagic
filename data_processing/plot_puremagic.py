@@ -367,8 +367,11 @@ _TICK_FONTSIZE = 15  # ~50 % larger than the default 10 pt
 _LEGEND_FONTSIZE = 15  # ~50 % larger than the default 10 pt
 
 
-def _combine_legend(ax, ax2=None):
+def _combine_legend(ax, ax2=None, no_legend=False):
     """Collect handles+labels from ax (and optionally ax2) and attach to ax."""
+    if no_legend:
+        ax.legend().set_visible(False) if ax.get_legend() else None
+        return
     handles, labels = ax.get_legend_handles_labels()
     if ax2 is not None:
         h2, l2 = ax2.get_legend_handles_labels()
@@ -388,20 +391,38 @@ def _combine_legend(ax, ax2=None):
 # ---------------------------------------------------------------------------
 
 
-def _dascot_square_sparse_total(n: int) -> int:
-    """Return the total logical qubit count for the Square Sparse layout with n data qubits."""
+def _dascot_square_sparse_counts(n: int) -> tuple:
+    """
+    Return (total_area, magic_count) for the Square Sparse layout with n data qubits.
+    total_area = (2*ceil(sqrt(n))+3)^2
+    magic_count = 4*(ceil(sqrt(n))+1)  (every other border cell)
+    """
     s = math.ceil(math.sqrt(n))
     inner_side = 2 * s + 1
     final_side = inner_side + 2  # = 2s + 3
-    return final_side * final_side
+    total = final_side * final_side
+    border_cells = total - inner_side * inner_side
+    magic = border_cells // 2
+    return total, magic
 
 
-def parse_wisq_dir(directory: str) -> list:
+def _dascot_square_sparse_total(n: int) -> int:
+    """Return the total logical qubit count for the Square Sparse layout with n data qubits."""
+    return _dascot_square_sparse_counts(n)[0]
+
+
+_WISQ_MAGIC_COST = 121  # logical qubits per magic state slot in the alternative area model
+
+
+def parse_wisq_dir(directory: str, magic_cost: int = 1) -> list:
     """
     Read all *.json files in *directory* and return a list of
     (circuit_name, volume) tuples, where:
-      circuit_name  = filename stem stripped of '-wisq' suffix
-      volume        = dascot_square_sparse_total(n_data) * len(steps)
+      circuit_name = filename stem stripped of '-wisq' suffix
+      volume       = ((total_area - magic) + magic * magic_cost) * len(steps)
+
+    magic_cost=1 gives the standard square-sparse area.
+    magic_cost=121 weights each magic slot as 121 logical qubits.
     """
     entries = []
     for fname in sorted(os.listdir(directory)):
@@ -413,13 +434,13 @@ def parse_wisq_dir(directory: str) -> list:
                 data = json.load(f)
             n_data = len(data["map"])
             n_steps = len(data["steps"])
-            area = _dascot_square_sparse_total(n_data)
-            volume = area * n_steps
+            total, magic = _dascot_square_sparse_counts(n_data)
+            area = (total - magic) + magic * magic_cost
             # Derive a canonical circuit name from the filename
             stem = fname[: -len(".json")]
             # Strip trailing "-wisq" or "_wisq" suffix if present
             stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
-            entries.append((stem, volume))
+            entries.append((stem, area * n_steps))
         except Exception as exc:
             print(f"Warning: could not parse WISQ file {fpath}: {exc}", file=sys.stderr)
     return entries
@@ -512,6 +533,18 @@ def main():
             "Forces the y-axis to 'volume'."
         ),
     )
+    parser.add_argument(
+        "--wisq-magic-q",
+        dest="wisq_magic_q",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of logical qubits per magic-state slot when computing the WISQ volume. "
+            "Default: 1 (standard square-sparse area). "
+            "Use e.g. 121 to account for the overhead of a magic-state factory."
+        ),
+    )
     parser.add_argument("-x", "--xaxis", dest="x_axis", choices=list(_X_AXES))
     parser.add_argument(
         "-y",
@@ -536,6 +569,19 @@ def main():
         metavar="FILE[:LABEL] or FILE1,FILE2[:LABEL]",
     )
     parser.add_argument("-o", "--output", required=True, help="Output plot file path.")
+    parser.add_argument(
+        "--no-legend",
+        dest="no_legend",
+        action="store_true",
+        default=False,
+        help="Suppress the legend.",
+    )
+    parser.add_argument(
+        "--figsize",
+        default=None,
+        metavar="W,H",
+        help="Figure size in inches, e.g. --figsize 10,5. Default: 8,4.5.",
+    )
     parser.add_argument(
         "-c",
         "--circuits",
@@ -1103,7 +1149,17 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    fig, ax = plt.subplots(figsize=(8, 4.5))
+    _figsize = (8, 4.5)
+    if args.figsize:
+        try:
+            _fw, _fh = args.figsize.split(",", 1)
+            _figsize = (float(_fw), float(_fh))
+        except ValueError:
+            print(
+                f"Warning: invalid --figsize '{args.figsize}', using default 8,4.5.",
+                file=sys.stderr,
+            )
+    fig, ax = plt.subplots(figsize=_figsize)
     ax2 = ax.twinx() if dual_y else None
     axes = [ax, ax2] if dual_y else [ax]
     all_circuits: list = []  # populated in the circuit-x branch; used by FLASQ overlay
@@ -1262,7 +1318,7 @@ def main():
                 ax.axhline(
                     y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
                 )
-            _combine_legend(ax, ax2)
+            _combine_legend(ax, ax2, no_legend=args.no_legend)
 
         else:
             # --- Scatter / line plot ---
@@ -1311,14 +1367,14 @@ def main():
                 ax.axhline(
                     y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
                 )
-            _combine_legend(ax, ax2)
+            _combine_legend(ax, ax2, no_legend=args.no_legend)
         _deferred_circuit_x_setup = False
 
     # -----------------------------------------------------------------------
     # WISQ overlay / ratio mode
     # -----------------------------------------------------------------------
     if args.wisq_dir is not None:
-        wisq_entries = parse_wisq_dir(args.wisq_dir)
+        wisq_entries = parse_wisq_dir(args.wisq_dir, magic_cost=args.wisq_magic_q)
 
         # Filter by allowed circuits
         def _wisq_canonical(stem):
@@ -1339,8 +1395,8 @@ def main():
 
             if has_f_series:
                 # -----------------------------------------------------------------
-                # Ratio mode: replace each -f series with wisq_volume / series_volume
-                # Only circuits present in both the series and wisq_map are shown.
+                # Ratio mode: for each -f series produce TWO ratio series:
+                #   one vs WISQ with 1 qubit/magic, one vs WISQ with 121 qubits/magic
                 # Clear the axes and redraw.
                 # -----------------------------------------------------------------
                 ax.cla()
@@ -1505,7 +1561,7 @@ def main():
                             label="_nolegend_",
                         )
 
-                _combine_legend(ax, ax2)
+                _combine_legend(ax, ax2, no_legend=args.no_legend)
 
             else:
                 # -----------------------------------------------------------------
@@ -1608,7 +1664,7 @@ def main():
                     if args.logy:
                         ax.set_yscale("log")
 
-                _combine_legend(ax, ax2)
+                _combine_legend(ax, ax2, no_legend=args.no_legend)
 
     # -----------------------------------------------------------------------
     # Deferred circuit-x axis setup (applied after WISQ overlay so all_circuits is final)
@@ -1628,7 +1684,7 @@ def main():
         if args.hline:
             hline_y = 0.0 if args.percent_improvement else 1.0
             ax.axhline(y=hline_y, color="black", linestyle="-", linewidth=1.0, label="_nolegend_")
-        _combine_legend(ax, ax2)
+        _combine_legend(ax, ax2, no_legend=args.no_legend)
 
     # -----------------------------------------------------------------------
     # FLASQ overlay: add conservative and optimistic series on top of the plot
@@ -1697,7 +1753,7 @@ def main():
                     ys_opt.append(entry[1])
             _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons)
             _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt)
-            _combine_legend(ax, ax2)
+            _combine_legend(ax, ax2, no_legend=args.no_legend)
 
         elif flasq_entries and x_key == "data_qubits":
             xs_cons, ys_cons, xs_opt, ys_opt = [], [], [], []
@@ -1710,7 +1766,7 @@ def main():
                     ys_opt.append(e[2])
             _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons)
             _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt)
-            _combine_legend(ax, ax2)
+            _combine_legend(ax, ax2, no_legend=args.no_legend)
 
         elif flasq_entries:
             print(
