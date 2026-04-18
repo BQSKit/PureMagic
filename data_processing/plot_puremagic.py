@@ -1379,6 +1379,32 @@ def main():
                     ]
                     all_circuits[:] = ratio_circuits  # update in-place for deferred setup
 
+                    # Print WISQ ratio table
+                    series_labels = [
+                        lbl or f"series{i}" for i, (lbl, _) in enumerate(ratio_series_data)
+                    ]
+                    col_w = max(len(l) for l in series_labels) if series_labels else 8
+                    circ_w = max(
+                        (len(prettify_circuit_name(c)) for c in ratio_circuits), default=10
+                    )
+                    value_fmt = "{:>+.1f}%" if args.percent_improvement else "{:>6.3f}x"
+                    header = f"{'Circuit':<{circ_w}}" + "".join(
+                        f"  {l:>{col_w}}" for l in series_labels
+                    )
+                    print("\nWISQ ratio table:")
+                    print(header)
+                    print("-" * len(header))
+                    for c in ratio_circuits:
+                        row = f"{prettify_circuit_name(c):<{circ_w}}"
+                        for _, ratio_map in ratio_series_data:
+                            v = ratio_map.get(c)
+                            if v is not None:
+                                row += "  " + f"{value_fmt.format(v):>{col_w}}"
+                            else:
+                                row += "  " + f"{'N/A':>{col_w}}"
+                        print(row)
+                    print()
+
                     n_c = len(ratio_circuits)
                     n_s = len(ratio_series_data)
                     bar_width_r = 0.8 / max(n_s, 1)
