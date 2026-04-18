@@ -51,12 +51,22 @@ def analyze_wisq_json(filepath):
     area = ss["total"]
     wisq_volume = area * num_steps
 
+    # Alternative area: each magic qubit costs 121 logical qubits instead of 1
+    area_magic11 = (area - ss["magic"]) + ss["magic"] * 121
+    wisq_volume_magic11 = area_magic11 * num_steps
+
     print(f"  Number of steps:              {num_steps}")
     print(f"  Total number of IDs:          {num_ids}")
     print(f"  Average IDs per step:         {avg_ids_per_step:.2f}")
     print(f"  Logical data qubits (n):      {n_data}")
-    print(f"  Square sparse total area:     {area}  (grid {ss['grid_side']}x{ss['grid_side']})")
+    print(
+        f"  Square sparse total area:     {area}  (grid {ss['grid_side']}x{ss['grid_side']}, magic={ss['magic']})"
+    )
     print(f"  WISQ volume (area × steps):   {wisq_volume}")
+    print(
+        f"  Area (magic×121 qubits):      {area_magic11}  (non-magic={area - ss['magic']}, magic={ss['magic']}×121={ss['magic']*121})"
+    )
+    print(f"  WISQ volume (magic×121):      {wisq_volume_magic11}")
     print()
 
 
