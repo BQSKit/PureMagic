@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         topo_graph.plot(".topo", &[], "")?;
         topo_graph.print()?;
     }
-    let mut n_qubits = topo_graph.n_qubits;
+    let n_qubits = topo_graph.n_qubits;
     let mut sched = Scheduler::new(
         circuit,
         topo_graph,
@@ -149,23 +149,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
-    sched.print_schedule(&hdr)?;
-    print!("Generating Pure Magic layout for comparison:\n  ");
-    let mut best_magic_topo_graph = TopoGraph::new();
-    best_magic_topo_graph.gen_pure_magic_topo(n_data_qubits, 1, false);
-    best_magic_topo_graph.update_statistics();
-    n_qubits = best_magic_topo_graph.n_qubits;
-    let (_, n_t_layers) = sched.input.circuit.count_t_stats();
-    let optimal_n_layers = if args.no_t_failures { n_layers } else { n_layers + n_t_layers / 2 };
-    let optimal_speedup = n_scheduled as f64 / optimal_n_layers as f64;
+    println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
+    // The definition of efficiency used in the PureMagic paper is 1/V. We normalize here
+    let mut optimal_n_layers = n_layers;
+    if !args.no_t_failures {
+        let (_, n_t_layers) = sched.input.circuit.count_t_stats();
+        optimal_n_layers += n_t_layers / 2;
+    };
     let optimal_volume = n_qubits * optimal_n_layers;
-    println!(
-        "Optimal logical cycles {} ({:.3} speedup) volume {}",
-        optimal_n_layers, optimal_speedup, optimal_volume
-    );
-    let speedup = n_scheduled as f64 / tot_lcycles as f64;
-    println!("Parallelism: {:.3}x", speedup);
-    println!("Scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
-    println!("Parallel efficiency: {:.3}", speedup / optimal_speedup);
+    println!("Normalized scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
+    sched.print_schedule(&hdr)?;
     Ok(())
 }

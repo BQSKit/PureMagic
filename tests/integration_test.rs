@@ -153,8 +153,8 @@ fn puremagic_reports_scheduling_efficiency() {
     let (ok, stdout, stderr) = run_puremagic(&["--circuit", circuit.to_str().unwrap()], tmp.path());
     assert!(ok, "puremagic failed; stderr:\n{}", stderr);
     assert!(
-        stdout.contains("Scheduling efficiency:"),
-        "expected 'Scheduling efficiency:' in stdout, got:\n{}",
+        stdout.contains("Normalized scheduling efficiency:"),
+        "expected 'Normalized scheduling efficiency:' in stdout, got:\n{}",
         stdout
     );
 }
@@ -995,16 +995,19 @@ fn puremagic_scheduling_efficiency_value_is_in_range() {
     let circuit = fixture("small_4q.trans");
     let (ok, stdout, stderr) = run_puremagic(&["--circuit", circuit.to_str().unwrap()], tmp.path());
     assert!(ok, "puremagic failed; stderr:\n{}", stderr);
-    // Line format: "Scheduling efficiency: 0.456"
+    // Line format: "Normalized scheduling efficiency: 0.456"
     let line = stdout
         .lines()
-        .find(|l| l.starts_with("Scheduling efficiency:"))
-        .expect("no 'Scheduling efficiency:' line in stdout");
-    let value_str =
-        line.split_whitespace().nth(2).expect("no value token after 'Scheduling efficiency:'");
-    let value: f64 = value_str.parse().expect("scheduling efficiency value is not a float");
-    assert!(value > 0.0, "scheduling efficiency must be > 0, got {}", value);
-    assert!(value <= 1.0, "scheduling efficiency must be <= 1.0, got {}", value);
+        .find(|l| l.starts_with("Normalized scheduling efficiency:"))
+        .expect("no 'Normalized scheduling efficiency:' line in stdout");
+    let value_str = line
+        .split_whitespace()
+        .nth(3)
+        .expect("no value token after 'Normalize scheduling efficiency:'");
+    let value: f64 =
+        value_str.parse().expect("normalized scheduling efficiency value is not a float");
+    assert!(value > 0.0, "normalized scheduling efficiency must be > 0, got {}", value);
+    assert!(value <= 1.0, "normalized scheduling efficiency must be <= 1.0, got {}", value);
 }
 
 // ── puremagic: seed variation ─────────────────────────────────────────────────
