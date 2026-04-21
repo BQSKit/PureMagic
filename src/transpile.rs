@@ -1,7 +1,7 @@
 #!/usr/bin/env -S cargo run --bin transpile --
 //! Transpile a Clifford+T circuit (QASM) to Pauli basis measurements (.trans).
 //!
-//! Rust port of `tableau/transpile_circuit.py`.  Input must be a `.cliffordt.qasm` file.
+//! Input must be a `.cliffordt.qasm` file produced by `compile_circuit.py`.
 
 use clap::Parser;
 use std::fmt;
@@ -359,44 +359,47 @@ fn try_parse_1q(line: &str) -> Option<QasmGate> {
 // Single-qubit Clifford optimizer
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Each of the 24 single-qubit Cliffords is identified by the pair
-// (X-image, Z-image) under conjugation, where each image is one of the 8
-// signed Paulis {±X, ±Y, ±Z}.  We encode a signed Pauli as a u8:
+// Each of the 24 single-qubit Cliffords is uniquely identified by the pair
+// (X-image, Z-image) of its conjugation action on the Pauli group, where each
+// image is one of the 6 signed non-identity Paulis {±X, ±Y, ±Z}.
+//
+// We encode a signed Pauli as a u8:
 //   bits [1:0] = Pauli type: 0=X, 1=Y, 2=Z
 //   bit  [2]   = sign: 0=+, 1=−
-// giving 6 valid values (0..=5) per axis.  The pair (x_img, z_img) uniquely
-// identifies the Clifford (not all 36 pairs are valid; exactly 24 are).
 //
-// The minimal output gate sequences (matching Python's `unitaries_to_gates`)
-// use only {S, Sdg, SX, SXdg, X, Z} — the gates that appear in the .trans
-// format plus X and Z (which are dropped by `TransClifford::from_qasm_gate`).
+// A sequence of single-qubit gates is compressed by composing their actions
+// into a single (x_img, z_img) state, then looking up the minimal gate
+// sequence that produces that state from a precomputed table of all 24
+// elements of the single-qubit Clifford group.
+//
+// Minimal sequences use only {S, Sdg, SX, SXdg, X, Z}.  Of these, X and Z
+// are not emitted in the .trans format and are silently dropped.
 
 /// Encode a signed single-qubit Pauli as a u8.
-/// Pauli: 0=X, 1=Y, 2=Z.  Sign bit: 0=+, 1=−.
+/// Pauli type: 0=X, 1=Y, 2=Z.  Sign bit 2: 0=+, 1=−.
 #[inline]
 fn pauli_code(pauli: u8, neg: bool) -> u8 {
     pauli | ((neg as u8) << 2)
 }
 
-/// Apply a single-qubit gate to the (x_img, z_img) state, returning the new state.
-/// Each image is a pauli_code.
+/// Apply a single-qubit gate to a Clifford state `(x_img, z_img)` and return
+/// the updated state.  Each image is a [`pauli_code`]-encoded signed Pauli
+/// representing where the gate sends X (resp. Z) under conjugation.
 fn apply_1q_to_state(gate: Gate1Q, x_img: u8, z_img: u8) -> (u8, u8) {
-    // Conjugation rules for each gate on X and Z:
-    //   H:    X→Z,  Z→X
-    //   S:    X→Y,  Z→Z
-    //   Sdg:  X→-Y, Z→Z
-    //   SX:   X→X,  Z→-Y
-    //   SXdg: X→X,  Z→Y
-    //   X:    X→X,  Z→-Z
-    //   Y:    X→-X, Z→-Z
-    //   Z:    X→-X, Z→Z
+    // Conjugation rules (P → G·P·G†) for each gate on the three Paulis:
+    //   H:    X→Z,   Y→-Y,  Z→X
+    //   S:    X→Y,   Y→-X,  Z→Z
+    //   Sdg:  X→-Y,  Y→X,   Z→Z
+    //   SX:   X→X,   Y→-Z,  Z→-Y
+    //   SXdg: X→X,   Y→Z,   Z→Y
+    //   X:    X→X,   Y→-Y,  Z→-Z
+    //   Y:    X→-X,  Y→Y,   Z→-Z
+    //   Z:    X→-X,  Y→-Y,  Z→Z
     //
-    // For a composed state (x_img, z_img), applying gate G means:
-    //   new_x_img = G(x_img)
-    //   new_z_img = G(z_img)
-    // where G acts on a signed Pauli by permuting/negating.
+    // For a composed state (x_img, z_img), prepending gate G updates each
+    // image independently: new_x_img = G(x_img), new_z_img = G(z_img).
     fn apply_gate_to_pauli(gate: Gate1Q, p: u8) -> u8 {
-        let pauli = p & 0x3; // 0=X,1=Y,2=Z
+        let pauli = p & 0x3;
         let neg = (p >> 2) & 1 != 0;
         let (new_pauli, extra_neg) = match gate {
             Gate1Q::H => match pauli {
@@ -453,8 +456,9 @@ fn apply_1q_to_state(gate: Gate1Q, x_img: u8, z_img: u8) -> (u8, u8) {
     (apply_gate_to_pauli(gate, x_img), apply_gate_to_pauli(gate, z_img))
 }
 
-/// Simulate a sequence of Gate1Q on the identity state (X+,Z+) and return
-/// the resulting (x_img, z_img).
+/// Compose a sequence of single-qubit gates into a single Clifford state
+/// `(x_img, z_img)` by applying each gate in order to the identity state
+/// `(X+, Z+)`.
 fn simulate_gate_sequence(gates: &[Gate1Q]) -> (u8, u8) {
     let mut x_img = pauli_code(0, false); // X+
     let mut z_img = pauli_code(2, false); // Z+
@@ -466,22 +470,21 @@ fn simulate_gate_sequence(gates: &[Gate1Q]) -> (u8, u8) {
     (x_img, z_img)
 }
 
-/// Build the complete lookup table: (x_img, z_img) → minimal gate sequence.
-/// This is computed once at startup by simulating all 24 Python gate sequences.
+/// Build a lookup table mapping each of the 24 single-qubit Clifford states
+/// `(x_img, z_img)` to a minimal gate sequence that produces it.
+///
+/// The 24 sequences cover all elements of the single-qubit Clifford group,
+/// using only gates from {I, S, Sdg, SX, SXdg, X, Z} (at most 4 gates each).
+/// The table is constructed by simulating each sequence and recording the
+/// resulting state; no two sequences produce the same state.
 fn build_clifford_table() -> std::collections::HashMap<(u8, u8), Vec<Gate1Q>> {
     use Gate1Q::*;
-    // All 24 minimal sequences from Python's unitaries_to_gates, translated to Gate1Q.
-    // Python uses 'H' in some sequences but H is not in the .trans format.
-    // However, Python's optimize_sequence only processes gates that went through
-    // the clifford_queue, which includes H. The output sequences from
-    // _optimize_single_qubit_sequence use only {S, Sdg, SX, SXdg, X, Z} — no H.
-    // (H = S·SX·S up to global phase, which is the entry ('S','SX','S') in the table.)
     let sequences: &[&[Gate1Q]] = &[
         &[],             // I
         &[X],            // X
-        &[X, Z],         // X,Z  (= Y up to phase)
+        &[X, Z],         // X·Z
         &[Z],            // Z
-        &[S, SX, S],     // H (= S·SX·S)
+        &[S, SX, S],     // S·SX·S  (= H up to global phase)
         &[S],            // S
         &[Sdg],          // Sdg
         &[S, X],         // S·X
@@ -510,17 +513,15 @@ fn build_clifford_table() -> std::collections::HashMap<(u8, u8), Vec<Gate1Q>> {
     table
 }
 
-/// Optimize a sequence of single-qubit Clifford gates on one qubit into the
-/// minimal equivalent sequence (matching Python's `_optimize_single_qubit_sequence`).
-/// Returns the minimal gate list (may be empty for identity).
+/// Reduce a sequence of single-qubit Clifford gates on one qubit to the
+/// minimal equivalent sequence.  Returns an empty vec for the identity.
+///
+/// The lookup table is built once per thread and cached for subsequent calls.
 fn optimize_single_qubit_sequence(gates: &[Gate1Q]) -> Vec<Gate1Q> {
     if gates.is_empty() {
         return vec![];
     }
-    // Compose all gates into a single Clifford state.
     let state = simulate_gate_sequence(gates);
-    // Look up the minimal sequence.
-    // We build the table lazily using a thread-local.
     use std::cell::RefCell;
     thread_local! {
         static TABLE: RefCell<Option<std::collections::HashMap<(u8, u8), Vec<Gate1Q>>>> =
@@ -535,24 +536,22 @@ fn optimize_single_qubit_sequence(gates: &[Gate1Q]) -> Vec<Gate1Q> {
     })
 }
 
-/// Optimize a sequence of Clifford gates (from the clifford_queue) into a
-/// minimal equivalent sequence, matching Python's `CliffordOperation.optimize_sequence`.
+/// Reduce a sequence of Clifford gates to a minimal equivalent sequence and
+/// return the result as [`TransClifford`] items ready for the .trans output.
 ///
-/// Strategy:
-///   - Single-qubit gates on the same qubit are accumulated and compressed
-///     into a minimal sequence using the 24-element Clifford group lookup.
-///   - When a 2-qubit gate is encountered, all pending single-qubit sequences
-///     on its qubits are flushed first, then the 2-qubit gate is emitted.
-///   - At the end, remaining single-qubit sequences are flushed.
-///   - Only gates that appear in the .trans format are emitted
-///     (X and Z are dropped by `TransClifford::from_qasm_gate`).
+/// Single-qubit gates on each qubit are accumulated independently and
+/// compressed into a minimal sequence using the 24-element Clifford group
+/// lookup.  When a 2-qubit gate is encountered, the pending single-qubit
+/// sequences on its two qubits are flushed and optimized first; the 2-qubit
+/// gate is then emitted unchanged.  Any remaining single-qubit sequences are
+/// flushed at the end.
+///
+/// Only CX, S, Sdg, SX, and SXdg are emitted; X and Z are Pauli corrections
+/// that do not need to be scheduled and are omitted from the output.
 fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransClifford> {
-    // Per-qubit accumulator of single-qubit Gate1Q values.
     let mut per_qubit: Vec<Vec<Gate1Q>> = vec![Vec::new(); n_qubits];
     let mut result: Vec<TransClifford> = Vec::new();
 
-    /// Flush the accumulated single-qubit sequence for `qubit`, appending
-    /// the minimal TransClifford items to `result`.
     fn flush_qubit(
         qubit: usize, per_qubit: &mut Vec<Vec<Gate1Q>>, result: &mut Vec<TransClifford>,
         n_qubits: usize,
@@ -561,13 +560,11 @@ fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransC
         if seq.is_empty() {
             return;
         }
-        let minimal = optimize_single_qubit_sequence(&seq);
-        for g in minimal {
+        for g in optimize_single_qubit_sequence(&seq) {
             let qasm_gate = QasmGate::Clifford1Q { gate: g, qubit };
             if let Some(tc) = TransClifford::from_qasm_gate(&qasm_gate, n_qubits) {
                 result.push(tc);
             }
-            // X and Z are dropped by from_qasm_gate (returns None).
         }
     }
 
@@ -577,21 +574,18 @@ fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransC
                 per_qubit[*qubit].push(*g);
             }
             QasmGate::Clifford2Q { gate: g2, control, target } => {
-                // Flush single-qubit sequences on both qubits before the 2Q gate.
                 flush_qubit(*control, &mut per_qubit, &mut result, n_qubits);
                 flush_qubit(*target, &mut per_qubit, &mut result, n_qubits);
-                // Emit the 2-qubit gate directly (no single-qubit optimization).
                 let qasm_gate =
                     QasmGate::Clifford2Q { gate: *g2, control: *control, target: *target };
                 if let Some(tc) = TransClifford::from_qasm_gate(&qasm_gate, n_qubits) {
                     result.push(tc);
                 }
             }
-            _ => {} // Barrier, T, Tdg, Measure — not in clifford_queue
+            _ => {}
         }
     }
 
-    // Flush remaining single-qubit sequences.
     for qubit in 0..n_qubits {
         flush_qubit(qubit, &mut per_qubit, &mut result, n_qubits);
     }
@@ -689,8 +683,8 @@ fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransI
                 }
                 let pre_pauli = make_z_pauli(n_qubits, *qubit, false);
                 let conjugated = tableau.conjugate(&pre_pauli);
-                // Match Python behaviour: flush only if the *last T gate's* weight
-                // exceeded max_weight, not the measurement's own conjugated weight.
+                // Flush only when the preceding T gate's conjugated weight exceeded
+                // max_weight; the measurement's own conjugated weight is not checked.
                 let should_flush = last_weight.map_or(false, |w| w > effective_max_weight);
                 if should_flush {
                     flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, n_qubits);
