@@ -183,7 +183,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Min volume estimate: {}", min_volume);
     //let optimal_volume = n_qubits * optimal_n_layers;
     //println!("Normalized scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
-    println!("Normalized scheduling efficiency: {:.3}", min_volume as f64 / volume as f64);
+    println!(
+        "Normalized scheduling efficiency: {:.3}",
+        (min_volume as f64 / volume as f64).min(1.0)
+    );
     sched.print_schedule(&hdr)?;
     Ok(())
 }
