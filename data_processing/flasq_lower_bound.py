@@ -173,6 +173,11 @@ T_BASE = {"conservative": 6.0, "optimistic": 2.5}
 # Cultivation volume multiplier (conservative = 1.5x optimistic)
 CULT_MULT = {"conservative": 1.5, "optimistic": 1.0}
 
+# Default probability that the wrong magic state (T† instead of T, or vice versa)
+# is injected for a given T gate, requiring a corrective S gate.
+# DEFAULT_P_WRONG = 0.5
+DEFAULT_P_WRONG = 0.0
+
 
 # ---------------------------------------------------------------------------
 # OpenQASM 2 parser (minimal, handles Clifford+T gate sets)
@@ -408,7 +413,8 @@ def gate_ancilla_volume(
     model: str,
     vol_cultivate: float,
     t_react: float,
-) -> Tuple[float, int]:
+    p_wrong: float = 0.0,
+) -> Tuple[float, float]:
     """
     Return (ancilla_volume, measurement_depth) for a single gate.
 
@@ -420,49 +426,59 @@ def gate_ancilla_volume(
     model         : 'conservative' or 'optimistic'
     vol_cultivate : spacetime volume to cultivate one T state (blocks)
     t_react       : reaction time (logical timesteps)
+    p_wrong       : probability that the wrong magic state (T† instead of T,
+                    or vice versa) is injected, requiring a corrective S gate
+                    (default 0.0 = no wrong-state errors)
 
     Returns
     -------
     (ancilla_volume, measurement_depth)
+      measurement_depth is a float when p_wrong > 0 (expected depth contribution).
     """
     rc = ROUTE_COEFF[model]
     sc = SWAP_COEFF[model]
 
     if gate in ("X", "Y", "Z", "MEAS", "RESET"):
-        return 0.0, 0
+        return 0.0, 0.0
 
     if gate == "H":
-        return H_COST[model], 0
+        return H_COST[model], 0.0
 
     if gate in ("S", "Sdg"):
-        return S_COST[model], 0
+        return S_COST[model], 0.0
 
     if gate in ("T", "Tdg"):
         vol_t = CULT_MULT[model] * vol_cultivate + t_react + T_BASE[model]
-        return vol_t, 1
+        # Wrong-state correction: with probability p_wrong an S gate is applied
+        # on the data qubit to convert T† → T (or T → T†).  The S gate adds
+        # S_COST ancilla volume and, assuming it takes one logical cycle on the
+        # critical path, contributes p_wrong to the expected measurement depth.
+        vol_t += p_wrong * S_COST[model]
+        depth_t = 1.0 + p_wrong  # expected depth: 1 (T) + p_wrong (S correction)
+        return vol_t, depth_t
 
     if gate in ("CNOT", "CZ"):
         if len(qubits) >= 2:
             p = layout.manhattan(qubits[0], qubits[1])
         else:
             p = 0
-        return rc * p, 0
+        return rc * p, 0.0
 
     if gate == "SWAP":
         if len(qubits) >= 2:
             p = layout.manhattan(qubits[0], qubits[1])
         else:
             p = 0
-        return sc * p, 0
+        return sc * p, 0.0
 
     # Fallback for unknown gates treated as H (single-qubit) or CNOT (two-qubit)
     if len(qubits) == 1:
-        return H_COST[model], 0
+        return H_COST[model], 0.0
     if len(qubits) == 2:
         p = layout.manhattan(qubits[0], qubits[1])
-        return rc * p, 0
+        return rc * p, 0.0
 
-    return 0.0, 0
+    return 0.0, 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -470,11 +486,18 @@ def gate_ancilla_volume(
 # ---------------------------------------------------------------------------
 
 
-def measurement_depth_bound(gates: List[Tuple[str, List[int]]], n_qubits: int) -> int:
+def measurement_depth_bound(
+    gates: List[Tuple[str, List[int]]], n_qubits: int, p_wrong: float = 0.0
+) -> float:
     """
-    Compute an upper bound on the measurement depth of the circuit.
+    Compute an upper bound on the (expected) measurement depth of the circuit.
 
     The measurement depth of a gate is 1 if it is a T/T† gate, 0 otherwise.
+    When p_wrong > 0, each T/T† gate has an *expected* depth contribution of
+    ``1 + p_wrong``: the base T gate (depth 1) plus a corrective S gate that
+    is applied with probability p_wrong and adds one logical cycle on the data
+    qubit.
+
     The measurement depth of the circuit is the length of the longest path
     (in terms of measurement depth) through the gate dependency DAG, where
     edges connect gates that share a qubit.
@@ -482,15 +505,17 @@ def measurement_depth_bound(gates: List[Tuple[str, List[int]]], n_qubits: int) -
     We compute this efficiently by tracking, for each qubit, the maximum
     accumulated measurement depth of the last gate that touched it.
     """
+    t_depth_contrib = 1.0 + p_wrong  # expected depth per T/T† gate
+
     # depth[q] = max measurement depth accumulated on qubit q so far
-    depth = [0] * n_qubits
-    max_depth = 0
+    depth = [0.0] * n_qubits
+    max_depth = 0.0
 
     for gate, qubits in gates:
         if not qubits:
             continue
-        # The measurement depth of this gate
-        gate_md = 1 if gate in ("T", "Tdg") else 0
+        # The (expected) measurement depth contribution of this gate
+        gate_md = t_depth_contrib if gate in ("T", "Tdg") else 0.0
         # The depth at which this gate starts = max depth of all its qubits
         start_depth = max(depth[q] for q in qubits)
         end_depth = start_depth + gate_md
@@ -557,6 +582,7 @@ def flasq(
     t_react: float,
     vol_cultivate: float,
     model: str,
+    p_wrong: float = 0.0,
     verbose: bool = False,
 ) -> Dict:
     """
@@ -570,6 +596,8 @@ def flasq(
     t_react       : reaction time in logical timesteps
     vol_cultivate : spacetime volume to cultivate one T state (blocks)
     model         : 'conservative' or 'optimistic'
+    p_wrong       : probability that the wrong magic state is injected per T gate,
+                    requiring a corrective S gate (default 0.0)
     verbose       : print per-gate breakdown
 
     Returns
@@ -587,7 +615,7 @@ def flasq(
         print("-" * 52)
 
     for gate, qubits in gates:
-        av, md = gate_ancilla_volume(gate, qubits, layout, model, vol_cultivate, t_react)
+        av, md = gate_ancilla_volume(gate, qubits, layout, model, vol_cultivate, t_react, p_wrong)
         V += av
         if gate in ("T", "Tdg"):
             M += 1
@@ -595,7 +623,7 @@ def flasq(
             print(f"{gate:<12} {str(qubits):<20} {av:>10.2f} {md:>6}")
 
     # --- Measurement depth bound ---
-    D = measurement_depth_bound(gates, n_qubits)
+    D = measurement_depth_bound(gates, n_qubits, p_wrong)
 
     # --- Maximum simultaneous qubit usage ---
     Q = max_qubit_usage(gates, n_qubits)
@@ -628,6 +656,7 @@ def flasq(
         "vol_cultivate": vol_cultivate,
         "vol_cultivate_eff": CULT_MULT[model] * vol_cultivate,
         "t_react": t_react,
+        "p_wrong": p_wrong,
         "model": model,
         "n_gates": len(gates),
     }
@@ -669,6 +698,18 @@ def main():
         ),
     )
     parser.add_argument(
+        "--pwrong",
+        type=float,
+        default=DEFAULT_P_WRONG,
+        help=(
+            "Probability that the wrong magic state (T† instead of T, or vice versa) "
+            "is injected for a given T gate, requiring a corrective S gate on the data qubit "
+            f"(default: {DEFAULT_P_WRONG}). "
+            "The S gate adds p_wrong * S_COST ancilla volume per T gate and increases the "
+            "expected measurement depth of each T gate from 1 to 1 + p_wrong."
+        ),
+    )
+    parser.add_argument(
         "--layout",
         dest="layout",
         choices=["puremagic", "bus"],
@@ -705,6 +746,7 @@ def main():
         t_react=args.treact,
         vol_cultivate=args.vcult,
         model="conservative",
+        p_wrong=args.pwrong,
         verbose=args.verbose,
     )
     ro = flasq(
@@ -714,6 +756,7 @@ def main():
         t_react=args.treact,
         vol_cultivate=args.vcult,
         model="optimistic",
+        p_wrong=args.pwrong,
         verbose=False,
     )
 
@@ -726,6 +769,7 @@ def main():
     print(f"  {'Circuit qubits (n_qubits)':<42}: {n_qubits}")
     print(f"  {'Gates parsed':<42}: {rc['n_gates']}")
     print(f"  {'T-count (M)':<42}: {rc['M']}")
+    print(f"  {'Wrong-state injection prob (p_wrong)':<42}: {rc['p_wrong']:.2f}")
     print(f"  {'Max simultaneous qubit usage (Q)':<42}: {rc['Q']}")
     print(f"  {'Total device qubits (N_tot)':<42}: {rc['n_tot']}")
     print(f"  {'Fluid ancilla available (A)':<42}: {rc['A']}")
