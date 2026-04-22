@@ -135,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         topo_graph.print()?;
     }
     let n_qubits = topo_graph.n_qubits;
+    let n_magic_qubits = topo_graph.n_magic_qubits;
     let mut sched = Scheduler::new(
         circuit,
         topo_graph,
@@ -152,12 +153,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
     // The definition of efficiency used in the PureMagic paper is 1/V. We normalize here
     let mut optimal_n_layers = n_layers;
+    let (n_t_gates, n_t_layers) = sched.input.circuit.count_t_stats();
     if !args.no_t_failures {
-        let (_, n_t_layers) = sched.input.circuit.count_t_stats();
         optimal_n_layers += n_t_layers / 2;
     };
-    let optimal_volume = n_qubits * optimal_n_layers;
-    println!("Normalized scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
+    // Magic states accumulate at rate n_magic_qubits * lambda per lcycle (including Clifford
+    // and correction lcycles). They are only consumed during T-gate lcycles. 50% of T gates
+    // need a Pauli correction that does not consume a magic state.
+    // max_parallelism = total magic states available / number of T-gate lcycles,
+    // capped by the average T gates per T-gate layer (circuit's inherent parallelism).
+    let expected_total_lcycles = optimal_n_layers as f64;
+    let max_parallelism = if n_t_layers > 0 {
+        let avg_t_per_layer = n_t_gates as f64 / n_t_layers as f64;
+        let supply_limited =
+            n_magic_qubits as f64 * args.magic_state_lambda * expected_total_lcycles
+                / n_t_layers as f64;
+        supply_limited.min(avg_t_per_layer)
+    } else {
+        0.0
+    };
+    println!("Max parallelism estimate: {:.3}", max_parallelism);
+    // Min volume estimate: schedule T gates at max_parallelism rate, Cliffords unchanged.
+    let n_clifford_layers = (n_layers - n_t_layers) as f64;
+    let min_t_lcycles =
+        if max_parallelism > 0.0 { n_t_gates as f64 / max_parallelism } else { 0.0 };
+    let min_correction_lcycles = if args.no_t_failures { 0.0 } else { min_t_lcycles / 2.0 };
+    let min_lcycles = (n_clifford_layers + min_t_lcycles + min_correction_lcycles).ceil() as usize;
+    let min_volume = n_qubits * min_lcycles;
+    println!("Min volume estimate: {}", min_volume);
+    //let optimal_volume = n_qubits * optimal_n_layers;
+    //println!("Normalized scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
+    println!("Normalized scheduling efficiency: {:.3}", min_volume as f64 / volume as f64);
     sched.print_schedule(&hdr)?;
     Ok(())
 }
