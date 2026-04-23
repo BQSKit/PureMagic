@@ -44,6 +44,7 @@ _X_AXES = {
     "ancilla_qubits": ("ancilla_qubits", "Routing and Cultivation Overhead (Logical Qubits)"),
     "data_qubits": ("data_qubits", "Logical Qubits"),
     "weight": ("weight", "Max. Transpilation Weight"),
+    "ppl": ("ppl", "Avg. Products per Layer"),
 }
 
 # Y-axis: key -> display label  (column name == key, unless overridden in _Y_FIELD)
@@ -101,7 +102,8 @@ def parse_output_file(filepath):
         circuit, weight, magic_state_lambda, scheduling_efficiency,
         parallel_efficiency, parallelism, cliffords, lcycles,
         data_qubits, total_qubits, magic_qubits, loaded_qubits, timing,
-        avg_cultivation_time, inv_lambda, ancilla_qubits, volume, max_parallelism
+        avg_cultivation_time, inv_lambda, ancilla_qubits, volume, max_parallelism,
+        min_volume, ppl
     """
     rows = []
     cur = {}  # mutable state for the current run
@@ -115,10 +117,13 @@ def parse_output_file(filepath):
         pe = cur.get("parallel_efficiency")
         if pe is None and cur.get("parallelism") and cur.get("optimal_speedup"):
             pe = cur["parallelism"] / cur["optimal_speedup"]
-        # Compute scheduling efficiency as optimal_lcycles / lcycles (ignore parsed value).
+        # Compute scheduling efficiency as optimal_lcycles / lcycles when available;
+        # otherwise fall back to the directly parsed value (e.g. "Normalized scheduling efficiency").
         se = None
         if cur.get("optimal_lcycles") is not None and cur.get("lcycles"):
             se = cur["optimal_lcycles"] / cur["lcycles"]
+        elif cur.get("scheduling_efficiency") is not None:
+            se = cur["scheduling_efficiency"]
         rows.append(
             {
                 "circuit": cur.get("circuit"),
@@ -135,6 +140,8 @@ def parse_output_file(filepath):
                 "loaded_qubits": cur.get("loaded_qubits"),
                 "timing": cur.get("timing"),
                 "avg_cultivation_time": cur.get("avg_cultivation_time"),
+                "min_volume": cur.get("min_volume"),
+                "ppl": cur.get("ppl"),
             }
         )
         for k in (
@@ -149,6 +156,7 @@ def parse_output_file(filepath):
             "timing",
             "loaded_qubits",
             "avg_cultivation_time",
+            "min_volume",
         ):
             cur.pop(k, None)
         in_qubit_block = False
@@ -208,14 +216,21 @@ def parse_output_file(filepath):
                     cur["avg_cultivation_time"] = float(m.group(1))
                     in_cultivation_block = False
 
+            if m := re.match(r"Min volume estimate:\s+(\d+)", s):
+                cur["min_volume"] = int(m.group(1))
+
+            if m := re.match(r"Products per layer:\s+([0-9.eE+\-]+)\s+avg", s):
+                cur["ppl"] = float(m.group(1))
+
+            if m := re.match(r"(?:Normalized )?[Ss]cheduling efficiency:\s+([0-9.eE+\-]+)", s):
+                cur["scheduling_efficiency"] = float(m.group(1))
+
             if cur.get("circuit"):
                 if m := re.match(r"Optimal logical cycles (\d+) \(([0-9.eE+\-]+) speedup\)", s):
                     cur["optimal_lcycles"] = int(m.group(1))
                     cur["optimal_speedup"] = float(m.group(2))
                 if m := re.match(r"Parallelism:\s+([0-9.eE+\-]+)x", s):
                     cur["parallelism"] = float(m.group(1))
-                if m := re.match(r"Scheduling efficiency:\s+([0-9.eE+\-]+)", s):
-                    cur["scheduling_efficiency"] = float(m.group(1))
                 if m := re.match(r"Parallel efficiency:\s+([0-9.eE+\-]+)", s):
                     cur["parallel_efficiency"] = float(m.group(1))
                 if m := re.match(
@@ -637,6 +652,16 @@ def main():
         help=(
             "When -y is slash-separated and -f uses ratio (file1,file2) form, "
             "render a stacked bar chart instead of a scatter/line plot."
+        ),
+    )
+    parser.add_argument(
+        "--minvol",
+        action="store_true",
+        default=False,
+        help=(
+            "Read the 'Min volume estimate' line from each data file and plot it as "
+            "an additional dashed series alongside each regular volume series. "
+            "Only meaningful when -y is 'volume'."
         ),
     )
     args = parser.parse_args()
@@ -1112,6 +1137,31 @@ def main():
         # wisq-only mode: no -f series; create empty placeholders
         all_series = [([], False, []) for _ in multi_y_keys]
 
+    # --minvol: build one Series per -f file using the min_volume column.
+    # Only meaningful when -y includes 'volume'; we build it regardless and let
+    # the drawing code decide whether to use it.
+    minvol_series: list = []  # list of Series, parallel to args.files
+    if args.minvol and args.files:
+        for file_arg in args.files:
+            path1, path2, file_label, _ = split_file_arg(file_arg, "")
+            df1 = _load_df(path1)
+            if df1 is None or "min_volume" not in df1.columns:
+                minvol_series.append(None)
+                continue
+            d1 = df1.dropna(subset=[x_field, "min_volume"])
+            if d1.empty:
+                minvol_series.append(None)
+                continue
+            mv_label = f"{file_label} Min volume" if file_label else "Min volume"
+            minvol_series.append(
+                Series(
+                    label=mv_label,
+                    xs=d1[x_field].tolist(),
+                    ys=d1["min_volume"].tolist(),
+                    circuits=d1["circuit"].fillna("").tolist(),
+                )
+            )
+
     # Print data table
     table_frames, col_names = [], []
     for yk_list, (series_list, any_ratio, ratio_labels) in zip(multi_y_keys, all_series):
@@ -1210,6 +1260,27 @@ def main():
                 fontsize=_LABEL_FONTSIZE,
             )
             cur_ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+
+        # --minvol overlay on circuit-x bar chart: draw a horizontal tick/line per circuit
+        if minvol_series and all_circuits:
+            for fi, mv_s in enumerate(minvol_series):
+                if mv_s is None:
+                    continue
+                colour = _COLOURS[fi % len(_COLOURS)]
+                mv_lookup = dict(zip(mv_s.xs, mv_s.ys))
+                half_w = 0.35
+                for xi, c in enumerate(all_circuits):
+                    mv_val = mv_lookup.get(c)
+                    if mv_val is not None:
+                        ax.plot(
+                            [xi - half_w, xi + half_w],
+                            [mv_val, mv_val],
+                            color=colour,
+                            linewidth=2.0,
+                            linestyle="--",
+                            zorder=4,
+                            label=mv_s.label if (fi == 0 and xi == 0) else "_nolegend_",
+                        )
 
         # x-axis ticks are set after WISQ overlay (which may populate all_circuits)
         _deferred_circuit_x_setup = True
@@ -1339,6 +1410,24 @@ def main():
                     fontsize=_LABEL_FONTSIZE,
                 )
                 cur_ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
+
+            # --minvol overlay on scatter/line plot: always a dashed line, never markers
+            if minvol_series:
+                for fi, mv_s in enumerate(minvol_series):
+                    if mv_s is None:
+                        continue
+                    colour = _COLOURS[fi % len(_COLOURS)]
+                    xs_mv, ys_mv = zip(*sorted(zip(mv_s.xs, mv_s.ys)))
+                    ax.plot(
+                        xs_mv,
+                        ys_mv,
+                        color=colour,
+                        linewidth=1.8,
+                        alpha=0.8,
+                        linestyle="--",
+                        zorder=2,
+                        label=mv_s.label if mv_s.label is not None else "_nolegend_",
+                    )
 
             if is_cultivation_x:
                 ax.set_xscale("log", base=2)
