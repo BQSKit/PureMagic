@@ -152,19 +152,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
     // The definition of efficiency used in the PureMagic paper is 1/V. We normalize here
-    let mut optimal_n_layers = n_layers;
     let (n_t_gates, n_t_layers) = sched.input.circuit.count_t_stats();
+    /*
+    let mut optimal_n_layers = n_layers;
     if !args.no_t_failures {
         optimal_n_layers += n_t_layers / 2;
     };
+    This complicated calculation assumes every T correction takes adds a cycle, once the full
+    parallelism is met
     // Magic states accumulate at rate n_magic_qubits * lambda per lcycle (including Clifford
     // and correction lcycles). They are only consumed during T-gate lcycles. 50% of T gates
     // need a Pauli correction that does not consume a magic state.
     // max_parallelism = total magic states available / number of T-gate lcycles,
     // capped by the average T gates per T-gate layer (circuit's inherent parallelism).
     let expected_total_lcycles = optimal_n_layers as f64;
+    let avg_t_per_layer = n_t_gates as f64 / n_t_layers as f64;
     let max_parallelism = if n_t_layers > 0 {
-        let avg_t_per_layer = n_t_gates as f64 / n_t_layers as f64;
         let supply_limited =
             n_magic_qubits as f64 * args.magic_state_lambda * expected_total_lcycles
                 / n_t_layers as f64;
@@ -181,12 +184,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let min_lcycles = (n_clifford_layers + min_t_lcycles + min_correction_lcycles).ceil() as usize;
     let min_volume = n_qubits * min_lcycles;
     println!("Min volume estimate: {}", min_volume);
-    //let optimal_volume = n_qubits * optimal_n_layers;
-    //println!("Normalized scheduling efficiency: {:.3}", optimal_volume as f64 / volume as f64);
-    println!(
-        "Normalized scheduling efficiency: {:.3}",
-        (min_volume as f64 / volume as f64).min(1.0)
-    );
+     */
+
+    // the big question is what to do with the T failure corrections. They don't need magic state,
+    // but they do reduce efficiency. For heavyweight PBC, they reduce it by 50% but for
+    // lightweight, they do get absorbed into the schedule to some extent. But there are some
+    // circuits where they all get absormed, so if we want a lower bound, we have to assume they
+    // all get absorbed
+    // They definitely can't be absorbed if the layer following the T contains another product on
+    // the same qubit, because they'll push back that product and add a cycle, guaranteed
+    let max_t_parallelism = n_magic_qubits as f64 * args.magic_state_lambda;
+    let magic_min_layers = (n_t_gates as f64 / max_t_parallelism) as usize;
+    // Each CX takes 2 and S takes 3 cycles, but tt is also possible that these could all be
+    // absorbed, so we can't have a scaling factor here.
+    // This could be refined by generating the circuit layers fter adding the extra Cliffords.
+    // But in general it shouldn't really matter because these are a small fraction of the total
+    // Well, we see some circuits with 8% Cliffords, so that could blow it up a bit.
+    let n_clifford_layers = n_layers - n_t_layers;
+    let lmin = std::cmp::max::<usize>(n_layers, n_clifford_layers as usize + magic_min_layers);
+    let vmin = lmin * n_qubits;
+    let max_parallelism_estimate = (n_products + n_t_gates / 2) as f64 / lmin as f64;
+    println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
+    println!("Min volume estimate: {}", vmin);
+    println!("Normalized scheduling efficiency: {:.3}", (vmin as f64 / volume as f64).min(1.0));
+
     sched.print_schedule(&hdr)?;
     Ok(())
 }
