@@ -102,7 +102,7 @@ impl Circuit {
         let plot_dir = format!("{}.circuit", circuit_stem);
         create_dir_all(&plot_dir)?;
 
-        let layers = self.layers();
+        let layers = self.compute_layers();
         let min_layer = 0;
         let max_layer = layers.len();
         const LAYERS_PER_FILE: usize = 1000;
@@ -225,7 +225,7 @@ impl Circuit {
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
         let plot_dir = format!("{}.circuit", circuit_stem);
         create_dir_all(&plot_dir)?;
-        let layers = self.layers();
+        let layers = self.compute_layers();
         let plot_fname = format!("{}.layer_stats.svg", circuit_stem);
         let root = SVGBackend::new(&plot_fname, (1800, 1000)).into_drawing_area();
         root.fill(&WHITE)?;
@@ -370,8 +370,83 @@ impl Circuit {
         Ok(())
     }
 
+    /// Calculates the number of layers in an expanded circuit where each Clifford
+    /// gate is replaced by the number of sequential copies equal to its cycle cost:
+    /// - [`GateType::CX`]: expanded to 2 identical products in sequence
+    /// - [`GateType::S`] / [`GateType::SX`]: expanded to 3 identical products in sequence
+    /// - All other gates (T, M): kept as-is (1 copy)
+    ///
+    /// The expanded circuit is built and scheduled entirely with temporaries; the
+    /// original `self.pps` and `self.layers` cache are never modified.
+    pub(crate) fn estimate_num_layers(&self) -> usize {
+        // Build the expanded product list.
+        let mut expanded: Vec<PauliProduct> = Vec::with_capacity(self.pps.len() * 3);
+        for pp in &self.pps {
+            let copies = if pp.gate_type.is_cx() {
+                2
+            } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
+                3
+            } else {
+                1
+            };
+            for _ in 0..copies {
+                let mut copy = pp.clone();
+                copy.id = expanded.len() as i32;
+                copy.parents.clear();
+                copy.children.clear();
+                expanded.push(copy);
+            }
+        }
+
+        // Generate dependencies on the expanded list (mirrors gen_deps).
+        let n_qubits = self.n_qubits;
+        let mut current_pps: Vec<i32> = vec![-1; n_qubits];
+        let mut deps: Vec<(i32, i32)> = Vec::new();
+        for pp in &expanded {
+            for op in &pp.operators {
+                let prev = current_pps[op.qubit as usize];
+                if prev != -1 {
+                    deps.push((pp.id, prev));
+                }
+                current_pps[op.qubit as usize] = pp.id;
+            }
+        }
+        for (child_id, parent_id) in deps {
+            expanded[child_id as usize].parents.push(parent_id);
+            expanded[parent_id as usize].children.push(child_id);
+        }
+
+        // Topological sort (Kahn's algorithm) to count layers.
+        let mut in_degrees: Vec<usize> = expanded.iter().map(|pp| pp.parents.len()).collect();
+        let mut ready: Vec<usize> =
+            in_degrees.iter().enumerate().filter(|&(_, &d)| d == 0).map(|(i, _)| i).collect();
+        let mut n_layers = 0;
+        let mut processed = 0;
+        while !ready.is_empty() {
+            n_layers += 1;
+            processed += ready.len();
+            let mut next_ready = Vec::new();
+            for &current in &ready {
+                for &child_id in &expanded[current].children {
+                    let child_idx = child_id as usize;
+                    in_degrees[child_idx] -= 1;
+                    if in_degrees[child_idx] == 0 {
+                        next_ready.push(child_idx);
+                    }
+                }
+            }
+            ready = next_ready;
+        }
+        assert_eq!(
+            processed,
+            expanded.len(),
+            "Expanded circuit contains cycles or unreachable products"
+        );
+        n_layers
+    }
+
     pub(crate) fn count_t_stats(&self) -> (usize, usize) {
-        let layers = self.layers();
+        let layers = self.compute_layers();
         let n_t_gates = self.pps.iter().filter(|pp| pp.gate_type.is_t()).count();
         let n_t_layers =
             layers.iter().filter(|layer| layer.iter().any(|pp| pp.gate_type.is_t())).count();
@@ -379,7 +454,7 @@ impl Circuit {
     }
 
     pub(crate) fn print_statistics(&self) -> usize {
-        let layers = self.layers();
+        let layers = self.compute_layers();
         let mut n_cliffords = 0;
         let mut n_products = vec![0; layers.len()];
 
@@ -414,7 +489,7 @@ impl Circuit {
         let f = File::create(&output_fname)?;
         let mut buf_f = BufWriter::new(f);
 
-        let layers = self.layers();
+        let layers = self.compute_layers();
 
         writeln!(buf_f, "layer id product ancilla? ES? clifford? children parents")?;
         for (i, layer) in layers.iter().enumerate() {
@@ -430,7 +505,7 @@ impl Circuit {
 
     /// Computes circuit layers using Kahn's topological sort (cached after first call).
     /// Each layer contains all products whose parents have all been placed in earlier layers.
-    fn layers(&self) -> Vec<Vec<&PauliProduct>> {
+    fn compute_layers(&self) -> Vec<Vec<&PauliProduct>> {
         if let Some(cached) = self.layers.borrow().as_ref() {
             return cached
                 .iter()
@@ -789,5 +864,84 @@ mod tests {
         c.load_circuit().unwrap();
         assert_eq!(c.n_products(), 1);
         assert!(c.product(0).gate_type.is_cx());
+    }
+
+    #[test]
+    fn n_cycles_single_t_gate_costs_one_cycle() {
+        let f = make_circuit_file(&["+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 1);
+    }
+
+    #[test]
+    fn n_cycles_single_cx_gate_costs_two_cycles() {
+        let f = make_circuit_file(&["+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 2);
+    }
+
+    #[test]
+    fn n_cycles_single_s_gate_costs_three_cycles() {
+        let f = make_circuit_file(&["+X_<S>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 3);
+    }
+
+    #[test]
+    fn n_cycles_single_sx_gate_costs_three_cycles() {
+        let f = make_circuit_file(&["+X_<SX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 3);
+    }
+
+    #[test]
+    fn n_cycles_parallel_cx_and_t_dominated_by_cx() {
+        // CX on qubits 0,1 and T on qubit 2 are independent → same layer
+        // layer cost = max(2, 1) = 2
+        let f = make_circuit_file(&["+XZ_<CX>", "+__X<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 2);
+    }
+
+    #[test]
+    fn n_cycles_parallel_s_and_cx_dominated_by_s() {
+        // S on qubit 0 and CX on qubits 2,3 are independent → same layer
+        // layer cost = max(3, 2) = 3
+        let f = make_circuit_file(&["+X___<S>", "+__XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 3);
+    }
+
+    #[test]
+    fn n_cycles_sequential_chain_sums_layers() {
+        // Three sequential T gates on the same qubit → 3 layers × 1 cycle = 3
+        let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 3);
+    }
+
+    #[test]
+    fn n_cycles_sequential_cx_then_s_sums_layers() {
+        // CX followed by S on same qubit → 2 layers: 2 + 3 = 5 cycles
+        let f = make_circuit_file(&["+XZ<CX>", "+X_<S>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 5);
+    }
+
+    #[test]
+    fn n_cycles_empty_circuit_is_zero() {
+        // X and Z gates are skipped, so the circuit is empty
+        let f = make_circuit_file(&["+X<X>", "+Z<Z>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        assert_eq!(c.estimate_num_layers(), 0);
     }
 }
