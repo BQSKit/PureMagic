@@ -469,10 +469,12 @@ impl Circuit {
         let n_layers = layers.len();
         let avg_products = self.pps.len() as f64 / n_layers as f64;
         let max_products = *n_products.iter().max().unwrap_or(&0);
+        let min_layers = self.estimate_num_layers();
         println!("Circuit statistics:");
         println!("  Number of products:               {}", self.pps.len());
         println!("  Number of Cliffords:              {}", n_cliffords);
         println!("  Layers:                           {}", n_layers);
+        println!("  Estimated min layers:             {}", min_layers);
         println!(
             "  Products per layer:               {:.2} avg, {} max",
             avg_products, max_products
