@@ -937,10 +937,8 @@ def main():
 
     def draw_series(ax, series_list, yk_list, colour_offset=0):
         y_key = yk_list[0] if isinstance(yk_list, list) else yk_list
-        draw_lines = args.lines or args.lines_with_markers or is_cultivation_x or is_weight_x
-        show_markers = args.lines_with_markers or (
-            not args.lines and (is_cultivation_x or is_weight_x)
-        )
+        draw_lines = args.lines or args.lines_with_markers
+        show_markers = args.lines_with_markers or is_cultivation_x or is_weight_x
         is_timing_y = y_key == "timing"
         is_total_qubits_y = y_key == "total_qubits"
         is_ancilla_qubits_y = "ancilla_qubits" in (
