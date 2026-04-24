@@ -1,7 +1,10 @@
 use crate::fn_timer;
-use crate::pauliproduct::PauliProduct;
+use crate::pauliproduct::{GateType, PauliProduct};
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
+use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::fs::create_dir_all;
 #[cfg(debug_assertions)]
 use std::io::{BufWriter, Write};
@@ -370,26 +373,57 @@ impl Circuit {
         Ok(())
     }
 
-    /// Calculates the number of layers in an expanded circuit where each Clifford
-    /// gate is replaced by the number of sequential copies equal to its cycle cost:
+    /// Calculates the number of layers in an expanded circuit where:
     /// - [`GateType::CX`]: expanded to 2 identical products in sequence
     /// - [`GateType::S`] / [`GateType::SX`]: expanded to 3 identical products in sequence
-    /// - All other gates (T, M): kept as-is (1 copy)
+    /// - [`GateType::T`]: kept as-is; when `no_t_failures` is `false`, with 50% probability
+    ///   an [`GateType::S`] product on the **same qubits** as the T is inserted immediately
+    ///   after it (modelling the Clifford correction needed after a T-gate failure)
+    /// - All other gates (M): kept as-is (1 copy)
     ///
-    /// The expanded circuit is built and scheduled entirely with temporaries; the
-    /// original `self.pps` and `self.layers` cache are never modified.
-    pub(crate) fn estimate_num_layers(&self) -> usize {
+    /// Dependencies are recomputed from scratch on the expanded list via qubit-overlap
+    /// (mirroring [`Circuit::gen_deps`]); the original `self.pps` and `self.layers` cache
+    /// are never modified.
+    pub(crate) fn estimate_num_layers(&self, rng: &mut StdRng, no_t_failures: bool) -> usize {
         // Build the expanded product list.
-        let mut expanded: Vec<PauliProduct> = Vec::with_capacity(self.pps.len() * 3);
+        let mut expanded: Vec<PauliProduct> = Vec::with_capacity(self.pps.len() * 4);
         for pp in &self.pps {
-            let copies = if pp.gate_type.is_cx() {
-                2
+            if pp.gate_type.is_cx() {
+                // CX → 2 sequential copies
+                for _ in 0..2 {
+                    let mut copy = pp.clone();
+                    copy.id = expanded.len() as i32;
+                    copy.parents.clear();
+                    copy.children.clear();
+                    expanded.push(copy);
+                }
             } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
-                3
+                // S / SX → 3 sequential copies
+                for _ in 0..3 {
+                    let mut copy = pp.clone();
+                    copy.id = expanded.len() as i32;
+                    copy.parents.clear();
+                    copy.children.clear();
+                    expanded.push(copy);
+                }
+            } else if pp.gate_type.is_t() {
+                // T → 1 copy; if T failures are enabled, 50% chance of an S correction
+                let mut t_copy = pp.clone();
+                t_copy.id = expanded.len() as i32;
+                t_copy.parents.clear();
+                t_copy.children.clear();
+                expanded.push(t_copy);
+                if !no_t_failures && rng.gen_bool(0.5) {
+                    // S correction uses the same qubits as the T gate
+                    let mut s_copy = pp.clone();
+                    s_copy.id = expanded.len() as i32;
+                    s_copy.gate_type = GateType::S;
+                    s_copy.parents.clear();
+                    s_copy.children.clear();
+                    expanded.push(s_copy);
+                }
             } else {
-                1
-            };
-            for _ in 0..copies {
+                // M and anything else → 1 copy
                 let mut copy = pp.clone();
                 copy.id = expanded.len() as i32;
                 copy.parents.clear();
@@ -469,12 +503,14 @@ impl Circuit {
         let n_layers = layers.len();
         let avg_products = self.pps.len() as f64 / n_layers as f64;
         let max_products = *n_products.iter().max().unwrap_or(&0);
-        let min_layers = self.estimate_num_layers();
+        let mut rng = StdRng::seed_from_u64(0);
+        let min_layers = self.estimate_num_layers(&mut rng, false);
+        let layer_ratio = min_layers as f64 / n_layers as f64;
         println!("Circuit statistics:");
         println!("  Number of products:               {}", self.pps.len());
         println!("  Number of Cliffords:              {}", n_cliffords);
         println!("  Layers:                           {}", n_layers);
-        println!("  Estimated min layers:             {}", min_layers);
+        println!("  Estimated min layers:             {} {:.3}", min_layers, layer_ratio);
         println!(
             "  Products per layer:               {:.2} avg, {} max",
             avg_products, max_products
@@ -868,74 +904,101 @@ mod tests {
         assert!(c.product(0).gate_type.is_cx());
     }
 
+    fn make_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
     #[test]
-    fn n_cycles_single_t_gate_costs_one_cycle() {
+    fn n_cycles_single_t_gate_no_t_failures_is_exactly_one_layer() {
+        // no_t_failures=true: S is never inserted, so T always costs exactly 1 layer.
         let f = make_circuit_file(&["+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 1);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), true), 1);
     }
 
     #[test]
-    fn n_cycles_single_cx_gate_costs_two_cycles() {
+    fn n_cycles_single_t_gate_with_t_failures_costs_one_or_two_layers() {
+        // no_t_failures=false: T → 1 layer; with 50% chance an S is appended → 1 or 2 layers
+        let f = make_circuit_file(&["+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let n = c.estimate_num_layers(&mut make_rng(), false);
+        assert!(n == 1 || n == 2, "expected 1 or 2, got {}", n);
+    }
+
+    #[test]
+    fn n_cycles_single_cx_gate_costs_two_layers() {
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 2);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), false), 2);
     }
 
     #[test]
-    fn n_cycles_single_s_gate_costs_three_cycles() {
+    fn n_cycles_single_s_gate_costs_three_layers() {
         let f = make_circuit_file(&["+X_<S>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 3);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), false), 3);
     }
 
     #[test]
-    fn n_cycles_single_sx_gate_costs_three_cycles() {
+    fn n_cycles_single_sx_gate_costs_three_layers() {
         let f = make_circuit_file(&["+X_<SX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 3);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), false), 3);
     }
 
     #[test]
-    fn n_cycles_parallel_cx_and_t_dominated_by_cx() {
-        // CX on qubits 0,1 and T on qubit 2 are independent → same layer
-        // layer cost = max(2, 1) = 2
+    fn n_cycles_parallel_cx_and_t() {
+        // CX on qubits 0,1 expands to 2 sequential copies.
+        // T on qubit 2 is independent; may get an S appended (also on qubit 2).
+        // Result is 2 (T alone) or 3 (T + S appended, S is in its own layer after T).
         let f = make_circuit_file(&["+XZ_<CX>", "+__X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 2);
+        let n = c.estimate_num_layers(&mut make_rng(), false);
+        assert!(n == 2 || n == 3, "expected 2 or 3, got {}", n);
     }
 
     #[test]
-    fn n_cycles_parallel_s_and_cx_dominated_by_s() {
-        // S on qubit 0 and CX on qubits 2,3 are independent → same layer
-        // layer cost = max(3, 2) = 3
+    fn n_cycles_parallel_s_and_cx() {
+        // S on qubit 0 expands to 3 sequential copies; CX on qubits 2,3 to 2.
+        // No T gates, so no randomness. Result is exactly 3.
         let f = make_circuit_file(&["+X___<S>", "+__XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 3);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), false), 3);
     }
 
     #[test]
-    fn n_cycles_sequential_chain_sums_layers() {
-        // Three sequential T gates on the same qubit → 3 layers × 1 cycle = 3
+    fn n_cycles_sequential_t_chain_no_t_failures_is_exact() {
+        // no_t_failures=true: no S inserted, 3 sequential T gates → exactly 3 layers.
         let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 3);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), true), 3);
+    }
+
+    #[test]
+    fn n_cycles_sequential_t_chain_with_t_failures_in_range() {
+        // no_t_failures=false: each T may add an S → result between 3 and 6.
+        let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let n = c.estimate_num_layers(&mut make_rng(), false);
+        assert!((3..=6).contains(&n), "expected 3–6, got {}", n);
     }
 
     #[test]
     fn n_cycles_sequential_cx_then_s_sums_layers() {
-        // CX followed by S on same qubit → 2 layers: 2 + 3 = 5 cycles
+        // CX (2 layers) followed by S (3 layers) on same qubit → exactly 5. No T gates.
         let f = make_circuit_file(&["+XZ<CX>", "+X_<S>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 5);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), false), 5);
     }
 
     #[test]
@@ -944,6 +1007,29 @@ mod tests {
         let f = make_circuit_file(&["+X<X>", "+Z<Z>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        assert_eq!(c.estimate_num_layers(), 0);
+        assert_eq!(c.estimate_num_layers(&mut make_rng(), false), 0);
+    }
+
+    #[test]
+    fn n_cycles_t_gate_s_insertion_is_reproducible_with_same_seed() {
+        let f = make_circuit_file(&["+X_<T>", "+X_<T>", "+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let n1 = c.estimate_num_layers(&mut StdRng::seed_from_u64(99), false);
+        let n2 = c.estimate_num_layers(&mut StdRng::seed_from_u64(99), false);
+        assert_eq!(n1, n2);
+    }
+
+    #[test]
+    fn n_cycles_t_gate_s_insertion_varies_across_seeds() {
+        // With enough T gates, different seeds should produce different layer counts.
+        let lines: Vec<&str> = vec!["+X_<T>"; 20];
+        let f = make_circuit_file(&lines);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let results: std::collections::HashSet<usize> = (0u64..20)
+            .map(|seed| c.estimate_num_layers(&mut StdRng::seed_from_u64(seed), false))
+            .collect();
+        assert!(results.len() > 1, "expected variation across seeds, got {:?}", results);
     }
 }
