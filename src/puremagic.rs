@@ -207,6 +207,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
     println!("Min volume estimate: {}", vmin);
     println!("Normalized scheduling efficiency: {:.3}", (vmin as f64 / volume as f64).min(1.0));
+    let estimated_min_layers = sched.input.circuit.estimate_num_layers();
+    println!("Estimated min layers: {}", estimated_min_layers);
 
     sched.print_schedule(&hdr)?;
     Ok(())
