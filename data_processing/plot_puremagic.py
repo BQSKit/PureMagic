@@ -1277,7 +1277,7 @@ def main():
                             linewidth=2.0,
                             linestyle="--",
                             zorder=4,
-                            label=mv_s.label if (fi == 0 and xi == 0) else "_nolegend_",
+                            label="_nolegend_",
                         )
 
         # x-axis ticks are set after WISQ overlay (which may populate all_circuits)
@@ -1424,7 +1424,7 @@ def main():
                         alpha=0.8,
                         linestyle="--",
                         zorder=2,
-                        label=mv_s.label if mv_s.label is not None else "_nolegend_",
+                        label="_nolegend_",
                     )
 
             if is_cultivation_x:

@@ -1108,6 +1108,32 @@ impl Scheduler {
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);
+
+        // Write normalized cultivation-time distribution to file.
+        let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
+        match self.write_cultivation_dist(&dist_fname, min, max) {
+            Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
+            Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
+        }
+    }
+
+    /// Writes the normalized distribution of cultivation times to `fname`.
+    /// Each line contains: `<cultivation_time> <normalized_count>` where
+    /// `normalized_count = count(t) / total_events` for t in [min, max].
+    fn write_cultivation_dist(&self, fname: &str, min: i32, max: i32) -> io::Result<()> {
+        let times = &self.cultivation.cultivation_times_log;
+        let total = times.len();
+        if total == 0 || min > max {
+            return Ok(());
+        }
+        let f = File::create(fname)?;
+        let mut buf_f = BufWriter::new(f);
+        for t in min..=max {
+            let count = times.iter().filter(|&&v| v == t).count();
+            let normalized = count as f64 / total as f64;
+            writeln!(buf_f, "{} {:.6}", t, normalized)?;
+        }
+        Ok(())
     }
 
     #[cfg(debug_assertions)]
