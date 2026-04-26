@@ -3,6 +3,7 @@ use crate::pauliproduct::{GateType, PauliProduct};
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use rand::Rng;
+#[cfg(test)]
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::fs::create_dir_all;
@@ -503,14 +504,10 @@ impl Circuit {
         let n_layers = layers.len();
         let avg_products = self.pps.len() as f64 / n_layers as f64;
         let max_products = *n_products.iter().max().unwrap_or(&0);
-        let mut rng = StdRng::seed_from_u64(0);
-        let min_layers = self.estimate_num_layers(&mut rng, false);
-        let layer_ratio = min_layers as f64 / n_layers as f64;
         println!("Circuit statistics:");
         println!("  Number of products:               {}", self.pps.len());
         println!("  Number of Cliffords:              {}", n_cliffords);
         println!("  Layers:                           {}", n_layers);
-        println!("  Estimated min layers:             {} {:.3}", min_layers, layer_ratio);
         println!(
             "  Products per layer:               {:.2} avg, {} max",
             avg_products, max_products
