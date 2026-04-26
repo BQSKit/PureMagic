@@ -169,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vmin = lmin * n_qubits;
     let max_parallelism_estimate = (n_products + n_t_gates / 2) as f64 / lmin as f64;
     println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
-    println!("Min volume estimate: {}", vmin);
+    println!("Volume estimate: {}", vmin);
     println!("Normalized scheduling efficiency: {:.3}", (vmin as f64 / volume as f64).min(1.0));
 
     sched.print_schedule(&hdr)?;
