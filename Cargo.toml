@@ -51,6 +51,10 @@ path = "src/puremagic.rs"
 name = "gen_circuit"
 path = "src/gen_circuit.rs"
 
+[[bin]]
+name = "circuit_stats"
+path = "src/circuit_stats.rs"
+
 [profile.release]
 opt-level = 3
 debug = false
@@ -77,8 +81,8 @@ opt-level = 3
 debug = false
 lto = true
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
+#[lints.rust]
+#unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
 
 [features]
 default = []
