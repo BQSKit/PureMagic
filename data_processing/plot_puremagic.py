@@ -225,18 +225,15 @@ def parse_output_file(filepath):
             if m := re.match(r"(?:Normalized )?[Ss]cheduling efficiency:\s+([0-9.eE+\-]+)", s):
                 cur["scheduling_efficiency"] = float(m.group(1))
 
-            if cur.get("circuit"):
-                if m := re.match(r"Optimal logical cycles (\d+) \(([0-9.eE+\-]+) speedup\)", s):
-                    cur["optimal_lcycles"] = int(m.group(1))
-                    cur["optimal_speedup"] = float(m.group(2))
-                if m := re.match(r"Parallelism:\s+([0-9.eE+\-]+)x", s):
-                    cur["parallelism"] = float(m.group(1))
-                if m := re.match(r"Parallel efficiency:\s+([0-9.eE+\-]+)", s):
-                    cur["parallel_efficiency"] = float(m.group(1))
-                if m := re.match(
-                    r"schedule_lcycle\s+total:.*avg:\s*([0-9.eE+\-]+)\s*(\S+)\s+max:", s
-                ):
-                    cur["timing"] = float(m.group(1)) * _TO_US.get(m.group(2), 1.0)
+            if m := re.match(r"Optimal logical cycles (\d+) \(([0-9.eE+\-]+) speedup\)", s):
+                cur["optimal_lcycles"] = int(m.group(1))
+                cur["optimal_speedup"] = float(m.group(2))
+            if m := re.match(r"Parallelism:\s+([0-9.eE+\-]+)x", s):
+                cur["parallelism"] = float(m.group(1))
+            if m := re.match(r"Parallel efficiency:\s+([0-9.eE+\-]+)", s):
+                cur["parallel_efficiency"] = float(m.group(1))
+            if m := re.match(r"schedule_lcycle\s+total:.*avg:\s*([0-9.eE+\-]+)\s*(\S+)\s+max:", s):
+                cur["timing"] = float(m.group(1)) * _TO_US.get(m.group(2), 1.0)
 
             if re.match(r"Timing: main took", s):
                 _flush()
@@ -655,6 +652,17 @@ def main():
         ),
     )
     parser.add_argument(
+        "--max-efficiency",
+        dest="max_efficiency",
+        action="store_true",
+        default=False,
+        help=(
+            "When -y is 'volume', plot 1/volume instead of volume for all series "
+            "(including --minvol, which becomes 1/min_volume). "
+            "Represents throughput / efficiency rather than cost."
+        ),
+    )
+    parser.add_argument(
         "--minvol",
         action="store_true",
         default=False,
@@ -712,6 +720,10 @@ def main():
     except OSError as e:
         print(f"Error: cannot read circuits file '{args.circuits_file}': {e}", file=sys.stderr)
         sys.exit(1)
+
+    # --max-efficiency: override the volume y-axis label to reflect 1/volume
+    if args.max_efficiency:
+        _Y_AXES["volume"] = "1 / Volume"
 
     x_key = args.x_axis
     x_field, x_label = _X_AXES[x_key]
@@ -908,6 +920,8 @@ def main():
                 raw_ys = d1[y_field].tolist()
                 if y_key in _Y_INVERT:
                     ys_vals = [1.0 - v for v in raw_ys]
+                elif args.max_efficiency and y_key == "volume":
+                    ys_vals = [1.0 / v if v else float("nan") for v in raw_ys]
                 else:
                     ys_vals = raw_ys
                 series_list.append(
@@ -1004,20 +1018,40 @@ def main():
                             color=colour,
                         )
 
-            # Power-law trendline for timing y-axis
+            # Power-law trendline for timing y-axis, with IQR outlier rejection in log space
             if is_timing_y and len(s.xs) >= 2:
                 xa, ya = np.array(s.xs, float), np.array(s.ys, float)
                 mask = (xa > 0) & (ya > 0)
                 if mask.sum() >= 2:
-                    lx, ly = np.log(xa[mask]), np.log(ya[mask])
-                    a, b = np.polyfit(lx, ly, 1)
-                    ly_pred = a * lx + b
-                    ss_res = np.sum((ly - ly_pred) ** 2)
-                    ss_tot = np.sum((ly - ly.mean()) ** 2)
+                    lx_all = np.where(mask, np.log(np.where(xa > 0, xa, 1.0)), np.nan)
+                    ly_all = np.where(mask, np.log(np.where(ya > 0, ya, 1.0)), np.nan)
+                    # Initial fit
+                    a, b = np.polyfit(lx_all[mask], ly_all[mask], 1)
+                    inliers = mask.copy()
+                    for _ in range(10):
+                        if inliers.sum() < 2:
+                            break
+                        a, b = np.polyfit(lx_all[inliers], ly_all[inliers], 1)
+                        residuals = ly_all - (a * lx_all + b)
+                        res_in = residuals[inliers]
+                        q1, q3 = np.percentile(res_in, 25), np.percentile(res_in, 75)
+                        iqr = q3 - q1
+                        new_inliers = (
+                            mask & (residuals >= q1 - 1.0 * iqr) & (residuals <= q3 + 1.0 * iqr)
+                        )
+                        if np.array_equal(new_inliers, inliers):
+                            break
+                        inliers = new_inliers
+                    n_outliers = mask.sum() - inliers.sum()
+                    lx_in, ly_in = lx_all[inliers], ly_all[inliers]
+                    ly_pred = a * lx_in + b
+                    ss_res = np.sum((ly_in - ly_pred) ** 2)
+                    ss_tot = np.sum((ly_in - ly_in.mean()) ** 2)
                     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
                     xf = np.linspace(xa[mask].min(), xa[mask].max(), 200)
                     print(
-                        f"{s.label} fit ($c \\cdot x^{{{a:.2f}}}$, c={np.exp(b):.2f}, R²={r2:.3f})"
+                        f"{s.label} fit (excl. {n_outliers} outlier(s)): "
+                        f"$c \\cdot x^{{{a:.2f}}}$, c={np.exp(b):.2f}, R²={r2:.3f}"
                     )
                     ax.plot(
                         xf,
@@ -1027,7 +1061,7 @@ def main():
                         linestyle="--",
                         alpha=0.7,
                         zorder=2,
-                        label=f"Fit ($c \\cdot x^{{{a:.2f}}}$, c={np.exp(b):.2f}, R²={r2:.3f})",
+                        label=f"Fit: $c \\cdot x^{{{a:.2f}}}$, $c={np.exp(b):.2f}$ ($R^2={r2:.2f}$)",
                     )
 
         # Fit y = A * x^(-0.5) on the ancilla_qubits ratio for data_qubits x-axis.
@@ -1121,6 +1155,98 @@ def main():
                         label=f"ratio fit ($c/\\sqrt{{x}}$, c={c:.2f}, R²={r2:.3f})",
                     )
 
+        # Linear trendline for ppl x-axis: fit y = a*x + b across all series points combined,
+        # with iterative outlier rejection based on residuals (1.5 × IQR rule).
+        if x_key == "ppl":
+            all_xs = np.array([xv for s in series_list for xv in s.xs], float)
+            all_ys = np.array([yv for s in series_list for yv in s.ys], float)
+            mask = np.isfinite(all_xs) & np.isfinite(all_ys)
+            if mask.sum() >= 2:
+                a, b = np.polyfit(all_xs[mask], all_ys[mask], 1)
+                inliers = mask.copy()
+                for _ in range(10):  # iterate until stable
+                    if inliers.sum() < 2:
+                        break
+                    a, b = np.polyfit(all_xs[inliers], all_ys[inliers], 1)
+                    residuals = all_ys - (a * all_xs + b)
+                    res_in = residuals[inliers]
+                    q1, q3 = np.percentile(res_in, 25), np.percentile(res_in, 75)
+                    iqr = q3 - q1
+                    new_inliers = (
+                        mask & (residuals >= q1 - 1.5 * iqr) & (residuals <= q3 + 1.5 * iqr)
+                    )
+                    if np.array_equal(new_inliers, inliers):
+                        break
+                    inliers = new_inliers
+                n_outliers = mask.sum() - inliers.sum()
+                sx, sy = all_xs[inliers], all_ys[inliers]
+                y_pred = a * sx + b
+                ss_res = np.sum((sy - y_pred) ** 2)
+                ss_tot = np.sum((sy - sy.mean()) ** 2)
+                r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+                xf = np.linspace(all_xs[mask].min(), all_xs[mask].max(), 200)
+                print(
+                    f"Linear fit (excl. {n_outliers} outlier(s)): y = {a:.3f}x + {b:.3f}  (R²={r2:.3f})"
+                )
+                ax.plot(
+                    xf,
+                    a * xf + b,
+                    color="black",
+                    linewidth=1.8,
+                    linestyle="--",
+                    alpha=0.8,
+                    zorder=2,
+                    label=f"Linear fit: $y = {a:.2f}x {'+' if b >= 0 else '-'} {abs(b):.2f}$ ($R^2={r2:.2f}$)",
+                )
+
+        # Sqrt trendline for data_qubits x-axis × parallelism y-axis: fit y = a*sqrt(x) + b,
+        # with iterative outlier rejection based on residuals (1.5 × IQR rule).
+        is_parallelism_y = "parallelism" in (yk_list if isinstance(yk_list, list) else [yk_list])
+        if x_key == "data_qubits" and is_parallelism_y:
+            all_xs = np.array([xv for s in series_list for xv in s.xs], float)
+            all_ys = np.array([yv for s in series_list for yv in s.ys], float)
+            mask = np.isfinite(all_xs) & np.isfinite(all_ys) & (all_xs > 0)
+            if mask.sum() >= 2:
+                # Fit y = a*sqrt(x) + b via linear regression on sqrt(x)
+                sqrt_xs = np.sqrt(all_xs)
+                a, b = np.polyfit(sqrt_xs[mask], all_ys[mask], 1)
+                inliers = mask.copy()
+                for _ in range(10):
+                    if inliers.sum() < 2:
+                        break
+                    a, b = np.polyfit(sqrt_xs[inliers], all_ys[inliers], 1)
+                    residuals = all_ys - (a * sqrt_xs + b)
+                    res_in = residuals[inliers]
+                    q1, q3 = np.percentile(res_in, 25), np.percentile(res_in, 75)
+                    iqr = q3 - q1
+                    new_inliers = (
+                        mask & (residuals >= q1 - 1.5 * iqr) & (residuals <= q3 + 1.5 * iqr)
+                    )
+                    if np.array_equal(new_inliers, inliers):
+                        break
+                    inliers = new_inliers
+                n_outliers = mask.sum() - inliers.sum()
+                sx, sy = all_xs[inliers], all_ys[inliers]
+                y_pred = a * np.sqrt(sx) + b
+                ss_res = np.sum((sy - y_pred) ** 2)
+                ss_tot = np.sum((sy - sy.mean()) ** 2)
+                r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+                xf = np.linspace(all_xs[mask].min(), all_xs[mask].max(), 200)
+                sign = "+" if b >= 0 else "-"
+                print(
+                    f"Sqrt fit (excl. {n_outliers} outlier(s)): y = {a:.3f}·√x {sign} {abs(b):.3f}  (R²={r2:.3f})"
+                )
+                ax.plot(
+                    xf,
+                    a * np.sqrt(xf) + b,
+                    color="black",
+                    linewidth=1.8,
+                    linestyle="--",
+                    alpha=0.8,
+                    zorder=2,
+                    label=f"Fit: $y = {a:.2f}\\sqrt{{x}} {sign} {abs(b):.2f}$ ($R^2={r2:.2f}$)",
+                )
+
         return colour_idx
 
     # multi_y_keys[axis_idx] = list of y-keys for that axis;
@@ -1139,7 +1265,7 @@ def main():
     # Only meaningful when -y includes 'volume'; we build it regardless and let
     # the drawing code decide whether to use it.
     minvol_series: list = []  # list of Series, parallel to args.files
-    if args.minvol and args.files:
+    if (args.minvol or args.max_efficiency) and args.files:
         for file_arg in args.files:
             path1, path2, file_label, _ = split_file_arg(file_arg, "")
             df1 = _load_df(path1)
@@ -1151,11 +1277,14 @@ def main():
                 minvol_series.append(None)
                 continue
             mv_label = f"{file_label} Min volume" if file_label else "Min volume"
+            mv_ys = d1["min_volume"].tolist()
+            if args.max_efficiency:
+                mv_ys = [1.0 / v if v else float("nan") for v in mv_ys]
             minvol_series.append(
                 Series(
                     label=mv_label,
                     xs=d1[x_field].tolist(),
-                    ys=d1["min_volume"].tolist(),
+                    ys=mv_ys,
                     circuits=d1["circuit"].fillna("").tolist(),
                 )
             )
