@@ -18,12 +18,14 @@ Requires Rust (stable). Build with:
 cargo build --release
 ```
 
-This produces two binaries:
+This produces four binaries:
 
 | Binary | Path | Description |
 |--------|------|-------------|
 | `puremagic` | `target/release/puremagic` | Lattice surgery scheduler |
 | `transpile` | `target/release/transpile` | Clifford+T QASM → `.trans` transpiler |
+| `circuit_stats` | `target/release/circuit_stats` | Estimate circuit statistics and layer/volume bounds without full scheduling |
+| `gen_circuit` | `target/release/gen_circuit` | Generate random T-gate circuits for benchmarking |
 
 ## Usage
 
@@ -44,6 +46,7 @@ Run with `-h` to see all options.
 | `-R, --randomize-data-qubits` | off | Randomize data qubit numbering |
 | `-u, --use-magic-routing` | off | Use magic qubits for routing in addition to bus qubits |
 | `-S, --sides-only` | off | Use only side edges of data patches (not top/bottom) |
+| `-F, --no-t-failures` | off | Disable T gate failures (every T gate succeeds on first attempt) |
 | `-a, --ancilla-rows <N>` | `1` | Number of ancilla rows between data patches (magic routing only) |
 | `-l, --log-scheduler <LEVEL>` | `none` | Scheduler trace log level: `none`, `info`, or `debug` |
 | `-I, --show-product-ids` | off | Show product IDs instead of Pauli terms in circuit plots |
@@ -124,7 +127,9 @@ After scheduling, the following files are produced. Throughout the output, **lcy
 | `<name>.schedule` | Final schedule (lcycle → operations). |
 | `<name>.topo.png` | Topology visualization (requires `--plot topo`). |
 | `<name>.topo.txt` | Topology grid dump. Debug builds only. |
-| `<name>.layer_stats.png` | Circuit layer statistics (requires `--plot cstats`). |
+| `<name>.circuit/` | Circuit layer plots as PNGs in a subdirectory (requires `--plot circuit`). |
+| `<name>.layer_stats.svg` | Circuit layer statistics (requires `--plot cstats`). |
+| `<name>.qubit_coupling.svg` | Qubit coupling matrix heatmap (requires `--plot coupling`). |
 | `<name>.paths/` | Per-lcycle path visualizations (requires `--plot paths`). |
 
 ## Topology File Format
@@ -148,13 +153,19 @@ If no topology file is provided, one is auto-generated based on the circuit's qu
 src/
 ├── puremagic.rs        # CLI entry point and argument parsing (puremagic binary)
 ├── transpile.rs        # CLI entry point for transpiler (transpile binary)
+├── circuit_stats.rs    # CLI entry point for circuit statistics estimator (circuit_stats binary)
+├── gen_circuit.rs      # CLI entry point for random circuit generator (gen_circuit binary)
 ├── tableau.rs          # Clifford tableau simulation used by transpile
 ├── compile_circuit.py  # Python script: compile QASM → Clifford+T QASM (uses BQSKit)
 ├── scheduler.rs        # Core EAF scheduling algorithm
+├── cultivation.rs      # Magic state cultivation pool management
 ├── astar.rs            # A* pathfinding (single-qubit T gate routing)
 ├── steinertree.rs      # Steiner tree computation (greedy multi-source BFS)
+├── treegraph.rs        # Steiner tree subgraph node representation
 ├── circuit.rs          # Circuit DAG: products, layers, dependencies
 ├── pauliproduct.rs     # Pauli product operations and gate types
 ├── node.rs             # Node type definitions (Magic, Bus, Data)
+├── topograph.rs        # Topology graph: lattice layout and qubit placement
+├── topograph_plotter.rs # SVG/PNG topology and path visualizations
 └── utils.rs            # Timing utilities and logging macros
 ```
