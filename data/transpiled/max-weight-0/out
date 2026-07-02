@@ -1,0 +1,490 @@
+Loading compiled circuit from ../../all_compiled/dnn_n16.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 160217 gates on 16 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.02 s
+Circuit length:    160217 (before) -> 63128 (after transpilation)
+  Overall reduction: 97089 operations removed (60.6% reduction)
+  Clifford gates:    97105 (before) -> 0 (after transpilation)
+  Clifford reduction: 97105 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 63112
+  Average Pauli product weight: 4.40
+Wrote transpiled circuit to dnn_n16.trans
+Wrote 63112 T gates and 0 Cliffords
+Timing: transpilation took 0.06 s
+Loading compiled circuit from ../../all_compiled/dnn_n51.cliffordt.qasm
+Timing: load circuit took 0.05 s
+Circuit has 313389 gates on 51 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, Tdg, X, Z
+Timing: tableau took 0.07 s
+Circuit length:    313389 (before) -> 123381 (after transpilation)
+  Overall reduction: 190008 operations removed (60.6% reduction)
+  Clifford gates:    190059 (before) -> 0 (after transpilation)
+  Clifford reduction: 190059 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 123330
+  Average Pauli product weight: 6.64
+Wrote transpiled circuit to dnn_n51.trans
+Wrote 123330 T gates and 0 Cliffords
+Timing: transpilation took 0.16 s
+Loading compiled circuit from ../../all_compiled/dnn_n8.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 81263 gates on 8 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.01 s
+Circuit length:    81263 (before) -> 32044 (after transpilation)
+  Overall reduction: 49219 operations removed (60.6% reduction)
+  Clifford gates:    49227 (before) -> 0 (after transpilation)
+  Clifford reduction: 49227 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 32036
+  Average Pauli product weight: 3.23
+Wrote transpiled circuit to dnn_n8.trans
+Wrote 32036 T gates and 0 Cliffords
+Timing: transpilation took 0.03 s
+Loading compiled circuit from ../../all_compiled/hubbard_18.cliffordt.qasm
+Timing: load circuit took 0.09 s
+Circuit has 649437 gates on 18 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Y, Z
+Timing: tableau took 0.09 s
+Circuit length:    649437 (before) -> 251406 (after transpilation)
+  Overall reduction: 398031 operations removed (61.3% reduction)
+  Clifford gates:    398049 (before) -> 0 (after transpilation)
+  Clifford reduction: 398049 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 251388
+  Average Pauli product weight: 12.88
+Wrote transpiled circuit to hubbard_18.trans
+Wrote 251388 T gates and 0 Cliffords
+Timing: transpilation took 0.24 s
+Loading compiled circuit from ../../all_compiled/ising_n10.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 78211 gates on 10 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.01 s
+Circuit length:    78211 (before) -> 30866 (after transpilation)
+  Overall reduction: 47345 operations removed (60.5% reduction)
+  Clifford gates:    47355 (before) -> 0 (after transpilation)
+  Clifford reduction: 47355 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 30856
+  Average Pauli product weight: 3.08
+Wrote transpiled circuit to ising_n10.trans
+Wrote 30856 T gates and 0 Cliffords
+Timing: transpilation took 0.03 s
+Loading compiled circuit from ../../all_compiled/ising_n26.cliffordt.qasm
+Timing: load circuit took 0.00 s
+Circuit has 27607 gates on 26 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.00 s
+Circuit length:    27607 (before) -> 10892 (after transpilation)
+  Overall reduction: 16715 operations removed (60.5% reduction)
+  Clifford gates:    16741 (before) -> 0 (after transpilation)
+  Clifford reduction: 16741 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 10866
+  Average Pauli product weight: 1.93
+Wrote transpiled circuit to ising_n26.trans
+Wrote 10866 T gates and 0 Cliffords
+Timing: transpilation took 0.01 s
+Loading compiled circuit from ../../all_compiled/ising_n42.cliffordt.qasm
+Timing: load circuit took 0.01 s
+Circuit has 44488 gates on 42 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.02 s
+Circuit length:    44488 (before) -> 17514 (after transpilation)
+  Overall reduction: 26974 operations removed (60.6% reduction)
+  Clifford gates:    27016 (before) -> 0 (after transpilation)
+  Clifford reduction: 27016 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 17472
+  Average Pauli product weight: 1.85
+Wrote transpiled circuit to ising_n42.trans
+Wrote 17472 T gates and 0 Cliffords
+Timing: transpilation took 0.03 s
+Loading compiled circuit from ../../all_compiled/ising_n66.cliffordt.qasm
+Timing: load circuit took 0.01 s
+Circuit has 68855 gates on 66 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.02 s
+Circuit length:    68855 (before) -> 27102 (after transpilation)
+  Overall reduction: 41753 operations removed (60.6% reduction)
+  Clifford gates:    41819 (before) -> 0 (after transpilation)
+  Clifford reduction: 41819 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 27036
+  Average Pauli product weight: 1.80
+Wrote transpiled circuit to ising_n66.trans
+Wrote 27036 T gates and 0 Cliffords
+Timing: transpilation took 0.03 s
+Loading compiled circuit from ../../all_compiled/ising_n98.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 103822 gates on 98 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.04 s
+Circuit length:    103822 (before) -> 40840 (after transpilation)
+  Overall reduction: 62982 operations removed (60.7% reduction)
+  Clifford gates:    63080 (before) -> 0 (after transpilation)
+  Clifford reduction: 63080 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 40742
+  Average Pauli product weight: 1.78
+Wrote transpiled circuit to ising_n98.trans
+Wrote 40742 T gates and 0 Cliffords
+Timing: transpilation took 0.07 s
+Loading compiled circuit from ../../all_compiled/knn_n129.cliffordt.qasm
+Timing: load circuit took 0.04 s
+Circuit has 443318 gates on 129 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, Tdg, X, Y, Z
+Timing: tableau took 0.22 s
+Circuit length:    443318 (before) -> 174224 (after transpilation)
+  Overall reduction: 269094 operations removed (60.7% reduction)
+  Clifford gates:    269223 (before) -> 0 (after transpilation)
+  Clifford reduction: 269223 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 174095
+  Average Pauli product weight: 4.15
+Wrote transpiled circuit to knn_n129.trans
+Wrote 174095 T gates and 0 Cliffords
+Timing: transpilation took 0.36 s
+Loading compiled circuit from ../../all_compiled/knn_n25.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 86902 gates on 25 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, Tdg, X, Z
+Timing: tableau took 0.01 s
+Circuit length:    86902 (before) -> 34212 (after transpilation)
+  Overall reduction: 52690 operations removed (60.6% reduction)
+  Clifford gates:    52715 (before) -> 0 (after transpilation)
+  Clifford reduction: 52715 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 34187
+  Average Pauli product weight: 4.49
+Wrote transpiled circuit to knn_n25.trans
+Wrote 34187 T gates and 0 Cliffords
+Timing: transpilation took 0.04 s
+Loading compiled circuit from ../../all_compiled/qaoa_barabasi_albert_N149_3reps.cliffordt.qasm
+Timing: load circuit took 0.06 s
+Circuit has 577554 gates on 149 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.33 s
+Circuit length:    577554 (before) -> 227741 (after transpilation)
+  Overall reduction: 349813 operations removed (60.6% reduction)
+  Clifford gates:    349962 (before) -> 0 (after transpilation)
+  Clifford reduction: 349962 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 227592
+  Average Pauli product weight: 1.56
+Wrote transpiled circuit to qaoa_barabasi_albert_N149_3reps.trans
+Wrote 227592 T gates and 0 Cliffords
+Timing: transpilation took 0.53 s
+Loading compiled circuit from ../../all_compiled/qaoa_barabasi_albert_N16_3reps.cliffordt.qasm
+Timing: load circuit took 0.01 s
+Circuit has 57180 gates on 16 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.01 s
+Circuit length:    57180 (before) -> 22310 (after transpilation)
+  Overall reduction: 34870 operations removed (61.0% reduction)
+  Clifford gates:    34886 (before) -> 0 (after transpilation)
+  Clifford reduction: 34886 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 22294
+  Average Pauli product weight: 6.16
+Wrote transpiled circuit to qaoa_barabasi_albert_N16_3reps.trans
+Wrote 22294 T gates and 0 Cliffords
+Timing: transpilation took 0.02 s
+Loading compiled circuit from ../../all_compiled/qaoa_barabasi_albert_N36_3reps.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 137492 gates on 36 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.03 s
+Circuit length:    137492 (before) -> 53300 (after transpilation)
+  Overall reduction: 84192 operations removed (61.2% reduction)
+  Clifford gates:    84228 (before) -> 0 (after transpilation)
+  Clifford reduction: 84228 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 53264
+  Average Pauli product weight: 13.36
+Wrote transpiled circuit to qaoa_barabasi_albert_N36_3reps.trans
+Wrote 53264 T gates and 0 Cliffords
+Timing: transpilation took 0.06 s
+Loading compiled circuit from ../../all_compiled/qft_N016.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 164199 gates on 16 qubits
+Gate set: CX, H, S, SX, Sdg, T, Tdg, X, Z
+Timing: tableau took 0.02 s
+Circuit length:    164199 (before) -> 64213 (after transpilation)
+  Overall reduction: 99986 operations removed (60.9% reduction)
+  Clifford gates:    100002 (before) -> 0 (after transpilation)
+  Clifford reduction: 100002 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 64197
+  Average Pauli product weight: 7.04
+Wrote transpiled circuit to qft_N016.trans
+Wrote 64197 T gates and 0 Cliffords
+Timing: transpilation took 0.05 s
+Loading compiled circuit from ../../all_compiled/qft_N100.cliffordt.qasm
+Timing: load circuit took 0.17 s
+Circuit has 1721682 gates on 100 qubits
+Gate set: CX, H, S, SX, Sdg, T, Tdg, X, Z
+Timing: tableau took 0.66 s
+Circuit length:    1721682 (before) -> 670207 (after transpilation)
+  Overall reduction: 1051475 operations removed (61.1% reduction)
+  Clifford gates:    1051575 (before) -> 0 (after transpilation)
+  Clifford reduction: 1051575 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 670107
+  Average Pauli product weight: 36.75
+Wrote transpiled circuit to qft_N100.trans
+Wrote 670107 T gates and 0 Cliffords
+Timing: transpilation took 1.23 s
+Loading compiled circuit from ../../all_compiled/qft_n160.cliffordt.qasm
+Timing: load circuit took 0.25 s
+Circuit has 2683274 gates on 160 qubits
+Gate set: CX, H, Measure, S, SX, T, Tdg, X, Z
+Timing: tableau took 1.63 s
+Circuit length:    2683274 (before) -> 1039500 (after transpilation)
+  Overall reduction: 1643774 operations removed (61.3% reduction)
+  Clifford gates:    1643934 (before) -> 0 (after transpilation)
+  Clifford reduction: 1643934 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 1039340
+  Average Pauli product weight: 57.64
+Wrote transpiled circuit to qft_n160.trans
+Wrote 1039340 T gates and 0 Cliffords
+Timing: transpilation took 2.80 s
+Loading compiled circuit from ../../all_compiled/qft_n63.cliffordt.qasm
+Timing: load circuit took 0.10 s
+Circuit has 973517 gates on 63 qubits
+Gate set: CX, H, Measure, S, SX, T, Tdg, X, Z
+Timing: tableau took 0.25 s
+Circuit length:    973517 (before) -> 379248 (after transpilation)
+  Overall reduction: 594269 operations removed (61.0% reduction)
+  Clifford gates:    594332 (before) -> 0 (after transpilation)
+  Clifford reduction: 594332 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 379185
+  Average Pauli product weight: 23.88
+Wrote transpiled circuit to qft_n63.trans
+Wrote 379185 T gates and 0 Cliffords
+Timing: transpilation took 0.51 s
+Loading compiled circuit from ../../all_compiled/qugan_n111.cliffordt.qasm
+Timing: load circuit took 0.07 s
+Circuit has 625078 gates on 111 qubits
+Gate set: CX, H, Measure, S, SX, Sdg, T, Tdg, X, Z
+Timing: tableau took 0.25 s
+Circuit length:    625078 (before) -> 245830 (after transpilation)
+  Overall reduction: 379248 operations removed (60.7% reduction)
+  Clifford gates:    379359 (before) -> 0 (after transpilation)
+  Clifford reduction: 379359 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 245719
+  Average Pauli product weight: 4.54
+Wrote transpiled circuit to qugan_n111.trans
+Wrote 245719 T gates and 0 Cliffords
+Timing: transpilation took 0.44 s
+Loading compiled circuit from ../../all_compiled/qv_N008_12345.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 122123 gates on 8 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.01 s
+Circuit length:    122123 (before) -> 48148 (after transpilation)
+  Overall reduction: 73975 operations removed (60.6% reduction)
+  Clifford gates:    73983 (before) -> 0 (after transpilation)
+  Clifford reduction: 73983 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 48140
+  Average Pauli product weight: 4.16
+Wrote transpiled circuit to qv_N008_12345.trans
+Wrote 48140 T gates and 0 Cliffords
+Timing: transpilation took 0.04 s
+Loading compiled circuit from ../../all_compiled/qv_N036_12345.cliffordt.qasm
+Timing: load circuit took 0.23 s
+Circuit has 2606206 gates on 36 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.51 s
+Circuit length:    2606206 (before) -> 1026686 (after transpilation)
+  Overall reduction: 1579520 operations removed (60.6% reduction)
+  Clifford gates:    1579556 (before) -> 0 (after transpilation)
+  Clifford reduction: 1579556 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 1026650
+  Average Pauli product weight: 22.49
+Wrote transpiled circuit to qv_N036_12345.trans
+Wrote 1026650 T gates and 0 Cliffords
+Timing: transpilation took 1.10 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N100.cliffordt.qasm
+Timing: load circuit took 0.09 s
+Circuit has 881528 gates on 100 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.33 s
+Circuit length:    881528 (before) -> 347510 (after transpilation)
+  Overall reduction: 534018 operations removed (60.6% reduction)
+  Clifford gates:    534118 (before) -> 0 (after transpilation)
+  Clifford reduction: 534118 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 347410
+  Average Pauli product weight: 9.89
+Wrote transpiled circuit to square_heisenberg_N100.trans
+Wrote 347410 T gates and 0 Cliffords
+Timing: transpilation took 0.58 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N121.cliffordt.qasm
+Timing: load circuit took 0.09 s
+Circuit has 1087625 gates on 121 qubits
+Gate set: CX, H, S, SX, Sdg, T, X
+Timing: tableau took 0.52 s
+Circuit length:    1087625 (before) -> 428695 (after transpilation)
+  Overall reduction: 658930 operations removed (60.6% reduction)
+  Clifford gates:    659051 (before) -> 0 (after transpilation)
+  Clifford reduction: 659051 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 428574
+  Average Pauli product weight: 11.39
+Wrote transpiled circuit to square_heisenberg_N121.trans
+Wrote 428574 T gates and 0 Cliffords
+Timing: transpilation took 0.85 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N144.cliffordt.qasm
+Timing: load circuit took 0.12 s
+Circuit has 1300635 gates on 144 qubits
+Gate set: CX, H, S, SX, Sdg, T, X
+Timing: tableau took 0.74 s
+Circuit length:    1300635 (before) -> 512704 (after transpilation)
+  Overall reduction: 787931 operations removed (60.6% reduction)
+  Clifford gates:    788075 (before) -> 0 (after transpilation)
+  Clifford reduction: 788075 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 512560
+  Average Pauli product weight: 13.29
+Wrote transpiled circuit to square_heisenberg_N144.trans
+Wrote 512560 T gates and 0 Cliffords
+Timing: transpilation took 1.18 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N16.cliffordt.qasm
+Timing: load circuit took 0.01 s
+Circuit has 119640 gates on 16 qubits
+Gate set: CX, H, S, SX, Sdg, T, X
+Timing: tableau took 0.02 s
+Circuit length:    119640 (before) -> 47164 (after transpilation)
+  Overall reduction: 72476 operations removed (60.6% reduction)
+  Clifford gates:    72492 (before) -> 0 (after transpilation)
+  Clifford reduction: 72492 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 47148
+  Average Pauli product weight: 3.56
+Wrote transpiled circuit to square_heisenberg_N16.trans
+Wrote 47148 T gates and 0 Cliffords
+Timing: transpilation took 0.04 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N169.cliffordt.qasm
+Timing: load circuit took 0.15 s
+Circuit has 1545058 gates on 169 qubits
+Gate set: CX, H, S, SX, Sdg, T, X
+Timing: tableau took 0.96 s
+Circuit length:    1545058 (before) -> 609049 (after transpilation)
+  Overall reduction: 936009 operations removed (60.6% reduction)
+  Clifford gates:    936178 (before) -> 0 (after transpilation)
+  Clifford reduction: 936178 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 608880
+  Average Pauli product weight: 13.92
+Wrote transpiled circuit to square_heisenberg_N169.trans
+Wrote 608880 T gates and 0 Cliffords
+Timing: transpilation took 1.53 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N196.cliffordt.qasm
+Timing: load circuit took 0.16 s
+Circuit has 1792297 gates on 196 qubits
+Gate set: CX, H, S, SX, Sdg, T, X
+Timing: tableau took 1.25 s
+Circuit length:    1792297 (before) -> 706524 (after transpilation)
+  Overall reduction: 1085773 operations removed (60.6% reduction)
+  Clifford gates:    1085969 (before) -> 0 (after transpilation)
+  Clifford reduction: 1085969 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 706328
+  Average Pauli product weight: 15.28
+Wrote transpiled circuit to square_heisenberg_N196.trans
+Wrote 706328 T gates and 0 Cliffords
+Timing: transpilation took 1.95 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N225.cliffordt.qasm
+Timing: load circuit took 0.19 s
+Circuit has 2079322 gates on 225 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 1.59 s
+Circuit length:    2079322 (before) -> 819337 (after transpilation)
+  Overall reduction: 1259985 operations removed (60.6% reduction)
+  Clifford gates:    1260210 (before) -> 0 (after transpilation)
+  Clifford reduction: 1260210 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 819112
+  Average Pauli product weight: 15.16
+Wrote transpiled circuit to square_heisenberg_N225.trans
+Wrote 819112 T gates and 0 Cliffords
+Timing: transpilation took 2.49 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N25.cliffordt.qasm
+Timing: load circuit took 0.02 s
+Circuit has 196492 gates on 25 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.03 s
+Circuit length:    196492 (before) -> 77459 (after transpilation)
+  Overall reduction: 119033 operations removed (60.6% reduction)
+  Clifford gates:    119058 (before) -> 0 (after transpilation)
+  Clifford reduction: 119058 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 77434
+  Average Pauli product weight: 4.35
+Wrote transpiled circuit to square_heisenberg_N25.trans
+Wrote 77434 T gates and 0 Cliffords
+Timing: transpilation took 0.07 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N36.cliffordt.qasm
+Timing: load circuit took 0.04 s
+Circuit has 296642 gates on 36 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.05 s
+Circuit length:    296642 (before) -> 116850 (after transpilation)
+  Overall reduction: 179792 operations removed (60.6% reduction)
+  Clifford gates:    179828 (before) -> 0 (after transpilation)
+  Clifford reduction: 179828 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 116814
+  Average Pauli product weight: 5.22
+Wrote transpiled circuit to square_heisenberg_N36.trans
+Wrote 116814 T gates and 0 Cliffords
+Timing: transpilation took 0.13 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N4.cliffordt.qasm
+Timing: load circuit took 0.00 s
+Circuit has 19492 gates on 4 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.00 s
+Circuit length:    19492 (before) -> 7682 (after transpilation)
+  Overall reduction: 11810 operations removed (60.6% reduction)
+  Clifford gates:    11814 (before) -> 0 (after transpilation)
+  Clifford reduction: 11814 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 7678
+  Average Pauli product weight: 2.24
+Wrote transpiled circuit to square_heisenberg_N4.trans
+Wrote 7678 T gates and 0 Cliffords
+Timing: transpilation took 0.01 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N49.cliffordt.qasm
+Timing: load circuit took 0.04 s
+Circuit has 416361 gates on 49 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.09 s
+Circuit length:    416361 (before) -> 164035 (after transpilation)
+  Overall reduction: 252326 operations removed (60.6% reduction)
+  Clifford gates:    252375 (before) -> 0 (after transpilation)
+  Clifford reduction: 252375 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 163986
+  Average Pauli product weight: 5.52
+Wrote transpiled circuit to square_heisenberg_N49.trans
+Wrote 163986 T gates and 0 Cliffords
+Timing: transpilation took 0.18 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N64.cliffordt.qasm
+Timing: load circuit took 0.05 s
+Circuit has 549290 gates on 64 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.14 s
+Circuit length:    549290 (before) -> 216490 (after transpilation)
+  Overall reduction: 332800 operations removed (60.6% reduction)
+  Clifford gates:    332864 (before) -> 0 (after transpilation)
+  Clifford reduction: 332864 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 216426
+  Average Pauli product weight: 6.56
+Wrote transpiled circuit to square_heisenberg_N64.trans
+Wrote 216426 T gates and 0 Cliffords
+Timing: transpilation took 0.27 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N81.cliffordt.qasm
+Timing: load circuit took 0.07 s
+Circuit has 713368 gates on 81 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.24 s
+Circuit length:    713368 (before) -> 281173 (after transpilation)
+  Overall reduction: 432195 operations removed (60.6% reduction)
+  Clifford gates:    432276 (before) -> 0 (after transpilation)
+  Clifford reduction: 432276 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 281092
+  Average Pauli product weight: 10.42
+Wrote transpiled circuit to square_heisenberg_N81.trans
+Wrote 281092 T gates and 0 Cliffords
+Timing: transpilation took 0.43 s
+Loading compiled circuit from ../../all_compiled/square_heisenberg_N9.cliffordt.qasm
+Timing: load circuit took 0.01 s
+Circuit has 59609 gates on 9 qubits
+Gate set: CX, H, S, SX, Sdg, T, X, Z
+Timing: tableau took 0.01 s
+Circuit length:    59609 (before) -> 23497 (after transpilation)
+  Overall reduction: 36112 operations removed (60.6% reduction)
+  Clifford gates:    36121 (before) -> 0 (after transpilation)
+  Clifford reduction: 36121 gates removed (100.0% reduction)
+  Non-Clifford Pauli products: 23488
+  Average Pauli product weight: 2.87
+Wrote transpiled circuit to square_heisenberg_N9.trans
+Wrote 23488 T gates and 0 Cliffords
+Timing: transpilation took 0.02 s
