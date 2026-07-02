@@ -1,16 +1,3 @@
-OPENQASM 2.0;
-include "qelib1.inc";
-qreg q[4];
-h q[0];
-t q[0];
-h q[0];
-s q[1];
-t q[1];
-sdg q[1];
-cx q[0], q[1];
-t q[2];
-t q[3];
-cx q[2], q[3];
-h q[2];
-t q[2];
-h q[2];
+version https://git-lfs.github.com/spec/v1
+oid sha256:8f4b9e4975f221e8c50745f8152f68d0ae5d06479a1c20c2a980e770ebb62753
+size 167
