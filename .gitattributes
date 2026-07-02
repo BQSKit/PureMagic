@@ -1,2 +1,2 @@
-*.qasm filter=lfs diff=lfs merge=lfs -text
-*.trans filter=lfs diff=lfs merge=lfs -text
+data/**/*.qasm filter=lfs diff=lfs merge=lfs -text
+data/**/*.trans filter=lfs diff=lfs merge=lfs -text

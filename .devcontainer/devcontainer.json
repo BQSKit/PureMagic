@@ -15,9 +15,12 @@
 		"ghcr.io/devcontainers/features/python:1": {
 			"installTools": true,
 			"version": "latest"
+		},
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "lts"
 		}
 	},
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt",
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt && sudo npm install -g @anthropic-ai/claude-code",
 	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
 	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
 	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
