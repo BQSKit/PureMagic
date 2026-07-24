@@ -67,6 +67,9 @@ struct Args {
     /// Disable T gate failures (every T gate succeeds on first attempt)
     #[arg(short = 'F', long)]
     no_t_failures: bool,
+    /// Record normalized cultivation-time distribution to <CIRCUIT_FNAME>.cultivation_dist
+    #[arg(short = 'C', long)]
+    record_cultivation_dist: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
@@ -146,6 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.plot.join(" "),
         args.rseed,
         args.no_t_failures,
+        args.record_cultivation_dist,
     );
 
     let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
