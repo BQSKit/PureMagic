@@ -217,7 +217,6 @@ pub(crate) struct Scheduler {
     /// Only used in unbounded-weight mode.
     runtime_s_parity: Vec<bool>,
     /// Per-product flag; true = operators have already been patched by JIT S correction.
-    /// Prevents double-application when a failed T gate is retried on its recovery lcycle.
     jit_corrected: Vec<bool>,
 }
 
@@ -284,9 +283,6 @@ impl Scheduler {
         }
     }
 
-    fn is_unbounded_weight_mode(&self) -> bool {
-        self.unbounded_weight_mode
-    }
 
     pub(crate) fn count_t_products(&self) -> usize {
         (0..self.input.circuit.n_products())
@@ -430,11 +426,9 @@ impl Scheduler {
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
-        // In bounded-weight mode, each T failure costs an extra physical S correction
-        // product, so we add t_gate_failures to the count.  In unbounded-weight mode
-        // failures are absorbed into the Pauli frame with no extra physical products.
-        let extra = if self.unbounded_weight_mode { 0 } else { self.t_gate_failures };
-        Ok((self.current_lcycle, self.scheduled_products.len() + extra))
+        // S corrections are absorbed into the Pauli frame via JIT correction in both
+        // bounded and unbounded weight modes; no extra physical S products are scheduled.
+        Ok((self.current_lcycle, self.scheduled_products.len()))
     }
 
     fn init_magic_nodes(&mut self) {
@@ -777,14 +771,20 @@ impl Scheduler {
     /// Applies any pending S corrections to product `pp_id`'s operators in-place,
     /// then recomputes routing caches if any basis changed (X↔Y).
     ///
-    /// Only runs in unbounded-weight mode and only once per product (guarded by
-    /// `jit_corrected`) so retried T gates do not get double-corrected.
+    /// Only runs once per product (guarded by `jit_corrected`) so retried T gates
+    /// do not get double-corrected.  Clifford products are skipped — their S
+    /// correction is handled by the bounded-mode carry-forward routing — but the
+    /// parity flag is left set so it propagates to the next non-Clifford product.
     ///
     /// If a basis change occurs, also evicts any stale precomputed Clifford tree for
     /// the product — the tree was built for the old operator bases and is now wrong.
     /// The product will then fall through to `sched_remaining()` for fresh routing.
     fn apply_jit_s_correction(&mut self, pp_id: i32) {
-        if !self.is_unbounded_weight_mode() || self.jit_corrected[pp_id as usize] {
+        if self.jit_corrected[pp_id as usize] {
+            return;
+        }
+        // Clifford products: parity carries forward past them.
+        if self.input.circuit.product(pp_id).gate_type.is_clifford() {
             return;
         }
         self.jit_corrected[pp_id as usize] = true;
@@ -997,7 +997,7 @@ impl Scheduler {
         self.scheduled_ids_buf.extend(self.pp_paths.iter().map(|(id, _)| *id));
         self.pps_pending.retain(|pp| !self.scheduled_ids_buf.contains(&pp.id));
         debug_sched!("After purge, pps_to_sched len {}", self.pps_pending.len());
-        // Only count T gates that are newly scheduled (not recovery lcycles) to
+        // Only count T gates that are newly scheduled (not bounded-mode recovery lcycles) to
         // keep the pool-size estimate accurate.
         let t_newly_scheduled = self
             .pp_paths
@@ -1011,16 +1011,6 @@ impl Scheduler {
             self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
         let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
         self.recovery_t_ids = t_recovery_ids;
-        // Toggle per-qubit S correction parity for each failed T gate.
-        // Two failures on the same qubit cancel automatically (S² = Z, Z conjugation is identity).
-        if self.is_unbounded_weight_mode() {
-            for &pp_id in &t_failed_ids {
-                let ops: Vec<_> = self.input.circuit.product(pp_id).operators.clone();
-                for op in ops {
-                    self.runtime_s_parity[op.qubit as usize] ^= true;
-                }
-            }
-        }
         self.unlock_children(&t_failed_ids);
         self.advance_clifford_state();
         debug_sched!(
@@ -1051,10 +1041,13 @@ impl Scheduler {
 
     /// Coin-flip T gate outcomes; updates `failed_t_paths`; returns (failed_ids, recovery_ids).
     ///
-    /// First-attempt T gates succeed with 50% probability (or always if `no_t_failures`).
-    /// Recovery-lcycle T gates (already in `failed_t_paths`) always succeed.
-    /// Failed gates are stored in `failed_t_paths` with the magic root trimmed off
-    /// so the routing subtree can be reused in the recovery lcycle.
+    /// **Unbounded-weight mode**: a "failed" T gate (50% coin) is treated as complete in this
+    /// lcycle — the S correction is absorbed into `runtime_s_parity` and children are unlocked
+    /// normally.  No retry, no extra magic state consumed.  Only the parity flag changes.
+    ///
+    /// **Bounded-weight mode**: parity is also toggled (JIT correction for non-Clifford
+    /// descendants), and the failed gate is stored in `failed_t_paths` with the magic root
+    /// trimmed off so the routing subtree can be carried forward to a recovery lcycle.
     fn process_t_gate_outcomes(&mut self) -> (Vec<i32>, Vec<i32>) {
         let mut t_failed_ids: Vec<i32> = Vec::new();
         let mut t_recovery_ids: Vec<i32> = Vec::new();
@@ -1069,40 +1062,66 @@ impl Scheduler {
                 } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
                 } else {
-                    t_failed_ids.push(pp_id);
                     self.t_gate_failures += 1;
-                    info_sched!(
-                        "  T gate {} failed (50% probability), recovery lcycle next",
-                        pp_id
-                    );
+                    if self.unbounded_weight_mode {
+                        // S correction absorbed into Pauli frame: toggle parity and complete.
+                        // No retry — the T gate finishes this lcycle like a success.
+                        info_sched!(
+                            "  T gate {} S-corrected (parity toggled, no retry)",
+                            pp_id
+                        );
+                        let ops: Vec<_> = pp.operators.clone();
+                        for op in ops {
+                            self.runtime_s_parity[op.qubit as usize] ^= true;
+                        }
+                    } else {
+                        t_failed_ids.push(pp_id);
+                        info_sched!(
+                            "  T gate {} failed (50% probability), recovery lcycle next",
+                            pp_id
+                        );
+                        // Toggle parity so JIT correction applies to subsequent
+                        // non-Clifford products; carry-forward routing handles Clifford products.
+                        let ops: Vec<_> = pp.operators.clone();
+                        for op in ops {
+                            self.runtime_s_parity[op.qubit as usize] ^= true;
+                        }
+                    }
                 }
             }
         }
-        let pp_paths_snapshot: Vec<(i32, Option<Rc<TreeGraph>>)> =
-            self.pp_paths.iter().map(|(id, opt)| (*id, opt.as_ref().map(Rc::clone))).collect();
-        for (pp_id, opt_pp_path) in &pp_paths_snapshot {
-            let pp_id = *pp_id;
-            let pp = self.input.circuit.product(pp_id);
-            if !pp.gate_type.is_t() {
-                continue;
-            }
-            if t_failed_ids.contains(&pp_id) {
-                // Store the routing subtree without the magic root so the recovery
-                // lcycle can reuse the same data/routing nodes while finding a new
-                // magic state.  When not plotting, fall back to just the terminal IDs.
-                let trimmed_opt_tree: Option<Rc<TreeGraph>> = opt_pp_path.as_ref().map(|tree| {
-                    let mut t = (**tree).clone();
-                    t.trim_magic_root();
-                    Rc::new(t)
-                });
-                let node_ids: Vec<u16> = if let Some(ref trimmed) = trimmed_opt_tree {
-                    trimmed.iter_nodes().collect()
+        // Bounded mode only: update failed_t_paths for retry routing.
+        if !self.unbounded_weight_mode {
+            let pp_paths_snapshot: Vec<(i32, Option<Rc<TreeGraph>>)> = self
+                .pp_paths
+                .iter()
+                .map(|(id, opt)| (*id, opt.as_ref().map(Rc::clone)))
+                .collect();
+            for (pp_id, opt_pp_path) in &pp_paths_snapshot {
+                let pp_id = *pp_id;
+                let pp = self.input.circuit.product(pp_id);
+                if !pp.gate_type.is_t() {
+                    continue;
+                }
+                if t_failed_ids.contains(&pp_id) {
+                    // Store the routing subtree without the magic root so the recovery
+                    // lcycle can reuse the same data/routing nodes while finding a new
+                    // magic state.  When not plotting, fall back to just the terminal IDs.
+                    let trimmed_opt_tree: Option<Rc<TreeGraph>> =
+                        opt_pp_path.as_ref().map(|tree| {
+                            let mut t = (**tree).clone();
+                            t.trim_magic_root();
+                            Rc::new(t)
+                        });
+                    let node_ids: Vec<u16> = if let Some(ref trimmed) = trimmed_opt_tree {
+                        trimmed.iter_nodes().collect()
+                    } else {
+                        self.precomputed_terminals[pp_id as usize].clone()
+                    };
+                    self.failed_t_paths.insert(pp_id, (pp.clone(), node_ids, trimmed_opt_tree));
                 } else {
-                    self.precomputed_terminals[pp_id as usize].clone()
-                };
-                self.failed_t_paths.insert(pp_id, (pp.clone(), node_ids, trimmed_opt_tree));
-            } else {
-                self.failed_t_paths.swap_remove(&pp_id);
+                    self.failed_t_paths.swap_remove(&pp_id);
+                }
             }
         }
         (t_failed_ids, t_recovery_ids)
@@ -1619,7 +1638,7 @@ mod tests {
         // A circuit with only T products has no Clifford products → unbounded mode.
         let lines = &["+X___<T>", "-_X__<T>"];
         let sched = run_scheduler(lines, 0);
-        assert!(sched.is_unbounded_weight_mode());
+        assert!(sched.unbounded_weight_mode);
     }
 
     #[test]
@@ -1627,7 +1646,7 @@ mod tests {
         // A circuit with an S product is NOT in unbounded mode.
         let lines = &["+X___<T>", "+X___<S>", "-_X__<T>"];
         let sched = run_scheduler(lines, 0);
-        assert!(!sched.is_unbounded_weight_mode());
+        assert!(!sched.unbounded_weight_mode);
     }
 
     #[test]
