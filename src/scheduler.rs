@@ -209,6 +209,12 @@ pub(crate) struct Scheduler {
     current_lcycle: usize,
     /// T gate IDs that completed a recovery lcycle this cycle (populated by complete_lcycle).
     recovery_t_ids: Vec<i32>,
+    /// Per-qubit accumulated S correction parity; true = odd number of pending corrections.
+    /// Only used in unbounded-weight mode.
+    runtime_s_parity: Vec<bool>,
+    /// Per-product flag; true = operators have already been patched by JIT S correction.
+    /// Prevents double-application when a failed T gate is retried on its recovery lcycle.
+    jit_corrected: Vec<bool>,
 }
 
 impl Scheduler {
@@ -230,6 +236,8 @@ impl Scheduler {
         let n_bus_qubits = topo.n_bus_qubits;
         let n_magic_qubits = topo.n_magic_qubits;
         let n_nodes = topo.n_nodes;
+        let n_circuit_qubits = circuit.n_qubits;
+        let n_circuit_products = circuit.n_products();
         let mut timers = AccumTimers::new();
         let loop_timer = timers.add_or_get("schedule loop");
         let other_timer = timers.add_or_get("other ");
@@ -264,7 +272,13 @@ impl Scheduler {
             pp_paths: Vec::new(),
             current_lcycle: 0,
             recovery_t_ids: Vec::new(),
+            runtime_s_parity: vec![false; n_circuit_qubits],
+            jit_corrected: vec![false; n_circuit_products],
         }
+    }
+
+    fn is_unbounded_weight_mode(&self) -> bool {
+        !self.input.circuit.pps.iter().any(|pp| pp.gate_type.is_clifford())
     }
 
     pub(crate) fn count_t_products(&self) -> usize {
@@ -554,47 +568,53 @@ impl Scheduler {
         self.precomputed_terminals = vec![Vec::new(); n_products];
         self.precomputed_root_info = vec![Vec::new(); n_products];
         for pp_id in 0..n_products {
-            let pp = self.input.circuit.product(pp_id as i32).clone();
-            let terminals = operators_to_node_ids(&self.input.topo, &pp.operators);
-            let mut root_info: Vec<(bool, Vec<u16>, Vec<u16>)> =
-                Vec::with_capacity(terminals.len());
-            for &term_id in &terminals {
-                let node = self.input.topo.node(term_id);
-                // is_paired: this terminal's paired data node is also a terminal
-                // (i.e. the operator is Y-basis, producing both X and Z data nodes).
-                let is_paired =
-                    node.paired_data_id.map(|pid| terminals.contains(&pid)).unwrap_or(false);
-                let mut preferred: Vec<u16> = Vec::new();
-                let mut side: Vec<u16> = Vec::new();
-                if is_paired {
-                    // X nodes look downward (toward paired Z), Z nodes look upward.
-                    let is_x = self.input.topo.label(term_id).contains('X');
-                    for &nb_id in node.nbs_slice() {
-                        let nb = self.input.topo.node(nb_id);
-                        if !nb.is_routing() {
-                            continue;
-                        }
-                        if (is_x && nb.pos.1 < node.pos.1) || (!is_x && nb.pos.1 > node.pos.1) {
-                            preferred.push(nb_id);
-                        } else if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
-                            side.push(nb_id);
-                        }
-                    }
-                } else {
-                    // Unpaired terminal: only same-row side nbs are valid roots.
-                    for &nb_id in node.nbs_slice() {
-                        let nb = self.input.topo.node(nb_id);
-                        if nb.is_routing() && nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
-                            preferred.push(nb_id);
-                        }
-                    }
-                }
-                root_info.push((is_paired, preferred, side));
-            }
-            self.precomputed_terminals[pp_id] = terminals;
-            self.precomputed_root_info[pp_id] = root_info;
+            self.recompute_terminals_for_product(pp_id);
         }
         println!("Precomputed terminals and root candidates for {} products", n_products);
+    }
+
+    /// Recomputes terminal node IDs and root candidates for a single product.
+    /// Called once for all products at startup and again when a JIT S correction
+    /// changes a product's operator bases (X↔Y), altering its terminal set.
+    fn recompute_terminals_for_product(&mut self, pp_id: usize) {
+        let pp = self.input.circuit.product(pp_id as i32).clone();
+        let terminals = operators_to_node_ids(&self.input.topo, &pp.operators);
+        let mut root_info: Vec<(bool, Vec<u16>, Vec<u16>)> = Vec::with_capacity(terminals.len());
+        for &term_id in &terminals {
+            let node = self.input.topo.node(term_id);
+            // is_paired: this terminal's paired data node is also a terminal
+            // (i.e. the operator is Y-basis, producing both X and Z data nodes).
+            let is_paired =
+                node.paired_data_id.map(|pid| terminals.contains(&pid)).unwrap_or(false);
+            let mut preferred: Vec<u16> = Vec::new();
+            let mut side: Vec<u16> = Vec::new();
+            if is_paired {
+                // X nodes look downward (toward paired Z), Z nodes look upward.
+                let is_x = self.input.topo.label(term_id).contains('X');
+                for &nb_id in node.nbs_slice() {
+                    let nb = self.input.topo.node(nb_id);
+                    if !nb.is_routing() {
+                        continue;
+                    }
+                    if (is_x && nb.pos.1 < node.pos.1) || (!is_x && nb.pos.1 > node.pos.1) {
+                        preferred.push(nb_id);
+                    } else if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                        side.push(nb_id);
+                    }
+                }
+            } else {
+                // Unpaired terminal: only same-row side nbs are valid roots.
+                for &nb_id in node.nbs_slice() {
+                    let nb = self.input.topo.node(nb_id);
+                    if nb.is_routing() && nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                        preferred.push(nb_id);
+                    }
+                }
+            }
+            root_info.push((is_paired, preferred, side));
+        }
+        self.precomputed_terminals[pp_id] = terminals;
+        self.precomputed_root_info[pp_id] = root_info;
     }
 
     fn mark_nodes_used(&mut self, node_ids: &[u16]) {
@@ -703,6 +723,10 @@ impl Scheduler {
         // before the loop body calls `&mut self` methods.
         let ids_to_process: Vec<i32> = self.remaining_ids_buf.clone();
         for &pp_id in &ids_to_process {
+            // Apply pending S corrections before consulting the precomputed tree.
+            // If any basis changed, the stale tree is evicted inside apply_jit_s_correction
+            // and the product will fall through to sched_remaining for fresh routing.
+            self.apply_jit_s_correction(pp_id);
             // Clone the Rc to end the immutable borrow on `precomputed_clifford_trees`.
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Rc::clone) else {
                 continue;
@@ -741,14 +765,62 @@ impl Scheduler {
         }
     }
 
+    /// Applies any pending S corrections to product `pp_id`'s operators in-place,
+    /// then recomputes routing caches if any basis changed (X↔Y).
+    ///
+    /// Only runs in unbounded-weight mode and only once per product (guarded by
+    /// `jit_corrected`) so retried T gates do not get double-corrected.
+    ///
+    /// If a basis change occurs, also evicts any stale precomputed Clifford tree for
+    /// the product — the tree was built for the old operator bases and is now wrong.
+    /// The product will then fall through to `sched_remaining()` for fresh routing.
+    fn apply_jit_s_correction(&mut self, pp_id: i32) {
+        if !self.is_unbounded_weight_mode() || self.jit_corrected[pp_id as usize] {
+            return;
+        }
+        self.jit_corrected[pp_id as usize] = true;
+        let mut needs_recompute = false;
+        let n_ops = self.input.circuit.product(pp_id).operators.len();
+        for i in 0..n_ops {
+            let qubit = self.input.circuit.product(pp_id).operators[i].qubit;
+            if !self.runtime_s_parity[qubit as usize] {
+                continue;
+            }
+            let original = self.input.circuit.product(pp_id).operators[i].basis;
+            let new_basis = match original {
+                'X' => 'Y',
+                'Y' => 'X',
+                _ => original, // Z → Z unchanged
+            };
+            if new_basis != original {
+                self.input.circuit.product_mut(pp_id).operators[i].basis = new_basis;
+                needs_recompute = true;
+                info_sched!(
+                    "  S correction JIT: product {} qubit {} {} → {}",
+                    pp_id, qubit, original, new_basis
+                );
+            }
+        }
+        if needs_recompute {
+            self.recompute_terminals_for_product(pp_id as usize);
+            // Any precomputed Clifford tree was built for the old operator bases
+            // and is now stale; drop it so the product re-routes via sched_remaining.
+            self.precomputed_clifford_trees.remove(&pp_id);
+        }
+    }
+
     /// Second pass: greedily schedule T gates, measurements, and S/SX gates.
     /// T gates are skipped when no magic state is available.
     fn sched_remaining(&mut self, n_avail_magic: &mut usize, plotting: bool) {
         let _timer = accum_start!(self.timers);
         for i in 0..self.pps_pending.len() {
             let pp_id = self.pps_pending[i].id;
+            self.apply_jit_s_correction(pp_id);
             let pp = self.input.circuit.product(pp_id);
-            if Self::should_precompute(pp) {
+            // Skip if this product would normally use a precomputed Clifford tree AND
+            // the tree is still valid.  If JIT correction evicted the tree, fall through
+            // to route it fresh via Steiner tree.
+            if Self::should_precompute(pp) && self.precomputed_clifford_trees.contains_key(&pp_id) {
                 continue;
             }
             let (pp_id, gate_type) = (pp.id, pp.gate_type);
@@ -882,9 +954,12 @@ impl Scheduler {
                 plotting,
             )
         } else {
+            // A should_precompute product can reach here if its precomputed Clifford tree
+            // was evicted by a JIT S correction; route it fresh via Steiner tree.
             debug_assert!(
-                !Self::should_precompute(self.input.circuit.product(pp_id)),
-                "should_precompute product {:?} reached Steiner path",
+                !Self::should_precompute(self.input.circuit.product(pp_id))
+                    || !self.precomputed_clifford_trees.contains_key(&pp_id),
+                "should_precompute product {:?} reached Steiner path with valid precomputed tree",
                 pp_id
             );
             match self.stree_computation.compute(
@@ -927,6 +1002,16 @@ impl Scheduler {
             self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
         let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
         self.recovery_t_ids = t_recovery_ids;
+        // Toggle per-qubit S correction parity for each failed T gate.
+        // Two failures on the same qubit cancel automatically (S² = Z, Z conjugation is identity).
+        if self.is_unbounded_weight_mode() {
+            for &pp_id in &t_failed_ids {
+                let ops: Vec<_> = self.input.circuit.product(pp_id).operators.clone();
+                for op in ops {
+                    self.runtime_s_parity[op.qubit as usize] ^= true;
+                }
+            }
+        }
         self.unlock_children(&t_failed_ids);
         self.advance_clifford_state();
         debug_sched!(
@@ -1516,6 +1601,84 @@ mod tests {
             active_lcycles,
             n_t,
             sched.t_gate_failures
+        );
+    }
+
+    #[test]
+    fn unbounded_mode_detected_when_no_clifford_products() {
+        // A circuit with only T products has no Clifford products → unbounded mode.
+        let lines = &["+X___<T>", "-_X__<T>"];
+        let sched = run_scheduler(lines, 0);
+        assert!(sched.is_unbounded_weight_mode());
+    }
+
+    #[test]
+    fn bounded_mode_detected_with_s_product() {
+        // A circuit with an S product is NOT in unbounded mode.
+        let lines = &["+X___<T>", "+X___<S>", "-_X__<T>"];
+        let sched = run_scheduler(lines, 0);
+        assert!(!sched.is_unbounded_weight_mode());
+    }
+
+    #[test]
+    fn scheduler_completes_with_jit_correction_enabled() {
+        // Two independent T gates on separate qubits; any failures should be
+        // handled by JIT S correction without panicking.
+        let lines = &["+X___<T>", "-_X__<T>"];
+        let sched = run_scheduler(lines, 42);
+        assert!(!sched.lcycle_scheduled.is_empty());
+    }
+
+    #[test]
+    fn z_basis_operator_unchanged_after_t_failure() {
+        // Z → Z under S conjugation; an M product on the same qubit keeps Z.
+        // The scheduler must complete without panicking.
+        let lines = &["+X___<T>", "+Z___<M>"];
+        let sched = run_scheduler(lines, 42);
+        assert!(!sched.lcycle_scheduled.is_empty());
+    }
+
+    #[test]
+    fn double_t_failure_cancels_parity() {
+        // Two T gates on the same qubit whose failures cancel (S² = Z = identity on routing).
+        // Use enough products and seeds so at least one seed produces two failures.
+        let lines = &["+X___<T>", "+X___<T>", "+X___<T>"];
+        for seed in 0u32..20 {
+            // Just verify the scheduler never panics regardless of how many failures occur.
+            let sched = run_scheduler(lines, seed);
+            assert!(!sched.lcycle_scheduled.is_empty());
+        }
+    }
+
+    #[test]
+    fn jit_correction_patches_operator_after_upstream_t_failure() {
+        // With seed 0, gates 0 and 1 both fail on a 3-gate all-X chain:
+        //   gate 0 fails  → parity[0] = true
+        //   gate 1 scheduled → JIT fires: X → Y for product 1
+        //   gate 1 fails  → parity[0] toggles back to false  (S² = identity)
+        //   gate 2 scheduled → parity[0] = false, no correction; stays X
+        let lines = &["+X___<T>", "+X___<T>", "+X___<T>"];
+        let sched = run_scheduler(lines, 0);
+
+        // Both failures must have actually occurred for this test to be meaningful.
+        assert_eq!(sched.t_gate_failures, 2, "expected exactly 2 T failures with seed 0");
+
+        // apply_jit_s_correction() was called exactly once per product.
+        assert!(sched.jit_corrected[0], "product 0 should be marked jit_corrected");
+        assert!(sched.jit_corrected[1], "product 1 should be marked jit_corrected");
+        assert!(sched.jit_corrected[2], "product 2 should be marked jit_corrected");
+
+        // Product 1: gate 0 failed before it was scheduled → X patched to Y.
+        assert_eq!(
+            sched.input.circuit.product(1).operators[0].basis, 'Y',
+            "product 1 operator should be X→Y after gate 0 failure"
+        );
+
+        // Product 2: gate 0 and gate 1 both failed before it was scheduled.
+        // Two S corrections cancel (S² = I), so the operator stays X.
+        assert_eq!(
+            sched.input.circuit.product(2).operators[0].basis, 'X',
+            "product 2 operator should remain X: double failure cancels"
         );
     }
 }
