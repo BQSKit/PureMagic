@@ -69,11 +69,16 @@ impl ScheduleStats {
         let magic_frac = self.tot_magic_used as f64 / (self.magic_qubits * n_lcycles) as f64;
         let magic_unused_frac =
             self.tot_magic_unused as f64 / (self.magic_qubits * n_lcycles) as f64;
+        let total_available = (self.data_qubits + self.bus_qubits + self.magic_qubits) * n_lcycles;
+        let total_used = self.tot_data_used + self.tot_bus_used + self.tot_magic_used;
+        let total_idle = total_available.saturating_sub(total_used);
+        let idle_frac = if total_available > 0 { total_idle as f64 / total_available as f64 } else { 0.0 };
         println!("Qubit fractions used:");
         println!("  data:        {:.3}", data_frac);
         println!("  bus:         {:.3}", bus_frac);
         println!("  magic:       {:.3}", magic_frac);
         println!("Magic unused {:.3}", magic_unused_frac);
+        println!("Idle qubit-cycles: {} ({:.4})", total_idle, idle_frac);
     }
 
     pub(crate) fn update(
@@ -1105,6 +1110,16 @@ impl Scheduler {
         println!("  average: {:.2}", mean);
         println!("  min:     {}", min);
         println!("  max:     {}", max);
+        let magic_volume = self.current_lcycle * self.stats.magic_qubits;
+        let aborted_frac = if magic_volume > 0 {
+            self.cultivation.aborted_cultivation_cycles as f64 / magic_volume as f64
+        } else {
+            0.0
+        };
+        println!(
+            "Aborted cultivation cycles: {} ({:.4})",
+            self.cultivation.aborted_cultivation_cycles, aborted_frac
+        );
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);

@@ -473,13 +473,13 @@ def parse_flasq_file(filepath):
         FLASQ Lower Bound for <filepath>
           Layout: ...
         ========================================================================
-          Max simultaneous qubit usage (Q)          : <Q>
+          Circuit qubits (n_qubits)                 : <Q>
           ...
           FLASQ spacetime volume (S, blocks)        :      <cons>       <opt>
         ========================================================================
 
     The circuit name is taken from the "FLASQ Lower Bound for" header line,
-    Q from the "Max simultaneous qubit usage" row, and the two volumes from
+    Q from the "Circuit qubits" row, and the two volumes from
     the "FLASQ spacetime volume" row.
     """
     entries = []
@@ -494,8 +494,8 @@ def parse_flasq_file(filepath):
                 current_circuit = m.group(1).strip()
                 current_q = None
                 continue
-            # Q row: "Max simultaneous qubit usage (Q)  :  <Q>"
-            m = re.match(r"Max simultaneous qubit usage \(Q\)\s*:\s*(\d+)", s)
+            # Q row: "Circuit qubits (n_qubits)  :  <Q>"
+            m = re.match(r"Circuit qubits \(n_qubits\)\s*:\s*(\d+)", s)
             if m and current_circuit is not None:
                 current_q = int(m.group(1))
                 continue
@@ -952,7 +952,7 @@ def main():
     def draw_series(ax, series_list, yk_list, colour_offset=0):
         y_key = yk_list[0] if isinstance(yk_list, list) else yk_list
         draw_lines = args.lines or args.lines_with_markers
-        show_markers = args.lines_with_markers or is_cultivation_x or is_weight_x
+        show_markers = args.lines_with_markers or is_cultivation_x  # or is_weight_x
         is_timing_y = y_key == "timing"
         is_total_qubits_y = y_key == "total_qubits"
         is_ancilla_qubits_y = "ancilla_qubits" in (

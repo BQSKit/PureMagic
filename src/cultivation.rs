@@ -19,6 +19,7 @@ pub(crate) struct CultivationManager {
     pub(crate) t_products_remaining: usize,
     new_cultivation_times: Vec<i32>,
     pub(crate) cultivation_times_log: Vec<i32>,
+    pub(crate) aborted_cultivation_cycles: u64,
     pub(crate) magic_node_ids: Vec<u16>,
     pub(crate) magic_node_positions: Vec<(f32, f32)>,
     /// Sorted by x for binary-search pruning in A* heuristic.
@@ -34,6 +35,7 @@ impl CultivationManager {
             t_products_remaining: 0,
             new_cultivation_times: Vec::new(),
             cultivation_times_log: Vec::new(),
+            aborted_cultivation_cycles: 0,
             magic_node_ids: Vec::new(),
             magic_node_positions: Vec::new(),
             ready_magic_positions: Vec::new(),
@@ -115,6 +117,8 @@ impl CultivationManager {
             let id = self.magic_node_ids[i];
             if used[id as usize] {
                 // Node was consumed this lcycle: assign a fresh cultivation time.
+                // Any busy_count cycles spent are lost (aborted cultivation).
+                self.aborted_cultivation_cycles += topo.busy_counts[id as usize] as u64;
                 topo.cultivation_times[id as usize] =
                     self.new_cultivation_times[cultivation_time_index];
                 topo.busy_counts[id as usize] = 0;
