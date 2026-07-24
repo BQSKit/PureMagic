@@ -218,6 +218,13 @@ pub(crate) struct Scheduler {
     runtime_s_parity: Vec<bool>,
     /// Per-product flag; true = operators have already been patched by JIT S correction.
     jit_corrected: Vec<bool>,
+    /// Per-qubit last-completed measurement basis; None until the first measurement
+    /// completes or after a Clifford completes on that qubit (Clifford invalidates it).
+    last_completed_basis: Vec<Option<char>>,
+    /// Products deterministically dropped this lcycle (same measurement as the preceding
+    /// completed measurement on the same qubit(s)).
+    dropped_products_this_lcycle: Vec<i32>,
+    pub(crate) n_dropped_products: usize,
 }
 
 impl Scheduler {
@@ -280,6 +287,9 @@ impl Scheduler {
             unbounded_weight_mode,
             runtime_s_parity: vec![false; n_circuit_qubits],
             jit_corrected: vec![false; n_circuit_products],
+            last_completed_basis: vec![None; n_circuit_qubits],
+            dropped_products_this_lcycle: Vec::new(),
+            n_dropped_products: 0,
         }
     }
 
@@ -683,7 +693,7 @@ impl Scheduler {
             n_avail_magic,
             plotting,
         );
-        if self.pp_paths.is_empty() {
+        if self.pp_paths.is_empty() && self.dropped_products_this_lcycle.is_empty() {
             if n_avail_magic > 0 {
                 panic!(
                     "{}",
@@ -818,13 +828,67 @@ impl Scheduler {
         }
     }
 
+    /// Returns true if `pp_id` is a single-qubit non-Clifford product whose
+    /// (JIT-corrected) operator matches the last completed measurement on that qubit.
+    /// Such a product is deterministic — its outcome equals the prior measurement's
+    /// — and can be skipped without physical routing.
+    ///
+    /// Restricted to single-qubit products because a joint (multi-qubit) measurement
+    /// leaves qubits entangled; individual qubit states are not in definite eigenstates
+    /// afterward, so a later single-qubit measurement on one of those qubits would not
+    /// be deterministic relative to just that qubit's prior basis.
+    fn can_drop_product(&self, pp_id: i32) -> bool {
+        let pp = self.input.circuit.product(pp_id);
+        if pp.gate_type.is_clifford() || pp.operators.len() != 1 {
+            return false;
+        }
+        let op = &pp.operators[0];
+        self.last_completed_basis[op.qubit as usize] == Some(op.basis)
+    }
+
+    /// Updates `last_completed_basis` after a product completes.
+    ///
+    /// Single-qubit non-Clifford products record `Some(basis)` — the qubit is in a
+    /// definite eigenstate afterward.  Everything else (Clifford, multi-qubit) records
+    /// `None` for each qubit it touches: Cliffords change the qubit's state, and
+    /// multi-qubit measurements leave qubits entangled rather than in individual
+    /// eigenstates.
+    fn update_last_completed_basis(&mut self, pp_id: i32) {
+        let pp = self.input.circuit.product(pp_id);
+        let ops: Vec<_> = pp.operators.iter().map(|op| (op.qubit, op.basis)).collect();
+        if !pp.gate_type.is_clifford() && ops.len() == 1 {
+            self.last_completed_basis[ops[0].0 as usize] = Some(ops[0].1);
+        } else {
+            for (qubit, _) in ops {
+                self.last_completed_basis[qubit as usize] = None;
+            }
+        }
+    }
+
     /// Second pass: greedily schedule T gates, measurements, and S/SX gates.
     /// T gates are skipped when no magic state is available.
     fn sched_remaining(&mut self, n_avail_magic: &mut usize, plotting: bool) {
         let _timer = accum_start!(self.timers);
+        // Sync last_completed_basis for products already in pp_paths this lcycle
+        // (carry-forward recovery T gates and precomputed Clifford trees) before
+        // checking drops, so a Clifford in pp_paths correctly invalidates its qubit.
+        for i in 0..self.pp_paths.len() {
+            let pp_id = self.pp_paths[i].0;
+            self.update_last_completed_basis(pp_id);
+        }
         for i in 0..self.pps_pending.len() {
             let pp_id = self.pps_pending[i].id;
             self.apply_jit_s_correction(pp_id);
+            if self.can_drop_product(pp_id) {
+                info_sched!(
+                    "  Product {} dropped (deterministic: basis matches last completed)",
+                    pp_id
+                );
+                self.n_dropped_products += 1;
+                self.update_last_completed_basis(pp_id);
+                self.dropped_products_this_lcycle.push(pp_id);
+                continue;
+            }
             let pp = self.input.circuit.product(pp_id);
             // Skip if this product would normally use a precomputed Clifford tree AND
             // the tree is still valid.  If JIT correction evicted the tree, fall through
@@ -995,10 +1059,12 @@ impl Scheduler {
         let _timer = accum_start!(self.timers);
         self.scheduled_ids_buf.clear();
         self.scheduled_ids_buf.extend(self.pp_paths.iter().map(|(id, _)| *id));
+        // Include dropped products so they are purged from pps_pending.
+        self.scheduled_ids_buf.extend(self.dropped_products_this_lcycle.iter().copied());
         self.pps_pending.retain(|pp| !self.scheduled_ids_buf.contains(&pp.id));
         debug_sched!("After purge, pps_to_sched len {}", self.pps_pending.len());
         // Only count T gates that are newly scheduled (not bounded-mode recovery lcycles) to
-        // keep the pool-size estimate accurate.
+        // keep the pool-size estimate accurate.  Dropped T gates also don't need future magic.
         let t_newly_scheduled = self
             .pp_paths
             .iter()
@@ -1007,11 +1073,39 @@ impl Scheduler {
                     && !self.failed_t_paths.contains_key(id)
             })
             .count();
+        let t_dropped = self
+            .dropped_products_this_lcycle
+            .iter()
+            .filter(|&&id| self.input.circuit.product(id).gate_type.is_t())
+            .count();
         self.cultivation.t_products_remaining =
-            self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
+            self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled + t_dropped);
         let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
         self.recovery_t_ids = t_recovery_ids;
         self.unlock_children(&t_failed_ids);
+        // Unlock children of dropped products (they complete without routing this lcycle).
+        for &pp_id in &self.dropped_products_this_lcycle {
+            let children: Vec<i32> = self.input.circuit.product(pp_id).children.clone();
+            for child_id in children {
+                self.remaining_parents[child_id as usize] -= 1;
+                if self.remaining_parents[child_id as usize] == 0
+                    && !self.children_buf.contains(&child_id)
+                {
+                    self.children_buf.push(child_id);
+                }
+            }
+        }
+        // Update last_completed_basis for all products that completed this lcycle.
+        // Dropped products were already updated in sched_remaining().
+        let completed_pp_ids: Vec<i32> = self
+            .pp_paths
+            .iter()
+            .filter(|(id, _)| !t_failed_ids.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        for pp_id in completed_pp_ids {
+            self.update_last_completed_basis(pp_id);
+        }
         self.advance_clifford_state();
         debug_sched!(
             "After inserting previous lcycle cliffords, pps_to_sched len {}",
@@ -1029,6 +1123,7 @@ impl Scheduler {
             .iter()
             .filter(|(id, _)| !t_failed_ids.contains(id))
             .map(|(id, _)| *id)
+            .chain(self.dropped_products_this_lcycle.iter().copied())
             .collect();
         self.lcycle_scheduled.push((self.current_lcycle, lcycle_ids));
         #[cfg(debug_assertions)]
@@ -1036,6 +1131,8 @@ impl Scheduler {
         self.scheduled_products.extend(
             self.pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
         );
+        self.scheduled_products.extend(self.dropped_products_this_lcycle.iter().copied());
+        self.dropped_products_this_lcycle.clear();
         Ok(())
     }
 
@@ -1219,6 +1316,7 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
+        println!("Dropped products: {}/{}", self.n_dropped_products, self.input.circuit.n_products());
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);
 
