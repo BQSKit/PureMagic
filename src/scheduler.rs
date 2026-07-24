@@ -857,10 +857,18 @@ impl Scheduler {
         let pp = self.input.circuit.product(pp_id);
         let ops: Vec<_> = pp.operators.iter().map(|op| (op.qubit, op.basis)).collect();
         if !pp.gate_type.is_clifford() && ops.len() == 1 {
+            debug_sched!(
+                "  last_completed_basis[{}] = Some({}) (product {})",
+                ops[0].0, ops[0].1, pp_id
+            );
             self.last_completed_basis[ops[0].0 as usize] = Some(ops[0].1);
         } else {
-            for (qubit, _) in ops {
-                self.last_completed_basis[qubit as usize] = None;
+            for (qubit, _) in &ops {
+                debug_sched!(
+                    "  last_completed_basis[{}] = None (product {} invalidates)",
+                    qubit, pp_id
+                );
+                self.last_completed_basis[*qubit as usize] = None;
             }
         }
     }
@@ -1156,6 +1164,16 @@ impl Scheduler {
                 if self.failed_t_paths.contains_key(&pp_id) {
                     t_recovery_ids.push(pp_id);
                     info_sched!("  T gate {} recovery lcycle succeeded", pp_id);
+                    // Bounded mode only: the carry-forward routing physically applied the S
+                    // correction as part of the retry path.  The qubit is now in the same state
+                    // as a first-attempt success.  Clear the pending parity so subsequent
+                    // products are not incorrectly JIT-corrected on top of the physical fix.
+                    if !self.unbounded_weight_mode {
+                        let ops = self.input.circuit.product(pp_id).operators.clone();
+                        for op in ops {
+                            self.runtime_s_parity[op.qubit as usize] = false;
+                        }
+                    }
                 } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
                 } else {
