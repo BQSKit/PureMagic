@@ -189,6 +189,7 @@ pub(crate) struct Scheduler {
     pub(crate) stree_computation: SteinerTree,
     pub(crate) astar: AStar,
     no_t_failures: bool,
+    record_cultivation_dist: bool,
     /// Reusable buffers to avoid per-lcycle allocations.
     terminals_buf: Vec<u16>,
     scheduled_ids_buf: Vec<i32>,
@@ -220,7 +221,7 @@ pub(crate) struct Scheduler {
 impl Scheduler {
     pub(crate) fn new(
         circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-        plot_option: String, rseed: u32, no_t_failures: bool,
+        plot_option: String, rseed: u32, no_t_failures: bool, record_cultivation_dist: bool,
     ) -> Self {
         if log_level != "none" {
             let trace_fname = format!("{}.sched_trace", circuit_stem(&circuit.circuit_fname));
@@ -257,6 +258,7 @@ impl Scheduler {
             stree_computation: SteinerTree::new(n_nodes),
             astar: AStar::new(n_nodes),
             no_t_failures,
+            record_cultivation_dist,
             terminals_buf: Vec::new(),
             scheduled_ids_buf: Vec::new(),
             children_buf: Vec::new(),
@@ -1194,11 +1196,12 @@ impl Scheduler {
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);
 
-        // Write normalized cultivation-time distribution to file.
-        let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
-        match self.write_cultivation_dist(&dist_fname, min, max) {
-            Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
-            Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
+        if self.record_cultivation_dist {
+            let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
+            match self.write_cultivation_dist(&dist_fname, min, max) {
+                Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
+                Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
+            }
         }
     }
 
@@ -1506,7 +1509,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         let mut sched =
-            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false);
+            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false);
         sched.sched_circuit().expect("sched_circuit failed");
         sched
     }
