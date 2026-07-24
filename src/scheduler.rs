@@ -430,9 +430,11 @@ impl Scheduler {
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
-        // Return total lcycles and total "attempts" (successes + failures), so the
-        // caller can compute the true T-gate count including failed first attempts.
-        Ok((self.current_lcycle, self.scheduled_products.len() + self.t_gate_failures))
+        // In bounded-weight mode, each T failure costs an extra physical S correction
+        // product, so we add t_gate_failures to the count.  In unbounded-weight mode
+        // failures are absorbed into the Pauli frame with no extra physical products.
+        let extra = if self.unbounded_weight_mode { 0 } else { self.t_gate_failures };
+        Ok((self.current_lcycle, self.scheduled_products.len() + extra))
     }
 
     fn init_magic_nodes(&mut self) {
