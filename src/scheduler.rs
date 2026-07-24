@@ -210,6 +210,9 @@ pub(crate) struct Scheduler {
     current_lcycle: usize,
     /// T gate IDs that completed a recovery lcycle this cycle (populated by complete_lcycle).
     recovery_t_ids: Vec<i32>,
+    /// True when the circuit has no Clifford products (all Cliffords absorbed into Pauli frame).
+    /// Computed once at construction; controls whether JIT S correction is active.
+    unbounded_weight_mode: bool,
     /// Per-qubit accumulated S correction parity; true = odd number of pending corrections.
     /// Only used in unbounded-weight mode.
     runtime_s_parity: Vec<bool>,
@@ -239,6 +242,7 @@ impl Scheduler {
         let n_nodes = topo.n_nodes;
         let n_circuit_qubits = circuit.n_qubits;
         let n_circuit_products = circuit.n_products();
+        let unbounded_weight_mode = !circuit.pps.iter().any(|pp| pp.gate_type.is_clifford());
         let mut timers = AccumTimers::new();
         let loop_timer = timers.add_or_get("schedule loop");
         let other_timer = timers.add_or_get("other ");
@@ -274,13 +278,14 @@ impl Scheduler {
             pp_paths: Vec::new(),
             current_lcycle: 0,
             recovery_t_ids: Vec::new(),
+            unbounded_weight_mode,
             runtime_s_parity: vec![false; n_circuit_qubits],
             jit_corrected: vec![false; n_circuit_products],
         }
     }
 
     fn is_unbounded_weight_mode(&self) -> bool {
-        !self.input.circuit.pps.iter().any(|pp| pp.gate_type.is_clifford())
+        self.unbounded_weight_mode
     }
 
     pub(crate) fn count_t_products(&self) -> usize {
