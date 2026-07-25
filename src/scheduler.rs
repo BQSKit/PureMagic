@@ -186,6 +186,7 @@ pub(crate) struct Scheduler {
     /// T gates that failed the 50% coin flip; held for one recovery lcycle.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     pub(crate) t_gate_failures: usize,
+    pub(crate) correction_gates_emitted: usize,
     pub(crate) stree_computation: SteinerTree,
     pub(crate) astar: AStar,
     no_t_failures: bool,
@@ -260,6 +261,7 @@ impl Scheduler {
             clifford_paths: IndexMap::new(),
             failed_t_paths: IndexMap::new(),
             t_gate_failures: 0,
+            correction_gates_emitted: 0,
             stree_computation: SteinerTree::new(n_nodes),
             astar: AStar::new(n_nodes),
             no_t_failures,
@@ -914,6 +916,7 @@ impl Scheduler {
                     power
                 );
                 self.next_correction_id += 1;
+                self.correction_gates_emitted += 1;
                 if let Some(ref g) = opt_graph {
                     let node_ids: Vec<u16> = g.iter_nodes().collect();
                     self.mark_nodes_used(&node_ids);
