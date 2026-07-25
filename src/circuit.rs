@@ -1,5 +1,6 @@
 use crate::fn_timer;
-use crate::pauliproduct::{GateType, PauliProduct};
+use crate::pauliproduct::{GateType, Operator, PauliProduct};
+use std::collections::HashMap;
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use rand::Rng;
@@ -386,10 +387,32 @@ impl Circuit {
     /// (mirroring [`Circuit::gen_deps`]); the original `self.pps` and `self.layers` cache
     /// are never modified.
     pub(crate) fn estimate_num_layers(&self, rng: &mut StdRng, no_t_failures: bool) -> usize {
+        // Per-qubit S^k correction power (0=none, 1=S, 2=Z, 3=S†).
+        // Incremented on each T gate failure; cleared when a Clifford is encountered.
+        let mut correction_power: HashMap<u16, u8> = HashMap::new();
+
         // Build the expanded product list.
         let mut expanded: Vec<PauliProduct> = Vec::with_capacity(self.pps.len() * 4);
         for pp in &self.pps {
             if pp.gate_type.is_cx() {
+                // Before a CX, emit S corrections for any tracked qubits.
+                for op in &pp.operators {
+                    let power = *correction_power.get(&op.qubit).unwrap_or(&0);
+                    if power == 1 || power == 3 {
+                        for _ in 0..3 {
+                            let corr = PauliProduct {
+                                id: expanded.len() as i32,
+                                gate_type: GateType::S,
+                                operators: vec![Operator { qubit: op.qubit, basis: op.basis }],
+                                parents: vec![],
+                                children: vec![],
+                                max_qubit: op.qubit,
+                            };
+                            expanded.push(corr);
+                        }
+                    }
+                    correction_power.insert(op.qubit, 0);
+                }
                 // CX → 2 sequential copies
                 for _ in 0..2 {
                     let mut copy = pp.clone();
@@ -399,6 +422,24 @@ impl Circuit {
                     expanded.push(copy);
                 }
             } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
+                // Before an S/SX, emit S correction for the tracked qubit if needed.
+                if let Some(op) = pp.operators.first() {
+                    let power = *correction_power.get(&op.qubit).unwrap_or(&0);
+                    if power == 1 || power == 3 {
+                        for _ in 0..3 {
+                            let corr = PauliProduct {
+                                id: expanded.len() as i32,
+                                gate_type: GateType::S,
+                                operators: vec![Operator { qubit: op.qubit, basis: op.basis }],
+                                parents: vec![],
+                                children: vec![],
+                                max_qubit: op.qubit,
+                            };
+                            expanded.push(corr);
+                        }
+                    }
+                    correction_power.insert(op.qubit, 0);
+                }
                 // S / SX → 3 sequential copies
                 for _ in 0..3 {
                     let mut copy = pp.clone();
@@ -408,23 +449,28 @@ impl Circuit {
                     expanded.push(copy);
                 }
             } else if pp.gate_type.is_t() {
-                // T → 1 copy; if T failures are enabled, 50% chance of an S correction
+                // Apply S^k conjugation just-in-time: swap X↔Y for qubits with odd power.
                 let mut t_copy = pp.clone();
                 t_copy.id = expanded.len() as i32;
                 t_copy.parents.clear();
                 t_copy.children.clear();
-                expanded.push(t_copy);
+                for op in &mut t_copy.operators {
+                    let power = *correction_power.get(&op.qubit).unwrap_or(&0);
+                    if power % 2 == 1 {
+                        op.basis =
+                            if op.basis == 'X' { 'Y' } else if op.basis == 'Y' { 'X' } else { op.basis };
+                    }
+                }
+                expanded.push(t_copy.clone());
                 if !no_t_failures && rng.gen_bool(0.5) {
-                    // S correction uses the same qubits as the T gate
-                    let mut s_copy = pp.clone();
-                    s_copy.id = expanded.len() as i32;
-                    s_copy.gate_type = GateType::S;
-                    s_copy.parents.clear();
-                    s_copy.children.clear();
-                    expanded.push(s_copy);
+                    // T gate failed: increment correction power for each operator qubit.
+                    for op in &t_copy.operators {
+                        let entry = correction_power.entry(op.qubit).or_insert(0);
+                        *entry = (*entry + 1) % 4;
+                    }
                 }
             } else {
-                // M and anything else → 1 copy
+                // M and anything else → 1 copy (no correction emission for measurements).
                 let mut copy = pp.clone();
                 copy.id = expanded.len() as i32;
                 copy.parents.clear();
@@ -1019,8 +1065,12 @@ mod tests {
 
     #[test]
     fn n_cycles_t_gate_s_insertion_varies_across_seeds() {
-        // With enough T gates, different seeds should produce different layer counts.
-        let lines: Vec<&str> = vec!["+X_<T>"; 20];
+        // With the lazy correction model, S corrections are emitted only when a Clifford
+        // gate is encountered.  Use a chain of T gates followed by an S gate so that the
+        // accumulated correction is flushed before the S, producing different layer counts
+        // depending on how many T gates failed (odd failures → extra 3-layer correction).
+        let mut lines: Vec<&str> = vec!["+X_<T>"; 19];
+        lines.push("+X_<S>");
         let f = make_circuit_file(&lines);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
