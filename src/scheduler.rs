@@ -6,7 +6,7 @@ use crate::debug_sched;
 use crate::fn_timer;
 use crate::info_sched;
 use crate::node::NodeType;
-use crate::pauliproduct::{Operator, PauliProduct};
+use crate::pauliproduct::{GateType, Operator, PauliProduct};
 use crate::steinertree::SteinerTree;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
@@ -186,6 +186,7 @@ pub(crate) struct Scheduler {
     /// T gates that failed the 50% coin flip; held for one recovery lcycle.
     failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     pub(crate) t_gate_failures: usize,
+    pub(crate) t_gate_retries: usize,
     pub(crate) stree_computation: SteinerTree,
     pub(crate) astar: AStar,
     no_t_failures: bool,
@@ -210,11 +211,8 @@ pub(crate) struct Scheduler {
     current_lcycle: usize,
     /// T gate IDs that completed a recovery lcycle this cycle (populated by complete_lcycle).
     recovery_t_ids: Vec<i32>,
-    /// True when the circuit has no Clifford products (all Cliffords absorbed into Pauli frame).
-    /// Computed once at construction; controls whether JIT S correction is active.
-    unbounded_weight_mode: bool,
     /// Per-qubit accumulated S correction parity; true = odd number of pending corrections.
-    /// Only used in unbounded-weight mode.
+    /// Toggled on T gate failure when no Clifford child needs the carry-forward retry.
     runtime_s_parity: Vec<bool>,
     /// Per-product flag; true = operators have already been patched by JIT S correction.
     jit_corrected: Vec<bool>,
@@ -248,7 +246,6 @@ impl Scheduler {
         let n_nodes = topo.n_nodes;
         let n_circuit_qubits = circuit.n_qubits;
         let n_circuit_products = circuit.n_products();
-        let unbounded_weight_mode = !circuit.pps.iter().any(|pp| pp.gate_type.is_clifford());
         let mut timers = AccumTimers::new();
         let loop_timer = timers.add_or_get("schedule loop");
         let other_timer = timers.add_or_get("other ");
@@ -265,6 +262,7 @@ impl Scheduler {
             clifford_paths: IndexMap::new(),
             failed_t_paths: IndexMap::new(),
             t_gate_failures: 0,
+            t_gate_retries: 0,
             stree_computation: SteinerTree::new(n_nodes),
             astar: AStar::new(n_nodes),
             no_t_failures,
@@ -284,7 +282,6 @@ impl Scheduler {
             pp_paths: Vec::new(),
             current_lcycle: 0,
             recovery_t_ids: Vec::new(),
-            unbounded_weight_mode,
             runtime_s_parity: vec![false; n_circuit_qubits],
             jit_corrected: vec![false; n_circuit_products],
             last_completed_basis: vec![None; n_circuit_qubits],
@@ -436,8 +433,8 @@ impl Scheduler {
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
-        // S corrections are absorbed into the Pauli frame via JIT correction in both
-        // bounded and unbounded weight modes; no extra physical S products are scheduled.
+        // S corrections are absorbed into the Pauli frame via JIT correction;
+        // no extra physical S products are ever scheduled.
         Ok((self.current_lcycle, self.scheduled_products.len()))
     }
 
@@ -782,9 +779,8 @@ impl Scheduler {
     /// then recomputes routing caches if any basis changed (X↔Y).
     ///
     /// Only runs once per product (guarded by `jit_corrected`) so retried T gates
-    /// do not get double-corrected.  Clifford products are skipped — their S
-    /// correction is handled by the bounded-mode carry-forward routing — but the
-    /// parity flag is left set so it propagates to the next non-Clifford product.
+    /// do not get double-corrected.  Clifford products are skipped — parity carries
+    /// forward past them to the next non-Clifford product.
     ///
     /// If a basis change occurs, also evicts any stale precomputed Clifford tree for
     /// the product — the tree was built for the old operator bases and is now wrong.
@@ -848,11 +844,10 @@ impl Scheduler {
 
     /// Updates `last_completed_basis` after a product completes.
     ///
-    /// Single-qubit non-Clifford products record `Some(basis)` — the qubit is in a
-    /// definite eigenstate afterward.  Everything else (Clifford, multi-qubit) records
-    /// `None` for each qubit it touches: Cliffords change the qubit's state, and
-    /// multi-qubit measurements leave qubits entangled rather than in individual
-    /// eigenstates.
+    /// Single-qubit non-Clifford products record `Some(basis)`.  Single-qubit S/SX
+    /// propagate the known eigenstate through the conjugation: S: X↔Y, Z→Z;
+    /// SX: Y↔Z, X→X.  Everything else (CX, multi-qubit) records `None`: multi-qubit
+    /// measurements leave qubits entangled, and CX entangles both qubits.
     fn update_last_completed_basis(&mut self, pp_id: i32) {
         let pp = self.input.circuit.product(pp_id);
         let ops: Vec<_> = pp.operators.iter().map(|op| (op.qubit, op.basis)).collect();
@@ -862,6 +857,24 @@ impl Scheduler {
                 ops[0].0, ops[0].1, pp_id
             );
             self.last_completed_basis[ops[0].0 as usize] = Some(ops[0].1);
+        } else if ops.len() == 1
+            && (pp.gate_type == GateType::S || pp.gate_type == GateType::SX)
+        {
+            let gate_type = pp.gate_type;
+            let qubit = ops[0].0 as usize;
+            self.last_completed_basis[qubit] = self.last_completed_basis[qubit].map(|b| {
+                match (gate_type, b) {
+                    (GateType::S,  'X') => 'Y',
+                    (GateType::S,  'Y') => 'X',
+                    (GateType::SX, 'Y') => 'Z',
+                    (GateType::SX, 'Z') => 'Y',
+                    _ => b,
+                }
+            });
+            debug_sched!(
+                "  last_completed_basis[{}] = {:?} (product {} Clifford propagate)",
+                qubit, self.last_completed_basis[qubit], pp_id
+            );
         } else {
             for (qubit, _) in &ops {
                 debug_sched!(
@@ -1071,7 +1084,7 @@ impl Scheduler {
         self.scheduled_ids_buf.extend(self.dropped_products_this_lcycle.iter().copied());
         self.pps_pending.retain(|pp| !self.scheduled_ids_buf.contains(&pp.id));
         debug_sched!("After purge, pps_to_sched len {}", self.pps_pending.len());
-        // Only count T gates that are newly scheduled (not bounded-mode recovery lcycles) to
+        // Only count T gates that are newly scheduled (not carry-forward retry lcycles) to
         // keep the pool-size estimate accurate.  Dropped T gates also don't need future magic.
         let t_newly_scheduled = self
             .pp_paths
@@ -1088,7 +1101,7 @@ impl Scheduler {
             .count();
         self.cultivation.t_products_remaining =
             self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled + t_dropped);
-        let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
+        let (t_failed_ids, t_recovery_ids, t_no_retry_failed_ids) = self.process_t_gate_outcomes();
         self.recovery_t_ids = t_recovery_ids;
         self.unlock_children(&t_failed_ids);
         // Unlock children of dropped products (they complete without routing this lcycle).
@@ -1103,12 +1116,24 @@ impl Scheduler {
                 }
             }
         }
-        // Update last_completed_basis for all products that completed this lcycle.
+        // A no-retry T gate failure leaves the qubit in the negative eigenstate of the
+        // measured basis: the JIT parity flip is a rigid rotation of all subsequent axes,
+        // so no adjacent measurement can become collinear.  Invalidate the eigenstate so
+        // subsequent products are never spuriously dropped.
+        for &pp_id in &t_no_retry_failed_ids {
+            let ops: Vec<_> = self.input.circuit.product(pp_id).operators.iter()
+                .map(|op| op.qubit as usize).collect();
+            for qubit in ops {
+                self.last_completed_basis[qubit] = None;
+            }
+        }
+        // Update last_completed_basis for all products that genuinely completed this lcycle.
         // Dropped products were already updated in sched_remaining().
+        // No-retry failures are excluded above — their eigenstate is invalidated instead.
         let completed_pp_ids: Vec<i32> = self
             .pp_paths
             .iter()
-            .filter(|(id, _)| !t_failed_ids.contains(id))
+            .filter(|(id, _)| !t_failed_ids.contains(id) && !t_no_retry_failed_ids.contains(id))
             .map(|(id, _)| *id)
             .collect();
         for pp_id in completed_pp_ids {
@@ -1144,18 +1169,17 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Coin-flip T gate outcomes; updates `failed_t_paths`; returns (failed_ids, recovery_ids).
+    /// Coin-flip T gate outcomes; updates `failed_t_paths`; returns (failed_ids, recovery_ids, no_retry_failed_ids).
     ///
-    /// **Unbounded-weight mode**: a "failed" T gate (50% coin) is treated as complete in this
-    /// lcycle — the S correction is absorbed into `runtime_s_parity` and children are unlocked
-    /// normally.  No retry, no extra magic state consumed.  Only the parity flag changes.
-    ///
-    /// **Bounded-weight mode**: parity is also toggled (JIT correction for non-Clifford
-    /// descendants), and the failed gate is stored in `failed_t_paths` with the magic root
-    /// trimmed off so the routing subtree can be carried forward to a recovery lcycle.
-    fn process_t_gate_outcomes(&mut self) -> (Vec<i32>, Vec<i32>) {
+    /// On failure, parity is always toggled for the affected qubit(s).  If any immediate child
+    /// is a Clifford product, the T gate is retried via carry-forward routing (stored in
+    /// `failed_t_paths`) and parity is reset on recovery — the carry-forward physically applies
+    /// the S correction.  If all children are non-Clifford, no retry is needed; JIT parity
+    /// correction handles the S correction when each child is scheduled.
+    fn process_t_gate_outcomes(&mut self) -> (Vec<i32>, Vec<i32>, Vec<i32>) {
         let mut t_failed_ids: Vec<i32> = Vec::new();
         let mut t_recovery_ids: Vec<i32> = Vec::new();
+        let mut t_no_retry_failed_ids: Vec<i32> = Vec::new();
         let pp_ids: Vec<i32> = self.pp_paths.iter().map(|(id, _)| *id).collect();
         for pp_id in &pp_ids {
             let pp_id = *pp_id;
@@ -1164,49 +1188,46 @@ impl Scheduler {
                 if self.failed_t_paths.contains_key(&pp_id) {
                     t_recovery_ids.push(pp_id);
                     info_sched!("  T gate {} recovery lcycle succeeded", pp_id);
-                    // Bounded mode only: the carry-forward routing physically applied the S
-                    // correction as part of the retry path.  The qubit is now in the same state
-                    // as a first-attempt success.  Clear the pending parity so subsequent
-                    // products are not incorrectly JIT-corrected on top of the physical fix.
-                    if !self.unbounded_weight_mode {
-                        let ops = self.input.circuit.product(pp_id).operators.clone();
-                        for op in ops {
-                            self.runtime_s_parity[op.qubit as usize] = false;
-                        }
+                    // The carry-forward routing physically applied the S correction, so the
+                    // qubit is in the same state as a first-attempt success.  Clear parity so
+                    // subsequent non-Clifford products are not JIT-corrected on top.
+                    let ops = self.input.circuit.product(pp_id).operators.clone();
+                    for op in ops {
+                        self.runtime_s_parity[op.qubit as usize] = false;
                     }
                 } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
                     info_sched!("  T gate {} succeeded on first attempt", pp_id);
                 } else {
                     self.t_gate_failures += 1;
-                    if self.unbounded_weight_mode {
-                        // S correction absorbed into Pauli frame: toggle parity and complete.
-                        // No retry — the T gate finishes this lcycle like a success.
+                    // Always toggle parity for the failing qubit(s).
+                    let ops: Vec<_> = pp.operators.clone();
+                    for op in &ops {
+                        self.runtime_s_parity[op.qubit as usize] ^= true;
+                    }
+                    // Retry (carry-forward) only when a Clifford child needs physical routing
+                    // of the S correction.  Non-Clifford children are handled by JIT parity.
+                    let has_clifford_child = self.input.circuit.product(pp_id)
+                        .children.iter()
+                        .any(|&cid| self.input.circuit.product(cid).gate_type.is_clifford());
+                    if has_clifford_child {
+                        t_failed_ids.push(pp_id);
+                        self.t_gate_retries += 1;
+                        info_sched!(
+                            "  T gate {} failed, retry needed (Clifford child)",
+                            pp_id
+                        );
+                    } else {
                         info_sched!(
                             "  T gate {} S-corrected (parity toggled, no retry)",
                             pp_id
                         );
-                        let ops: Vec<_> = pp.operators.clone();
-                        for op in ops {
-                            self.runtime_s_parity[op.qubit as usize] ^= true;
-                        }
-                    } else {
-                        t_failed_ids.push(pp_id);
-                        info_sched!(
-                            "  T gate {} failed (50% probability), recovery lcycle next",
-                            pp_id
-                        );
-                        // Toggle parity so JIT correction applies to subsequent
-                        // non-Clifford products; carry-forward routing handles Clifford products.
-                        let ops: Vec<_> = pp.operators.clone();
-                        for op in ops {
-                            self.runtime_s_parity[op.qubit as usize] ^= true;
-                        }
+                        t_no_retry_failed_ids.push(pp_id);
                     }
                 }
             }
         }
-        // Bounded mode only: update failed_t_paths for retry routing.
-        if !self.unbounded_weight_mode {
+        // Update failed_t_paths: insert new retry entries, remove recovered ones.
+        if !t_failed_ids.is_empty() || !self.failed_t_paths.is_empty() {
             let pp_paths_snapshot: Vec<(i32, Option<Rc<TreeGraph>>)> = self
                 .pp_paths
                 .iter()
@@ -1239,7 +1260,7 @@ impl Scheduler {
                 }
             }
         }
-        (t_failed_ids, t_recovery_ids)
+        (t_failed_ids, t_recovery_ids, t_no_retry_failed_ids)
     }
 
     /// Decrements `remaining_parents` for each completed product and collects
@@ -1334,7 +1355,14 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
-        println!("Dropped products: {}/{}", self.n_dropped_products, self.input.circuit.n_products());
+        let retry_pct = if self.t_gate_failures > 0 {
+            100.0 * self.t_gate_retries as f64 / self.t_gate_failures as f64
+        } else { 0.0 };
+        let drop_pct = if self.input.circuit.n_products() > 0 {
+            100.0 * self.n_dropped_products as f64 / self.input.circuit.n_products() as f64
+        } else { 0.0 };
+        println!("T gate retries (Clifford child): {}/{} ({:.1}%)", self.t_gate_retries, self.t_gate_failures, retry_pct);
+        println!("Dropped products: {}/{} ({:.1}%)", self.n_dropped_products, self.input.circuit.n_products(), drop_pct);
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);
 
@@ -1747,22 +1775,6 @@ mod tests {
             n_t,
             sched.t_gate_failures
         );
-    }
-
-    #[test]
-    fn unbounded_mode_detected_when_no_clifford_products() {
-        // A circuit with only T products has no Clifford products → unbounded mode.
-        let lines = &["+X___<T>", "-_X__<T>"];
-        let sched = run_scheduler(lines, 0);
-        assert!(sched.unbounded_weight_mode);
-    }
-
-    #[test]
-    fn bounded_mode_detected_with_s_product() {
-        // A circuit with an S product is NOT in unbounded mode.
-        let lines = &["+X___<T>", "+X___<S>", "-_X__<T>"];
-        let sched = run_scheduler(lines, 0);
-        assert!(!sched.unbounded_weight_mode);
     }
 
     #[test]
