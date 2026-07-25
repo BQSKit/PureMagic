@@ -216,7 +216,7 @@ def parse_output_file(filepath):
                     cur["avg_cultivation_time"] = float(m.group(1))
                     in_cultivation_block = False
 
-            if m := re.match(r"Min volume estimate:\s+(\d+)", s):
+            if m := re.match(r"Volume estimate:\s+(\d+)", s):
                 cur["min_volume"] = int(m.group(1))
 
             if m := re.match(r"Products per layer:\s+([0-9.eE+\-]+)\s+avg", s):
@@ -347,6 +347,8 @@ def prettify_circuit_name(name):
 
     # separate trailing _n<digits> or _N<digits> qubit count: foo_n8 -> foo(8)
     name = re.sub(r"[_-][nN](\d+)$", lambda mo: f"({mo.group(1)})", name)
+
+    name = re.sub(r"(?i)hubbard_18", "hubbard(18)", name)
 
     return name
 
@@ -667,7 +669,7 @@ def main():
         action="store_true",
         default=False,
         help=(
-            "Read the 'Min volume estimate' line from each data file and plot it as "
+            "Read the 'Volume estimate' line from each data file and plot it as "
             "an additional dashed series alongside each regular volume series. "
             "Only meaningful when -y is 'volume'."
         ),
@@ -952,7 +954,9 @@ def main():
     def draw_series(ax, series_list, yk_list, colour_offset=0):
         y_key = yk_list[0] if isinstance(yk_list, list) else yk_list
         draw_lines = args.lines or args.lines_with_markers
-        show_markers = args.lines_with_markers or is_cultivation_x or is_weight_x
+        show_markers = args.lines_with_markers or (
+            (is_cultivation_x or is_weight_x) and not args.lines
+        )
         is_timing_y = y_key == "timing"
         is_total_qubits_y = y_key == "total_qubits"
         is_ancilla_qubits_y = "ancilla_qubits" in (
@@ -1276,7 +1280,7 @@ def main():
             if d1.empty:
                 minvol_series.append(None)
                 continue
-            mv_label = f"{file_label} Min volume" if file_label else "Min volume"
+            mv_label = f"{file_label} Volume" if file_label else "Volume"
             mv_ys = d1["min_volume"].tolist()
             if args.max_efficiency:
                 mv_ys = [1.0 / v if v else float("nan") for v in mv_ys]
