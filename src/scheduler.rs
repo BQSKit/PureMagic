@@ -632,6 +632,7 @@ impl Scheduler {
             .filter(|&(&(_, ob), new_op)| ob != new_op.basis)
             .map(|(_, new_op)| (new_op.qubit, new_op.basis))
             .collect();
+        #[cfg(debug_assertions)]
         for &(q, new_basis) in &swapped {
             info_sched!(
                 "  T gate {}: qubit {} conjugated to {} (S^{} correction active)",
