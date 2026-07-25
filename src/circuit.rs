@@ -95,10 +95,6 @@ impl Circuit {
         &self.pps[id as usize]
     }
 
-    pub(crate) fn product_mut(&mut self, id: i32) -> &mut PauliProduct {
-        &mut self.pps[id as usize]
-    }
-
     pub(crate) fn n_products(&self) -> usize {
         self.pps.len()
     }
