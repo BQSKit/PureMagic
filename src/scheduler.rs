@@ -413,10 +413,14 @@ impl Scheduler {
                 }
             } else {
                 debug_sched!("Could not schedule anything on lcycle {}", self.current_lcycle);
-                // If nothing is cultivating, no magic state will ever become ready,
-                // so the layout is fundamentally unable to make progress.
-                if !(0..self.input.topo.n_nodes)
-                    .any(|node_i| self.input.topo.is_cultivating(node_i as u16))
+                // If nothing is cultivating, no magic state will ever become ready —
+                // but only T gates need magic. If all pending products are Cliffords
+                // (e.g. correction S gate emission temporarily failed), they don't need
+                // magic and will route once the area frees up; don't error in that case.
+                let has_pending_t = self.pps_pending.iter().any(|pp| pp.gate_type.is_t());
+                if has_pending_t
+                    && !(0..self.input.topo.n_nodes)
+                        .any(|node_i| self.input.topo.is_cultivating(node_i as u16))
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
@@ -477,7 +481,11 @@ impl Scheduler {
                 return false;
             }
             let (_, preferred, side) = &root_info[i];
-            if preferred.iter().all(|&rid| self.used[rid as usize])
+            // Only reject when there are root candidates and all are occupied.
+            // Empty preferred+side means the gate uses sched_s_sx (no root needed),
+            // so the vacuous-truth case must not fire here.
+            if (!preferred.is_empty() || !side.is_empty())
+                && preferred.iter().all(|&rid| self.used[rid as usize])
                 && side.iter().all(|&rid| self.used[rid as usize])
             {
                 info_sched!("  No unused root candidates for node {}", node_id);
