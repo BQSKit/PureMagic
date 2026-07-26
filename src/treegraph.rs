@@ -107,6 +107,7 @@ impl TreeGraph {
 
     /// Removes the magic root and trims dangling routing nodes.
     /// Routing nodes whose sole remaining nb is a data node are preserved.
+    #[cfg(test)]
     pub(crate) fn trim_magic_root(&mut self) {
         let root_id = match self.root_node_id.take() {
             Some(id) => id,
