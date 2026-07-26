@@ -17,7 +17,7 @@ use indexmap::{IndexMap, IndexSet};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -218,6 +218,10 @@ pub(crate) struct Scheduler {
     /// Maps product_id → (qubit, new_basis) pairs for T gates whose operators were
     /// conjugated this lcycle. Populated in sched_remaining; consumed in process_t_gate_outcomes.
     t_conjugated_bases: HashMap<i32, Vec<(u16, char)>>,
+    /// Set of T gate product IDs whose precomputed_terminals/root_info currently reflect a
+    /// conjugated (non-original) operator basis.  Needed to trigger a restore call to
+    /// apply_t_conjugation when correction_power later drops back to zero.
+    conjugated_t_products: HashSet<i32>,
 }
 
 impl Scheduler {
@@ -279,6 +283,7 @@ impl Scheduler {
             correction_basis: vec!['X'; n_qubits],
             next_correction_id: n_initial_products,
             t_conjugated_bases: HashMap::new(),
+            conjugated_t_products: HashSet::new(),
         }
     }
 
@@ -617,24 +622,20 @@ impl Scheduler {
             .iter()
             .map(|op| (op.qubit, op.basis))
             .collect();
-        // Apply S^k conjugation: odd power swaps X↔Y (Z unchanged).
-        let new_ops: Vec<Operator> = orig_ops
-            .iter()
-            .map(|&(qubit, basis)| {
-                let new_basis = if self.correction_power[qubit as usize] % 2 == 1 {
-                    if basis == 'X' { 'Y' } else if basis == 'Y' { 'X' } else { basis }
-                } else {
-                    basis
-                };
-                Operator { qubit, basis: new_basis }
-            })
-            .collect();
-        let swapped: Vec<(u16, char)> = orig_ops
-            .iter()
-            .zip(new_ops.iter())
-            .filter(|&(&(_, ob), new_op)| ob != new_op.basis)
-            .map(|(_, new_op)| (new_op.qubit, new_op.basis))
-            .collect();
+        // Apply S^k conjugation in a single pass: odd power swaps X↔Y (Z unchanged).
+        let mut new_ops = Vec::with_capacity(orig_ops.len());
+        let mut swapped = Vec::new();
+        for &(qubit, basis) in &orig_ops {
+            let new_basis = if self.correction_power[qubit as usize] % 2 == 1 {
+                if basis == 'X' { 'Y' } else if basis == 'Y' { 'X' } else { basis }
+            } else {
+                basis
+            };
+            if new_basis != basis {
+                swapped.push((qubit, new_basis));
+            }
+            new_ops.push(Operator { qubit, basis: new_basis });
+        }
         #[cfg(debug_assertions)]
         for &(q, new_basis) in &swapped {
             info_sched!(
@@ -967,9 +968,23 @@ impl Scheduler {
                 }
             }
             // For T gates, apply just-in-time S^k conjugation (X↔Y swap for odd power).
+            // Skip entirely when no qubit in the product has an odd correction power AND
+            // the precomputed terminals are not stale from a prior conjugation — this is
+            // the common case and avoids Vec allocations + topology lookups every lcycle.
             if gate_type.is_t() {
-                let swapped = self.apply_t_conjugation(pp_id);
-                self.t_conjugated_bases.insert(pp_id, swapped);
+                let any_odd_correction = self.input.circuit.product(pp_id).operators
+                    .iter()
+                    .any(|op| self.correction_power[op.qubit as usize] % 2 == 1);
+                let was_conjugated = self.conjugated_t_products.contains(&pp_id);
+                if any_odd_correction || was_conjugated {
+                    let swapped = self.apply_t_conjugation(pp_id);
+                    if swapped.is_empty() {
+                        self.conjugated_t_products.remove(&pp_id);
+                    } else {
+                        self.conjugated_t_products.insert(pp_id);
+                        self.t_conjugated_bases.insert(pp_id, swapped);
+                    }
+                }
             }
             if *n_avail_magic > 0 || !gate_type.is_t() {
                 info_sched!("  Trying to schedule product {}", self.input.circuit.product(pp_id));
