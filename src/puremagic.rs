@@ -67,6 +67,9 @@ struct Args {
     /// Disable T gate failures (every T gate succeeds on first attempt)
     #[arg(short = 'F', long)]
     no_t_failures: bool,
+    /// Record normalized cultivation-time distribution to <CIRCUIT_FNAME>.cultivation_dist
+    #[arg(short = 'C', long)]
+    record_cultivation_dist: bool,
     /// Number of ancilla between each data patch (all magic routing only)
     #[arg(short, long, default_value = "1")]
     ancilla_rows: usize,
@@ -108,6 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
     let n_products = circuit.n_products();
+    let n_sx_cliffords = circuit.pps.iter().filter(|pp| pp.gate_type.is_s() || pp.gate_type.is_sx()).count();
     let _n_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
@@ -146,12 +150,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.plot.join(" "),
         args.rseed,
         args.no_t_failures,
+        args.record_cultivation_dist,
     );
 
     let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
+    if !args.no_t_failures && n_sx_cliffords > 0 {
+        let corrections = sched.correction_gates_emitted;
+        println!(
+            "S correction gates: {} / {} S/SX Cliffords ({:.1}%)",
+            corrections,
+            n_sx_cliffords,
+            corrections as f64 * 100.0 / n_sx_cliffords as f64
+        );
+    }
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
     //let min_layers = if args.no_t_failures { n_layers } else { (n_layers * 3) / 2 };

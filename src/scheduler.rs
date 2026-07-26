@@ -6,7 +6,7 @@ use crate::debug_sched;
 use crate::fn_timer;
 use crate::info_sched;
 use crate::node::NodeType;
-use crate::pauliproduct::{Operator, PauliProduct};
+use crate::pauliproduct::{GateType, Operator, PauliProduct};
 use crate::steinertree::SteinerTree;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
@@ -17,7 +17,7 @@ use indexmap::{IndexMap, IndexSet};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -183,12 +183,12 @@ pub(crate) struct Scheduler {
     /// (remaining_lcycles, product, node_ids, opt_tree).
     /// CX occupies 2 lcycles; S/SX occupy 3.
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
-    /// T gates that failed the 50% coin flip; held for one recovery lcycle.
-    failed_t_paths: IndexMap<i32, (PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     pub(crate) t_gate_failures: usize,
+    pub(crate) correction_gates_emitted: usize,
     pub(crate) stree_computation: SteinerTree,
     pub(crate) astar: AStar,
     no_t_failures: bool,
+    record_cultivation_dist: bool,
     /// Reusable buffers to avoid per-lcycle allocations.
     terminals_buf: Vec<u16>,
     scheduled_ids_buf: Vec<i32>,
@@ -207,15 +207,30 @@ pub(crate) struct Scheduler {
     remaining_parents: Vec<usize>,
     pub(crate) pp_paths: Vec<(i32, Option<Rc<TreeGraph>>)>,
     current_lcycle: usize,
-    /// T gate IDs that completed a recovery lcycle this cycle (populated by complete_lcycle).
-    recovery_t_ids: Vec<i32>,
+    /// Per-qubit accumulated S^k correction power (0=none, 1=S, 2=Z, 3=S†).
+    /// Incremented on T gate failure; cleared when a Clifford is encountered or power cycles to 0.
+    correction_power: Vec<u8>,
+    /// Pauli basis of the most-recent conjugated T-gate operator per qubit.
+    /// Used as the operator basis when emitting an S correction before a Clifford.
+    correction_basis: Vec<char>,
+    /// Next ID to assign when creating a dynamic S correction product.
+    next_correction_id: i32,
+    /// Maps product_id → (qubit, new_basis) pairs for T gates whose operators were
+    /// conjugated this lcycle. Populated in sched_remaining; consumed in process_t_gate_outcomes.
+    t_conjugated_bases: HashMap<i32, Vec<(u16, char)>>,
+    /// Set of T gate product IDs whose precomputed_terminals/root_info currently reflect a
+    /// conjugated (non-original) operator basis.  Needed to trigger a restore call to
+    /// apply_t_conjugation when correction_power later drops back to zero.
+    conjugated_t_products: HashSet<i32>,
 }
 
 impl Scheduler {
     pub(crate) fn new(
         circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-        plot_option: String, rseed: u32, no_t_failures: bool,
+        plot_option: String, rseed: u32, no_t_failures: bool, record_cultivation_dist: bool,
     ) -> Self {
+        let n_qubits = circuit.n_qubits;
+        let n_initial_products = circuit.n_products() as i32;
         if log_level != "none" {
             let trace_fname = format!("{}.sched_trace", circuit_stem(&circuit.circuit_fname));
             let level_filter = match log_level.to_lowercase().as_str() {
@@ -244,11 +259,12 @@ impl Scheduler {
             scheduled_products: IndexSet::new(),
             used: vec![false; n_nodes],
             clifford_paths: IndexMap::new(),
-            failed_t_paths: IndexMap::new(),
             t_gate_failures: 0,
+            correction_gates_emitted: 0,
             stree_computation: SteinerTree::new(n_nodes),
             astar: AStar::new(n_nodes),
             no_t_failures,
+            record_cultivation_dist,
             terminals_buf: Vec::new(),
             scheduled_ids_buf: Vec::new(),
             children_buf: Vec::new(),
@@ -263,7 +279,11 @@ impl Scheduler {
             remaining_parents: Vec::new(),
             pp_paths: Vec::new(),
             current_lcycle: 0,
-            recovery_t_ids: Vec::new(),
+            correction_power: vec![0u8; n_qubits],
+            correction_basis: vec!['X'; n_qubits],
+            next_correction_id: n_initial_products,
+            t_conjugated_bases: HashMap::new(),
+            conjugated_t_products: HashSet::new(),
         }
     }
 
@@ -306,7 +326,6 @@ impl Scheduler {
         self.pp_paths = Vec::new();
         while !self.pps_pending.is_empty()
             || !self.clifford_paths.is_empty()
-            || !self.failed_t_paths.is_empty()
         {
             self.timers.start(self.loop_timer);
             self.current_lcycle += 1;
@@ -328,22 +347,23 @@ impl Scheduler {
                 // Show a progress bar during the non-plotting middle section of the run.
                 // The first `plot_lcycles` and last `plot_lcycles` are plotted instead.
                 if self.current_lcycle >= plot_lcycles
-                    && (tot_pps_to_sched - n_scheduled >= plot_lcycles)
+                    && n_scheduled + plot_lcycles <= tot_pps_to_sched
                 {
                     if self.current_lcycle == plot_lcycles {
                         print!("Scheduling {} products:    ", tot_pps_to_sched);
                     }
-                    let pct_complete = (n_scheduled * 100) / tot_pps_to_sched;
+                    let pct_complete =
+                        ((n_scheduled * 100) / tot_pps_to_sched).min(100);
                     if pct_complete > prev_pct_complete {
                         // \x08 is backspace; overwrite the previous "XX%" in-place.
                         print!("\x08\x08\x08{:02}%", pct_complete);
                         std::io::stdout().flush()?;
                         prev_pct_complete = pct_complete;
                     }
-                    if tot_pps_to_sched - n_scheduled == plot_lcycles {
+                    if n_scheduled + plot_lcycles == tot_pps_to_sched {
                         print!("\n");
                     }
-                } else {
+                } else if plotting {
                     let plot_info_str = self.stats.plot_info_str();
                     assert!(!plot_info_str.is_empty());
                     let fname_added = format!(".{}", self.current_lcycle);
@@ -375,7 +395,7 @@ impl Scheduler {
                                         }
                                     }
                                 } else if pp.gate_type.is_t() {
-                                    if self.recovery_t_ids.contains(pp_id) { 2 } else { 1 }
+                                    1
                                 } else {
                                     1
                                 };
@@ -391,10 +411,14 @@ impl Scheduler {
                 }
             } else {
                 debug_sched!("Could not schedule anything on lcycle {}", self.current_lcycle);
-                // If nothing is cultivating, no magic state will ever become ready,
-                // so the layout is fundamentally unable to make progress.
-                if !(0..self.input.topo.n_nodes)
-                    .any(|node_i| self.input.topo.is_cultivating(node_i as u16))
+                // If nothing is cultivating, no magic state will ever become ready —
+                // but only T gates need magic. If all pending products are Cliffords
+                // (e.g. correction S gate emission temporarily failed), they don't need
+                // magic and will route once the area frees up; don't error in that case.
+                let has_pending_t = self.pps_pending.iter().any(|pp| pp.gate_type.is_t());
+                if has_pending_t
+                    && !(0..self.input.topo.n_nodes)
+                        .any(|node_i| self.input.topo.is_cultivating(node_i as u16))
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
@@ -409,9 +433,7 @@ impl Scheduler {
         self.check_clifford_repetitions()?;
         #[cfg(debug_assertions)]
         self.check_schedule()?;
-        // Return total lcycles and total "attempts" (successes + failures), so the
-        // caller can compute the true T-gate count including failed first attempts.
-        Ok((self.current_lcycle, self.scheduled_products.len() + self.t_gate_failures))
+        Ok((self.current_lcycle, self.scheduled_products.len()))
     }
 
     fn init_magic_nodes(&mut self) {
@@ -457,7 +479,11 @@ impl Scheduler {
                 return false;
             }
             let (_, preferred, side) = &root_info[i];
-            if preferred.iter().all(|&rid| self.used[rid as usize])
+            // Only reject when there are root candidates and all are occupied.
+            // Empty preferred+side means the gate uses sched_s_sx (no root needed),
+            // so the vacuous-truth case must not fire here.
+            if (!preferred.is_empty() || !side.is_empty())
+                && preferred.iter().all(|&rid| self.used[rid as usize])
                 && side.iter().all(|&rid| self.used[rid as usize])
             {
                 info_sched!("  No unused root candidates for node {}", node_id);
@@ -539,6 +565,92 @@ impl Scheduler {
             }
         }
         println!("Precomputed {} multi-term Clifford trees", n_precomputed);
+    }
+
+    /// Computes root candidate info for a set of already-computed terminal node IDs.
+    /// Extracted from `precompute_terminals_and_roots` so it can be called for dynamically
+    /// constructed operator lists (e.g. after S^k conjugation of T gate operators).
+    fn compute_root_info_for_terminals(
+        topo: &TopoGraph, terminals: &[u16],
+    ) -> Vec<(bool, Vec<u16>, Vec<u16>)> {
+        let mut root_info = Vec::with_capacity(terminals.len());
+        for &term_id in terminals {
+            let node = topo.node(term_id);
+            let is_paired =
+                node.paired_data_id.map(|pid| terminals.contains(&pid)).unwrap_or(false);
+            let mut preferred = Vec::new();
+            let mut side = Vec::new();
+            if is_paired {
+                let is_x = topo.label(term_id).contains('X');
+                for &nb_id in node.nbs_slice() {
+                    let nb = topo.node(nb_id);
+                    if !nb.is_routing() {
+                        continue;
+                    }
+                    if (is_x && nb.pos.1 < node.pos.1) || (!is_x && nb.pos.1 > node.pos.1) {
+                        preferred.push(nb_id);
+                    } else if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                        side.push(nb_id);
+                    }
+                }
+            } else {
+                for &nb_id in node.nbs_slice() {
+                    let nb = topo.node(nb_id);
+                    if nb.is_routing() && nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
+                        preferred.push(nb_id);
+                    }
+                }
+            }
+            root_info.push((is_paired, preferred, side));
+        }
+        root_info
+    }
+
+    /// Applies the current per-qubit S^k conjugation to a T gate's operators just-in-time,
+    /// updates `precomputed_terminals` and `precomputed_root_info` for the product, and
+    /// returns the list of (qubit, new_basis) pairs where a swap occurred.
+    ///
+    /// Always recomputes from the circuit's original operators so that correction_power
+    /// changes between lcycles are always reflected correctly.
+    fn apply_t_conjugation(&mut self, pp_id: i32) -> Vec<(u16, char)> {
+        // Copy original operator data to release the borrow on self.input.circuit.
+        let orig_ops: Vec<(u16, char)> = self
+            .input
+            .circuit
+            .product(pp_id)
+            .operators
+            .iter()
+            .map(|op| (op.qubit, op.basis))
+            .collect();
+        // Apply S^k conjugation in a single pass: odd power swaps X↔Y (Z unchanged).
+        let mut new_ops = Vec::with_capacity(orig_ops.len());
+        let mut swapped = Vec::new();
+        for &(qubit, basis) in &orig_ops {
+            let new_basis = if self.correction_power[qubit as usize] % 2 == 1 {
+                if basis == 'X' { 'Y' } else if basis == 'Y' { 'X' } else { basis }
+            } else {
+                basis
+            };
+            if new_basis != basis {
+                swapped.push((qubit, new_basis));
+            }
+            new_ops.push(Operator { qubit, basis: new_basis });
+        }
+        #[cfg(debug_assertions)]
+        for &(q, new_basis) in &swapped {
+            info_sched!(
+                "  T gate {}: qubit {} conjugated to {} (S^{} correction active)",
+                pp_id,
+                q,
+                new_basis,
+                self.correction_power[q as usize]
+            );
+        }
+        let terminals = operators_to_node_ids(&self.input.topo, &new_ops);
+        let root_info = Self::compute_root_info_for_terminals(&self.input.topo, &terminals);
+        self.precomputed_terminals[pp_id as usize] = terminals;
+        self.precomputed_root_info[pp_id as usize] = root_info;
+        swapped
     }
 
     /// Precomputes terminal node IDs and root candidates for every product.
@@ -625,7 +737,7 @@ impl Scheduler {
         let initial_magic = n_avail_magic;
         self.pp_paths.clear();
         self.used.fill(false);
-        // Collect carry-forward data before the loop to release borrows on the maps.
+        // Collect carry-forward data before the loop to release borrows on the map.
         let clifford_carry: Vec<(i32, Vec<u16>, Option<Rc<TreeGraph>>)> = self
             .clifford_paths
             .values()
@@ -633,20 +745,10 @@ impl Scheduler {
                 (pp.id, node_ids.clone(), opt_tree.as_ref().map(Rc::clone))
             })
             .collect();
-        let failed_t_carry: Vec<(i32, Vec<u16>, Option<Rc<TreeGraph>>)> = self
-            .failed_t_paths
-            .values()
-            .map(|(pp, node_ids, opt_tree)| {
-                (pp.id, node_ids.clone(), opt_tree.as_ref().map(Rc::clone))
-            })
-            .collect();
         for (pp_id, node_ids, opt_tree) in clifford_carry {
             self.carry_forward_path(pp_id, &node_ids, opt_tree);
         }
-        for (pp_id, node_ids, opt_tree) in failed_t_carry {
-            self.carry_forward_path(pp_id, &node_ids, opt_tree);
-        }
-        let carry_forward_count = self.clifford_paths.len() + self.failed_t_paths.len();
+        let carry_forward_count = self.clifford_paths.len();
         let tot_available = carry_forward_count + self.pps_pending.len();
         info_sched!("  Remaining to schedule: {}", self.pps_pending.len());
         self.sched_precomputed(plotting);
@@ -662,20 +764,27 @@ impl Scheduler {
         );
         if self.pp_paths.is_empty() {
             if n_avail_magic > 0 {
-                panic!(
-                    "{}",
-                    format!(
-                        "lcycle {}: Cannot schedule products [{}] on current layout ({} magic)",
-                        self.current_lcycle,
-                        self.pps_pending
-                            .iter()
-                            .map(|pp| pp.to_operator_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        n_avail_magic,
-                    )
-                    .red()
-                );
+                // Only panic when T gates are pending but couldn't consume available magic.
+                // If all pending products are Cliffords whose correction S gate emission failed
+                // this lcycle (e.g. routing area temporarily congested), they will retry next
+                // lcycle — that is not a bug.
+                let has_pending_t = self.pps_pending.iter().any(|pp| pp.gate_type.is_t());
+                if has_pending_t {
+                    panic!(
+                        "{}",
+                        format!(
+                            "lcycle {}: Cannot schedule products [{}] on current layout ({} magic)",
+                            self.current_lcycle,
+                            self.pps_pending
+                                .iter()
+                                .map(|pp| pp.to_operator_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            n_avail_magic,
+                        )
+                        .red()
+                    );
+                }
             }
             false
         } else {
@@ -741,10 +850,92 @@ impl Scheduler {
         }
     }
 
+    /// Attempts to emit a physical S correction gate for `qubit` when `correction_power[qubit]`
+    /// is non-zero. Returns `true` if the qubit's correction was handled (gate emitted or power=2
+    /// classical-only), `false` if scheduling the physical S gate failed this lcycle.
+    ///
+    /// On success the correction power is cleared to 0. On failure (NoPath), the circuit push is
+    /// rolled back and the correction power is left unchanged so the caller can retry next lcycle.
+    fn try_emit_s_correction(&mut self, qubit: u16, plotting: bool) -> bool {
+        let q = qubit as usize;
+        let power = self.correction_power[q];
+        info_sched!(
+            "  Correction emit for qubit {} (power={}, basis={})",
+            qubit,
+            power,
+            self.correction_basis[q]
+        );
+        if power == 0 {
+            return true;
+        }
+        if power == 2 {
+            // Z correction: tracked classically — no physical gate needed.
+            info_sched!("  Qubit {}: Z correction (classical), clearing power", qubit);
+            self.correction_power[q] = 0;
+            return true;
+        }
+        // power 1 (S) or 3 (S†): emit a physical S gate on the qubit.
+        let s_id = self.next_correction_id;
+        let basis = self.correction_basis[q];
+        let s_pp = PauliProduct {
+            id: s_id,
+            gate_type: GateType::S,
+            operators: vec![Operator { qubit, basis }],
+            parents: vec![],
+            children: vec![],
+            max_qubit: qubit,
+        };
+        self.input.circuit.pps.push(s_pp);
+        let new_ops = vec![Operator { qubit, basis }];
+        let terminals = operators_to_node_ids(&self.input.topo, &new_ops);
+        let root_info = Self::compute_root_info_for_terminals(&self.input.topo, &terminals);
+        self.precomputed_terminals.push(terminals);
+        self.precomputed_root_info.push(root_info);
+
+        if !self.terminal_nodes(s_id) {
+            self.input.circuit.pps.pop();
+            self.precomputed_terminals.pop();
+            self.precomputed_root_info.pop();
+            return false;
+        }
+        let result = self.sched_s_sx(s_id, plotting);
+        match result {
+            PathResult::PathFound(opt_graph) => {
+                info_sched!(
+                    "  Emitted correction S gate id={} for qubit {} (power={}), clearing",
+                    s_id,
+                    qubit,
+                    power
+                );
+                self.next_correction_id += 1;
+                self.correction_gates_emitted += 1;
+                if let Some(ref g) = opt_graph {
+                    let node_ids: Vec<u16> = g.iter_nodes().collect();
+                    self.mark_nodes_used(&node_ids);
+                }
+                self.pp_paths.push((s_id, opt_graph.map(Rc::new)));
+                self.correction_power[q] = 0;
+                true
+            }
+            PathResult::NoPath => {
+                info_sched!(
+                    "  Correction S gate emit for qubit {} (power={}) failed (NoPath), will retry next lcycle",
+                    qubit,
+                    power
+                );
+                self.input.circuit.pps.pop();
+                self.precomputed_terminals.pop();
+                self.precomputed_root_info.pop();
+                false
+            }
+        }
+    }
+
     /// Second pass: greedily schedule T gates, measurements, and S/SX gates.
     /// T gates are skipped when no magic state is available.
     fn sched_remaining(&mut self, n_avail_magic: &mut usize, plotting: bool) {
         let _timer = accum_start!(self.timers);
+        self.t_conjugated_bases.clear();
         for i in 0..self.pps_pending.len() {
             let pp_id = self.pps_pending[i].id;
             let pp = self.input.circuit.product(pp_id);
@@ -752,6 +943,49 @@ impl Scheduler {
                 continue;
             }
             let (pp_id, gate_type) = (pp.id, pp.gate_type);
+            // For single-qubit Clifford gates (S/SX), check for pending correction and emit
+            // a physical S gate before proceeding.  CX is multi-qubit and handled by
+            // sched_precomputed, so it never appears here.
+            if gate_type.is_s() || gate_type.is_sx() {
+                let op_qubit = self.input.circuit.product(pp_id).operators[0].qubit;
+                if self.correction_power[op_qubit as usize] != 0 {
+                    info_sched!(
+                        "  Clifford {:?} {} (qubit {}) deferred: pending correction power={}",
+                        gate_type,
+                        pp_id,
+                        op_qubit,
+                        self.correction_power[op_qubit as usize]
+                    );
+                    let emitted = self.try_emit_s_correction(op_qubit, plotting);
+                    // Block the Clifford's qubit node only when the correction S gate was
+                    // successfully placed; if emission failed, leave the node free so T gates
+                    // can still route through it this lcycle (avoids deadlock).
+                    if emitted {
+                        let pp = self.input.circuit.product(pp_id);
+                        Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
+                    }
+                    continue;
+                }
+            }
+            // For T gates, apply just-in-time S^k conjugation (X↔Y swap for odd power).
+            // Skip entirely when no qubit in the product has an odd correction power AND
+            // the precomputed terminals are not stale from a prior conjugation — this is
+            // the common case and avoids Vec allocations + topology lookups every lcycle.
+            if gate_type.is_t() {
+                let any_odd_correction = self.input.circuit.product(pp_id).operators
+                    .iter()
+                    .any(|op| self.correction_power[op.qubit as usize] % 2 == 1);
+                let was_conjugated = self.conjugated_t_products.contains(&pp_id);
+                if any_odd_correction || was_conjugated {
+                    let swapped = self.apply_t_conjugation(pp_id);
+                    if swapped.is_empty() {
+                        self.conjugated_t_products.remove(&pp_id);
+                    } else {
+                        self.conjugated_t_products.insert(pp_id);
+                        self.t_conjugated_bases.insert(pp_id, swapped);
+                    }
+                }
+            }
             if *n_avail_magic > 0 || !gate_type.is_t() {
                 info_sched!("  Trying to schedule product {}", self.input.circuit.product(pp_id));
                 let result = if !self.terminal_nodes(pp_id) {
@@ -913,21 +1147,15 @@ impl Scheduler {
         self.scheduled_ids_buf.extend(self.pp_paths.iter().map(|(id, _)| *id));
         self.pps_pending.retain(|pp| !self.scheduled_ids_buf.contains(&pp.id));
         debug_sched!("After purge, pps_to_sched len {}", self.pps_pending.len());
-        // Only count T gates that are newly scheduled (not recovery lcycles) to
-        // keep the pool-size estimate accurate.
         let t_newly_scheduled = self
             .pp_paths
             .iter()
-            .filter(|(id, _)| {
-                self.input.circuit.product(*id).gate_type.is_t()
-                    && !self.failed_t_paths.contains_key(id)
-            })
+            .filter(|(id, _)| self.input.circuit.product(*id).gate_type.is_t())
             .count();
         self.cultivation.t_products_remaining =
             self.cultivation.t_products_remaining.saturating_sub(t_newly_scheduled);
-        let (t_failed_ids, t_recovery_ids) = self.process_t_gate_outcomes();
-        self.recovery_t_ids = t_recovery_ids;
-        self.unlock_children(&t_failed_ids);
+        self.process_t_gate_outcomes();
+        self.unlock_children();
         self.advance_clifford_state();
         debug_sched!(
             "After inserting previous lcycle cliffords, pps_to_sched len {}",
@@ -940,83 +1168,60 @@ impl Scheduler {
             self.children_buf.len(),
             self.pps_pending.len()
         );
-        let lcycle_ids: Vec<i32> = self
-            .pp_paths
-            .iter()
-            .filter(|(id, _)| !t_failed_ids.contains(id))
-            .map(|(id, _)| *id)
-            .collect();
+        let lcycle_ids: Vec<i32> = self.pp_paths.iter().map(|(id, _)| *id).collect();
         self.lcycle_scheduled.push((self.current_lcycle, lcycle_ids));
         #[cfg(debug_assertions)]
-        self.check_lcycle(&t_failed_ids, &self.recovery_t_ids)?;
-        self.scheduled_products.extend(
-            self.pp_paths.iter().filter(|(id, _)| !t_failed_ids.contains(id)).map(|(id, _)| *id),
-        );
+        self.check_lcycle()?;
+        self.scheduled_products.extend(self.pp_paths.iter().map(|(id, _)| *id));
         Ok(())
     }
 
-    /// Coin-flip T gate outcomes; updates `failed_t_paths`; returns (failed_ids, recovery_ids).
+    /// Coin-flip T gate outcomes and update per-qubit correction tracking.
     ///
-    /// First-attempt T gates succeed with 50% probability (or always if `no_t_failures`).
-    /// Recovery-lcycle T gates (already in `failed_t_paths`) always succeed.
-    /// Failed gates are stored in `failed_t_paths` with the magic root trimmed off
-    /// so the routing subtree can be reused in the recovery lcycle.
-    fn process_t_gate_outcomes(&mut self) -> (Vec<i32>, Vec<i32>) {
-        let mut t_failed_ids: Vec<i32> = Vec::new();
-        let mut t_recovery_ids: Vec<i32> = Vec::new();
+    /// T gates complete in one lcycle regardless of outcome. A failed T gate
+    /// increments `correction_power` for each of its qubits (tracked classically);
+    /// no recovery lcycle is needed.
+    fn process_t_gate_outcomes(&mut self) {
         let pp_ids: Vec<i32> = self.pp_paths.iter().map(|(id, _)| *id).collect();
-        for pp_id in &pp_ids {
-            let pp_id = *pp_id;
-            let pp = self.input.circuit.product(pp_id);
-            if pp.gate_type.is_t() {
-                if self.failed_t_paths.contains_key(&pp_id) {
-                    t_recovery_ids.push(pp_id);
-                    info_sched!("  T gate {} recovery lcycle succeeded", pp_id);
-                } else if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
-                    info_sched!("  T gate {} succeeded on first attempt", pp_id);
-                } else {
-                    t_failed_ids.push(pp_id);
-                    self.t_gate_failures += 1;
-                    info_sched!(
-                        "  T gate {} failed (50% probability), recovery lcycle next",
-                        pp_id
-                    );
-                }
-            }
-        }
-        let pp_paths_snapshot: Vec<(i32, Option<Rc<TreeGraph>>)> =
-            self.pp_paths.iter().map(|(id, opt)| (*id, opt.as_ref().map(Rc::clone))).collect();
-        for (pp_id, opt_pp_path) in &pp_paths_snapshot {
-            let pp_id = *pp_id;
+        for pp_id in pp_ids {
             let pp = self.input.circuit.product(pp_id);
             if !pp.gate_type.is_t() {
                 continue;
             }
-            if t_failed_ids.contains(&pp_id) {
-                // Store the routing subtree without the magic root so the recovery
-                // lcycle can reuse the same data/routing nodes while finding a new
-                // magic state.  When not plotting, fall back to just the terminal IDs.
-                let trimmed_opt_tree: Option<Rc<TreeGraph>> = opt_pp_path.as_ref().map(|tree| {
-                    let mut t = (**tree).clone();
-                    t.trim_magic_root();
-                    Rc::new(t)
-                });
-                let node_ids: Vec<u16> = if let Some(ref trimmed) = trimmed_opt_tree {
-                    trimmed.iter_nodes().collect()
-                } else {
-                    self.precomputed_terminals[pp_id as usize].clone()
-                };
-                self.failed_t_paths.insert(pp_id, (pp.clone(), node_ids, trimmed_opt_tree));
+            if self.no_t_failures || self.rng_uniform.gen_bool(0.5) {
+                info_sched!("  T gate {} succeeded", pp_id);
             } else {
-                self.failed_t_paths.swap_remove(&pp_id);
+                self.t_gate_failures += 1;
+                info_sched!("  T gate {} failed (50% probability), S correction tracked", pp_id);
+                // Update per-qubit correction tracking using the conjugated operator bases
+                // recorded in sched_remaining.  Each failed qubit increments its S^k power.
+                let pp = self.input.circuit.product(pp_id);
+                let conjugated_map: HashMap<u16, char> = self
+                    .t_conjugated_bases
+                    .get(&pp_id)
+                    .map(|v| v.iter().copied().collect())
+                    .unwrap_or_default();
+                let orig_ops: Vec<(u16, char)> =
+                    pp.operators.iter().map(|op| (op.qubit, op.basis)).collect();
+                for (qubit, orig_basis) in orig_ops {
+                    let q = qubit as usize;
+                    self.correction_power[q] = (self.correction_power[q] + 1) % 4;
+                    self.correction_basis[q] =
+                        conjugated_map.get(&qubit).copied().unwrap_or(orig_basis);
+                    info_sched!(
+                        "    Qubit {} correction: power now {} (basis={})",
+                        qubit,
+                        self.correction_power[q],
+                        self.correction_basis[q]
+                    );
+                }
             }
         }
-        (t_failed_ids, t_recovery_ids)
     }
 
     /// Decrements `remaining_parents` for each completed product and collects
     /// newly-ready children into `children_buf`.
-    fn unlock_children(&mut self, t_failed_ids: &[i32]) {
+    fn unlock_children(&mut self) {
         self.children_buf.clear();
         for i in 0..self.pp_paths.len() {
             let pp_id = self.pp_paths[i].0;
@@ -1035,9 +1240,6 @@ impl Scheduler {
                     None => continue,
                     _ => {}
                 }
-            }
-            if gate_type.is_t() && t_failed_ids.contains(&pp_id) {
-                continue;
             }
             let children: Vec<i32> = self.input.circuit.product(pp_id).children.clone();
             for child_id in children {
@@ -1109,11 +1311,12 @@ impl Scheduler {
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);
 
-        // Write normalized cultivation-time distribution to file.
-        let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
-        match self.write_cultivation_dist(&dist_fname, min, max) {
-            Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
-            Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
+        if self.record_cultivation_dist {
+            let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
+            match self.write_cultivation_dist(&dist_fname, min, max) {
+                Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
+                Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
+            }
         }
     }
 
@@ -1137,7 +1340,7 @@ impl Scheduler {
     }
 
     #[cfg(debug_assertions)]
-    fn check_lcycle(&self, _t_failed_ids: &[i32], t_recovery_ids: &[i32]) -> io::Result<()> {
+    fn check_lcycle(&self) -> io::Result<()> {
         let mut lcycle_used = vec![false; self.input.topo.n_nodes];
         for &(pp_id, ref opt_tree) in &self.pp_paths {
             let Some(tree) = opt_tree else { continue };
@@ -1157,7 +1360,7 @@ impl Scheduler {
                     ));
                 }
             }
-            for nid in operators_to_node_ids(&self.input.topo, &pp.operators) {
+            for &nid in &self.precomputed_terminals[pp_id as usize] {
                 if !tree.contains_node(nid) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
@@ -1169,7 +1372,7 @@ impl Scheduler {
                     ));
                 }
             }
-            if pp.gate_type.is_t() && !t_recovery_ids.contains(&pp_id) {
+            if pp.gate_type.is_t() {
                 match tree.root_node_id {
                     None => {
                         return Err(io::Error::new(
@@ -1421,7 +1624,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         let mut sched =
-            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false);
+            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false);
         sched.sched_circuit().expect("sched_circuit failed");
         sched
     }
@@ -1494,28 +1697,19 @@ mod tests {
     }
 
     #[test]
-    fn failed_t_paths_empty_after_schedule_completes() {
-        let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
-        let sched = run_scheduler(lines, 0);
-        assert!(
-            sched.failed_t_paths.is_empty(),
-            "failed_t_paths not empty after schedule_circuit: {:?}",
-            sched.failed_t_paths.keys().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn lcycle_count_bounded_by_t_gate_failure_overhead() {
+    fn lcycle_count_not_inflated_by_t_gate_failures() {
+        // T gate failures are tracked classically (correction_power); they do NOT
+        // add extra scheduling lcycles.  All N independent T gates complete in at
+        // most N lcycles regardless of failure count.
         let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
         let sched = run_scheduler(lines, 5);
         let n_t = 4usize;
         let active_lcycles = sched.lcycle_scheduled.len();
         assert!(
-            active_lcycles <= n_t + sched.t_gate_failures,
-            "active lcycles {} > n_t {} + failures {}",
+            active_lcycles <= n_t,
+            "active lcycles {} > n_t {} (failures should not add extra lcycles)",
             active_lcycles,
             n_t,
-            sched.t_gate_failures
         );
     }
 }

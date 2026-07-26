@@ -89,6 +89,7 @@ class Series:
     is_ratio: bool = False
     ratio_label: Optional[str] = None
     point_labels: Optional[list] = None
+    y_key: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +217,7 @@ def parse_output_file(filepath):
                     cur["avg_cultivation_time"] = float(m.group(1))
                     in_cultivation_block = False
 
-            if m := re.match(r"Min volume estimate:\s+(\d+)", s):
+            if m := re.match(r"Volume estimate:\s+(\d+)", s):
                 cur["min_volume"] = int(m.group(1))
 
             if m := re.match(r"Products per layer:\s+([0-9.eE+\-]+)\s+avg", s):
@@ -348,6 +349,8 @@ def prettify_circuit_name(name):
     # separate trailing _n<digits> or _N<digits> qubit count: foo_n8 -> foo(8)
     name = re.sub(r"[_-][nN](\d+)$", lambda mo: f"({mo.group(1)})", name)
 
+    name = re.sub(r"(?i)hubbard_18", "hubbard(18)", name)
+
     return name
 
 
@@ -473,18 +476,18 @@ def parse_flasq_file(filepath):
         FLASQ Lower Bound for <filepath>
           Layout: ...
         ========================================================================
-          Max simultaneous qubit usage (Q)          : <Q>
+          Circuit qubits (n_qubits)                 : <n>
           ...
           FLASQ spacetime volume (S, blocks)        :      <cons>       <opt>
         ========================================================================
 
     The circuit name is taken from the "FLASQ Lower Bound for" header line,
-    Q from the "Max simultaneous qubit usage" row, and the two volumes from
-    the "FLASQ spacetime volume" row.
+    n_data_qubits from the "Circuit qubits (n_qubits)" row, and the two volumes
+    from the "FLASQ spacetime volume" row.
     """
     entries = []
     current_circuit = None
-    current_q = None
+    current_n_qubits = None
     with open(filepath) as f:
         for line in f:
             s = line.strip()
@@ -492,12 +495,12 @@ def parse_flasq_file(filepath):
             m = re.match(r"^FLASQ Lower Bound for\s+(.+)$", s)
             if m:
                 current_circuit = m.group(1).strip()
-                current_q = None
+                current_n_qubits = None
                 continue
-            # Q row: "Max simultaneous qubit usage (Q)  :  <Q>"
-            m = re.match(r"Max simultaneous qubit usage \(Q\)\s*:\s*(\d+)", s)
+            # n_qubits row: "Circuit qubits (n_qubits)  :  <n>"
+            m = re.match(r"Circuit qubits \(n_qubits\)\s*:\s*(\d+)", s)
             if m and current_circuit is not None:
-                current_q = int(m.group(1))
+                current_n_qubits = int(m.group(1))
                 continue
             # Volume row: "FLASQ spacetime volume (S, blocks)  :  <cons>  <opt>"
             m = re.match(
@@ -508,11 +511,11 @@ def parse_flasq_file(filepath):
                 try:
                     vol_cons = float(m.group(1))
                     vol_opt = float(m.group(2))
-                    entries.append((current_circuit, vol_cons, vol_opt, current_q))
+                    entries.append((current_circuit, vol_cons, vol_opt, current_n_qubits))
                 except ValueError:
                     pass
                 current_circuit = None
-                current_q = None
+                current_n_qubits = None
     return entries
 
 
@@ -667,7 +670,7 @@ def main():
         action="store_true",
         default=False,
         help=(
-            "Read the 'Min volume estimate' line from each data file and plot it as "
+            "Read the 'Volume estimate' line from each data file and plot it as "
             "an additional dashed series alongside each regular volume series. "
             "Only meaningful when -y is 'volume'."
         ),
@@ -901,6 +904,7 @@ def main():
                         circuits=merged["circuit"].tolist(),
                         is_ratio=True,
                         ratio_label=ratio_label,
+                        y_key=y_key,
                     )
                 )
             else:
@@ -931,6 +935,7 @@ def main():
                         ys=ys_vals,
                         circuits=d1["circuit"].fillna("").tolist(),
                         point_labels=pt_labels,
+                        y_key=y_key,
                     )
                 )
 
@@ -952,7 +957,9 @@ def main():
     def draw_series(ax, series_list, yk_list, colour_offset=0):
         y_key = yk_list[0] if isinstance(yk_list, list) else yk_list
         draw_lines = args.lines or args.lines_with_markers
-        show_markers = args.lines_with_markers or is_cultivation_x or is_weight_x
+        show_markers = args.lines_with_markers or (
+            (is_cultivation_x or is_weight_x) and not args.lines
+        )
         is_timing_y = y_key == "timing"
         is_total_qubits_y = y_key == "total_qubits"
         is_ancilla_qubits_y = "ancilla_qubits" in (
@@ -1075,8 +1082,10 @@ def main():
             ratio_series = [s for s in series_list if s.is_ratio]
             non_ratio_series = [s for s in series_list if not s.is_ratio]
             if ratio_series:
-                # Use the first ratio series (there is typically only one per axis)
-                s = ratio_series[0]
+                # In slash mode multiple ratio series share the axis; pick the one for
+                # ancilla_qubits, falling back to the first if none is tagged.
+                ancilla_rs = [s for s in ratio_series if s.y_key == "ancilla_qubits"]
+                s = ancilla_rs[0] if ancilla_rs else ratio_series[0]
                 rx = np.array(s.xs, float)
                 ry = np.array(s.ys, float)
             elif len(non_ratio_series) >= 2:
@@ -1101,7 +1110,7 @@ def main():
                     # Least-squares fit for y = A / sqrt(x):
                     # minimise sum((y - A/sqrt(x))^2)  =>  A = sum(y/sqrt(x)) / sum(1/x)
                     A = np.sum(sy / np.sqrt(sx)) / np.sum(1.0 / sx)
-                    # A *= 0.48
+                    # A *= 0.85
                     y_pred = A / np.sqrt(sx)
                     ss_res = np.sum((sy - y_pred) ** 2)
                     ss_tot = np.sum((sy - sy.mean()) ** 2)
@@ -1276,7 +1285,7 @@ def main():
             if d1.empty:
                 minvol_series.append(None)
                 continue
-            mv_label = f"{file_label} Min volume" if file_label else "Min volume"
+            mv_label = f"{file_label} Volume" if file_label else "Volume"
             mv_ys = d1["min_volume"].tolist()
             if args.max_efficiency:
                 mv_ys = [1.0 / v if v else float("nan") for v in mv_ys]
