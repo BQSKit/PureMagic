@@ -89,6 +89,7 @@ class Series:
     is_ratio: bool = False
     ratio_label: Optional[str] = None
     point_labels: Optional[list] = None
+    y_key: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -903,6 +904,7 @@ def main():
                         circuits=merged["circuit"].tolist(),
                         is_ratio=True,
                         ratio_label=ratio_label,
+                        y_key=y_key,
                     )
                 )
             else:
@@ -933,6 +935,7 @@ def main():
                         ys=ys_vals,
                         circuits=d1["circuit"].fillna("").tolist(),
                         point_labels=pt_labels,
+                        y_key=y_key,
                     )
                 )
 
@@ -1079,8 +1082,10 @@ def main():
             ratio_series = [s for s in series_list if s.is_ratio]
             non_ratio_series = [s for s in series_list if not s.is_ratio]
             if ratio_series:
-                # Use the first ratio series (there is typically only one per axis)
-                s = ratio_series[0]
+                # In slash mode multiple ratio series share the axis; pick the one for
+                # ancilla_qubits, falling back to the first if none is tagged.
+                ancilla_rs = [s for s in ratio_series if s.y_key == "ancilla_qubits"]
+                s = ancilla_rs[0] if ancilla_rs else ratio_series[0]
                 rx = np.array(s.xs, float)
                 ry = np.array(s.ys, float)
             elif len(non_ratio_series) >= 2:
@@ -1105,7 +1110,7 @@ def main():
                     # Least-squares fit for y = A / sqrt(x):
                     # minimise sum((y - A/sqrt(x))^2)  =>  A = sum(y/sqrt(x)) / sum(1/x)
                     A = np.sum(sy / np.sqrt(sx)) / np.sum(1.0 / sx)
-                    # A *= 0.48
+                    # A *= 0.85
                     y_pred = A / np.sqrt(sx)
                     ss_res = np.sum((sy - y_pred) ** 2)
                     ss_tot = np.sum((sy - sy.mean()) ** 2)
