@@ -476,18 +476,18 @@ def parse_flasq_file(filepath):
         FLASQ Lower Bound for <filepath>
           Layout: ...
         ========================================================================
-          Max simultaneous qubit usage (Q)          : <Q>
+          Circuit qubits (n_qubits)                 : <n>
           ...
           FLASQ spacetime volume (S, blocks)        :      <cons>       <opt>
         ========================================================================
 
     The circuit name is taken from the "FLASQ Lower Bound for" header line,
-    Q from the "Max simultaneous qubit usage" row, and the two volumes from
-    the "FLASQ spacetime volume" row.
+    n_data_qubits from the "Circuit qubits (n_qubits)" row, and the two volumes
+    from the "FLASQ spacetime volume" row.
     """
     entries = []
     current_circuit = None
-    current_q = None
+    current_n_qubits = None
     with open(filepath) as f:
         for line in f:
             s = line.strip()
@@ -495,12 +495,12 @@ def parse_flasq_file(filepath):
             m = re.match(r"^FLASQ Lower Bound for\s+(.+)$", s)
             if m:
                 current_circuit = m.group(1).strip()
-                current_q = None
+                current_n_qubits = None
                 continue
-            # Q row: "Max simultaneous qubit usage (Q)  :  <Q>"
-            m = re.match(r"Max simultaneous qubit usage \(Q\)\s*:\s*(\d+)", s)
+            # n_qubits row: "Circuit qubits (n_qubits)  :  <n>"
+            m = re.match(r"Circuit qubits \(n_qubits\)\s*:\s*(\d+)", s)
             if m and current_circuit is not None:
-                current_q = int(m.group(1))
+                current_n_qubits = int(m.group(1))
                 continue
             # Volume row: "FLASQ spacetime volume (S, blocks)  :  <cons>  <opt>"
             m = re.match(
@@ -511,11 +511,11 @@ def parse_flasq_file(filepath):
                 try:
                     vol_cons = float(m.group(1))
                     vol_opt = float(m.group(2))
-                    entries.append((current_circuit, vol_cons, vol_opt, current_q))
+                    entries.append((current_circuit, vol_cons, vol_opt, current_n_qubits))
                 except ValueError:
                     pass
                 current_circuit = None
-                current_q = None
+                current_n_qubits = None
     return entries
 
 
