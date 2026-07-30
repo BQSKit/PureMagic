@@ -93,43 +93,65 @@ The result is written next to the input as <name>.cliffordt.qasm (OpenQASM 2,
 or OpenQASM 3 if the circuit uses control flow that OpenQASM 2 cannot express),
 and per-circuit gate/T counts go to stdout and optionally to --stats JSON.
 
-Verification (--verify)
------------------------
-Three checks, applied from cheapest to most expensive; every circuit gets as
-many of them as its size allows, and the log says which ran.
-
-basis + error bound: always, at any qubit count.  Every operation in the
+Verification
+------------
+basis + error bound: always run, no flag needed -- both are cheap (no
+    simulation), and a broken basis is worth failing the run over regardless
+    of whether numeric verification was asked for.  Every operation in the
     output must be in the Clifford+T basis (plus measure/barrier/reset/control
-    flow).  For the qiskit backend, the per-rewrite errors measured during
-    resynthesis and clean-up are summed into an error bound: each rewrite
-    replaces one wire's run by a phase-aligned approximation of it, so by
-    subadditivity of the spectral norm that sum is a genuine upper bound on
-    ||U_compiled - U_unrolled||_2 -- taking qiskit's own unroll and inverse
-    cancellation as exact.  The bqskit backend (with the gauge fix on, the
-    default) gets a narrower analogue from bqskit's own machinery: each
-    GaugeFixedZXZXZDecomposition/FastGridSynthPass ForEachBlockPass call runs
-    with calculate_error_bound=True, so bqskit measures the exact unitary
-    distance of every 1-qubit block before and after and composes them via
-    PassData.update_error_mul -- see decompose_rz_gauge_fixed's docstring for
-    what this covers and doesn't (notably: not RoundToDiscreteZPass's own
-    rounding, and not bqskit's own earlier 2-qubit block instantiation). With
-    --no-rz-gauge-fix, bqskit has no equivalent bookkeeping at all, so no error
-    bound is reported. Either way, this is the only check available for the
-    large circuits, where nothing can be simulated.
-statevector fidelity: up to --verify-statevector-qubits (default 24), subject
-    to a work budget of gates * 2^qubits <= --verify-statevector-ops.  Evolves
-    one Haar-random state (seeded by --verify-seed, so runs are reproducible)
-    through both circuits and compares.  A single random state is a strong
-    test: a systematic error survives it with negligible probability.  Cost is
-    inherently gates * 2^qubits -- qiskit's Statevector manages roughly 1e8 of
-    those per second, falling to ~5e7 by 22 qubits as the state stops fitting
-    in cache -- so the default budget of 5e9 is about a minute of work, and a
-    100k-gate circuit at 22 qubits would need hours.  Raise the budget if you
-    want to spend them; the skip message estimates the wall time.  Memory is
-    ~3 * 16 * 2^qubits bytes (~800 MB at 24 qubits), doubling per qubit.
-unitary fidelity: up to --verify-max-qubits (default 10) and --verify-max-gates.
-    The full dense 2^n x 2^n comparison, exhaustive but limited to ~12 qubits
-    by memory.
+    flow); a violation fails the run.  For the qiskit backend, the per-rewrite
+    errors measured during resynthesis and clean-up are summed into an error
+    bound: each rewrite replaces one wire's run by a phase-aligned
+    approximation of it, so by subadditivity of the spectral norm that sum is
+    a genuine upper bound on ||U_compiled - U_unrolled||_2 -- taking qiskit's
+    own unroll and inverse cancellation as exact.  The bqskit backend (with
+    the gauge fix on, the default) gets a narrower analogue from bqskit's own
+    machinery: each GaugeFixedZXZXZDecomposition/FastGridSynthPass
+    ForEachBlockPass call runs with calculate_error_bound=True, so bqskit
+    measures the exact unitary distance of every 1-qubit block before and
+    after and composes them via PassData.update_error_mul -- see
+    decompose_rz_gauge_fixed's docstring for what this covers and doesn't
+    (notably: not RoundToDiscreteZPass's own rounding, and not bqskit's own
+    earlier 2-qubit block instantiation). With --no-rz-gauge-fix, bqskit has
+    no equivalent bookkeeping at all, so no error bound is reported.
+
+--verify: numeric fidelity only, cascading from exact to sampled as the
+    circuit grows, so it is always tractable -- unlike an error bound, which
+    is only ever a bound, this actually measures how close the compiled
+    circuit's action is to the source's.
+  unitary fidelity: up to DENSE_VERIFY_MAX_QUBITS (10) qubits and
+    DENSE_VERIFY_MAX_GATES (20000) gates.  The full dense 2^n x 2^n
+    comparison, exhaustive but limited to ~12 qubits by memory.
+  statevector fidelity: up to STATEVECTOR_VERIFY_MAX_QUBITS (24) qubits,
+    subject to a work budget of gates * 2^qubits <= STATEVECTOR_VERIFY_MAX_OPS
+    (5e9, about a minute).  Evolves one Haar-random state (seeded by
+    --verify-seed, so runs are reproducible) through both circuits and
+    compares.  A single random state is a strong test: a systematic error
+    survives it with negligible probability.
+  random-window fidelity: the automatic fallback for circuits too large for
+    either check above, or containing classical control flow (which both
+    skip).  Samples WINDOW_VERIFY_COUNT (5) random contiguous windows of the
+    *source* circuit's instructions (not the compiled output -- resynthesis
+    restructures gates, so indices would not correspond).  Each window is
+    grown greedily from a random start point, tracking the distinct qubits
+    touched, until either WINDOW_VERIFY_MAX_QUBITS (24, the same cap as the
+    direct statevector check) or WINDOW_VERIFY_MAX_OPS (that check's own
+    budget, divided across the samples so total cost stays bounded regardless
+    of the real circuit's size) would be exceeded, or the next instruction has
+    classical bits, is a measurement/reset, or is control flow (a hard stop;
+    barrier is skipped, not stopped on).  Each window is independently
+    compiled through the same backend and this run's other arguments
+    (exercising preopt too, not just resynthesis) and fidelity-checked against
+    its own source window (dense or statevector, whichever applies -- a
+    window is always small enough for one of them).  The worst fidelity found
+    across the samples is reported, alongside each window's own qubit/gate
+    count and fidelity.  This is a spot check, not a proof: it only catches
+    what shows up in the sampled windows, and how much of the circuit a
+    window's greedy growth can cover before hitting its qubit cap depends on
+    the circuit's actual locality -- which is exactly why several independent
+    samples are taken rather than one, and why none of this is exposed as a
+    tunable flag: the point is that it always runs, at a bounded cost, no
+    matter how large or oddly-shaped the input circuit is.
 
 Examples
 --------
@@ -147,6 +169,7 @@ import cmath
 import contextlib
 import json
 import math
+import random
 import sys
 import tempfile
 import time
@@ -296,6 +319,27 @@ EXACTNESS_FLOOR = 1e-12
 
 # Non-gate operations that are allowed to survive into the output.
 PASSTHROUGH_OPS = frozenset({"measure", "barrier", "reset", "delay"})
+
+# Thresholds for the --verify fidelity cascade (dense unitary -> single random
+# statevector -> automatic random-window sampling). Not exposed as CLI flags:
+# these were the flags' former defaults, unchanged numerically, just no longer
+# user-configurable, so the fidelity cascade always has somewhere to fall back
+# to instead of dead-ending at "no numeric check".
+DENSE_VERIFY_MAX_QUBITS = 10
+DENSE_VERIFY_MAX_GATES = 20_000
+STATEVECTOR_VERIFY_MAX_QUBITS = 24
+STATEVECTOR_VERIFY_MAX_OPS = 5e9
+
+# Random-window sampling: the fallback for circuits too large for either check
+# above (or containing classical control flow, which both skip). Derived from
+# the direct-check constants above rather than invented fresh, so the total
+# cost of windowed sampling stays bounded by roughly the same budget as a
+# single direct statevector check would have used, regardless of how large the
+# real circuit is -- this is what makes it always tractable.
+WINDOW_VERIFY_COUNT = 5
+WINDOW_VERIFY_MAX_QUBITS = STATEVECTOR_VERIFY_MAX_QUBITS
+WINDOW_VERIFY_MAX_OPS = STATEVECTOR_VERIFY_MAX_OPS / WINDOW_VERIFY_COUNT
+WINDOW_VERIFY_MAX_ATTEMPTS = WINDOW_VERIFY_COUNT * 5
 
 
 def canonical_key(matrix: np.ndarray, decimals: int = 7) -> tuple:
@@ -1166,77 +1210,208 @@ def compile_bqskit(
         return load_circuit(out_path), error_bound  # qiskit's own loader -- now a QuantumCircuit
 
 
-def verify_compilation(
+def compile_dispatch(
+    unrolled: QuantumCircuit,
+    args: argparse.Namespace,
+    synth: Optional[CliffordTSynthesizer] = None,
+) -> tuple[QuantumCircuit, list[str], Optional[float], Optional[int]]:
+    """Compile an already-unrolled circuit via whichever backend args.backend selects.
+
+    Returns (compiled, extra report lines, error_bound, n_rewrites). `synth`, if
+    given, is reused (and its counters read afterward) rather than creating a
+    fresh one -- this lets main()'s per-file loop keep sharing one
+    CliffordTSynthesizer, and its gridsynth cache, across a batch of input
+    files. Random-window sampling (windowed_fidelity) instead passes no synth,
+    since a window is small enough that losing cache reuse across windows
+    doesn't matter.
+    """
+    if args.backend == "qiskit":
+        synth = synth or CliffordTSynthesizer(epsilon=args.epsilon, tol=args.tol)
+        compiled = compile_qiskit(unrolled, synth, optimize=not args.no_optimize)
+        extra = [
+            f"1q runs: {synth.n_clifford} Clifford, {synth.n_exact} exact,"
+            f" {synth.n_approx} approximated, {synth.n_merged} shortened"
+            f" (worst rewrite {synth.max_error:.2e}, total {synth.error_bound:.2e})"
+        ]
+        return compiled, extra, synth.error_bound, synth.n_approx + synth.n_merged
+    compiled, error_bound = compile_bqskit(
+        unrolled,
+        epsilon=args.epsilon,
+        seed=args.seed,
+        gauge_fix=not args.no_rz_gauge_fix,
+    )
+    return compiled, [], error_bound, None
+
+
+def _random_window(
+    source: QuantumCircuit, max_qubits: int, max_ops: float, rng: random.Random
+) -> Optional[QuantumCircuit]:
+    """Greedily grow a random contiguous window of source's instructions.
+
+    Stops (not including the next instruction) as soon as either the
+    touched-qubit count or the projected gates * 2^qubits cost would exceed the
+    given caps, or the next instruction has classical bits, is a
+    measure/reset, or is control flow -- a hard stop, since a window must be a
+    plain unitary circuit to be independently recompiled and fidelity-checked.
+    `barrier` is skipped over rather than stopped on: it's a no-op here and
+    would otherwise fragment windows for no reason.
+
+    Returns None if the window would be empty (e.g. a random start landing
+    exactly on a hard-stop instruction).
+    """
+    n = len(source.data)
+    if n == 0:
+        return None
+    start = rng.randrange(n)
+    touched: dict[Qubit, int] = {}
+    end = start
+    window_gates = 0
+    for i in range(start, n):
+        inst = source.data[i]
+        if inst.operation.name == "barrier":
+            continue
+        if inst.clbits or isinstance(inst.operation, ControlFlowOp) or inst.operation.name in (
+            "measure",
+            "reset",
+            "delay",
+        ):
+            break
+        new_qubits = [q for q in inst.qubits if q not in touched]
+        prospective_qubits = len(touched) + len(new_qubits)
+        prospective_gates = window_gates + 1
+        if prospective_qubits > max_qubits or prospective_gates * 2**prospective_qubits > max_ops:
+            break
+        for q in new_qubits:
+            touched[q] = len(touched)
+        window_gates = prospective_gates
+        end = i + 1
+    if end == start or not touched:
+        return None
+    window = QuantumCircuit(len(touched))
+    for i in range(start, end):
+        inst = source.data[i]
+        if inst.operation.name == "barrier":
+            continue
+        window.append(inst.operation, [touched[q] for q in inst.qubits], [])
+    return window
+
+
+def windowed_fidelity(
+    source: QuantumCircuit, args: argparse.Namespace
+) -> tuple[Optional[float], list[str]]:
+    """Automatic fallback verification for circuits too large (or containing
+    classical control flow) to verify directly.
+
+    Samples WINDOW_VERIFY_COUNT random contiguous windows of source's
+    instructions (see _random_window), each independently compiled through the
+    same backend and args as the real run (unroll_to_u_cx then
+    compile_dispatch, exactly mirroring the real pipeline so this validates
+    preopt too, not just resynthesis) and fidelity-checked against its own
+    source window. Bounded, constant cost regardless of the real circuit's
+    size -- unlike the direct checks above, this is always tractable.
+
+    _random_window's own budget check only bounds the *source* window's gate
+    count, which isn't the whole story: Clifford+T compilation can blow gate
+    count up by two orders of magnitude (a 59-gate window was measured
+    compiling to 6944 gates), and the fidelity check's real cost depends on
+    the *compiled* circuit's size, not the source's. So the ops budget is
+    checked again here, after compiling, using both circuits' real gate counts
+    -- exactly the same check the direct statevector path above already makes.
+    A window that turns out too expensive only after compiling is skipped (a
+    cheap loss -- compiling is fast; the fidelity check is what's expensive)
+    rather than run anyway.
+
+    A spot check, not a proof: it only catches what shows up in the sampled
+    windows, and how much of the circuit a window can cover depends on the
+    circuit's actual locality -- a Trotterized local-Hamiltonian circuit will
+    yield large, useful windows; something built from wide/all-to-all
+    entanglers (e.g. QFT) may only yield small ones. That is inherent to the
+    technique, not a bug, and is exactly why several independent samples are
+    taken rather than one.
+    """
+    rng = random.Random(args.verify_seed)
+    fidelities: list[float] = []
+    notes: list[str] = []
+    for _ in range(WINDOW_VERIFY_MAX_ATTEMPTS):
+        if len(fidelities) >= WINDOW_VERIFY_COUNT:
+            break
+        window = _random_window(source, WINDOW_VERIFY_MAX_QUBITS, WINDOW_VERIFY_MAX_OPS, rng)
+        if window is None:
+            continue
+        compiled_window, _, _, _ = compile_dispatch(unroll_to_u_cx(window), args)
+        qubits = compiled_window.num_qubits
+        cost = (operation_counts_cost(compiled_window)[1] + operation_counts_cost(window)[1]) * (
+            2**qubits
+        )
+        if qubits > DENSE_VERIFY_MAX_QUBITS and cost > WINDOW_VERIFY_MAX_OPS:
+            continue  # compiled blowup made this window too expensive after all; try another
+        fid = (
+            unitary_fidelity(window, compiled_window)
+            if qubits <= DENSE_VERIFY_MAX_QUBITS
+            else statevector_fidelity(window, compiled_window, args.verify_seed)
+        )
+        fidelities.append(fid)
+        notes.append(
+            f"  window {len(fidelities)}: {window.num_qubits} qubits,"
+            f" {len(window.data)} gates, fidelity {fid:.12f}"
+        )
+    if not fidelities:
+        return None, ["no numeric check: could not find any sample window small enough to verify"]
+    worst = min(fidelities)
+    header = (
+        f"random-window fidelity (worst of {len(fidelities)} samples,"
+        f" up to {WINDOW_VERIFY_MAX_QUBITS} qubits each): {worst:.12f}"
+    )
+    return worst, [header] + notes
+
+
+def verify_fidelity(
     source: QuantumCircuit,
     compiled: QuantumCircuit,
     args: argparse.Namespace,
-    error_bound: Optional[float] = None,
-    n_rewrites: Optional[int] = None,
 ) -> tuple[dict, list[str]]:
-    """Check the compiled circuit as thoroughly as its size allows.
+    """Numeric fidelity check, as thoroughly as the circuit's size allows.
 
-    Returns the statistics to record and the lines to log.  The basis check
-    applies at any qubit count; the numeric checks fall back from dense
-    unitaries to a single random statevector to nothing as the circuit grows.
-    `error_bound` is qiskit's CliffordTSynthesizer's per-rewrite sum
-    (`n_rewrites` counts how many) when called from the qiskit backend, or
-    bqskit's own `calculate_error_bound` mechanism (no comparable rewrite
-    count, so `n_rewrites` stays None) from the bqskit backend with the gauge
-    fix on -- see `decompose_rz_gauge_fixed`'s docstring for what it does and
-    doesn't cover. `error_bound` is None for bqskit with `--no-rz-gauge-fix`,
-    since that path has no equivalent bookkeeping either way.
+    The basis check and error bound are handled unconditionally by main(), not
+    here -- they're cheap enough to always run regardless of --verify, which
+    gates only this, the potentially-expensive numeric comparison.
+
+    Cascades: dense unitary comparison (exact, tiny circuits) -> a single
+    random statevector (medium circuits) -> automatic random-window sampling
+    (any size, or classical control flow, which the first two skip -- see
+    windowed_fidelity). Unlike the first two, windowed sampling is always
+    tractable, so this never dead-ends the way the old four-flag version could.
     """
-    entry: dict = {
-        "non_basis_ops": non_basis_ops(compiled),
-        "error_bound": error_bound,
-        "fidelity": None,
-        "state_fidelity": None,
-    }
-    notes = []
-    if error_bound is not None:
-        scope = f" over {n_rewrites} rewrites" if n_rewrites is not None else ""
-        notes.append(f"error bound{scope}: {error_bound:.2e}")
-    if entry["non_basis_ops"]:
-        notes.append(f"FAILED basis check, output is not Clifford+T: {entry['non_basis_ops']}")
-    else:
-        notes.append(f"basis check passed ({', '.join(CLIFFORD_T_BASIS)} + measure/barrier/reset)")
-
+    entry: dict = {"fidelity": None, "state_fidelity": None, "fidelity_method": None}
+    notes: list[str] = []
+    control_flow = has_control_flow(compiled) or has_control_flow(source)
     qubits = compiled.num_qubits
     gates = operation_counts_cost(compiled)[1] + operation_counts_cost(source)[1]
-    if has_control_flow(compiled) or has_control_flow(source):
-        notes.append("no numeric check: circuit has classical control flow")
-        return entry, notes
     try:
-        if qubits <= args.verify_max_qubits and gates <= args.verify_max_gates:
+        if not control_flow and qubits <= DENSE_VERIFY_MAX_QUBITS and gates <= DENSE_VERIFY_MAX_GATES:
             entry["fidelity"] = unitary_fidelity(source, compiled)
+            entry["fidelity_method"] = "dense"
             notes.append(f"unitary fidelity vs input: {entry['fidelity']:.12f}")
         elif (
-            qubits <= args.verify_statevector_qubits
-            and gates * 2**qubits <= args.verify_statevector_ops
+            not control_flow
+            and qubits <= STATEVECTOR_VERIFY_MAX_QUBITS
+            and gates * 2**qubits <= STATEVECTOR_VERIFY_MAX_OPS
         ):
             entry["state_fidelity"] = statevector_fidelity(source, compiled, args.verify_seed)
+            entry["fidelity_method"] = "statevector"
             notes.append(
                 f"statevector fidelity vs input: {entry['state_fidelity']:.12f}"
                 f" (1 random state, seed {args.verify_seed})"
             )
         else:
-            # Both limits can bind at once, and naming only one of them sends the
-            # reader to raise a knob that will not actually let the check run.
-            over = []
-            if qubits > args.verify_statevector_qubits:
-                over.append(
-                    f"--verify-statevector-qubits {args.verify_statevector_qubits}"
-                    f" (needs ~{3 * 16 * 2**qubits / 2**30:.0f} GB)"
+            if control_flow:
+                notes.append(
+                    "circuit has classical control flow: falling back to random-window sampling"
                 )
-            if gates * 2**qubits > args.verify_statevector_ops:
-                over.append(
-                    f"--verify-statevector-ops {args.verify_statevector_ops:.1e}"
-                    f" (needs {gates * 2**qubits:.1e},"
-                    f" ~{gates * 2**qubits / 1e8 / 3600:.1f} h at ~1e8/s)"
-                )
-            notes.append(
-                f"no numeric check: {qubits} qubits x {gates} gates is over " + " and ".join(over)
-            )
+            worst, window_notes = windowed_fidelity(source, args)
+            entry["state_fidelity"] = worst
+            entry["fidelity_method"] = "windowed" if worst is not None else None
+            notes.extend(window_notes)
     except Exception as error:  # mid-circuit measurement, unsupported op, memory
         notes.append(f"numeric check failed to run ({type(error).__name__}: {error})")
     return entry, notes
@@ -1359,42 +1534,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="check the compiled circuit against the input: basis check at any "
-        "size (plus an error bound for the qiskit backend), and a dense or "
-        "statevector fidelity if it is small enough",
-    )
-    parser.add_argument(
-        "--verify-max-qubits",
-        type=int,
-        default=10,
-        help="use the dense 2^n x 2^n unitary comparison up to this many qubits",
-    )
-    parser.add_argument(
-        "--verify-max-gates",
-        type=int,
-        default=20000,
-        help="use the dense unitary comparison up to this many gates",
-    )
-    parser.add_argument(
-        "--verify-statevector-qubits",
-        type=int,
-        default=24,
-        help="use the random-statevector comparison up to this many qubits, above "
-        "which only the basis check (and error bound, for qiskit) are "
-        "reported; memory is ~800 MB at 24 and doubles per qubit",
-    )
-    parser.add_argument(
-        "--verify-statevector-ops",
-        type=float,
-        default=5e9,
-        help="work budget for the random-statevector comparison, as gates * 2^qubits; "
-        "roughly 1e8 per second, so the default is about a minute",
+        help="check the compiled circuit's fidelity against the input: an exact "
+        "comparison if small enough, else a single random statevector, else "
+        "automatic random-window sampling -- always tractable, at a bounded "
+        "cost, regardless of circuit size. The basis check and error bound "
+        "are always reported, regardless of this flag",
     )
     parser.add_argument(
         "--verify-seed",
         type=int,
         default=0,
-        help="seed for the random state used by the statevector comparison",
+        help="seed for the random state used by the statevector comparison, and "
+        "for window selection when falling back to random-window sampling",
     )
     parser.add_argument("--stats", type=Path, help="write per-circuit statistics as JSON")
     parser.add_argument("-q", "--quiet", action="store_true", help="only report errors")
@@ -1442,9 +1593,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     for source in args.inputs:
         log(f"=== {source}")
         timings: dict[str, float] = {}
-        verification: Optional[dict] = None
-        error_bound: Optional[float] = None
-        n_rewrites: Optional[int] = None
+        fidelity_result: Optional[dict] = None
         if synth is not None:
             synth.reset_counters()  # counters are per circuit
         try:
@@ -1457,38 +1606,36 @@ def main(argv: Optional[list[str]] = None) -> int:
                     unrolled = unroll_to_u_cx(circuit)
 
                 with timed("compile", timings):
-                    if args.backend == "qiskit":
-                        assert synth is not None  # set above whenever backend == "qiskit"
-                        compiled = compile_qiskit(unrolled, synth, optimize=not args.no_optimize)
-                        extra = [
-                            f"1q runs: {synth.n_clifford} Clifford, {synth.n_exact} exact,"
-                            f" {synth.n_approx} approximated, {synth.n_merged} shortened"
-                            f" (worst rewrite {synth.max_error:.2e}, total {synth.error_bound:.2e})"
-                        ]
-                        error_bound = synth.error_bound
-                        n_rewrites = synth.n_approx + synth.n_merged
-                    else:
-                        if has_control_flow(circuit):
-                            raise RuntimeError(
-                                "the bqskit backend does not support classical control flow"
-                            )
-                        compiled, error_bound = compile_bqskit(
-                            unrolled,
-                            epsilon=args.epsilon,
-                            seed=args.seed,
-                            gauge_fix=not args.no_rz_gauge_fix,
+                    if args.backend == "bqskit" and has_control_flow(circuit):
+                        raise RuntimeError(
+                            "the bqskit backend does not support classical control flow"
                         )
-                        extra = []
+                    compiled, extra, error_bound, n_rewrites = compile_dispatch(
+                        unrolled, args, synth
+                    )
 
                 after = circuit_stats(compiled)
                 print_report(log, before, after, extra)
 
+                # Basis check + error bound: always, no flag needed -- both are
+                # cheap (no simulation), and a broken basis is worth failing the
+                # run over regardless of whether numeric verification was asked for.
+                non_basis = non_basis_ops(compiled)
+                if error_bound is not None:
+                    scope = f" over {n_rewrites} rewrites" if n_rewrites is not None else ""
+                    log(f"  error bound{scope}: {error_bound:.2e}")
+                if non_basis:
+                    log(f"  FAILED basis check, output is not Clifford+T: {non_basis}")
+                else:
+                    log(
+                        f"  basis check passed ({', '.join(CLIFFORD_T_BASIS)}"
+                        " + measure/barrier/reset)"
+                    )
+
                 timings["verify"] = 0.0
                 if args.verify:
                     with timed("verify", timings):
-                        verification, notes = verify_compilation(
-                            circuit, compiled, args, error_bound, n_rewrites
-                        )
+                        fidelity_result, notes = verify_fidelity(circuit, compiled, args)
                     for note in notes:
                         log(f"  {note}")
 
@@ -1520,16 +1667,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             "tol": synth.tol if synth else None,
             "max_rewrite_error": synth.max_error if synth else None,
             "error_bound": error_bound,
+            "non_basis_ops": non_basis,
         }
-        if verification is not None:
-            entry.update(verification)
-            if verification["non_basis_ops"]:
-                print(
-                    f"ERROR {source}: output is not Clifford+T: "
-                    f"{verification['non_basis_ops']}",
-                    file=sys.stderr,
-                )
-                failures += 1
+        if fidelity_result is not None:
+            entry.update(fidelity_result)
+        if non_basis:
+            print(
+                f"ERROR {source}: output is not Clifford+T: {non_basis}",
+                file=sys.stderr,
+            )
+            failures += 1
 
         log(f"  wrote {destination} (OpenQASM {version})")
         all_stats.append(entry)

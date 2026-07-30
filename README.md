@@ -119,9 +119,10 @@ python data_processing/compile_cliffordt.py circuit.qasm --backend bqskit
 qiskit is the default because it emits substantially fewer T gates than bqskit on every benchmark
 measured so far; the bqskit backend is kept for comparison and as an independently implemented
 compiler, and rejects circuits with classical control flow (bqskit's own `Circuit` has no concept
-of it). Either backend's output works as input to Step 2. Run with `--help` to see all options,
-including `--verify` (basis and fidelity checks against the input) and `--stats` (per-circuit JSON
-statistics, including per-stage timings).
+of it). Either backend's output works as input to Step 2. A basis check and error bound are always
+reported; run with `--help` to see all options, including `--verify` (fidelity checks against the
+input -- exact, single-statevector, or automatic random-window sampling, whichever the circuit's
+size allows) and `--stats` (per-circuit JSON statistics, including per-stage timings).
 
 ### Step 2 — Transpile to `.trans` format (Rust)
 
