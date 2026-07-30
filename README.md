@@ -98,20 +98,30 @@ Files in this format are produced by the `transpile` binary. The full pipeline f
 
 ### Step 1 — Compile to Clifford+T (Python, optional)
 
-If your circuit is not already in the Clifford+T gate set, compile it first using [`data_processing/bqskit_compile_cliffordt.py`](data_processing/bqskit_compile_cliffordt.py):
+If your circuit is not already in the Clifford+T gate set, compile it first using
+[`data_processing/compile_cliffordt.py`](data_processing/compile_cliffordt.py):
 
 ```bash
 # Install Python dependencies once
 pip install -r requirements.txt
 
-python data_processing/bqskit_compile_cliffordt.py -i circuit.qasm
+python data_processing/compile_cliffordt.py circuit.qasm
 ```
 
-This produces `circuit.cliffordt.qasm` using [BQSKit](https://bqskit.readthedocs.io/).
+This produces `circuit.cliffordt.qasm` using qiskit's own resynthesis pipeline (the default
+`--backend`). Pass `--backend bqskit` to compile with [BQSKit](https://bqskit.readthedocs.io/)
+instead:
 
-[`data_processing/qiskit_compile_cliffordt.py`](data_processing/qiskit_compile_cliffordt.py) is an
-alternative that targets the same gate set with qiskit instead, and sometimes emits substantially fewer
-T gates on the benchmarks here. Either output works as input to Step 2.
+```bash
+python data_processing/compile_cliffordt.py circuit.qasm --backend bqskit
+```
+
+qiskit is the default because it emits substantially fewer T gates than bqskit on every benchmark
+measured so far; the bqskit backend is kept for comparison and as an independently implemented
+compiler, and rejects circuits with classical control flow (bqskit's own `Circuit` has no concept
+of it). Either backend's output works as input to Step 2. Run with `--help` to see all options,
+including `--verify` (basis and fidelity checks against the input) and `--stats` (per-circuit JSON
+statistics, including per-stage timings).
 
 ### Step 2 — Transpile to `.trans` format (Rust)
 
@@ -181,8 +191,9 @@ src/
                         #   fitted to Figure 15 of arXiv:2409.17595
 
 data_processing/        # Python/shell tooling; not built by cargo
-├── bqskit_compile_cliffordt.py # Compile QASM → Clifford+T QASM (uses BQSKit)
-├── qiskit_compile_cliffordt.py # Same, using qiskit; fewer T gates on these benchmarks
+├── compile_cliffordt.py     # Compile QASM → Clifford+T QASM (qiskit or bqskit, --backend)
+├── bqskit_compile_cliffordt.py # Standalone BQSKit-only compiler; superseded by
+│                                #   compile_cliffordt.py --backend bqskit, kept for reference
 ├── flasq_lower_bound.py     # FLASQ lower bound (Algorithm 1 of Beverland et al.)
 ├── dascot_qubit_count.py    # Logical qubit counts for DASCOT square-sparse/compact
 ├── analyze_wisq.py          # Summarise WISQ JSON: steps, total and mean IDs per step

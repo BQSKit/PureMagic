@@ -1,0 +1,1545 @@
+#!/usr/bin/env python3
+"""
+Compile an arbitrary OpenQASM circuit into the Clifford+T gate set, via qiskit or bqskit.
+
+Output gate set: h, s, sdg, x, y, z, t, tdg, cx (plus measure/barrier/reset and
+any classical control flow that was present in the input -- the bqskit backend
+rejects circuits with control flow, since bqskit's own `Circuit` has no concept
+of it). The bqskit backend also natively emits sx/sxdg (sqrt(X) and its
+inverse): bqskit's own ZXZXZ decomposition and Clifford+T gate set treat sx as
+a Clifford generator in its own right rather than expanding it to h/s, and the
+downstream Rust `transpile` binary understands both natively, so this is not
+rewritten away. The qiskit backend never produces either.
+
+Pipeline
+--------
+1. Load the QASM file (OpenQASM 2 first, falling back to OpenQASM 3 -- which
+   needs the optional `qiskit-qasm3-import` package).
+2. Preopt: transpile to {u, cx} so that every multi-qubit gate (ccx, cswap,
+   cry, rzz, ryy, ...) is broken down into cx plus single-qubit rotations.
+   Both backends resynthesise from this same {u, cx} circuit -- necessary for
+   the qiskit backend (which only knows how to re-synthesise 1-qubit runs, not
+   arbitrary multi-qubit gates) and a real, if smaller, improvement for the
+   bqskit backend too (bqskit's own partitioner refragments single-qubit runs
+   across 2-qubit block boundaries regardless of input quality, so it cannot
+   benefit from the preopt step as much as qiskit's own pipeline does).
+3. Resynthesise over Clifford+T (--backend qiskit, the default, or bqskit):
+
+   qiskit: merge each maximal run of consecutive single-qubit gates on a wire
+   into one 2x2 matrix, then re-synthesise that matrix:
+     * Clifford            -> shortest word in {h, s, sdg, x, y, z} (BFS table).
+     * exactly representable -> exact sequence.  A gate is exact iff its ZXZ
+       Euler angles are all integer multiples of pi/4, since Rz(k*pi/4) is a
+       T/S/Z word and Rx(theta) = H Rz(theta) H.
+     * otherwise           -> each generic Rz in the ZXZ decomposition is
+       approximated to --epsilon via gridsynth (see below), memoised per angle.
+     Neither "exact" path is taken on trust: the word it produces is measured
+     against the target and rejected if it is off by more than --tol, which
+     defaults to --epsilon.  The check matters because the Clifford lookup key
+     rounds to 7 decimals -- deliberately, so that gates differing only by
+     floating-point noise share a table entry -- which also makes the lookup
+     match anything within ~5e-8 of a Clifford.  Unguarded, that discards small
+     rotations for free: the pi/2^k tail of a wide QFT, for instance, where
+     every rotation below ~1e-7 would cost zero T at an error hundreds of
+     times --epsilon.  Rotations that really are within --epsilon of a
+     Clifford still cost nothing, but that is now the synthesis backend's
+     decision, made against the requested accuracy, and it shows up in the
+     reported error.
+     Then cleans up: cancels adjacent inverse pairs (t.tdg, h.h, cx.cx, ...)
+     and collapses blocks of gates that have a shorter exact form (t.t -> s,
+     tdg.tdg.tdg.tdg -> z, any Clifford block -> its shortest word).  The
+     block collapses are exact; the whole-run rewrite goes through the same
+     guarded exact paths as above, so it can trade up to --tol of accuracy for
+     a shorter run, and what it spends is added to the reported error bound.
+
+   bqskit: hands the {u,cx} circuit to bqskit's own compiler
+   (bqskit.compiler.compile) using its default Clifford+T model and workflow,
+   then re-synthesises the diagonal single-qubit rotations that bqskit's own
+   ZXZXZDecomposition doubles up (see GaugeFixedZXZXZDecomposition; on by
+   default, --no-rz-gauge-fix reproduces stock bqskit output) via the same
+   gridsynth algorithm as the qiskit backend (see FastGridSynthPass, ~8x
+   faster per rotation than bqskit's own pygridsynth-based GridSynthPass).
+   Produces substantially more T gates than the qiskit backend on every
+   benchmark measured so far -- kept for comparison and as an independently
+   implemented Clifford+T compiler, not because it is competitive.
+
+Rotation synthesis: gridsynth
+------------------------------
+The Ross-Selinger algorithm, near T-optimal at T ~ 3*log2(1/epsilon) per
+rotation.  Both backends use qiskit's own Rust implementation
+(qiskit.synthesis.gridsynth_rz, qiskit >= 2.5, ~5 ms per distinct rotation),
+falling back to pygridsynth -- the pure-Python/mpmath implementation, ~8x
+slower -- for the rare angles rsgridsynth 0.2.0 panics on at coarse epsilon.
+That fallback already handles gridsynth failing on part of a circuit; there is
+no separate "worse but always works" mode. Each generic 1q gate needs up to 3
+Rz rotations (ZXZ Euler angles), so the error per gate is up to 3*epsilon;
+angles that are exact multiples of pi/4 are synthesised exactly and cost
+nothing.  Each distinct rotation is synthesised once and reused, so cost
+scales with the number of distinct angles rather than the number of gates.
+
+--epsilon's default depends on --backend (1e-10 for qiskit, 1e-8 for bqskit)
+rather than being one shared value, because "epsilon" is not the same
+quantity across the two implementations in terms of delivered accuracy: on
+the reference slice (data/hubbard_18_slice600.qasm), bqskit at its own old
+default of 1e-8 already measures fidelity 1.000000000000, identical (to the
+12 decimals this script prints) to what tightening it to 1e-10 gets --
+tightening costs 2430 -> 6562 T for no measurable accuracy gain, because
+bqskit's own numerical instantiation step (also controlled by this parameter)
+turns out to work much harder for a target it was already comfortably
+beating. qiskit's own resynthesis has no equivalent instantiation step, so
+1e-10 costs it nothing extra and is worth keeping as its default.
+
+The result is written next to the input as <name>.cliffordt.qasm (OpenQASM 2,
+or OpenQASM 3 if the circuit uses control flow that OpenQASM 2 cannot express),
+and per-circuit gate/T counts go to stdout and optionally to --stats JSON.
+
+Verification (--verify)
+-----------------------
+Three checks, applied from cheapest to most expensive; every circuit gets as
+many of them as its size allows, and the log says which ran.
+
+basis + error bound: always, at any qubit count.  Every operation in the
+    output must be in the Clifford+T basis (plus measure/barrier/reset/control
+    flow).  For the qiskit backend, the per-rewrite errors measured during
+    resynthesis and clean-up are summed into an error bound: each rewrite
+    replaces one wire's run by a phase-aligned approximation of it, so by
+    subadditivity of the spectral norm that sum is a genuine upper bound on
+    ||U_compiled - U_unrolled||_2 -- taking qiskit's own unroll and inverse
+    cancellation as exact.  The bqskit backend (with the gauge fix on, the
+    default) gets a narrower analogue from bqskit's own machinery: each
+    GaugeFixedZXZXZDecomposition/FastGridSynthPass ForEachBlockPass call runs
+    with calculate_error_bound=True, so bqskit measures the exact unitary
+    distance of every 1-qubit block before and after and composes them via
+    PassData.update_error_mul -- see decompose_rz_gauge_fixed's docstring for
+    what this covers and doesn't (notably: not RoundToDiscreteZPass's own
+    rounding, and not bqskit's own earlier 2-qubit block instantiation). With
+    --no-rz-gauge-fix, bqskit has no equivalent bookkeeping at all, so no error
+    bound is reported. Either way, this is the only check available for the
+    large circuits, where nothing can be simulated.
+statevector fidelity: up to --verify-statevector-qubits (default 24), subject
+    to a work budget of gates * 2^qubits <= --verify-statevector-ops.  Evolves
+    one Haar-random state (seeded by --verify-seed, so runs are reproducible)
+    through both circuits and compares.  A single random state is a strong
+    test: a systematic error survives it with negligible probability.  Cost is
+    inherently gates * 2^qubits -- qiskit's Statevector manages roughly 1e8 of
+    those per second, falling to ~5e7 by 22 qubits as the state stops fitting
+    in cache -- so the default budget of 5e9 is about a minute of work, and a
+    100k-gate circuit at 22 qubits would need hours.  Raise the budget if you
+    want to spend them; the skip message estimates the wall time.  Memory is
+    ~3 * 16 * 2^qubits bytes (~800 MB at 24 qubits), doubling per qubit.
+unitary fidelity: up to --verify-max-qubits (default 10) and --verify-max-gates.
+    The full dense 2^n x 2^n comparison, exhaustive but limited to ~12 qubits
+    by memory.
+
+Examples
+--------
+    ./compile_cliffordt.py ../data/qasmbench/ising_n26.qasm
+    ./compile_cliffordt.py ../data/qasmbench/dnn_n8.qasm -o dnn_n8.ct.qasm \
+        --epsilon 1e-6 --verify
+    ./compile_cliffordt.py ../data/qasmbench/*.qasm -o out_dir --stats stats.json
+    ./compile_cliffordt.py circuit.qasm --backend bqskit --seed 1
+"""
+
+from __future__ import annotations
+
+import argparse
+import cmath
+import contextlib
+import json
+import math
+import sys
+import tempfile
+import time
+import warnings
+from pathlib import Path
+from typing import Iterable, Iterator, Optional
+
+import numpy as np
+from qiskit import QuantumCircuit, qasm2, qasm3, transpile
+from qiskit.circuit import ControlFlowOp, Gate, Qubit
+from qiskit.quantum_info import Operator, random_statevector
+from qiskit.synthesis import OneQubitEulerDecomposer
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import InverseCancellation, RemoveBarriers
+from qiskit.circuit.library import (
+    CXGate,
+    HGate,
+    SdgGate,
+    SGate,
+    TdgGate,
+    TGate,
+    XGate,
+    YGate,
+    ZGate,
+)
+
+from bqskit import Circuit
+from bqskit.compiler import Compiler
+from bqskit.compiler.basepass import BasePass
+from bqskit.compiler.compile import compile as bqskit_compile
+from bqskit.compiler.passdata import PassData
+from bqskit.compiler.registry import register_workflow
+from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates
+from bqskit.ft.cliffordt.cliffordtmodel import CliffordTModel
+from bqskit.ft.cliffordt.defaultworkflow import (
+    build_circuit_workflow,
+    clifford_replace,
+    single_qudit_filter,
+)
+from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass
+from bqskit.ft.rules.isolate_rz import IsolateRZGatePass
+from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
+from bqskit.ir.gates.constant.h import HGate as BHGate
+from bqskit.ir.gates.constant.s import SGate as BSGate
+from bqskit.ir.gates.constant.sx import SqrtXGate
+from bqskit.ir.gates.constant.t import TGate as BTGate
+from bqskit.ir.gates.constant.x import XGate as BXGate
+from bqskit.ir.gates.parameterized.rx import RXGate
+from bqskit.ir.gates.parameterized.rz import RZGate
+from bqskit.ir.gates.parameterized.u1 import U1Gate
+from bqskit.passes.control.foreach import ForEachBlockPass
+from bqskit.passes.partitioning.single import GroupSingleQuditGatePass
+from bqskit.passes.rules.zxzxz import ZXZXZDecomposition
+from bqskit.passes.util.unfold import UnfoldPass
+
+try:  # qiskit >= 2.5: Ross-Selinger in Rust, the rotation synthesis both backends use
+    from qiskit.synthesis import gridsynth_rz
+except ImportError:
+    gridsynth_rz = None
+
+try:  # optional fallback for the angles rsgridsynth 0.2.0 panics on
+    import mpmath
+    from pygridsynth.gridsynth import gridsynth_gates
+except ImportError:
+    mpmath = None
+    gridsynth_gates = None
+
+# sx/sxdg (sqrt(X) and its inverse) are included because the bqskit backend
+# emits them natively -- bqskit's own Clifford+T gate set treats sx as a
+# Clifford generator in its own right, and the downstream Rust `transpile`
+# binary understands both directly (src/transpile.rs's Gate1Q::SX/SXdg) -- not
+# because either is reachable from the qiskit backend, which never emits them.
+CLIFFORD_T_BASIS = ("h", "s", "sdg", "sx", "sxdg", "x", "y", "z", "t", "tdg", "cx")
+PI_4 = math.pi / 4
+
+# qiskit's transpile() default is None, which resolves to level 2 -- but level 2
+# restructures which single-qubit gates sit adjacent to which cx gates relative
+# to level 1, in a way that produces more, smaller single-qubit runs for the
+# qiskit backend to re-synthesise.  Measured on an 18-qubit/600-gate slice of a
+# Hubbard benchmark: level 1 merges runs down to 18 non-Clifford rotations
+# (1858 T); qiskit's own default merges them into 39 (7085 T).  Same cx count
+# either way, so this is purely about how well the runs merge for this
+# script's purposes, not circuit quality by qiskit's own metrics.  Pinned
+# rather than exposed as a CLI option, since a worse choice was never useful
+# here.  Shared by both backends' preopt step (unroll_to_u_cx).
+UNROLL_OPTIMIZATION_LEVEL = 1
+
+# bqskit's own default, used wherever an optimization_level has to be given
+# explicitly (register_workflow has no default of its own).  Not exposed as a
+# CLI option: level 1 is fast and works at any circuit size, and levels 2-4 add
+# slower passes (level 2 rebases small blocks numerically; 3 and 4
+# additionally synthesise the whole circuit from its unitary, which only works
+# up to ~12 qubits) that are not needed for the benchmarks this script targets.
+BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL = 1
+
+# Tolerance for recognising the ZXZXZ middle angle as Clifford, in
+# GaugeFixedZXZXZDecomposition.  It only has to separate "t is 0 or +-pi" from
+# every other value the decomposition produces, and those two come out exact
+# to floating-point precision.
+CLIFFORD_ANGLE_TOL = 1e-10
+
+# --epsilon's default, backend-dependent -- see the module docstring's
+# "Rotation synthesis: gridsynth" section for why these are not one shared
+# value: bqskit's own instantiation step (not just its final rotation
+# synthesis) is also controlled by this parameter, and tightening it to
+# qiskit's default measurably inflates bqskit's T count with no measured
+# accuracy gain, since bqskit already saturates this script's fidelity check
+# at its own old default.
+QISKIT_EPSILON_DEFAULT = 1e-10
+BQSKIT_EPSILON_DEFAULT = 1e-8
+
+# Single-qubit Clifford generators used to build the shortest-word table.
+CLIFFORD_GENERATORS = {
+    "h": np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2),
+    "s": np.array([[1, 0], [0, 1j]], dtype=complex),
+    "sdg": np.array([[1, 0], [0, -1j]], dtype=complex),
+    "x": np.array([[0, 1], [1, 0]], dtype=complex),
+    "y": np.array([[0, -1j], [1j, 0]], dtype=complex),
+    "z": np.array([[1, 0], [0, -1]], dtype=complex),
+}
+
+GATE_MATRICES = dict(
+    CLIFFORD_GENERATORS,
+    t=np.array([[1, 0], [0, np.exp(1j * PI_4)]], dtype=complex),
+    tdg=np.array([[1, 0], [0, np.exp(-1j * PI_4)]], dtype=complex),
+    id=np.eye(2, dtype=complex),
+)
+
+# Diagonal gates, as the multiple of pi/4 they rotate about z by.  A block of
+# them commutes and collapses to a single Rz(k * pi/4).
+DIAGONAL_PHASES = {"t": 1, "tdg": -1, "s": 2, "sdg": -2, "z": 4, "id": 0}
+
+CLIFFORD_1Q_NAMES = frozenset(CLIFFORD_GENERATORS) | {"id"}
+
+# pygridsynth emits words over {H, S, T, X, W}; W is the e^{i pi/4} global phase,
+# which we drop because the phase is recomputed against the target anyway.
+# (qiskit's gridsynth_rz returns a circuit with lowercase gate names instead.)
+GRIDSYNTH_NAMES = {"H": "h", "S": "s", "T": "t", "X": "x"}
+
+# Working precision pygridsynth is driven at, matching bqskit's GridSynthPass.
+GRIDSYNTH_DPS = 128
+
+# Floor on the exactness tolerance (see CliffordTSynthesizer.tol).  A run product
+# is accumulated over hundreds of 2x2 multiplications, so comparing a word
+# against it is only meaningful down to about this much floating-point noise.
+EXACTNESS_FLOOR = 1e-12
+
+# Non-gate operations that are allowed to survive into the output.
+PASSTHROUGH_OPS = frozenset({"measure", "barrier", "reset", "delay"})
+
+
+def canonical_key(matrix: np.ndarray, decimals: int = 7) -> tuple:
+    """Hashable key for a 2x2 unitary, insensitive to global phase.
+
+    The rounding is deliberately coarse so that gates that differ only by
+    floating-point noise (e.g. an H that came back from the transpiler as a u
+    gate) hit the same table entry.  It is far finer than the accuracy of any
+    approximate synthesis, so sharing a gridsynth sequence between two
+    matrices with the same key is harmless.
+
+    The pivot has to be chosen off the *rounded* magnitudes.  Unitarity forces
+    |a| == |d| and |b| == |c|, so the largest element is always tied with another
+    one; a raw argmax would let floating-point noise pick which, and the two
+    choices normalise to different keys for the same matrix.  Rounding first
+    makes the tie exact, so argmax breaks it deterministically by index.
+    """
+    flat = matrix.reshape(-1)
+    pivot = int(np.argmax(np.round(np.abs(flat), decimals)))
+    normalised = flat * np.exp(-1j * np.angle(flat[pivot]))
+    rounded = np.round(normalised, decimals)
+    # -0.0 and 0.0 must hash the same.
+    rounded = rounded + 0.0
+    return tuple((c.real, c.imag) for c in rounded)
+
+
+def global_phase_between(target: np.ndarray, built: np.ndarray) -> float:
+    """Phase gamma minimising ||target - exp(i*gamma) * built||.
+
+    The minimiser is arg(tr(built^dag @ target)), which averages over all four
+    elements.  Taking the ratio of one element instead would let that element's
+    approximation error alone set the phase, which matters because `built` is an
+    approximation of `target` everywhere except on the exact paths.
+    """
+    return float(np.angle(np.trace(built.conj().T @ target)))
+
+
+def spectral_error(target: np.ndarray, built: np.ndarray, phase: float) -> float:
+    """||exp(i*phase) * built - target||_2."""
+    return float(np.linalg.norm(np.exp(1j * phase) * built - target, ord=2))
+
+
+def build_clifford_words() -> dict[tuple, tuple[str, ...]]:
+    """Map every single-qubit Clifford (up to phase) to a shortest generator word."""
+    identity = np.eye(2, dtype=complex)
+    words: dict[tuple, tuple[str, ...]] = {canonical_key(identity): ()}
+    matrices: dict[tuple, np.ndarray] = {canonical_key(identity): identity}
+    frontier = [canonical_key(identity)]
+    while frontier:
+        next_frontier = []
+        for key in frontier:
+            for name, gen in CLIFFORD_GENERATORS.items():
+                product = gen @ matrices[key]
+                new_key = canonical_key(product)
+                if new_key in words:
+                    continue
+                words[new_key] = words[key] + (name,)
+                matrices[new_key] = product
+                next_frontier.append(new_key)
+        frontier = next_frontier
+    return words
+
+
+def word_matrix(word: Iterable[str]) -> np.ndarray:
+    """Unitary of a word of named single-qubit gates, in circuit order."""
+    matrix = np.eye(2, dtype=complex)
+    for name in word:
+        matrix = GATE_MATRICES[name] @ matrix
+    return matrix
+
+
+def word_error(target: np.ndarray, word: Iterable[str]) -> tuple[float, float]:
+    """(error, global phase) of a named gate word against `target`.
+
+    The phase is the one that minimises the error, i.e. the one _from_word bakes
+    into the circuit it builds, so the error returned is the error of the
+    circuit that will actually be emitted.
+    """
+    built = word_matrix(word)
+    phase = global_phase_between(target, built)
+    return spectral_error(target, built, phase), phase
+
+
+def rz_pi_4_word(k: int) -> tuple[str, ...]:
+    """Shortest Clifford+T word (up to global phase) for Rz(k * pi/4)."""
+    return {
+        0: (),
+        1: ("t",),
+        2: ("s",),
+        3: ("s", "t"),
+        4: ("z",),
+        5: ("sdg", "tdg"),
+        6: ("sdg",),
+        7: ("tdg",),
+    }[k % 8]
+
+
+def collapse_diagonal_blocks(names: list[str]) -> list[str]:
+    """Replace each maximal block of diagonal gates by its shortest equivalent."""
+    out: list[str] = []
+    index = 0
+    while index < len(names):
+        if names[index] not in DIAGONAL_PHASES:
+            out.append(names[index])
+            index += 1
+            continue
+        total = 0
+        while index < len(names) and names[index] in DIAGONAL_PHASES:
+            total += DIAGONAL_PHASES[names[index]]
+            index += 1
+        out.extend(rz_pi_4_word(total))
+    return out
+
+
+def collapse_clifford_blocks(
+    names: list[str], clifford_words: dict[tuple, tuple[str, ...]]
+) -> list[str]:
+    """Replace each maximal block of Clifford gates by its shortest word."""
+    out: list[str] = []
+    index = 0
+    while index < len(names):
+        if names[index] not in CLIFFORD_1Q_NAMES:
+            out.append(names[index])
+            index += 1
+            continue
+        start = index
+        while index < len(names) and names[index] in CLIFFORD_1Q_NAMES:
+            index += 1
+        block = names[start:index]
+        shortest = clifford_words.get(canonical_key(word_matrix(block)))
+        out.extend(block if shortest is None or len(shortest) > len(block) else shortest)
+    return out
+
+
+class CliffordTSynthesizer:
+    """Re-synthesise single-qubit unitaries over {h, s, sdg, x, y, z, t, tdg} via gridsynth."""
+
+    def __init__(
+        self,
+        epsilon: float = 1e-10,
+        tol: Optional[float] = None,
+    ) -> None:
+        self.epsilon = epsilon
+        # How much error an "exact" rewrite is allowed to introduce.  Defaulting
+        # it to epsilon keeps the exact paths from being looser than the
+        # approximate one: a rotation only comes out free if it really is within
+        # the requested accuracy of a Clifford.
+        self.tol = max(epsilon, EXACTNESS_FLOOR) if tol is None else tol
+        self._decomposer = OneQubitEulerDecomposer(basis="ZXZ")
+        self._clifford_words = build_clifford_words()
+        self._gridsynth_cache: dict[float, tuple[str, ...]] = {}
+        if gridsynth_rz is None and gridsynth_gates is None:
+            raise RuntimeError(
+                "gridsynth needs qiskit >= 2.5 (which ships "
+                "qiskit.synthesis.gridsynth_rz) or the pygridsynth package"
+            )
+        if mpmath is not None:
+            mpmath.mp.dps = max(mpmath.mp.dps, GRIDSYNTH_DPS)
+        self.reset_counters()
+
+    def reset_counters(self) -> None:
+        self.n_clifford = 0
+        self.n_exact = 0
+        self.n_approx = 0
+        self.n_merged = 0
+        self.max_error = 0.0
+        self.error_bound = 0.0
+
+    def _record(self, error: float) -> None:
+        """Account for one rewrite's error.
+
+        Every rewrite replaces one wire's run by a phase-aligned approximation,
+        so the sum bounds the error of the whole circuit (subadditivity of the
+        spectral norm), while the max is the worst single rewrite.
+        """
+        self.max_error = max(self.max_error, error)
+        self.error_bound += error
+
+    def synthesize(self, matrix: np.ndarray, _run=None) -> QuantumCircuit:
+        """Return a 1-qubit Clifford+T circuit implementing `matrix`."""
+        exact = self._exact(matrix)
+        if exact is not None:
+            circuit, kind, error = exact
+            if kind == "clifford":
+                self.n_clifford += 1
+            else:
+                self.n_exact += 1
+            self._record(error)
+            return circuit
+        self.n_approx += 1
+        return self._gridsynth(matrix)
+
+    def shorten_run(self, matrix: np.ndarray, run: list[Gate]) -> Optional[QuantumCircuit]:
+        """Shorten an already-compiled run of Clifford+T gates.
+
+        Returns None if nothing can be improved.  Two rewrites are tried: the
+        whole run at once (it may be Clifford, or a pi/4 rotation), and failing
+        that a local collapse of sub-blocks -- a gridsynth word is a long
+        h/t/tdg sequence which is *not* exactly representable as a whole, but its
+        diagonal sub-blocks (t.t == s, tdg^4 == z, ...) are, and collapsing them
+        removes T gates for free.
+
+        The block collapse is exact.  The whole-run rewrite goes through _exact,
+        so it is only as exact as --tol: it can also merge two genuine rotations
+        whose product happens to land within --tol of a Clifford.  Both report
+        what they cost, so it lands in the error bound either way.
+        """
+        exact = self._exact(matrix)
+        if exact is not None and gate_cost(exact[0]) < gate_cost(run):
+            self.n_merged += 1
+            self._record(exact[2])
+            return exact[0]
+
+        names = [gate.name for gate in run]
+        if not all(name in GATE_MATRICES for name in names):
+            return None
+        collapsed = collapse_clifford_blocks(collapse_diagonal_blocks(names), self._clifford_words)
+        if gate_cost(collapsed) >= gate_cost(names):
+            return None
+        # Exact by construction; this only guards against a bug in the collapses.
+        error, phase = word_error(matrix, collapsed)
+        if error > self.tol:
+            return None
+        self.n_merged += 1
+        self._record(error)
+        return self._from_word(tuple(collapsed), matrix, phase)
+
+    def _exact(self, matrix: np.ndarray) -> Optional[tuple[QuantumCircuit, str, float]]:
+        """Exact synthesis as (circuit, kind, error), or None if it needs approximating.
+
+        A candidate word is only accepted once it has been measured against
+        `matrix` and found to be within self.tol.  The Clifford lookup needs that
+        check because canonical_key rounds to 7 decimals, so the table matches
+        anything within ~5e-8 of a Clifford; without it, every rotation smaller
+        than that -- the pi/2^k tail of a wide QFT, say -- would be silently
+        thrown away for free at an error far above --epsilon.  The pi/4 path
+        needs it because _is_pi_4_multiple accepts angles up to --tol off a
+        multiple, and three such angles compound.
+        """
+        word = self._clifford_words.get(canonical_key(matrix))
+        if word is not None:
+            error, phase = word_error(matrix, word)
+            if error <= self.tol:
+                return self._from_word(word, matrix, phase), "clifford", error
+
+        euler = self._decomposer(matrix)
+        angles = [inst.operation.params[0] for inst in euler.data if inst.operation.params]
+        if all(self._is_pi_4_multiple(a) for a in angles):
+            word = self._euler_word(euler, self._pi_4_word)
+            error, phase = word_error(matrix, word)
+            if error <= self.tol:
+                return self._from_word(word, matrix, phase), "pi_4", error
+        return None
+
+    def _is_pi_4_multiple(self, angle: float) -> bool:
+        return abs(angle / PI_4 - round(angle / PI_4)) < self.tol
+
+    def _euler_word(self, euler: QuantumCircuit, rz_word) -> tuple[str, ...]:
+        """Assemble a word for an Rz/Rx circuit, sending each angle to `rz_word`."""
+        word: list[str] = []
+        for inst in euler.data:
+            name = inst.operation.name
+            inner = rz_word(inst.operation.params[0])
+            if name == "rz":
+                word.extend(inner)
+            elif name == "rx":
+                # Rx(theta) = H Rz(theta) H
+                if inner:
+                    word.extend(("h", *inner, "h"))
+            else:  # pragma: no cover - ZXZ only emits rz/rx
+                raise RuntimeError(f"unexpected gate {name} in ZXZ decomposition")
+        return tuple(word)
+
+    def _pi_4_word(self, angle: float) -> tuple[str, ...]:
+        return rz_pi_4_word(round(angle / PI_4))
+
+    def _from_word(
+        self,
+        word: tuple[str, ...],
+        target: np.ndarray,
+        phase: Optional[float] = None,
+    ) -> QuantumCircuit:
+        circuit = QuantumCircuit(1)
+        for name in word:
+            getattr(circuit, name)(0)
+        circuit.global_phase = (
+            global_phase_between(target, word_matrix(word)) if phase is None else phase
+        )
+        return circuit
+
+    def _gridsynth(self, matrix: np.ndarray) -> QuantumCircuit:
+        """Approximate via ZXZ Euler angles, each Rz handed to gridsynth."""
+        word = self._euler_word(self._decomposer(matrix), self._gridsynth_word)
+        error, phase = word_error(matrix, word)
+        self._record(error)
+        return self._from_word(word, matrix, phase)
+
+    def _gridsynth_word(self, angle: float) -> tuple[str, ...]:
+        if self._is_pi_4_multiple(angle):
+            return self._pi_4_word(angle)
+        key = round(angle, 12)
+        word = self._gridsynth_cache.get(key)
+        if word is None:
+            word = self._synthesize_rz(angle)
+            self._gridsynth_cache[key] = word
+        return word
+
+    def _synthesize_rz(self, angle: float) -> tuple[str, ...]:
+        """Ross-Selinger word for Rz(angle), accurate to self.epsilon."""
+        if gridsynth_rz is None:
+            return self._pygridsynth_word(angle)
+        try:
+            circuit = gridsynth_rz(angle, self.epsilon)
+        except BaseException as error:
+            # rsgridsynth 0.2.0 panics on some angles at coarse epsilon ("Invalid
+            # coefficients for inverse sqrt2 multiplication"): 26% of 300 random
+            # angles at 1e-2, 6% at 1e-4, none at 1e-6 or below.  Which angles fail
+            # depends on process state, not just the angle, so retrying is not a
+            # fix.  A pyo3 panic is a BaseException, so it would otherwise escape
+            # the per-file error handling in main().
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            if gridsynth_gates is None:
+                raise RuntimeError(
+                    f"qiskit's gridsynth failed on angle {angle} at epsilon "
+                    f"{self.epsilon:g} ({type(error).__name__}: {error}). Use a "
+                    "smaller --epsilon or install pygridsynth as a fallback."
+                ) from error
+            return self._pygridsynth_word(angle)
+        return tuple(inst.operation.name for inst in circuit.data)
+
+    def _pygridsynth_word(self, angle: float) -> tuple[str, ...]:
+        """Same rotation via pygridsynth, the implementation bqskit-ft calls."""
+        if gridsynth_gates is None or mpmath is None:  # __init__ checks this
+            raise RuntimeError("pygridsynth is not installed")
+        sequence = gridsynth_gates(mpmath.mpf(angle), mpmath.mpf(self.epsilon))
+        # pygridsynth returns the word in matrix order, so it is applied in reverse.
+        return tuple(GRIDSYNTH_NAMES[symbol] for symbol in reversed(sequence) if symbol != "W")
+
+
+def load_circuit(path: Path) -> QuantumCircuit:
+    """Load an OpenQASM 2 (preferred) or OpenQASM 3 file."""
+    try:
+        return qasm2.load(
+            path,
+            include_path=(str(path.parent), "."),
+            custom_instructions=qasm2.LEGACY_CUSTOM_INSTRUCTIONS,
+        )
+    except qasm2.QASM2Error as qasm2_error:
+        try:
+            return qasm3.load(str(path))
+        except Exception as qasm3_error:
+            raise RuntimeError(
+                f"could not parse {path} as OpenQASM 2 ({qasm2_error}) "
+                f"or OpenQASM 3 ({qasm3_error})"
+            ) from qasm2_error
+
+
+def rewrite_single_qubit_runs(circuit: QuantumCircuit, resynthesize) -> QuantumCircuit:
+    """Re-synthesise every maximal run of single-qubit gates on every wire.
+
+    Consecutive single-qubit gates on a wire are accumulated into one 2x2 matrix
+    and handed to `resynthesize(matrix, run)`, which returns a replacement
+    1-qubit circuit, or None to keep the original gates.  Working on runs
+    rather than
+    individual gates keeps the output much shorter.  Non-unitary ops
+    (measure/reset/barrier) and multi-qubit gates flush the wires they touch, so
+    the original ordering is preserved.
+    """
+    # copy_empty_like keeps loose qubits, which control-flow blocks are built from.
+    out = circuit.copy_empty_like()
+    pending: dict[Qubit, tuple[np.ndarray, list[Gate]]] = {}
+
+    def flush(qubits: Iterable[Qubit]) -> None:
+        for qubit in qubits:
+            entry = pending.pop(qubit, None)
+            if entry is None:
+                continue
+            matrix, run = entry
+            replacement = resynthesize(matrix, run)
+            if replacement is None:
+                for gate in run:
+                    out.append(gate, [qubit], [])
+            else:
+                out.compose(replacement, qubits=[qubit], inplace=True)
+
+    for inst in circuit.data:
+        operation, qubits, clbits = inst.operation, inst.qubits, inst.clbits
+        if len(qubits) == 1 and not clbits and isinstance(operation, Gate):
+            try:
+                matrix = np.asarray(operation.to_matrix(), dtype=complex)
+            except Exception:
+                matrix = None
+            if matrix is not None:
+                qubit = qubits[0]
+                previous = pending.get(qubit)
+                if previous is None:
+                    pending[qubit] = (matrix, [operation])
+                else:
+                    pending[qubit] = (matrix @ previous[0], previous[1] + [operation])
+                continue
+
+        flush(qubits)
+        if isinstance(operation, ControlFlowOp):
+            operation = operation.replace_blocks(
+                rewrite_single_qubit_runs(block, resynthesize) for block in operation.blocks
+            )
+        out.append(operation, qubits, clbits)
+
+    flush(list(pending))
+    return out
+
+
+def cancel_inverses(circuit: QuantumCircuit) -> QuantumCircuit:
+    # Self-inverse gates are given bare, genuine inverse pairs as tuples.
+    cancellable = [
+        HGate(),
+        XGate(),
+        YGate(),
+        ZGate(),
+        CXGate(),
+        (TGate(), TdgGate()),
+        (SGate(), SdgGate()),
+    ]
+    return PassManager([InverseCancellation(cancellable)]).run(circuit)
+
+
+def gate_cost(gates) -> tuple[int, int]:
+    """(T count, gate count) of a circuit, a list of gates, or a list of names.
+
+    Counts inside control-flow blocks as well.  Without that, shortening a run in
+    an if/for body leaves the top-level cost unchanged, and the clean-up loop in
+    compile_qiskit would stop after a single round.
+    """
+    if isinstance(gates, QuantumCircuit):
+        return operation_counts_cost(gates)
+    names = [gate if isinstance(gate, str) else gate.name for gate in gates]
+    return sum(name in ("t", "tdg") for name in names), len(names)
+
+
+def operation_counts(circuit: QuantumCircuit) -> dict[str, int]:
+    """Operation-name counts, recursing into control-flow blocks."""
+    counts: dict[str, int] = {}
+    for inst in circuit.data:
+        operation = inst.operation
+        if isinstance(operation, ControlFlowOp):
+            for block in operation.blocks:
+                for name, n in operation_counts(block).items():
+                    counts[name] = counts.get(name, 0) + n
+        else:
+            counts[operation.name] = counts.get(operation.name, 0) + 1
+    return counts
+
+
+def operation_counts_cost(circuit: QuantumCircuit) -> tuple[int, int]:
+    counts = operation_counts(circuit)
+    t_count = counts.get("t", 0) + counts.get("tdg", 0)
+    return t_count, sum(n for name, n in counts.items() if name != "barrier")
+
+
+def unroll_to_u_cx(circuit: QuantumCircuit) -> QuantumCircuit:
+    """The {u,cx} unroll + optimization step both backends resynthesise from.
+
+    Structurally necessary, not just an optimization: it is what breaks
+    multi-qubit gates neither backend otherwise knows how to re-synthesise
+    (ccx, cp, rzz, ...) down into {1-qubit unitary, cx}.  UNROLL_OPTIMIZATION_LEVEL
+    also matters a great deal for how well single-qubit runs merge before
+    resynthesis (see its comment).
+    """
+    return transpile(circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL)
+
+
+def compile_qiskit(
+    unrolled: QuantumCircuit,
+    synth: CliffordTSynthesizer,
+    optimize: bool = True,
+    max_rounds: int = 5,
+) -> QuantumCircuit:
+    """Re-synthesise an already-{u,cx}-unrolled circuit over Clifford+T, then clean up."""
+    out = rewrite_single_qubit_runs(unrolled, synth.synthesize)
+    if not optimize:
+        return out
+    # Cancelling inverses brings new gates together, which lets the next round of
+    # block collapsing find more, so iterate until it stops paying off.  Inverse
+    # cancellation and the block collapses are exact; the whole-run rewrite in
+    # shorten_run can spend up to --tol per run, and does so at most once per
+    # round, which synth.error_bound accounts for.
+    for _ in range(max_rounds):
+        cost = gate_cost(out)
+        out = cancel_inverses(rewrite_single_qubit_runs(out, synth.shorten_run))
+        if gate_cost(out) >= cost:
+            break
+    return out
+
+
+def circuit_stats(circuit: QuantumCircuit) -> dict:
+    """Reported per-circuit statistics.
+
+    The counts come from operation_counts, which recurses into control-flow
+    blocks; QuantumCircuit.count_ops and .size do not, and would report an
+    if/else body as a single `if_else` op with no T gates in it.  The two depths
+    are qiskit's, which do not recurse either -- a control-flow block counts as
+    one layer -- since the depth of a circuit whose length depends on a
+    measurement outcome is not well defined in the first place.
+    """
+    counts = {name: int(n) for name, n in operation_counts(circuit).items()}
+    is_t = lambda inst: inst.operation.name in ("t", "tdg")  # noqa: E731
+    t_count, gates = operation_counts_cost(circuit)
+    return {
+        "qubits": circuit.num_qubits,
+        "gates": gates,
+        "depth": int(circuit.depth()),
+        "t_count": t_count,
+        "t_depth": int(circuit.depth(filter_function=is_t)),
+        "cx_count": counts.get("cx", 0),
+        "clifford_count": sum(n for name, n in counts.items() if name in CLIFFORD_T_BASIS)
+        - t_count,
+        "op_counts": counts,
+    }
+
+
+def has_control_flow(circuit: QuantumCircuit) -> bool:
+    return any(isinstance(inst.operation, ControlFlowOp) for inst in circuit.data)
+
+
+def unitary_part(circuit: QuantumCircuit) -> QuantumCircuit:
+    """The circuit with final measurements and barriers stripped, for simulation."""
+    stripped = circuit.copy()
+    stripped.remove_final_measurements(inplace=True)
+    return PassManager([RemoveBarriers()]).run(stripped)
+
+
+def unitary_fidelity(lhs: QuantumCircuit, rhs: QuantumCircuit) -> float:
+    """Global-phase-insensitive fidelity of two circuits' unitaries.
+
+    Dense: builds both 2^n x 2^n operators, so it is limited to ~12 qubits by
+    memory.  Use statevector_fidelity above that.
+    """
+
+    def unitary(circuit: QuantumCircuit) -> np.ndarray:
+        return np.asarray(Operator(unitary_part(circuit)).data, dtype=complex)
+
+    left, right = unitary(lhs), unitary(rhs)
+    dim = left.shape[0]
+    return float(abs(np.trace(left.conj().T @ right)) / dim)
+
+
+def statevector_fidelity(lhs: QuantumCircuit, rhs: QuantumCircuit, seed: int = 0) -> float:
+    """|<lhs psi | rhs psi>| for one Haar-random |psi>.
+
+    Costs 2^n amplitudes rather than 4^n, which is what makes verification
+    possible past ~12 qubits.  It samples the unitaries rather than comparing
+    them everywhere, but a Haar-random state misses a systematic discrepancy
+    with negligible probability: for U^dag V = exp(i*theta) I + E the shortfall
+    in fidelity is O(||E||), and only a measure-zero set of states hides it.
+    """
+    left, right = unitary_part(lhs), unitary_part(rhs)
+    state = random_statevector(2**left.num_qubits, seed=seed)
+    return float(abs(np.vdot(state.evolve(left).data, state.evolve(right).data)))
+
+
+def non_basis_ops(circuit: QuantumCircuit) -> dict[str, int]:
+    """Operations in the output that are not Clifford+T or a passthrough op.
+
+    Nothing else validates the basis: a single-qubit gate whose to_matrix() fails
+    is re-emitted verbatim by rewrite_single_qubit_runs, and a `u` or `unitary`
+    left in the output would contribute nothing to the T count while still being
+    a non-Clifford gate.
+    """
+    return {
+        name: n
+        for name, n in operation_counts(circuit).items()
+        if name not in CLIFFORD_T_BASIS and name not in PASSTHROUGH_OPS
+    }
+
+
+def _wrap_angle(angle: float) -> float:
+    """Move an angle into [-pi, pi), as ZXZXZDecomposition does."""
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+
+
+class GaugeFixedZXZXZDecomposition(ZXZXZDecomposition):
+    """ZXZXZDecomposition that does not split a diagonal rotation into two.
+
+    bqskit's version (bqskit/passes/rules/zxzxz.py:76-80) writes a single-qubit
+    unitary as rz(l) . sx . rz(t) . sx . rz(p).  For a *diagonal* target
+    utry[1, 0] is 0, so cmath.phase(0) == 0.0 forces t == pi and leaves
+    l == p + pi == a/2: the total z-rotation is split evenly between the two
+    outer gates and both halves are generic, so gridsynth is called twice
+    where once would do.  A gridsynth word is ~3*log2(1/epsilon) T gates (~100
+    at the epsilon this script uses), so that doubles the T count of every
+    diagonal run -- on an 18-qubit Hubbard benchmark, all 544 runs that need
+    synthesis are diagonal.
+
+    The split is a free gauge, not a constraint.  When t == +-pi the middle
+    block sx . rz(t) . sx is diagonal and commutes with the outer rz gates, so
+    only l + p is determined; when t == 0 that block is X and only p - l is.
+    Either way the whole rotation can be moved into one gate, leaving rz(0),
+    which costs nothing.  For any other t, l and p are individually determined
+    and this class behaves exactly like the base class.
+
+    Everything here is exact -- it changes which gate carries the rotation, not
+    the unitary -- so accuracy is still whatever gridsynth delivers at epsilon.
+    """
+
+    async def run(self, circuit: Circuit, data: PassData) -> None:
+        if circuit.num_qudits != 1:
+            raise ValueError("Cannot convert multi-qudit circuit into ZXZXZ sequence.")
+        if circuit.radixes[0] != 2:
+            raise ValueError("Cannot convert non-qubit circuit into ZXZXZ sequence.")
+
+        no_sx = RXGate() in data.gate_set and SqrtXGate() not in data.gate_set
+        use_rx = self.always_use_rx or no_sx
+        no_rz = U1Gate() in data.gate_set and RZGate() not in data.gate_set
+        use_u1 = self.always_use_u1 or no_rz
+
+        utry = circuit.get_unitary()
+        utry = np.linalg.det(utry) ** (-0.5) * utry
+        i1 = cmath.phase(utry[1, 1])
+        i2 = cmath.phase(utry[1, 0])
+        t = 2 * np.arctan2(abs(utry[1, 0]), abs(utry[0, 0])) + np.pi
+        p = i1 + i2 + np.pi
+        l = i1 - i2
+
+        t, p, l = _wrap_angle(t), _wrap_angle(p), _wrap_angle(l)
+
+        # The fix: collapse the gauge when the middle block is Clifford.
+        if abs(abs(t) - np.pi) < CLIFFORD_ANGLE_TOL:
+            l, p = 0.0, _wrap_angle(l + p)
+        elif abs(t) < CLIFFORD_ANGLE_TOL:
+            l, p = 0.0, _wrap_angle(p - l)
+
+        z_gate = U1Gate() if use_u1 else RZGate()
+        new_circuit = Circuit(1)
+        new_circuit.append_gate(z_gate, 0, [l])
+        if use_rx:
+            new_circuit.append_gate(RXGate(), 0, [np.pi / 2])
+        else:
+            new_circuit.append_gate(SqrtXGate(), 0)
+        new_circuit.append_gate(z_gate, 0, [t])
+        if use_rx:
+            new_circuit.append_gate(RXGate(), 0, [np.pi / 2])
+        else:
+            new_circuit.append_gate(SqrtXGate(), 0)
+        new_circuit.append_gate(z_gate, 0, [p])
+        circuit.become(new_circuit)
+
+
+class FastGridSynthPass(BasePass):
+    """GridSynthPass, but via qiskit's Rust gridsynth_rz instead of pygridsynth (~8x
+    faster per rotation, equivalent T count -- see module docstring).
+
+    Same contract as bqskit's own GridSynthPass: takes a single-qubit circuit
+    containing exactly one RZGate, replaces it with an equivalent Clifford+T
+    circuit.
+
+    qiskit's gridsynth_rz returns gates in circuit order (confirmed: forcing an
+    asymmetric target by prepending an H, the un-reversed reading matches
+    qiskit's own Operator() exactly (fidelity 1.000000) while the reversed
+    reading does not (0.997502)) -- so, unlike bqskit's own GridSynthPass,
+    which reverses pygridsynth's matrix-order output, this reads qc.data
+    directly with no reversal.
+    """
+
+    # BHGate etc. are bqskit's constant gates, imported under these aliases since
+    # qiskit's own HGate/XGate/SGate/TGate are already imported bare elsewhere
+    # in this file.
+    NAME_TO_GATE = {"h": BHGate(), "x": BXGate(), "s": BSGate(), "t": BTGate()}
+
+    def __init__(self, epsilon: float) -> None:
+        self.epsilon = epsilon
+
+    async def run(self, circuit: Circuit, data: PassData) -> None:
+        if gridsynth_rz is None:
+            raise RuntimeError(
+                "FastGridSynthPass needs qiskit >= 2.5 (qiskit.synthesis.gridsynth_rz)"
+            )
+        if circuit.num_qudits != 1:
+            raise ValueError(f"single qubit only, got {circuit.num_qudits}.")
+        if circuit.gate_counts.get(RZGate(), 0) != 1:
+            raise ValueError(f"input must be a single RZ gate, got {circuit.gate_counts}.")
+        qk_circuit = gridsynth_rz(circuit.params[0], self.epsilon)
+        new_circuit = Circuit(1)
+        for inst in qk_circuit.data:
+            new_circuit.append_gate(self.NAME_TO_GATE[inst.operation.name], [0])
+        circuit.become(new_circuit)
+
+
+def decompose_rz_gauge_fixed(
+    circuit: Circuit, synthesis_epsilon: float = BQSKIT_EPSILON_DEFAULT
+) -> tuple[Circuit, float]:
+    """Take a {Clifford, RZ} circuit to Clifford+T without the doubled rotations.
+
+    Feed this the output of a workflow built with ``decompose_rz=False``, which
+    stops with the rotation angles still exact.  The fix cannot be applied to a
+    finished Clifford+T circuit, where the two gridsynth words have already been
+    expanded into ~200 gates and recovering the intended angle would mean
+    approximating an approximation.
+
+    The pass list mirrors bqskit's own ordering in build_cliffordt_workflow --
+    group single-qubit runs, decompose, replace exact Cliffords, round
+    near-discrete z-rotations, then gridsynth what is left -- with two
+    substitutions: GaugeFixedZXZXZDecomposition in place of the stock
+    decomposition, and FastGridSynthPass (qiskit's Rust gridsynth) in place of
+    bqskit's own pygridsynth-based GridSynthPass, inlined here in place of
+    bqskit's rz_decomposition_passes() helper since that helper hardcodes
+    GridSynthPass and an integer digit-count precision rather than a literal
+    epsilon.
+
+    Returns (circuit, error_bound). error_bound is bqskit's own
+    ``calculate_error_bound`` mechanism (bqskit/compiler/basepass.py's
+    ``_sub_do_work``, which every ``ForEachBlockPass`` below with that flag set
+    invokes per block: it measures the *exact* distance between each 1-qubit
+    block's unitary before and after its sub-workflow runs -- cheap, since
+    these are single-qubit blocks, not the whole circuit -- and composes the
+    per-block sums multiplicatively across passes via
+    ``PassData.update_error_mul``, the same fidelity-complement composition
+    qiskit's own subadditive sum approximates). This is analogous to, but
+    narrower in scope than, the qiskit backend's ``error_bound``: it covers
+    GaugeFixedZXZXZDecomposition (contributes ~0, since that rewrite is exact
+    by construction) and FastGridSynthPass (the real source of error here), but
+    not RoundToDiscreteZPass's own rounding (which isn't run inside a
+    ForEachBlockPass, so isn't measured by this mechanism, and could in
+    principle spend up to synthesis_epsilon per rounded rotation without being
+    counted) or anything from bqskit's own earlier 2-qubit block instantiation
+    in compile_bqskit's first bqskit_compile() call. Only available when
+    gauge_fix=True -- bqskit's own decompose_rz=True path (used when
+    --no-rz-gauge-fix is passed) doesn't wrap its ForEachBlockPass calls with
+    calculate_error_bound, so there is no equivalent bound to read there.
+    """
+    passes = [
+        GroupSingleQuditGatePass(),
+        ForEachBlockPass(
+            [GaugeFixedZXZXZDecomposition()],
+            collection_filter=single_qudit_filter,
+            calculate_error_bound=True,
+        ),
+        clifford_replace(),
+        UnfoldPass(),
+        RoundToDiscreteZPass(synthesis_epsilon),
+        UnfoldPass(),
+        IsolateRZGatePass(),
+        ForEachBlockPass([FastGridSynthPass(synthesis_epsilon)], calculate_error_bound=True),
+        UnfoldPass(),
+    ]
+    # bqskit runs passes in spawned workers, which unpickle the pass and import
+    # its module.  That works for GaugeFixedZXZXZDecomposition and
+    # FastGridSynthPass whether this file is run as a script (multiprocessing
+    # re-imports the parent's __main__) or imported as a module, but it would
+    # not work for a class defined inside a function or monkeypatched onto
+    # bqskit in this process.
+    #
+    # num_workers=1 forced here, not bqskit's own default (all cores): running
+    # FastGridSynthPass across bqskit's normal multi-worker pool was measured
+    # to make gridsynth_rz produce different, equally-valid-but-different
+    # sequences for the *same* RZ angle across repeated runs at the same seed
+    # -- confirmed by isolating the extracted angles themselves (bit-identical
+    # across runs) and by comparing a direct in-process call to gridsynth_rz
+    # (deterministic) against the same call routed through bqskit's worker
+    # pool (not deterministic); num_workers=1 alone fixes it. That indicates a
+    # fork-safety issue in rsgridsynth's PyO3 extension, not a bug in this
+    # angle-extraction code, and it does not affect bqskit's own passes (the
+    # stock pygridsynth-based GridSynthPass this replaces stays deterministic
+    # under bqskit's default parallel workers). Measured to also be faster
+    # here in practice, not just safer: parallel-worker startup overhead
+    # dominates at this pass's rotation counts, so serial execution with the
+    # ~8x-faster-per-call FastGridSynthPass still beats parallel pygridsynth.
+    with Compiler(num_workers=1) as compiler:
+        out, data = compiler.compile(circuit, passes, request_data=True)
+    return out, data.error
+
+
+def _dedupe_creg_lines(path: Path) -> None:
+    """bqskit emits one creg declaration per MeasurementPlaceholder, producing
+    duplicate lines that cause QASM parsers to reject the file.  Deduplicate
+    them while preserving the first occurrence and the original line order.
+    """
+    text = path.read_text()
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("creg "):
+            if stripped in seen:
+                continue
+            seen.add(stripped)
+        deduped.append(line)
+    path.write_text("".join(deduped))
+
+
+def compile_bqskit(
+    unrolled: QuantumCircuit,
+    epsilon: float,
+    seed: int,
+    gauge_fix: bool,
+) -> tuple[QuantumCircuit, Optional[float]]:
+    """Compile an already-{u,cx}-unrolled circuit via bqskit, returning a qiskit
+    QuantumCircuit (round-tripped through qiskit's own loader, so it can share
+    verification/reporting/writing with the qiskit backend) and an error bound.
+
+    The error bound is bqskit's own ``calculate_error_bound`` mechanism, read
+    from ``decompose_rz_gauge_fixed`` -- see its docstring for exactly what it
+    covers. Only available when ``gauge_fix`` is True; ``None`` otherwise,
+    since bqskit's own ``decompose_rz=True`` path (used when gauge_fix is
+    False) has no equivalent tracking.
+    """
+    error_bound: Optional[float] = None
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = Path(tmp) / "in.qasm"
+        qasm2.dump(unrolled, in_path)
+        bq_circuit = Circuit.from_file(str(in_path))
+
+        machine = CliffordTModel(bq_circuit.num_qudits)
+        # CliffordTModel registers a default workflow for every optimization
+        # level in its constructor, so registering ours always displaces one
+        # and bqskit warns about it.  Displacing it is the whole point -- it
+        # is also the only way to seed, since compile() returns the registered
+        # workflow before it ever looks at its own seed argument -- and the
+        # warning's advice about namespace packages does not apply, so drop
+        # just that message and leave every other warning visible.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Overwritting workflow")
+            register_workflow(
+                machine,
+                build_circuit_workflow(
+                    BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
+                    synthesis_epsilon=epsilon,
+                    decompose_rz=not gauge_fix,
+                    seed=seed,
+                ),
+                BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
+                "circuit",
+            )
+        bq_circuit = bqskit_compile(
+            bq_circuit,
+            model=machine,
+            optimization_level=BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
+            seed=seed,
+        )
+        if gauge_fix:
+            bq_circuit, error_bound = decompose_rz_gauge_fixed(bq_circuit, epsilon)
+
+        # Flatten any CircuitGate wrappers bqskit may have left around
+        # sub-circuits (e.g. U3Gate wrapped in a CircuitGate).  Without this,
+        # the transpile binary crashes because it has no rule for CircuitGate.
+        bq_circuit.unfold_all()
+
+        # Remove IdentityGate operations: they are semantic no-ops but bqskit
+        # serialises them as a custom "identity1" gate using U(0,0,0).  When the
+        # QASM is reloaded, that custom gate definition is parsed back as a
+        # CircuitGate(U3Gate), which causes the transpile binary to crash.
+        identity = IdentityGate(1)
+        if identity in bq_circuit.gate_set:
+            bq_circuit.remove_all(identity)
+
+        for g in bq_circuit.gate_set:
+            if (
+                not isinstance(g, IdentityGate)
+                and not isinstance(g, MeasurementPlaceholder)
+                and not isinstance(g, BarrierPlaceholder)
+                and g not in clifford_t_gates
+            ):
+                print(f"Warning: gate {g} is not Clifford+T", file=sys.stderr)
+
+        out_path = Path(tmp) / "out.qasm"
+        bq_circuit.save(str(out_path))
+        _dedupe_creg_lines(out_path)
+        return load_circuit(out_path), error_bound  # qiskit's own loader -- now a QuantumCircuit
+
+
+def verify_compilation(
+    source: QuantumCircuit,
+    compiled: QuantumCircuit,
+    args: argparse.Namespace,
+    error_bound: Optional[float] = None,
+    n_rewrites: Optional[int] = None,
+) -> tuple[dict, list[str]]:
+    """Check the compiled circuit as thoroughly as its size allows.
+
+    Returns the statistics to record and the lines to log.  The basis check
+    applies at any qubit count; the numeric checks fall back from dense
+    unitaries to a single random statevector to nothing as the circuit grows.
+    `error_bound` is qiskit's CliffordTSynthesizer's per-rewrite sum
+    (`n_rewrites` counts how many) when called from the qiskit backend, or
+    bqskit's own `calculate_error_bound` mechanism (no comparable rewrite
+    count, so `n_rewrites` stays None) from the bqskit backend with the gauge
+    fix on -- see `decompose_rz_gauge_fixed`'s docstring for what it does and
+    doesn't cover. `error_bound` is None for bqskit with `--no-rz-gauge-fix`,
+    since that path has no equivalent bookkeeping either way.
+    """
+    entry: dict = {
+        "non_basis_ops": non_basis_ops(compiled),
+        "error_bound": error_bound,
+        "fidelity": None,
+        "state_fidelity": None,
+    }
+    notes = []
+    if error_bound is not None:
+        scope = f" over {n_rewrites} rewrites" if n_rewrites is not None else ""
+        notes.append(f"error bound{scope}: {error_bound:.2e}")
+    if entry["non_basis_ops"]:
+        notes.append(f"FAILED basis check, output is not Clifford+T: {entry['non_basis_ops']}")
+    else:
+        notes.append(f"basis check passed ({', '.join(CLIFFORD_T_BASIS)} + measure/barrier/reset)")
+
+    qubits = compiled.num_qubits
+    gates = operation_counts_cost(compiled)[1] + operation_counts_cost(source)[1]
+    if has_control_flow(compiled) or has_control_flow(source):
+        notes.append("no numeric check: circuit has classical control flow")
+        return entry, notes
+    try:
+        if qubits <= args.verify_max_qubits and gates <= args.verify_max_gates:
+            entry["fidelity"] = unitary_fidelity(source, compiled)
+            notes.append(f"unitary fidelity vs input: {entry['fidelity']:.12f}")
+        elif (
+            qubits <= args.verify_statevector_qubits
+            and gates * 2**qubits <= args.verify_statevector_ops
+        ):
+            entry["state_fidelity"] = statevector_fidelity(source, compiled, args.verify_seed)
+            notes.append(
+                f"statevector fidelity vs input: {entry['state_fidelity']:.12f}"
+                f" (1 random state, seed {args.verify_seed})"
+            )
+        else:
+            # Both limits can bind at once, and naming only one of them sends the
+            # reader to raise a knob that will not actually let the check run.
+            over = []
+            if qubits > args.verify_statevector_qubits:
+                over.append(
+                    f"--verify-statevector-qubits {args.verify_statevector_qubits}"
+                    f" (needs ~{3 * 16 * 2**qubits / 2**30:.0f} GB)"
+                )
+            if gates * 2**qubits > args.verify_statevector_ops:
+                over.append(
+                    f"--verify-statevector-ops {args.verify_statevector_ops:.1e}"
+                    f" (needs {gates * 2**qubits:.1e},"
+                    f" ~{gates * 2**qubits / 1e8 / 3600:.1f} h at ~1e8/s)"
+                )
+            notes.append(
+                f"no numeric check: {qubits} qubits x {gates} gates is over " + " and ".join(over)
+            )
+    except Exception as error:  # mid-circuit measurement, unsupported op, memory
+        notes.append(f"numeric check failed to run ({type(error).__name__}: {error})")
+    return entry, notes
+
+
+def write_circuit(circuit: QuantumCircuit, path: Path) -> str:
+    """Write as OpenQASM 2 if possible, else OpenQASM 3.  Returns the version."""
+    try:
+        text, version = qasm2.dumps(circuit), "2.0"
+    except qasm2.QASM2ExportError:
+        text, version = qasm3.dumps(circuit), "3.0"
+    path.write_text(text + "\n")
+    return version
+
+
+def output_path(source: Path, target: Optional[Path], many: bool) -> Path:
+    default_name = source.stem + ".cliffordt.qasm"
+    if target is None:
+        return source.parent / default_name
+    if many or target.is_dir():
+        target.mkdir(parents=True, exist_ok=True)
+        return target / default_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def print_report(log, before: dict, after: dict, extra: list[str]) -> None:
+    """Print a report line identical in shape for both backends.
+
+    `extra` carries the qiskit-only "1q runs: N Clifford, ..." diagnostic
+    (from CliffordTSynthesizer's counters); it reflects bookkeeping internal to
+    qiskit's own resynthesis algorithm that bqskit's compiler passes don't
+    expose, so it is empty for the bqskit backend.
+    """
+    log(
+        f"  {before['qubits']} qubits, {before['gates']} gates -> {after['gates']} gates "
+        f"(T={after['t_count']}, cx={after['cx_count']}, depth={after['depth']}, "
+        f"T-depth={after['t_depth']})"
+    )
+    for line in extra:
+        log(f"  {line}")
+
+
+@contextlib.contextmanager
+def timed(label: str, timings: dict) -> Iterator[None]:
+    start = time.time()
+    try:
+        yield
+    finally:
+        timings[label] = time.time() - start
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compile a QASM circuit to the Clifford+T gate set, via qiskit or bqskit.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("inputs", nargs="+", type=Path, help="input .qasm file(s)")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="output file (single input) or directory (multiple inputs); "
+        "default is <input>.cliffordt.qasm next to the input",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("qiskit", "bqskit"),
+        default="qiskit",
+        help="compilation backend: qiskit (far fewer T gates on every benchmark "
+        "measured so far) or bqskit (kept for comparison and as an "
+        "independent implementation; rejects circuits with classical control "
+        "flow)",
+    )
+    parser.add_argument(
+        "-e",
+        "--epsilon",
+        type=float,
+        default=None,
+        help="gridsynth target error per rotation; default depends on --backend "
+        f"({QISKIT_EPSILON_DEFAULT:g} for qiskit, {BQSKIT_EPSILON_DEFAULT:g} for "
+        "bqskit -- see module docstring for why these differ rather than being "
+        "one shared value)",
+    )
+    parser.add_argument(
+        "--no-optimize",
+        action="store_true",
+        help="qiskit backend only: skip the post-synthesis clean-up (inverse "
+        "cancellation and exact re-synthesis of collapsible runs)",
+    )
+    parser.add_argument(
+        "--tol",
+        type=float,
+        help="qiskit backend only: how much error an exact rewrite may introduce: "
+        "the tolerance for treating an angle as a multiple of pi/4 or a unitary "
+        "as a Clifford. Defaults to --epsilon, so that no rotation comes out "
+        "free unless it is within the requested accuracy of a Clifford",
+    )
+    parser.add_argument(
+        "--no-rz-gauge-fix",
+        action="store_true",
+        help="bqskit backend only: use bqskit's ZXZXZDecomposition unchanged. By "
+        "default this script substitutes a gauge-fixed version, which halves "
+        "the T count of every diagonal single-qubit rotation; see "
+        "GaugeFixedZXZXZDecomposition. Pass this to reproduce stock bqskit "
+        "output.",
+    )
+    parser.add_argument(
+        "--seed",
+        "-s",
+        type=int,
+        default=0,
+        help="bqskit backend only: seed for bqskit's numerical instantiation. "
+        "bqskit is nondeterministic without one: repeated runs of the same "
+        "input have been seen to differ by ~40%% in T count, which makes gate "
+        "counts unreproducible and unsafe to compare. Pass a different integer "
+        "to sample another compilation; there is no unseeded mode, since an "
+        "unrecorded seed is never preferable to a recorded one.",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="check the compiled circuit against the input: basis check at any "
+        "size (plus an error bound for the qiskit backend), and a dense or "
+        "statevector fidelity if it is small enough",
+    )
+    parser.add_argument(
+        "--verify-max-qubits",
+        type=int,
+        default=10,
+        help="use the dense 2^n x 2^n unitary comparison up to this many qubits",
+    )
+    parser.add_argument(
+        "--verify-max-gates",
+        type=int,
+        default=20000,
+        help="use the dense unitary comparison up to this many gates",
+    )
+    parser.add_argument(
+        "--verify-statevector-qubits",
+        type=int,
+        default=24,
+        help="use the random-statevector comparison up to this many qubits, above "
+        "which only the basis check (and error bound, for qiskit) are "
+        "reported; memory is ~800 MB at 24 and doubles per qubit",
+    )
+    parser.add_argument(
+        "--verify-statevector-ops",
+        type=float,
+        default=5e9,
+        help="work budget for the random-statevector comparison, as gates * 2^qubits; "
+        "roughly 1e8 per second, so the default is about a minute",
+    )
+    parser.add_argument(
+        "--verify-seed",
+        type=int,
+        default=0,
+        help="seed for the random state used by the statevector comparison",
+    )
+    parser.add_argument("--stats", type=Path, help="write per-circuit statistics as JSON")
+    parser.add_argument("-q", "--quiet", action="store_true", help="only report errors")
+
+    args = parser.parse_args(argv)
+
+    if args.epsilon is None:
+        args.epsilon = (
+            QISKIT_EPSILON_DEFAULT if args.backend == "qiskit" else BQSKIT_EPSILON_DEFAULT
+        )
+
+    # Warn (not error) if a backend-inappropriate flag was explicitly set to a
+    # non-default value, so the two backends can share one parser without
+    # silently ignoring a flag the user thought they were setting.
+    backend_only_flags = {
+        "qiskit": {"no_rz_gauge_fix": "--no-rz-gauge-fix", "seed": "--seed"},
+        "bqskit": {"no_optimize": "--no-optimize", "tol": "--tol"},
+    }
+    for dest, flag in backend_only_flags[args.backend].items():
+        if getattr(args, dest) != parser.get_default(dest):
+            print(
+                f"warning: {flag} has no effect with --backend {args.backend}",
+                file=sys.stderr,
+            )
+
+    return args
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    log = (lambda *a: None) if args.quiet else lambda *a: print(*a, flush=True)
+
+    synth: Optional[CliffordTSynthesizer] = None
+    if args.backend == "qiskit":
+        synth = CliffordTSynthesizer(epsilon=args.epsilon, tol=args.tol)
+        log(f"backend: qiskit (epsilon={args.epsilon:g})")
+    else:
+        log(
+            f"backend: bqskit (epsilon={args.epsilon:g}, seed={args.seed}, "
+            f"gauge fix {'on' if not args.no_rz_gauge_fix else 'off'})"
+        )
+
+    all_stats = []
+    failures = 0
+    for source in args.inputs:
+        log(f"=== {source}")
+        timings: dict[str, float] = {}
+        verification: Optional[dict] = None
+        error_bound: Optional[float] = None
+        n_rewrites: Optional[int] = None
+        if synth is not None:
+            synth.reset_counters()  # counters are per circuit
+        try:
+            with timed("total", timings):
+                with timed("load", timings):
+                    circuit = load_circuit(source)
+                before = circuit_stats(circuit)
+
+                with timed("preopt", timings):
+                    unrolled = unroll_to_u_cx(circuit)
+
+                with timed("compile", timings):
+                    if args.backend == "qiskit":
+                        assert synth is not None  # set above whenever backend == "qiskit"
+                        compiled = compile_qiskit(unrolled, synth, optimize=not args.no_optimize)
+                        extra = [
+                            f"1q runs: {synth.n_clifford} Clifford, {synth.n_exact} exact,"
+                            f" {synth.n_approx} approximated, {synth.n_merged} shortened"
+                            f" (worst rewrite {synth.max_error:.2e}, total {synth.error_bound:.2e})"
+                        ]
+                        error_bound = synth.error_bound
+                        n_rewrites = synth.n_approx + synth.n_merged
+                    else:
+                        if has_control_flow(circuit):
+                            raise RuntimeError(
+                                "the bqskit backend does not support classical control flow"
+                            )
+                        compiled, error_bound = compile_bqskit(
+                            unrolled,
+                            epsilon=args.epsilon,
+                            seed=args.seed,
+                            gauge_fix=not args.no_rz_gauge_fix,
+                        )
+                        extra = []
+
+                after = circuit_stats(compiled)
+                print_report(log, before, after, extra)
+
+                timings["verify"] = 0.0
+                if args.verify:
+                    with timed("verify", timings):
+                        verification, notes = verify_compilation(
+                            circuit, compiled, args, error_bound, n_rewrites
+                        )
+                    for note in notes:
+                        log(f"  {note}")
+
+                with timed("write", timings):
+                    destination = output_path(source, args.output, len(args.inputs) > 1)
+                    version = write_circuit(compiled, destination)
+        except Exception as error:  # keep going over a batch of files
+            print(f"ERROR {source}: {type(error).__name__}: {error}", file=sys.stderr)
+            failures += 1
+            continue
+
+        for label in ("load", "preopt", "compile", "verify", "write"):
+            log(f"  {label}: {timings[label]:.2f}s")
+        log(f"  total: {timings['total']:.2f}s")
+
+        entry = {
+            "input": str(source),
+            "output": str(destination),
+            "qasm_version": version,
+            "backend": args.backend,
+            "epsilon": args.epsilon,
+            "before": before,
+            "after": after,
+            "timings": {k: round(v, 3) for k, v in timings.items()},
+            "runs_clifford": synth.n_clifford if synth else None,
+            "runs_exact": synth.n_exact if synth else None,
+            "runs_approximated": synth.n_approx if synth else None,
+            "runs_shortened": synth.n_merged if synth else None,
+            "tol": synth.tol if synth else None,
+            "max_rewrite_error": synth.max_error if synth else None,
+            "error_bound": error_bound,
+        }
+        if verification is not None:
+            entry.update(verification)
+            if verification["non_basis_ops"]:
+                print(
+                    f"ERROR {source}: output is not Clifford+T: "
+                    f"{verification['non_basis_ops']}",
+                    file=sys.stderr,
+                )
+                failures += 1
+
+        log(f"  wrote {destination} (OpenQASM {version})")
+        all_stats.append(entry)
+
+    if args.stats:
+        args.stats.write_text(json.dumps(all_stats, indent=2) + "\n")
+        log(f"wrote statistics to {args.stats}")
+
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
