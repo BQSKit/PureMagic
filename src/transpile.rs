@@ -1,7 +1,8 @@
 #!/usr/bin/env -S cargo run --bin transpile --
 //! Transpile a Clifford+T circuit (QASM) to Pauli basis measurements (.trans).
 //!
-//! Input must be a `.cliffordt.qasm` file produced by `compile_circuit.py`.
+//! Input must be a `.cliffordt.qasm` file produced by one of the Clifford+T
+//! compilers in `data_processing/`.
 
 use clap::Parser;
 use std::fmt;
@@ -774,7 +775,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_file = &args.input_file;
     if !input_file.ends_with(".cliffordt.qasm") {
         return Err(format!(
-            "Input file must be a .cliffordt.qasm file produced by compile_circuit.py, got: {}",
+            "Input file must be a .cliffordt.qasm file produced by a Clifford+T compiler in data_processing/, got: {}",
             input_file
         )
         .into());

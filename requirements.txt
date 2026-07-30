@@ -3,6 +3,11 @@ matplotlib
 pandas
 bqskit
 bqskit-ft
+qiskit>=2.5
+# Optional: fallback rotation synthesiser for data_processing/qiskit_compile_cliffordt.py,
+# used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
+# Already pulled in by bqskit-ft.
+pygridsynth
 # PyTorch: CPU-only build installed by default.
 # For GPU support, replace with a CUDA-enabled build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121

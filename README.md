@@ -92,16 +92,20 @@ Files in this format are produced by the `transpile` binary. The full pipeline f
 
 ### Step 1 — Compile to Clifford+T (Python, optional)
 
-If your circuit is not already in the Clifford+T gate set, compile it first using [`src/compile_circuit.py`](src/compile_circuit.py):
+If your circuit is not already in the Clifford+T gate set, compile it first using [`data_processing/bqskit_compile_cliffordt.py`](data_processing/bqskit_compile_cliffordt.py):
 
 ```bash
 # Install Python dependencies once
 pip install -r requirements.txt
 
-python src/compile_circuit.py -i circuit.qasm
+python data_processing/bqskit_compile_cliffordt.py -i circuit.qasm
 ```
 
 This produces `circuit.cliffordt.qasm` using [BQSKit](https://bqskit.readthedocs.io/).
+
+[`data_processing/qiskit_compile_cliffordt.py`](data_processing/qiskit_compile_cliffordt.py) is an
+alternative that targets the same gate set with qiskit instead, and sometimes emits substantially fewer
+T gates on the benchmarks here. Either output works as input to Step 2.
 
 ### Step 2 — Transpile to `.trans` format (Rust)
 
@@ -156,7 +160,6 @@ src/
 ├── circuit_stats.rs    # CLI entry point for circuit statistics estimator (circuit_stats binary)
 ├── gen_circuit.rs      # CLI entry point for random circuit generator (gen_circuit binary)
 ├── tableau.rs          # Clifford tableau simulation used by transpile
-├── compile_circuit.py  # Python script: compile QASM → Clifford+T QASM (uses BQSKit)
 ├── scheduler.rs        # Core EAF scheduling algorithm
 ├── cultivation.rs      # Magic state cultivation pool management
 ├── astar.rs            # A* pathfinding (single-qubit T gate routing)
@@ -167,5 +170,38 @@ src/
 ├── node.rs             # Node type definitions (Magic, Bus, Data)
 ├── topograph.rs        # Topology graph: lattice layout and qubit placement
 ├── topograph_plotter.rs # SVG/PNG topology and path visualizations
-└── utils.rs            # Timing utilities and logging macros
+├── utils.rs            # Timing utilities and logging macros
+└── mcmc_cultivation.py # MCMC model of the cultivation time distribution,
+                        #   fitted to Figure 15 of arXiv:2409.17595
+
+data_processing/        # Python/shell tooling; not built by cargo
+├── bqskit_compile_cliffordt.py # Compile QASM → Clifford+T QASM (uses BQSKit)
+├── qiskit_compile_cliffordt.py # Same, using qiskit; fewer T gates on these benchmarks
+├── flasq_lower_bound.py     # FLASQ lower bound (Algorithm 1 of Beverland et al.)
+├── dascot_qubit_count.py    # Logical qubit counts for DASCOT square-sparse/compact
+├── analyze_wisq.py          # Summarise WISQ JSON: steps, total and mean IDs per step
+├── generate_rnd_layout.py   # Generate random Pauli product sequences
+├── convert_lss_to_trans.py  # Lattice Surgery Simulator output → .trans
+├── convert_lss_to_qasm.py   # Lattice Surgery Simulator output → QASM
+├── circuit_table.py         # LaTeX table of circuit statistics from QASM files
+├── scheduling_table.py      # LaTeX table comparing two scheduling runs
+├── plot_puremagic.py        # Unified results plotter
+├── plot_cultivation_dist.py # Plot *.cultivation_dist files as distributions
+├── plot_all.sh              # Driver: regenerate the paper figures via plot_puremagic.py
+└── .gitignore               # Ignores the *.png this directory generates
+
+data/                   # Benchmark circuits, selected from Benchpress; see data/README.md
+├── all_compiled/       # Source QASM plus its .cliffordt.qasm, and count-gates.sh
+└── transpiled/         # .trans inputs for puremagic, under max-weight-0/ and max-weight-1/
+
+tests/
+├── integration_test.rs # End-to-end tests over the fixtures below
+└── fixtures/           # tiny.cliffordt.qasm, tiny.trans, small_4q.trans
 ```
+
+Build and CI configuration lives in `Cargo.toml`, `Cargo.lock`, `build.rs`,
+`.cargo/config.toml`, `.rustfmt.toml` and `.github/workflows/ci.yml`; Python
+dependencies are in `requirements.txt` and the dev container in
+`.devcontainer/devcontainer.json`. Git metadata is `.gitignore` and
+`.gitattributes`, which declares Git LFS filters for `data/**/*.qasm` and
+`data/**/*.trans`.
