@@ -56,26 +56,31 @@ Pipeline
    (bqskit.compiler.compile) using its default Clifford+T model and workflow,
    then re-synthesises the diagonal single-qubit rotations that bqskit's own
    ZXZXZDecomposition doubles up (see GaugeFixedZXZXZDecomposition; on by
-   default, --no-rz-gauge-fix reproduces stock bqskit output) via the same
-   gridsynth algorithm as the qiskit backend (see FastGridSynthPass, ~8x
-   faster per rotation than bqskit's own pygridsynth-based GridSynthPass).
-   Produces substantially more T gates than the qiskit backend on every
-   benchmark measured so far -- kept for comparison and as an independently
-   implemented Clifford+T compiler, not because it is competitive.
+   default, --no-rz-gauge-fix reproduces stock bqskit output) via bqskit's own
+   stock, pygridsynth-based GridSynthPass (an earlier version of this script
+   substituted qiskit's Rust gridsynth_rz here instead; reverted after it gave
+   no measurable end-to-end speedup and proved unreliable inside bqskit's
+   worker-process model on real benchmarks -- see decompose_rz_gauge_fixed's
+   docstring). Produces substantially more T gates than the qiskit backend on
+   every benchmark measured so far -- kept for comparison and as an
+   independently implemented Clifford+T compiler, not because it is
+   competitive.
 
 Rotation synthesis: gridsynth
 ------------------------------
 The Ross-Selinger algorithm, near T-optimal at T ~ 3*log2(1/epsilon) per
-rotation.  Both backends use qiskit's own Rust implementation
+rotation. The qiskit backend uses qiskit's own Rust implementation
 (qiskit.synthesis.gridsynth_rz, qiskit >= 2.5, ~5 ms per distinct rotation),
 falling back to pygridsynth -- the pure-Python/mpmath implementation, ~8x
 slower -- for the rare angles rsgridsynth 0.2.0 panics on at coarse epsilon.
 That fallback already handles gridsynth failing on part of a circuit; there is
-no separate "worse but always works" mode. Each generic 1q gate needs up to 3
-Rz rotations (ZXZ Euler angles), so the error per gate is up to 3*epsilon;
-angles that are exact multiples of pi/4 are synthesised exactly and cost
-nothing.  Each distinct rotation is synthesised once and reused, so cost
-scales with the number of distinct angles rather than the number of gates.
+no separate "worse but always works" mode. The bqskit backend uses only
+pygridsynth (bqskit's own stock GridSynthPass), with no Rust extension
+involved at all. Each generic 1q gate needs up to 3 Rz rotations (ZXZ Euler
+angles), so the error per gate is up to 3*epsilon; angles that are exact
+multiples of pi/4 are synthesised exactly and cost nothing.  Each distinct
+rotation is synthesised once and reused, so cost scales with the number of
+distinct angles rather than the number of gates.
 
 --epsilon's default depends on --backend (1e-10 for qiskit, 1e-8 for bqskit)
 rather than being one shared value, because "epsilon" is not the same
@@ -106,7 +111,7 @@ basis + error bound: always run, no flag needed -- both are cheap (no
     a genuine upper bound on ||U_compiled - U_unrolled||_2 -- taking qiskit's
     own unroll and inverse cancellation as exact.  The bqskit backend (with
     the gauge fix on, the default) gets a narrower analogue from bqskit's own
-    machinery: each GaugeFixedZXZXZDecomposition/FastGridSynthPass
+    machinery: each GaugeFixedZXZXZDecomposition/GridSynthPass
     ForEachBlockPass call runs with calculate_error_bound=True, so bqskit
     measures the exact unitary distance of every 1-qubit block before and
     after and composes them via PassData.update_error_mul -- see
@@ -198,7 +203,6 @@ from qiskit.circuit.library import (
 
 from bqskit import Circuit
 from bqskit.compiler import Compiler
-from bqskit.compiler.basepass import BasePass
 from bqskit.compiler.compile import compile as bqskit_compile
 from bqskit.compiler.passdata import PassData
 from bqskit.compiler.registry import register_workflow
@@ -209,14 +213,11 @@ from bqskit.ft.cliffordt.defaultworkflow import (
     clifford_replace,
     single_qudit_filter,
 )
+from bqskit.ft.ftpasses.gridsynth import GridSynthPass
 from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass
 from bqskit.ft.rules.isolate_rz import IsolateRZGatePass
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
-from bqskit.ir.gates.constant.h import HGate as BHGate
-from bqskit.ir.gates.constant.s import SGate as BSGate
 from bqskit.ir.gates.constant.sx import SqrtXGate
-from bqskit.ir.gates.constant.t import TGate as BTGate
-from bqskit.ir.gates.constant.x import XGate as BXGate
 from bqskit.ir.gates.parameterized.rx import RXGate
 from bqskit.ir.gates.parameterized.rz import RZGate
 from bqskit.ir.gates.parameterized.u1 import U1Gate
@@ -988,46 +989,6 @@ class GaugeFixedZXZXZDecomposition(ZXZXZDecomposition):
         circuit.become(new_circuit)
 
 
-class FastGridSynthPass(BasePass):
-    """GridSynthPass, but via qiskit's Rust gridsynth_rz instead of pygridsynth (~8x
-    faster per rotation, equivalent T count -- see module docstring).
-
-    Same contract as bqskit's own GridSynthPass: takes a single-qubit circuit
-    containing exactly one RZGate, replaces it with an equivalent Clifford+T
-    circuit.
-
-    qiskit's gridsynth_rz returns gates in circuit order (confirmed: forcing an
-    asymmetric target by prepending an H, the un-reversed reading matches
-    qiskit's own Operator() exactly (fidelity 1.000000) while the reversed
-    reading does not (0.997502)) -- so, unlike bqskit's own GridSynthPass,
-    which reverses pygridsynth's matrix-order output, this reads qc.data
-    directly with no reversal.
-    """
-
-    # BHGate etc. are bqskit's constant gates, imported under these aliases since
-    # qiskit's own HGate/XGate/SGate/TGate are already imported bare elsewhere
-    # in this file.
-    NAME_TO_GATE = {"h": BHGate(), "x": BXGate(), "s": BSGate(), "t": BTGate()}
-
-    def __init__(self, epsilon: float) -> None:
-        self.epsilon = epsilon
-
-    async def run(self, circuit: Circuit, data: PassData) -> None:
-        if gridsynth_rz is None:
-            raise RuntimeError(
-                "FastGridSynthPass needs qiskit >= 2.5 (qiskit.synthesis.gridsynth_rz)"
-            )
-        if circuit.num_qudits != 1:
-            raise ValueError(f"single qubit only, got {circuit.num_qudits}.")
-        if circuit.gate_counts.get(RZGate(), 0) != 1:
-            raise ValueError(f"input must be a single RZ gate, got {circuit.gate_counts}.")
-        qk_circuit = gridsynth_rz(circuit.params[0], self.epsilon)
-        new_circuit = Circuit(1)
-        for inst in qk_circuit.data:
-            new_circuit.append_gate(self.NAME_TO_GATE[inst.operation.name], [0])
-        circuit.become(new_circuit)
-
-
 def decompose_rz_gauge_fixed(
     circuit: Circuit, synthesis_epsilon: float = BQSKIT_EPSILON_DEFAULT
 ) -> tuple[Circuit, float]:
@@ -1041,13 +1002,28 @@ def decompose_rz_gauge_fixed(
 
     The pass list mirrors bqskit's own ordering in build_cliffordt_workflow --
     group single-qubit runs, decompose, replace exact Cliffords, round
-    near-discrete z-rotations, then gridsynth what is left -- with two
-    substitutions: GaugeFixedZXZXZDecomposition in place of the stock
-    decomposition, and FastGridSynthPass (qiskit's Rust gridsynth) in place of
-    bqskit's own pygridsynth-based GridSynthPass, inlined here in place of
-    bqskit's rz_decomposition_passes() helper since that helper hardcodes
-    GridSynthPass and an integer digit-count precision rather than a literal
-    epsilon.
+    near-discrete z-rotations, then gridsynth what is left -- with
+    GaugeFixedZXZXZDecomposition in place of the stock decomposition.
+    Rotation synthesis itself is bqskit's own stock, pygridsynth-based
+    GridSynthPass, inlined here (rather than calling bqskit's own
+    rz_decomposition_passes() helper, which hardcodes the same pass) so
+    calculate_error_bound=True can be set on it below.
+
+    An earlier version of this function substituted qiskit's Rust gridsynth_rz
+    here instead (FastGridSynthPass, ~8x faster per rotation in isolation).
+    Reverted: it gave no measurable end-to-end speedup on real benchmarks (the
+    initial 2-qubit block instantiation in compile_bqskit's first
+    bqskit_compile() call dominates wall time regardless), and calling it
+    through bqskit's worker-process model surfaced two distinct failure modes
+    on a real 36-qubit circuit that stock GridSynthPass does not hit: an
+    unguarded pyo3 panic on some angles at coarse epsilon (bqskit's own
+    task-stepping loop only catches Exception, not the BaseException a panic
+    surfaces as, so it took the whole worker process down), and, even once
+    that panic was caught and handled, a separate `TypeError: cannot pickle
+    '_MPMathModule' object` and worker hangs on the same circuit. Both point
+    at instability in calling that particular Rust extension repeatedly from
+    inside bqskit's forked workers, not a one-line bug -- not worth the
+    reliability cost for a change that wasn't measurably faster in practice.
 
     Returns (circuit, error_bound). error_bound is bqskit's own
     ``calculate_error_bound`` mechanism (bqskit/compiler/basepass.py's
@@ -1060,7 +1036,7 @@ def decompose_rz_gauge_fixed(
     qiskit's own subadditive sum approximates). This is analogous to, but
     narrower in scope than, the qiskit backend's ``error_bound``: it covers
     GaugeFixedZXZXZDecomposition (contributes ~0, since that rewrite is exact
-    by construction) and FastGridSynthPass (the real source of error here), but
+    by construction) and GridSynthPass (the real source of error here), but
     not RoundToDiscreteZPass's own rounding (which isn't run inside a
     ForEachBlockPass, so isn't measured by this mechanism, and could in
     principle spend up to synthesis_epsilon per rounded rotation without being
@@ -1070,6 +1046,7 @@ def decompose_rz_gauge_fixed(
     --no-rz-gauge-fix is passed) doesn't wrap its ForEachBlockPass calls with
     calculate_error_bound, so there is no equivalent bound to read there.
     """
+    precision = int(math.log10(1 / synthesis_epsilon)) + 2
     passes = [
         GroupSingleQuditGatePass(),
         ForEachBlockPass(
@@ -1082,32 +1059,15 @@ def decompose_rz_gauge_fixed(
         RoundToDiscreteZPass(synthesis_epsilon),
         UnfoldPass(),
         IsolateRZGatePass(),
-        ForEachBlockPass([FastGridSynthPass(synthesis_epsilon)], calculate_error_bound=True),
+        ForEachBlockPass([GridSynthPass(precision=precision)], calculate_error_bound=True),
         UnfoldPass(),
     ]
     # bqskit runs passes in spawned workers, which unpickle the pass and import
-    # its module.  That works for GaugeFixedZXZXZDecomposition and
-    # FastGridSynthPass whether this file is run as a script (multiprocessing
-    # re-imports the parent's __main__) or imported as a module, but it would
-    # not work for a class defined inside a function or monkeypatched onto
-    # bqskit in this process.
-    #
-    # num_workers=1 forced here, not bqskit's own default (all cores): running
-    # FastGridSynthPass across bqskit's normal multi-worker pool was measured
-    # to make gridsynth_rz produce different, equally-valid-but-different
-    # sequences for the *same* RZ angle across repeated runs at the same seed
-    # -- confirmed by isolating the extracted angles themselves (bit-identical
-    # across runs) and by comparing a direct in-process call to gridsynth_rz
-    # (deterministic) against the same call routed through bqskit's worker
-    # pool (not deterministic); num_workers=1 alone fixes it. That indicates a
-    # fork-safety issue in rsgridsynth's PyO3 extension, not a bug in this
-    # angle-extraction code, and it does not affect bqskit's own passes (the
-    # stock pygridsynth-based GridSynthPass this replaces stays deterministic
-    # under bqskit's default parallel workers). Measured to also be faster
-    # here in practice, not just safer: parallel-worker startup overhead
-    # dominates at this pass's rotation counts, so serial execution with the
-    # ~8x-faster-per-call FastGridSynthPass still beats parallel pygridsynth.
-    with Compiler(num_workers=1) as compiler:
+    # its module.  That works for GaugeFixedZXZXZDecomposition whether this
+    # file is run as a script (multiprocessing re-imports the parent's
+    # __main__) or imported as a module, but it would not work for a class
+    # defined inside a function or monkeypatched onto bqskit in this process.
+    with Compiler() as compiler:
         out, data = compiler.compile(circuit, passes, request_data=True)
     return out, data.error
 
