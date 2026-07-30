@@ -45,55 +45,13 @@ from bqskit.passes.util.unfold import UnfoldPass
 # except ImportError:
 #    _CUDA_AVAILABLE = False
 
-Measurement = tuple[MeasurementPlaceholder, tuple[int, ...]]
-
-# Optimization levels 3 and 4 add a QSearch stage that synthesises the *whole*
-# circuit from its unitary, so they only work on small circuits.  Three walls, in
-# the order you hit them: QSearch's search time is exponential (10 qubits already
-# runs for many minutes), the unitary costs 16 * 4^n bytes (4 GiB at 14 qubits),
-# and numpy caps tensors at 64 axes, i.e. 32 qubits ("maximum supported dimension
-# for an ndarray is currently 64, found 128").
-MAX_SYNTHESIS_QUBITS = 12
-SLOW_SYNTHESIS_QUBITS = 8
-
-
-def extract_final_measurements(circuit: Circuit) -> list[Measurement]:
-    """Remove the measurement placeholders from a circuit and return them.
-
-    Optimization levels 3 and 4 run unitary synthesis over the whole circuit,
-    which fails outright on a measurement placeholder ("Cannot compute unitary
-    for a measurement placeholder"), so the measurements have to be held aside
-    and re-appended afterwards.  Re-appending them at the end is only equivalent
-    if nothing acts on a measured qubit afterwards, so refuse mid-circuit
-    measurements rather than silently reordering the circuit.
-    """
-    # Barriers and measurements do not count as "something happening later".
-    placeholders = (MeasurementPlaceholder, BarrierPlaceholder)
-    last_cycle: dict[int, int] = {}
-    for cycle, op in circuit.operations_with_cycles():
-        if isinstance(op.gate, placeholders):
-            continue
-        for qudit in op.location:
-            last_cycle[qudit] = cycle
-
-    measurements: list[Measurement] = []
-    for cycle, op in circuit.operations_with_cycles():
-        if not isinstance(op.gate, MeasurementPlaceholder):
-            continue
-        mid_circuit = [q for q in op.location if last_cycle.get(q, -1) > cycle]
-        if mid_circuit:
-            print(
-                f"Error: qubit(s) {mid_circuit} are used after being measured; "
-                "optimization levels 3 and 4 cannot synthesise circuits with "
-                "mid-circuit measurement. Use level 1 or 2 for this circuit.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        measurements.append((op.gate, tuple(op.location)))
-
-    if measurements:
-        circuit.remove_all_measurements()
-    return measurements
+# bqskit's own default, used here wherever an optimization_level has to be given
+# explicitly (register_workflow has no default of its own).  This script does not
+# expose a way to change it: level 1 is fast and works at any circuit size, and
+# levels 2-4 add slower passes (level 2 rebases small blocks numerically; 3 and 4
+# additionally synthesise the whole circuit from its unitary, which only works up
+# to ~12 qubits) that are not needed for the benchmarks this script targets.
+OPTIMIZATION_LEVEL = 1
 
 
 # Tolerance for recognising the ZXZXZ middle angle as Clifford.  It only has to
@@ -276,21 +234,6 @@ def main() -> None:
         default="",
     )
     parser.add_argument(
-        "--optimization_level",
-        "-l",
-        type=int,
-        choices=[1, 2, 3, 4],
-        default=1,
-        help=(
-            "bqskit optimization level: better circuits at the cost of compile time. "
-            "Level 0 is not supported by bqskit, since any workflow containing synthesis "
-            "optimizes inherently. Levels 3 and 4 additionally synthesise the whole "
-            f"circuit from its unitary, so they only work up to {MAX_SYNTHESIS_QUBITS} "
-            "qubits and cannot handle mid-circuit measurement. "
-            "(default: 1, bqskit's own default)"
-        ),
-    )
-    parser.add_argument(
         "--no-rz-gauge-fix",
         action="store_true",
         help=(
@@ -365,32 +308,7 @@ def main() -> None:
     # else:
     #    print("Using CPU instantiation.")
 
-    optimization_level: int = args.optimization_level
-    print(f"Compiling to Clifford+T (optimization level {optimization_level})...")
-
-    if optimization_level >= 3 and circuit.num_qudits > MAX_SYNTHESIS_QUBITS:
-        print(
-            f"Error: optimization levels 3 and 4 synthesise the whole circuit from its "
-            f"unitary, which is not feasible for {circuit.num_qudits} qubits (limit "
-            f"{MAX_SYNTHESIS_QUBITS}). Use level 1 or 2 for circuits this size.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if optimization_level >= 3 and circuit.num_qudits > SLOW_SYNTHESIS_QUBITS:
-        print(
-            f"Warning: whole-circuit synthesis of {circuit.num_qudits} qubits at "
-            f"optimization level {optimization_level} may run for hours.",
-            file=sys.stderr,
-        )
-
-    # Levels 1 and 2 carry measurements through the workflow untouched; levels 3
-    # and 4 synthesise the circuit unitary and cannot, so hold them aside.
-    held_measurements: list[Measurement] = []
-    if optimization_level >= 3:
-        held_measurements = extract_final_measurements(circuit)
-        if held_measurements:
-            print(f"Set aside {len(held_measurements)} measurement(s) during synthesis")
+    print("Compiling to Clifford+T...")
 
     compile_start: float = timer()
     machine: CliffordTModel = CliffordTModel(circuit.num_qudits)
@@ -417,24 +335,21 @@ def main() -> None:
         register_workflow(
             machine,
             build_circuit_workflow(
-                optimization_level,
+                OPTIMIZATION_LEVEL,
                 synthesis_epsilon=args.synthesis_epsilon,
                 decompose_rz=not gauge_fix,
                 seed=seed,
             ),
-            optimization_level,
+            OPTIMIZATION_LEVEL,
             "circuit",
         )
 
     #circuit = compile(circuit, model=machine, instantiate_options=instantiate_options or None)
-    circuit = compile(circuit, model=machine, optimization_level=optimization_level, seed=seed)
+    circuit = compile(circuit, model=machine, optimization_level=OPTIMIZATION_LEVEL, seed=seed)
     if gauge_fix:
         circuit = decompose_rz_gauge_fixed(circuit, args.synthesis_epsilon)
     compile_end: float = timer()
     print(f"Compilation took {(compile_end - compile_start):.2f} seconds")
-
-    for gate, location in held_measurements:
-        circuit.append_gate(gate, location)
 
     # Flatten any CircuitGate wrappers that bqskit may have left around
     # sub-circuits (e.g. U3Gate wrapped in a CircuitGate).  Without this,

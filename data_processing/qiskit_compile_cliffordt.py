@@ -146,6 +146,17 @@ except ImportError:
 CLIFFORD_T_BASIS = ("h", "s", "sdg", "x", "y", "z", "t", "tdg", "cx")
 PI_4 = math.pi / 4
 
+# qiskit's transpile() default is None, which resolves to level 2 -- but level 2
+# restructures which single-qubit gates sit adjacent to which cx gates relative
+# to level 1, in a way that produces more, smaller single-qubit runs for this
+# script to re-synthesise.  Measured on an 18-qubit/600-gate slice of a Hubbard
+# benchmark: level 1 merges runs down to 18 non-Clifford rotations (1858 T);
+# qiskit's own default merges them into 39 (7085 T).  Same cx count either way,
+# so this is purely about how well the runs merge for this script's purposes,
+# not circuit quality by qiskit's own metrics.  Pinned rather than exposed as a
+# CLI option, since a worse choice was never useful here.
+OPTIMIZATION_LEVEL = 1
+
 # Single-qubit Clifford generators used to build the shortest-word table.
 CLIFFORD_GENERATORS = {
     "h": np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2),
@@ -689,12 +700,11 @@ def operation_counts_cost(circuit: QuantumCircuit) -> tuple[int, int]:
 def compile_to_clifford_t(
     circuit: QuantumCircuit,
     synth: CliffordTSynthesizer,
-    opt_level: int = 1,
     optimize: bool = True,
     max_rounds: int = 5,
 ) -> QuantumCircuit:
     """Full unroll -> re-synthesise -> clean-up pipeline."""
-    unrolled = transpile(circuit, basis_gates=["u", "cx"], optimization_level=opt_level)
+    unrolled = transpile(circuit, basis_gates=["u", "cx"], optimization_level=OPTIMIZATION_LEVEL)
     out = rewrite_single_qubit_runs(unrolled, synth.synthesize)
     if not optimize:
         return out
@@ -929,13 +939,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "(--synthesis sk only)",
     )
     parser.add_argument(
-        "--opt-level",
-        type=int,
-        default=1,
-        choices=(0, 1, 2, 3),
-        help="qiskit optimization level for the initial unroll to {u, cx}",
-    )
-    parser.add_argument(
         "--no-optimize",
         action="store_true",
         help="skip the post-synthesis clean-up (inverse cancellation and exact "
@@ -1023,9 +1026,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             circuit = load_circuit(source)
             before = circuit_stats(circuit)
-            compiled = compile_to_clifford_t(
-                circuit, synth, opt_level=args.opt_level, optimize=not args.no_optimize
-            )
+            compiled = compile_to_clifford_t(circuit, synth, optimize=not args.no_optimize)
             after = circuit_stats(compiled)
             destination = output_path(source, args.output, len(args.inputs) > 1)
             version = write_circuit(compiled, destination)
