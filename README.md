@@ -18,6 +18,12 @@ Requires Rust (stable). Build with:
 cargo build --release
 ```
 
+The benchmark circuits under `data/` are tracked with [Git LFS](https://git-lfs.com/);
+install it once per machine (`git lfs install`) before cloning, or run `git lfs pull`
+afterwards, or those files check out as small pointer stubs instead of real QASM/`.trans`
+content. Building and testing do not otherwise require it — `tests/fixtures/` is plain
+git content, not LFS.
+
 This produces four binaries:
 
 | Binary | Path | Description |
