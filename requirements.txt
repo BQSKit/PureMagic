@@ -8,6 +8,18 @@ qiskit>=2.5
 # used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
 # Already pulled in by bqskit-ft.
 pygridsynth
+# cyclosynth (data_processing/compile_cliffordt.py --backend cyclosynth):
+# a local Rust extension (git submodule at cyclosynth/, not on PyPI), so it
+# can't be a normal line here. Build once with:
+#   git submodule update --init && pip install maturin
+#   cd cyclosynth && maturin build --release && pip install target/wheels/*.whl
+# (maturin develop --release also works if the active Python is inside a
+# venv/conda env; this repo's devcontainer uses the system interpreter, which
+# maturin develop refuses, hence build+install instead.) See
+# cyclosynth/README.md for system gmp/mpfr requirements and the pinned Rust
+# toolchain (cyclosynth/rust-toolchain.toml). On Python versions newer than
+# pyo3 0.22's supported max (3.13 at last check), the build additionally
+# needs PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 set in the environment.
 # PyTorch: CPU-only build installed by default.
 # For GPU support, replace with a CUDA-enabled build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121
