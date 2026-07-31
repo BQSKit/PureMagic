@@ -23,7 +23,7 @@ Pipeline
    bqskit backend too (bqskit's own partitioner refragments single-qubit runs
    across 2-qubit block boundaries regardless of input quality, so it cannot
    benefit from the preopt step as much as qiskit's own pipeline does).
-3. Resynthesise over Clifford+T (--backend qiskit, the default, or bqskit):
+3. Resynthesise over Clifford+T (--backend bqskit, the default, or qiskit):
 
    qiskit: merge each maximal run of consecutive single-qubit gates on a wire
    into one 2x2 matrix, then re-synthesise that matrix:
@@ -53,15 +53,19 @@ Pipeline
      a shorter run, and what it spends is added to the reported error bound.
 
    bqskit: hands the {u,cx} circuit to bqskit's own compiler
-   (bqskit.compiler.compile) using its default Clifford+T model and workflow,
-   then re-synthesises the diagonal single-qubit rotations via bqskit's own
-   ZXZXZDecomposition and stock, pygridsynth-based GridSynthPass (on by
-   default, --bqskit-inline-decompose-rz uses bqskit's own inline
-   decompose_rz=True workflow instead -- see decompose_rz_tracked's docstring
-   for what the difference actually is). Produces substantially more T gates
-   than the qiskit backend on every benchmark measured so far -- kept for
-   comparison and as an independently implemented Clifford+T compiler, not
-   because it is competitive.
+   (bqskit.compiler.compile) using bqskit's CliffordTModel with this script's
+   own workflow registered against it (build_bqskit_workflow -- bqskit's own
+   build_circuit_workflow minus its multi-qudit retargeting stage, which
+   unconditionally and needlessly re-synthesises already-native <=3-qubit
+   blocks; see its docstring), then re-synthesises the diagonal single-qubit
+   rotations via bqskit's own ZXZXZDecomposition and stock, pygridsynth-based
+   GridSynthPass (on by default, --bqskit-inline-decompose-rz uses bqskit's
+   own inline decompose_rz=True workflow instead -- see decompose_rz_tracked's
+   docstring for what the difference actually is). Produces fewer T gates
+   than the qiskit backend on every benchmark measured so far, which is why
+   it is the default -- but rejects circuits with classical control flow
+   (which bqskit's own Circuit has no concept of), unlike qiskit's own
+   backend, which is kept as the fallback for those.
 
 Rotation synthesis: gridsynth
 ------------------------------
@@ -199,6 +203,7 @@ from qiskit.circuit.library import (
 
 from bqskit import Circuit
 from bqskit.compiler import Compiler
+from bqskit.compiler.basepass import BasePass
 from bqskit.compiler.compile import compile as bqskit_compile
 from bqskit.compiler.registry import register_workflow
 # bqskit-ft is a separate distribution installed alongside the editable-cloned
@@ -208,7 +213,6 @@ from bqskit.compiler.registry import register_workflow
 from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates  # pyright: ignore[reportMissingImports]
 from bqskit.ft.cliffordt.cliffordtmodel import CliffordTModel  # pyright: ignore[reportMissingImports]
 from bqskit.ft.cliffordt.defaultworkflow import (  # pyright: ignore[reportMissingImports]
-    build_circuit_workflow,
     clifford_replace,
     single_qudit_filter,
 )
@@ -217,8 +221,12 @@ from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass  # pyright: ignore[
 from bqskit.ft.rules.isolate_rz import IsolateRZGatePass  # pyright: ignore[reportMissingImports]
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
 from bqskit.passes.control.foreach import ForEachBlockPass
+from bqskit.passes.partitioning.quick import QuickPartitioner
 from bqskit.passes.partitioning.single import GroupSingleQuditGatePass
+from bqskit.passes.processing.scan import ScanningGateRemovalPass
 from bqskit.passes.rules.zxzxz import ZXZXZDecomposition
+from bqskit.passes.util.log import LogErrorPass
+from bqskit.passes.util.random import SetRandomSeedPass
 from bqskit.passes.util.unfold import UnfoldPass
 
 try:  # qiskit >= 2.5: Ross-Selinger in Rust, the rotation synthesis both backends use
@@ -253,12 +261,13 @@ PI_4 = math.pi / 4
 # here.  Shared by both backends' preopt step (unroll_to_u_cx).
 UNROLL_OPTIMIZATION_LEVEL = 1
 
-# bqskit's own default, used wherever an optimization_level has to be given
-# explicitly (register_workflow has no default of its own).  Not exposed as a
-# CLI option: level 1 is fast and works at any circuit size, and levels 2-4 add
-# slower passes (level 2 rebases small blocks numerically; 3 and 4
-# additionally synthesise the whole circuit from its unitary, which only works
-# up to ~12 qubits) that are not needed for the benchmarks this script targets.
+# The optimization_level slot build_bqskit_workflow's own workflow is
+# registered and invoked under -- register_workflow and bqskit_compile both
+# require one, and the two calls must agree on which slot to use. Since
+# build_bqskit_workflow always builds the same pass list regardless of this
+# number (unlike bqskit's own levels 2-4, which select genuinely different,
+# slower workflows), there is nothing to gain from exposing it as a CLI
+# option; it is fixed at 1 purely because some value has to be picked.
 BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL = 1
 
 # --epsilon's default, backend-dependent -- see the module docstring's
@@ -905,6 +914,60 @@ def non_basis_ops(circuit: QuantumCircuit) -> dict[str, int]:
     }
 
 
+def build_bqskit_workflow(
+    synthesis_epsilon: float,
+    decompose_rz: bool,
+    seed: Optional[int],
+) -> list[BasePass]:
+    """Build this script's own Clifford+T circuit workflow for bqskit.
+
+    Mirrors bqskit's own build_circuit_workflow (bqskit.ft.cliffordt.
+    defaultworkflow), minus its multi-qudit retargeting stage
+    (build_multi_qudit_retarget_workflow, from core bqskit). That stage is
+    gated on NotPredicate(WidthPredicate(2)), which is true for any circuit
+    with 2 or more qubits -- not just ones containing gates outside the
+    target model's native gate set -- so it unconditionally runs
+    AutoRebase2QuditGatePass over every <=3-qubit block, numerically
+    re-synthesising it even when the block is already expressed in native
+    gates. That discards exact Clifford+T structure (e.g. the H/T/Tdg/CX
+    from a Toffoli/CSWAP decomposition) in favour of generic-angle
+    rotations that each then need their own gridsynth call: measured 12x
+    more T gates on data/qasmbench/knn_n25.qasm, a CSWAP-heavy circuit.
+    Skipping it is safe here because unroll_to_u_cx already guarantees the
+    circuit handed to bqskit contains only {u, cx} -- no gate outside
+    CliffordTModel's native set for retargeting to act on.
+    """
+    passes: list[BasePass] = [SetRandomSeedPass(seed)] if seed is not None else []
+    zxzxz = ForEachBlockPass([ZXZXZDecomposition()], collection_filter=single_qudit_filter)
+    passes += [
+        GroupSingleQuditGatePass(),
+        clifford_replace(),
+        UnfoldPass(),
+        RoundToDiscreteZPass(synthesis_epsilon),
+        QuickPartitioner(2),
+        ForEachBlockPass([ScanningGateRemovalPass()]),
+        UnfoldPass(),
+        GroupSingleQuditGatePass(),
+        zxzxz,
+        clifford_replace(),
+        UnfoldPass(),
+        RoundToDiscreteZPass(synthesis_epsilon),
+        UnfoldPass(),
+    ]
+    if decompose_rz:
+        # Matches decompose_rz_tracked's own precision formula below (ceil, not
+        # bqskit's int(...)+2 padding) so the two workflows' T counts stay
+        # comparable regardless of which one a run ends up using.
+        precision = math.ceil(math.log10(1 / synthesis_epsilon))
+        passes += [
+            IsolateRZGatePass(),
+            ForEachBlockPass([GridSynthPass(precision=precision)]),
+            UnfoldPass(),
+        ]
+    passes += [LogErrorPass()]
+    return passes
+
+
 def decompose_rz_tracked(
     circuit: Circuit, synthesis_epsilon: float = BQSKIT_EPSILON_DEFAULT
 ) -> tuple[Circuit, float]:
@@ -1037,8 +1100,7 @@ def compile_bqskit(
             warnings.filterwarnings("ignore", message="Overwritting workflow")
             register_workflow(
                 machine,
-                build_circuit_workflow(
-                    BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
+                build_bqskit_workflow(
                     synthesis_epsilon=epsilon,
                     decompose_rz=not use_custom_rz_decomposition,
                     seed=seed,
@@ -1353,11 +1415,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         choices=("qiskit", "bqskit"),
-        default="qiskit",
-        help="compilation backend: qiskit (far fewer T gates on every benchmark "
-        "measured so far) or bqskit (kept for comparison and as an "
-        "independent implementation; rejects circuits with classical control "
-        "flow)",
+        default="bqskit",
+        help="compilation backend: bqskit (fewer T gates on every benchmark "
+        "measured so far, since the multi-qudit retargeting and "
+        "ZXZXZDecomposition gauge-collapse fixes -- see build_bqskit_workflow's "
+        "and decompose_rz_tracked's docstrings -- but rejects circuits with "
+        "classical control flow) or qiskit (kept for comparison and as an "
+        "independent implementation; the only option for circuits bqskit "
+        "rejects)",
     )
     parser.add_argument(
         "-e",
