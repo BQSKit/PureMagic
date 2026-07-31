@@ -1431,11 +1431,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "-e",
         "--epsilon",
         type=float,
-        default=None,
-        help="gridsynth target error per rotation; shared default "
-        f"{EPSILON_DEFAULT:g} for both backends -- see module docstring's "
-        "\"Rotation synthesis: gridsynth\" section for the measurements behind "
-        "this number",
+        default=EPSILON_DEFAULT,
+        help="gridsynth target error per rotation, shared by both backends "
+        "-- see module docstring's \"Rotation synthesis: gridsynth\" section "
+        "for the measurements behind this number",
     )
     parser.add_argument(
         "--no-optimize",
@@ -1492,9 +1491,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("-q", "--quiet", action="store_true", help="only report errors")
 
     args = parser.parse_args(argv)
-
-    if args.epsilon is None:
-        args.epsilon = EPSILON_DEFAULT
 
     # Warn (not error) if a backend-inappropriate flag was explicitly set to a
     # non-default value, so the two backends can share one parser without
