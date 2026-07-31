@@ -56,12 +56,12 @@ Pipeline
    (bqskit.compiler.compile) using its default Clifford+T model and workflow,
    then re-synthesises the diagonal single-qubit rotations via bqskit's own
    ZXZXZDecomposition and stock, pygridsynth-based GridSynthPass (on by
-   default, --no-rz-gauge-fix uses bqskit's own inline decompose_rz=True
-   workflow instead -- see decompose_rz_gauge_fixed's docstring for what the
-   difference actually is). Produces substantially more T gates than the
-   qiskit backend on every benchmark measured so far -- kept for comparison
-   and as an independently implemented Clifford+T compiler, not because it is
-   competitive.
+   default, --bqskit-inline-decompose-rz uses bqskit's own inline
+   decompose_rz=True workflow instead -- see decompose_rz_tracked's docstring
+   for what the difference actually is). Produces substantially more T gates
+   than the qiskit backend on every benchmark measured so far -- kept for
+   comparison and as an independently implemented Clifford+T compiler, not
+   because it is competitive.
 
 Rotation synthesis: gridsynth
 ------------------------------
@@ -106,16 +106,16 @@ basis + error bound: always run, no flag needed -- both are cheap (no
     bound: each rewrite replaces one wire's run by a phase-aligned
     approximation of it, so by subadditivity of the spectral norm that sum is
     a genuine upper bound on ||U_compiled - U_unrolled||_2 -- taking qiskit's
-    own unroll and inverse cancellation as exact.  The bqskit backend (with
-    the gauge fix on, the default) gets a narrower analogue from bqskit's own
-    machinery: each ZXZXZDecomposition/GridSynthPass
-    ForEachBlockPass call runs with calculate_error_bound=True, so bqskit
-    measures the exact unitary distance of every 1-qubit block before and
-    after and composes them via PassData.update_error_mul -- see
-    decompose_rz_gauge_fixed's docstring for what this covers and doesn't
-    (notably: not RoundToDiscreteZPass's own rounding, and not bqskit's own
-    earlier 2-qubit block instantiation). With --no-rz-gauge-fix, bqskit has
-    no equivalent bookkeeping at all, so no error bound is reported.
+    own unroll and inverse cancellation as exact.  The bqskit backend (by
+    default) gets a narrower analogue from bqskit's own machinery: each
+    ZXZXZDecomposition/GridSynthPass ForEachBlockPass call runs with
+    calculate_error_bound=True, so bqskit measures the exact unitary distance
+    of every 1-qubit block before and after and composes them via
+    PassData.update_error_mul -- see decompose_rz_tracked's docstring for
+    what this covers and doesn't (notably: not RoundToDiscreteZPass's own
+    rounding, and not bqskit's own earlier 2-qubit block instantiation). With
+    --bqskit-inline-decompose-rz, bqskit has no equivalent bookkeeping at
+    all, so no error bound is reported.
 
 --verify: numeric fidelity only, cascading from exact to sampled as the
     circuit grows, so it is always tractable -- unlike an error bound, which
@@ -201,16 +201,20 @@ from bqskit import Circuit
 from bqskit.compiler import Compiler
 from bqskit.compiler.compile import compile as bqskit_compile
 from bqskit.compiler.registry import register_workflow
-from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates
-from bqskit.ft.cliffordt.cliffordtmodel import CliffordTModel
-from bqskit.ft.cliffordt.defaultworkflow import (
+# bqskit-ft is a separate distribution installed alongside the editable-cloned
+# bqskit/ (see its __init__.py for how bqskit.ft resolves at runtime via
+# pkgutil.extend_path -- a dynamic sys.path merge pyright cannot evaluate
+# statically, hence the ignores below).
+from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates  # pyright: ignore[reportMissingImports]
+from bqskit.ft.cliffordt.cliffordtmodel import CliffordTModel  # pyright: ignore[reportMissingImports]
+from bqskit.ft.cliffordt.defaultworkflow import (  # pyright: ignore[reportMissingImports]
     build_circuit_workflow,
     clifford_replace,
     single_qudit_filter,
 )
-from bqskit.ft.ftpasses.gridsynth import GridSynthPass
-from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass
-from bqskit.ft.rules.isolate_rz import IsolateRZGatePass
+from bqskit.ft.ftpasses.gridsynth import GridSynthPass  # pyright: ignore[reportMissingImports]
+from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass  # pyright: ignore[reportMissingImports]
+from bqskit.ft.rules.isolate_rz import IsolateRZGatePass  # pyright: ignore[reportMissingImports]
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
 from bqskit.passes.control.foreach import ForEachBlockPass
 from bqskit.passes.partitioning.single import GroupSingleQuditGatePass
@@ -901,7 +905,7 @@ def non_basis_ops(circuit: QuantumCircuit) -> dict[str, int]:
     }
 
 
-def decompose_rz_gauge_fixed(
+def decompose_rz_tracked(
     circuit: Circuit, synthesis_epsilon: float = BQSKIT_EPSILON_DEFAULT
 ) -> tuple[Circuit, float]:
     """Take a {Clifford, RZ} circuit to Clifford+T, tracking an error bound.
@@ -918,8 +922,8 @@ def decompose_rz_gauge_fixed(
     own stock ZXZXZDecomposition and GridSynthPass, inlined here (rather than
     calling bqskit's own rz_decomposition_passes() helper, which hardcodes the
     same pass) so calculate_error_bound=True can be set on both below, which
-    bqskit's own decompose_rz=True path (used when --no-rz-gauge-fix is
-    passed) does not do.
+    bqskit's own decompose_rz=True path (used when --bqskit-inline-decompose-rz
+    is passed) does not do.
 
     bqskit's stock ZXZXZDecomposition has a gauge bug: for a diagonal target,
     the middle rotation is Clifford, so how the total rotation splits between
@@ -950,9 +954,10 @@ def decompose_rz_gauge_fixed(
     principle spend up to synthesis_epsilon per rounded rotation without being
     counted) or anything from bqskit's own earlier 2-qubit block instantiation
     in compile_bqskit's first bqskit_compile() call. Only available when
-    gauge_fix=True -- bqskit's own decompose_rz=True path (used when
-    --no-rz-gauge-fix is passed) doesn't wrap its ForEachBlockPass calls with
-    calculate_error_bound, so there is no equivalent bound to read there.
+    use_custom_rz_decomposition=True -- bqskit's own decompose_rz=True path
+    (used when --bqskit-inline-decompose-rz is passed) doesn't wrap its
+    ForEachBlockPass calls with calculate_error_bound, so there is no
+    equivalent bound to read there.
     """
     # bqskit's own build_cliffordt_workflow computes this as
     # int(log10(1/synthesis_epsilon)) + 2, padding to 100x tighter than
@@ -1002,17 +1007,17 @@ def compile_bqskit(
     unrolled: QuantumCircuit,
     epsilon: float,
     seed: int,
-    gauge_fix: bool,
+    use_custom_rz_decomposition: bool,
 ) -> tuple[QuantumCircuit, Optional[float]]:
     """Compile an already-{u,cx}-unrolled circuit via bqskit, returning a qiskit
     QuantumCircuit (round-tripped through qiskit's own loader, so it can share
     verification/reporting/writing with the qiskit backend) and an error bound.
 
     The error bound is bqskit's own ``calculate_error_bound`` mechanism, read
-    from ``decompose_rz_gauge_fixed`` -- see its docstring for exactly what it
-    covers. Only available when ``gauge_fix`` is True; ``None`` otherwise,
-    since bqskit's own ``decompose_rz=True`` path (used when gauge_fix is
-    False) has no equivalent tracking.
+    from ``decompose_rz_tracked`` -- see its docstring for exactly what it
+    covers. Only available when ``use_custom_rz_decomposition`` is True;
+    ``None`` otherwise, since bqskit's own ``decompose_rz=True`` path (used
+    when it is False) has no equivalent tracking.
     """
     error_bound: Optional[float] = None
     with tempfile.TemporaryDirectory() as tmp:
@@ -1035,7 +1040,7 @@ def compile_bqskit(
                 build_circuit_workflow(
                     BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
                     synthesis_epsilon=epsilon,
-                    decompose_rz=not gauge_fix,
+                    decompose_rz=not use_custom_rz_decomposition,
                     seed=seed,
                 ),
                 BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
@@ -1047,8 +1052,8 @@ def compile_bqskit(
             optimization_level=BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
             seed=seed,
         )
-        if gauge_fix:
-            bq_circuit, error_bound = decompose_rz_gauge_fixed(bq_circuit, epsilon)
+        if use_custom_rz_decomposition:
+            bq_circuit, error_bound = decompose_rz_tracked(bq_circuit, epsilon)
 
         # Flatten any CircuitGate wrappers bqskit may have left around
         # sub-circuits (e.g. U3Gate wrapped in a CircuitGate).  Without this,
@@ -1106,7 +1111,7 @@ def compile_dispatch(
         unrolled,
         epsilon=args.epsilon,
         seed=args.seed,
-        gauge_fix=not args.no_rz_gauge_fix,
+        use_custom_rz_decomposition=not args.bqskit_inline_decompose_rz,
     )
     return compiled, [], error_bound, None
 
@@ -1379,10 +1384,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "free unless it is within the requested accuracy of a Clifford",
     )
     parser.add_argument(
-        "--no-rz-gauge-fix",
+        "--bqskit-inline-decompose-rz",
         action="store_true",
         help="bqskit backend only: use bqskit's own inline decompose_rz=True "
-        "workflow instead of this script's decompose_rz_gauge_fixed "
+        "workflow instead of this script's decompose_rz_tracked "
         "post-processing pass (see its docstring). The latter is on by "
         "default because it additionally tracks an error bound that the "
         "inline workflow does not.",
@@ -1429,7 +1434,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     # non-default value, so the two backends can share one parser without
     # silently ignoring a flag the user thought they were setting.
     backend_only_flags = {
-        "qiskit": {"no_rz_gauge_fix": "--no-rz-gauge-fix", "seed": "--seed"},
+        "qiskit": {"bqskit_inline_decompose_rz": "--bqskit-inline-decompose-rz", "seed": "--seed"},
         "bqskit": {"no_optimize": "--no-optimize", "tol": "--tol"},
     }
     for dest, flag in backend_only_flags[args.backend].items():
@@ -1453,7 +1458,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         log(
             f"backend: bqskit (epsilon={args.epsilon:g}, seed={args.seed}, "
-            f"gauge fix {'on' if not args.no_rz_gauge_fix else 'off'})"
+            f"rz decomposition: {'bqskit inline' if args.bqskit_inline_decompose_rz else 'tracked'})"
         )
 
     all_stats = []
