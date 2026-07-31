@@ -86,13 +86,13 @@ distinct angles rather than the number of gates.
 rather than being one shared value, because "epsilon" is not the same
 quantity across the two implementations in terms of delivered accuracy: on
 the reference slice (data/hubbard_18_slice600.qasm), bqskit at its own old
-default of 1e-8 already measures fidelity 1.000000000000, identical (to the
-12 decimals this script prints) to what tightening it to 1e-10 gets --
-tightening costs 2430 -> 6562 T for no measurable accuracy gain, because
-bqskit's own numerical instantiation step (also controlled by this parameter)
-turns out to work much harder for a target it was already comfortably
-beating. qiskit's own resynthesis has no equivalent instantiation step, so
-1e-10 costs it nothing extra and is worth keeping as its default.
+default of 1e-8 already measures fidelity 1.000000000000, statistically
+identical (to the 12 decimals this script prints) to what tightening it to
+1e-10 gets -- tightening costs 2348 -> 4900 T for no measurable accuracy
+gain, because bqskit's own numerical instantiation step (also controlled by
+this parameter) turns out to work much harder for a target it was already
+comfortably beating. qiskit's own resynthesis has no equivalent instantiation
+step, so 1e-10 costs it nothing extra and is worth keeping as its default.
 
 The result is written next to the input as <name>.cliffordt.qasm (OpenQASM 2,
 or OpenQASM 3 if the circuit uses control flow that OpenQASM 2 cannot express),
@@ -1046,7 +1046,16 @@ def decompose_rz_gauge_fixed(
     --no-rz-gauge-fix is passed) doesn't wrap its ForEachBlockPass calls with
     calculate_error_bound, so there is no equivalent bound to read there.
     """
-    precision = int(math.log10(1 / synthesis_epsilon)) + 2
+    # bqskit's own build_cliffordt_workflow computes this as
+    # int(log10(1/synthesis_epsilon)) + 2 -- a padding convention that made
+    # GridSynthPass synthesize to 100x tighter than synthesis_epsilon.
+    # Harmless there (it is bqskit's own default), but it silently inflated T
+    # counts by ~25% here once this became the actual accuracy delivered
+    # (confirmed: the previous FastGridSynthPass passed synthesis_epsilon
+    # through unpadded, and removing the padding recovers its T counts).
+    # ceil (not int, which truncates) guarantees the digit-count still meets
+    # synthesis_epsilon for non-power-of-10 values, without the 100x overshoot.
+    precision = math.ceil(math.log10(1 / synthesis_epsilon))
     passes = [
         GroupSingleQuditGatePass(),
         ForEachBlockPass(
