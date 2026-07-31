@@ -23,7 +23,7 @@ Pipeline
    bqskit backend too (bqskit's own partitioner refragments single-qubit runs
    across 2-qubit block boundaries regardless of input quality, so it cannot
    benefit from the preopt step as much as qiskit's own pipeline does).
-3. Resynthesise over Clifford+T (--backend bqskit, the default, or qiskit):
+3. Resynthesise over Clifford+T (--backend qiskit, the default, or bqskit):
 
    qiskit: merge each maximal run of consecutive single-qubit gates on a wire
    into one 2x2 matrix, then re-synthesise that matrix:
@@ -61,11 +61,13 @@ Pipeline
    rotations via bqskit's own ZXZXZDecomposition and stock, pygridsynth-based
    GridSynthPass (on by default, --bqskit-inline-decompose-rz uses bqskit's
    own inline decompose_rz=True workflow instead -- see decompose_rz_tracked's
-   docstring for what the difference actually is). Produces fewer T gates
-   than the qiskit backend on every benchmark measured so far, which is why
-   it is the default -- but rejects circuits with classical control flow
-   (which bqskit's own Circuit has no concept of), unlike qiskit's own
-   backend, which is kept as the fallback for those.
+   docstring for what the difference actually is). At the same --epsilon,
+   produces more T gates than the qiskit backend on every benchmark measured
+   so far -- kept for comparison and as an independently implemented
+   Clifford+T compiler, not because it is competitive. Also rejects circuits
+   with classical control flow (bqskit's own Circuit has no concept of it),
+   unlike qiskit's backend, which handles it and is the only option for such
+   circuits.
 
 Rotation synthesis: gridsynth
 ------------------------------
@@ -83,17 +85,25 @@ multiples of pi/4 are synthesised exactly and cost nothing.  Each distinct
 rotation is synthesised once and reused, so cost scales with the number of
 distinct angles rather than the number of gates.
 
---epsilon's default depends on --backend (1e-10 for qiskit, 1e-8 for bqskit)
-rather than being one shared value, because "epsilon" is not the same
-quantity across the two implementations in terms of delivered accuracy: on
-the reference slice (data/hubbard_18_slice600.qasm), bqskit at its own
-default of 1e-8 already measures fidelity 1.000000000000, statistically
-identical (to the 12 decimals this script prints) to what tightening it to
-1e-10 gets -- tightening costs 2348 -> 4900 T for no measurable accuracy
-gain, because bqskit's own numerical instantiation step (also controlled by
-this parameter) turns out to work much harder for a target it was already
-comfortably beating. qiskit's own resynthesis has no equivalent instantiation
-step, so 1e-10 costs it nothing extra and is worth keeping as its default.
+--epsilon defaults to EPSILON_DEFAULT (1e-8) for both backends. Measured via
+exact dense-unitary fidelity (not this script's own coarser --verify checks)
+on two small benchmarks (data/qasmbench/dnn_n8.qasm, data/qasmbench/
+ising_n10.qasm), real infidelity plateaus by around 1e-8 for both backends'
+resynthesis -- tightening further to 1e-10 or 1e-12 costs substantially more
+T gates (e.g. dnn_n8 via qiskit: 23592 -> 35144 T from 1e-8 to 1e-12) for a
+change in delivered accuracy indistinguishable from float64 rounding noise.
+Looser than 1e-8 does cost real accuracy (e.g. 1e-6 measures ~1e-11
+infidelity on the same benchmarks, still fine for most purposes but a
+genuine, if small, step up from 1e-8's ~1e-12).
+
+The error bound this script reports (both backends -- see "Verification"
+below) is a real upper bound, not an estimate of actual fidelity loss: it
+sums per-rewrite worst-case errors, which above assumes every rewrite's error
+constructively interferes with every other's. In practice they mostly do
+not, so the bound is typically several orders of magnitude looser than the
+true error measured above (e.g. dnn_n8 at 1e-8: bound 8.5e-7, actual
+infidelity 3.2e-12) -- useful as a ceiling, not as a proxy for how accurate
+the output really is.
 
 The result is written next to the input as <name>.cliffordt.qasm (OpenQASM 2,
 or OpenQASM 3 if the circuit uses control flow that OpenQASM 2 cannot express),
@@ -270,15 +280,11 @@ UNROLL_OPTIMIZATION_LEVEL = 1
 # option; it is fixed at 1 purely because some value has to be picked.
 BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL = 1
 
-# --epsilon's default, backend-dependent -- see the module docstring's
-# "Rotation synthesis: gridsynth" section for why these are not one shared
-# value: bqskit's own instantiation step (not just its final rotation
-# synthesis) is also controlled by this parameter, and tightening it to
-# qiskit's default measurably inflates bqskit's T count with no measured
-# accuracy gain, since bqskit already saturates this script's fidelity check
-# at its own default of 1e-8.
-QISKIT_EPSILON_DEFAULT = 1e-10
-BQSKIT_EPSILON_DEFAULT = 1e-8
+# --epsilon's default, shared by both backends -- see the module docstring's
+# "Rotation synthesis: gridsynth" section for the exact-fidelity measurements
+# behind this number: real infidelity plateaus by around this value for both
+# backends, so tightening further costs T gates for no measurable gain.
+EPSILON_DEFAULT = 1e-8
 
 # Single-qubit Clifford generators used to build the shortest-word table.
 CLIFFORD_GENERATORS = {
@@ -477,7 +483,7 @@ class CliffordTSynthesizer:
 
     def __init__(
         self,
-        epsilon: float = 1e-10,
+        epsilon: float = EPSILON_DEFAULT,
         tol: Optional[float] = None,
     ) -> None:
         self.epsilon = epsilon
@@ -969,7 +975,7 @@ def build_bqskit_workflow(
 
 
 def decompose_rz_tracked(
-    circuit: Circuit, synthesis_epsilon: float = BQSKIT_EPSILON_DEFAULT
+    circuit: Circuit, synthesis_epsilon: float = EPSILON_DEFAULT
 ) -> tuple[Circuit, float]:
     """Take a {Clifford, RZ} circuit to Clifford+T, tracking an error bound.
 
@@ -1415,24 +1421,21 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         choices=("qiskit", "bqskit"),
-        default="bqskit",
-        help="compilation backend: bqskit (fewer T gates on every benchmark "
-        "measured so far, since the multi-qudit retargeting and "
-        "ZXZXZDecomposition gauge-collapse fixes -- see build_bqskit_workflow's "
-        "and decompose_rz_tracked's docstrings -- but rejects circuits with "
-        "classical control flow) or qiskit (kept for comparison and as an "
-        "independent implementation; the only option for circuits bqskit "
-        "rejects)",
+        default="qiskit",
+        help="compilation backend: qiskit (fewer T gates at a given --epsilon "
+        "on every benchmark measured so far) or bqskit (kept for comparison "
+        "and as an independent implementation; rejects circuits with "
+        "classical control flow)",
     )
     parser.add_argument(
         "-e",
         "--epsilon",
         type=float,
         default=None,
-        help="gridsynth target error per rotation; default depends on --backend "
-        f"({QISKIT_EPSILON_DEFAULT:g} for qiskit, {BQSKIT_EPSILON_DEFAULT:g} for "
-        "bqskit -- see module docstring for why these differ rather than being "
-        "one shared value)",
+        help="gridsynth target error per rotation; shared default "
+        f"{EPSILON_DEFAULT:g} for both backends -- see module docstring's "
+        "\"Rotation synthesis: gridsynth\" section for the measurements behind "
+        "this number",
     )
     parser.add_argument(
         "--no-optimize",
@@ -1491,9 +1494,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
     if args.epsilon is None:
-        args.epsilon = (
-            QISKIT_EPSILON_DEFAULT if args.backend == "qiskit" else BQSKIT_EPSILON_DEFAULT
-        )
+        args.epsilon = EPSILON_DEFAULT
 
     # Warn (not error) if a backend-inappropriate flag was explicitly set to a
     # non-default value, so the two backends can share one parser without
