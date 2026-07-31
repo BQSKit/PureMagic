@@ -90,7 +90,12 @@ Pipeline
 The qiskit and cyclosynth backends report percentage progress through the
 main resynthesis pass (silenced by -q, like all other logging) --
 compile_via_resynthesis's shared pipeline makes this cheap to add once for
-both. bqskit reports none: it exposes no public per-block progress callback,
+both. Progress is weighted by actual gridsynth/cyclosynth calls (cache
+misses), not by block count: both synthesizers cache by angle/matrix key, so
+on circuits with a lot of repeated rotations (QFT-family circuits, say) the
+vast majority of blocks are instant cache hits, and counting them equally
+would make progress look stuck near 0% until the last moment, then jump to
+100% -- see estimate_synthesis_calls/_with_progress. bqskit reports none: it exposes no public per-block progress callback,
 and the only usable signal (DEBUG-level runtime log lines, one per block)
 would need splitting decompose_rz_tracked's currently-atomic compile() call
 in two -- with the two halves' error bounds recombined by hand to avoid
@@ -681,6 +686,46 @@ class CliffordTSynthesizer:
                 return circuit_from_word(word, matrix, phase), "pi_4", error
         return None
 
+    def estimate_synthesis_calls(self, circuit: QuantumCircuit) -> int:
+        """How many distinct Rz(angle) gridsynth searches resynthesizing
+        `circuit` will actually perform, i.e. cache misses in
+        _gridsynth_word -- cheap to compute up front (Euler decomposition
+        only, no lattice search) but gives an accurate denominator for
+        weighting progress by real work rather than block count, since a
+        handful of unique angles can dominate the wall-clock cost of
+        thousands of repeated ones (see _with_progress).
+
+        `self._gridsynth_cache` may already hold entries from an earlier
+        circuit (compile_dispatch's callers can reuse one synth across a
+        batch of files) -- those angles are excluded rather than counted, so
+        `total` reflects only the *new* misses this circuit will cause, not
+        the accumulated cache size.
+        """
+        already_cached = set(self._gridsynth_cache)
+        new_keys: set[float] = set()
+
+        def counter(matrix, run):
+            if self._exact(matrix) is not None:
+                return None
+            for inst in self._decomposer(matrix).data:
+                if not inst.operation.params:
+                    continue
+                angle = inst.operation.params[0]
+                if not self._is_pi_4_multiple(angle):
+                    key = round(angle, 12)
+                    if key not in already_cached:
+                        new_keys.add(key)
+            return None
+
+        rewrite_single_qubit_runs(circuit, counter)
+        return len(new_keys)
+
+    def _expensive_cache(self) -> dict:
+        """The cache whose growth marks a genuine gridsynth search, as
+        opposed to a cache hit or an exact/Clifford block -- watched by
+        _with_progress to weight progress by real work, not block count."""
+        return self._gridsynth_cache
+
     def _is_pi_4_multiple(self, angle: float) -> bool:
         return abs(angle / PI_4 - round(angle / PI_4)) < self.tol
 
@@ -902,6 +947,48 @@ class CyclosynthSynthesizer:
         kind = "exact" if error <= EXACTNESS_FLOOR else "approx"
         return circuit_from_word(word, matrix, phase), kind, error
 
+    def estimate_synthesis_calls(self, circuit: QuantumCircuit) -> int:
+        """How many distinct blocks resynthesizing `circuit` will actually
+        send to cyclosynth's lattice search, i.e. cache misses in
+        _resynthesize -- cheap to compute up front (a Clifford-table/
+        canonical-key check, no search) but gives an accurate denominator
+        for weighting progress by real work rather than block count (see
+        CliffordTSynthesizer.estimate_synthesis_calls).
+
+        Deliberately does not call _resynthesize itself: on a genuine miss
+        that would trigger the real, expensive synthesize_u3 call. Instead
+        it inlines just the Clifford-check gating from the start of
+        _resynthesize, which must stay in sync with that method.
+
+        `self._cache` may already hold entries from an earlier circuit
+        (compile_dispatch's callers can reuse one synth across a batch of
+        files) -- those keys are excluded rather than counted, so `total`
+        reflects only the *new* misses this circuit will cause, not the
+        accumulated cache size.
+        """
+        already_cached = set(self._cache)
+        new_keys: set[tuple] = set()
+
+        def counter(matrix, run):
+            key = canonical_key(matrix)
+            word = self._clifford_words.get(key)
+            if word is not None:
+                error, _ = word_error(matrix, word)
+                if error <= self.tol:
+                    return None
+            if key not in already_cached:
+                new_keys.add(key)
+            return None
+
+        rewrite_single_qubit_runs(circuit, counter)
+        return len(new_keys)
+
+    def _expensive_cache(self) -> dict:
+        """The cache whose growth marks a genuine cyclosynth search, as
+        opposed to a cache hit or an exact/Clifford block -- watched by
+        _with_progress to weight progress by real work, not block count."""
+        return self._cache
+
     def _zyz_angles(self, matrix: np.ndarray) -> tuple[float, float, float]:
         """(theta, phi, lam) matching cyclosynth's synthesize_u3 = qiskit's
         U3 = Rz(phi)*Ry(theta)*Rz(lam). OneQubitEulerDecomposer drops trivial
@@ -1061,25 +1148,7 @@ def unroll_to_u_cx(circuit: QuantumCircuit) -> QuantumCircuit:
     return transpile(circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL)
 
 
-def count_resynthesis_blocks(circuit: QuantumCircuit) -> int:
-    """How many times rewrite_single_qubit_runs will call resynthesize() on
-    `circuit`, without resynthesizing anything -- only 2x2 matrix merges, no
-    gridsynth/cyclosynth calls, so this is cheap even for large circuits.
-    Used to give --backend qiskit/cyclosynth a known denominator for
-    percentage progress before the (potentially slow) real pass.
-    """
-    count = 0
-
-    def counter(matrix, run):
-        nonlocal count
-        count += 1
-        return None
-
-    rewrite_single_qubit_runs(circuit, counter)
-    return count
-
-
-def _with_progress(resynthesize, total: int, log, label: str):
+def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
     """Wrap a resynthesize callback to report percentage progress via log(),
     overwriting a single line in place (a trailing \\r, no newline until
     done) rather than printing one line per update, throttled to at most one
@@ -1092,24 +1161,40 @@ def _with_progress(resynthesize, total: int, log, label: str):
     interval) only shows its completion state; a slow one visibly ticks
     upward for as long as it actually runs.
 
-    Counts every merged single-qubit run, not just non-Clifford/approximated
-    ones (those resolve instantly), so progress isn't linear in elapsed time
-    -- it typically races through easy blocks then slows for the hard ones.
-    That's an accepted simplification: an exact-vs-approximate split would
-    need CliffordTSynthesizer/CyclosynthSynthesizer-specific logic here,
-    coupling this generic wrapper to both synthesizers' internals.
+    `cache` is the synthesizer's cache dict (CliffordTSynthesizer/
+    CyclosynthSynthesizer's `_expensive_cache()`); `count` only advances when
+    a call actually *grows* it, i.e. a genuine gridsynth/cyclosynth search
+    happened, not on every merged run. Both synthesizers cache by angle/
+    matrix key, so on circuits with a lot of repeated rotations (QFT-family
+    circuits, say) the vast majority of calls are instant cache hits -- with
+    plain block counting, progress used to race through the first few
+    percent (the actual searches) then jump straight to 100% on the cache
+    hits, rather than tracking real elapsed time.  `total` (from
+    estimate_synthesis_calls) is the number of distinct cache misses that
+    will occur, computed the same way, so `count` reaches it exactly -- but
+    unlike the old block-count scheme, `count` can then sit at `total` for
+    many further calls (every remaining cache hit), so `finished` latches
+    the completion print to fire exactly once instead of re-printing "100%"
+    on every one of those trailing calls.
     """
     if total == 0:
         return resynthesize
     count = 0
     last_report = 0.0
+    finished = False
 
     def wrapped(matrix, run):
-        nonlocal count, last_report
+        nonlocal count, last_report, finished
+        if finished:
+            return resynthesize(matrix, run)
+        before = len(cache)
         result = resynthesize(matrix, run)
-        count += 1
+        if len(cache) > before:
+            count += 1
         now = time.monotonic()
         done = count == total
+        if done:
+            finished = True
         if done or now - last_report >= PROGRESS_INTERVAL_SECONDS:
             # Trailing spaces clear any leftover characters from a longer
             # previous update; the string only grows as count/pct gain
@@ -1139,9 +1224,10 @@ def compile_via_resynthesis(
     shorten_run cleanup rounds below (those mostly hit the exact/cache paths
     and are expected to be fast).
     """
-    total = count_resynthesis_blocks(unrolled)
+    total = synth.estimate_synthesis_calls(unrolled)
     out = rewrite_single_qubit_runs(
-        unrolled, _with_progress(synth.synthesize, total, log, "resynthesizing")
+        unrolled,
+        _with_progress(synth.synthesize, total, log, "resynthesizing", synth._expensive_cache()),
     )
     if not optimize:
         return out
