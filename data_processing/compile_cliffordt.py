@@ -87,6 +87,18 @@ Pipeline
    cyclosynth extension built separately (it is a git submodule, not a PyPI
    package; see cyclosynth/README.md and this repo's requirements.txt).
 
+The qiskit and cyclosynth backends report percentage progress through the
+main resynthesis pass (silenced by -q, like all other logging) --
+compile_via_resynthesis's shared pipeline makes this cheap to add once for
+both. bqskit reports none: it exposes no public per-block progress callback,
+and the only usable signal (DEBUG-level runtime log lines, one per block)
+would need splitting decompose_rz_tracked's currently-atomic compile() call
+in two -- with the two halves' error bounds recombined by hand to avoid
+changing the already-verified error_bound numbers -- and risks adding real
+overhead of its own inside bqskit's runtime-server/worker pipeline. Not
+worth it for a backend that is "kept for comparison, not because it is
+competitive" (see the bqskit paragraph above).
+
 Rotation synthesis: gridsynth and cyclosynth
 ---------------------------------------------
 The qiskit and bqskit backends both use the Ross-Selinger algorithm
@@ -331,6 +343,11 @@ BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL = 1
 # value for every backend, so tightening further costs T gates for no
 # measurable gain.
 EPSILON_DEFAULT = 1e-8
+
+# Minimum time between resynthesis progress updates (see _with_progress).
+# Not exposed as a CLI option: this is a UI refresh rate, not a behavioral
+# knob -- there is no reason a user would want a different value.
+PROGRESS_INTERVAL_SECONDS = 1.0
 
 # Single-qubit Clifford generators used to build the shortest-word table.
 CLIFFORD_GENERATORS = {
@@ -1044,20 +1061,88 @@ def unroll_to_u_cx(circuit: QuantumCircuit) -> QuantumCircuit:
     return transpile(circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL)
 
 
+def count_resynthesis_blocks(circuit: QuantumCircuit) -> int:
+    """How many times rewrite_single_qubit_runs will call resynthesize() on
+    `circuit`, without resynthesizing anything -- only 2x2 matrix merges, no
+    gridsynth/cyclosynth calls, so this is cheap even for large circuits.
+    Used to give --backend qiskit/cyclosynth a known denominator for
+    percentage progress before the (potentially slow) real pass.
+    """
+    count = 0
+
+    def counter(matrix, run):
+        nonlocal count
+        count += 1
+        return None
+
+    rewrite_single_qubit_runs(circuit, counter)
+    return count
+
+
+def _with_progress(resynthesize, total: int, log, label: str):
+    """Wrap a resynthesize callback to report percentage progress via log(),
+    overwriting a single line in place (a trailing \\r, no newline until
+    done) rather than printing one line per update, throttled to at most one
+    update per PROGRESS_INTERVAL_SECONDS plus a final update on completion.
+
+    Time-throttled rather than just percentage-throttled: a circuit with only
+    a few dozen blocks would otherwise update close to once per block -- each
+    essentially instant if the blocks are cheap (Clifford/exact), far faster
+    than the line is readable.  A fast compile (finishing inside one
+    interval) only shows its completion state; a slow one visibly ticks
+    upward for as long as it actually runs.
+
+    Counts every merged single-qubit run, not just non-Clifford/approximated
+    ones (those resolve instantly), so progress isn't linear in elapsed time
+    -- it typically races through easy blocks then slows for the hard ones.
+    That's an accepted simplification: an exact-vs-approximate split would
+    need CliffordTSynthesizer/CyclosynthSynthesizer-specific logic here,
+    coupling this generic wrapper to both synthesizers' internals.
+    """
+    if total == 0:
+        return resynthesize
+    count = 0
+    last_report = 0.0
+
+    def wrapped(matrix, run):
+        nonlocal count, last_report
+        result = resynthesize(matrix, run)
+        count += 1
+        now = time.monotonic()
+        done = count == total
+        if done or now - last_report >= PROGRESS_INTERVAL_SECONDS:
+            # Trailing spaces clear any leftover characters from a longer
+            # previous update; the string only grows as count/pct gain
+            # digits, so this is defensive padding, not required alignment.
+            text = f"\r  {label}: {count}/{total} ({count * 100 // total}%)   "
+            log(text, end="\n" if done else "")
+            last_report = now
+        return result
+
+    return wrapped
+
+
 def compile_via_resynthesis(
     unrolled: QuantumCircuit,
     synth: ResynthesisSynthesizer,
     optimize: bool = True,
     max_rounds: int = 5,
+    log=lambda *a: None,
 ) -> QuantumCircuit:
     """Re-synthesise an already-{u,cx}-unrolled circuit over Clifford+T, then clean up.
 
     Shared by the qiskit and cyclosynth backends -- both re-synthesise single-
     qubit runs via the same rewrite_single_qubit_runs/cancel_inverses/
     shorten_run cleanup loop, differing only in what `synth` does with a
-    matrix (see CliffordTSynthesizer vs CyclosynthSynthesizer).
+    matrix (see CliffordTSynthesizer vs CyclosynthSynthesizer). `log` reports
+    percentage progress through the main resynthesis pass only, not the
+    shorten_run cleanup rounds below (those mostly hit the exact/cache paths
+    and are expected to be fast).
     """
-    out = rewrite_single_qubit_runs(unrolled, synth.synthesize)
+    total = count_resynthesis_blocks(unrolled)
+    out = rewrite_single_qubit_runs(
+        unrolled, _with_progress(synth.synthesize, total, log, "resynthesizing")
+    )
     if not optimize:
         return out
     # Cancelling inverses brings new gates together, which lets the next round of
@@ -1389,6 +1474,7 @@ def compile_dispatch(
     unrolled: QuantumCircuit,
     args: argparse.Namespace,
     synth: Optional[ResynthesisSynthesizer] = None,
+    log=lambda *a: None,
 ) -> tuple[QuantumCircuit, list[str], Optional[float], Optional[int]]:
     """Compile an already-unrolled circuit via whichever backend args.backend selects.
 
@@ -1397,7 +1483,10 @@ def compile_dispatch(
     fresh one -- this lets main()'s per-file loop keep sharing one synthesizer,
     and its resynthesis cache, across a batch of input files. Random-window
     sampling (windowed_fidelity) instead passes no synth, since a window is
-    small enough that losing cache reuse across windows doesn't matter.
+    small enough that losing cache reuse across windows doesn't matter. `log`
+    reports resynthesis progress for the qiskit/cyclosynth backends (see
+    compile_via_resynthesis); windowed_fidelity doesn't pass one, since a
+    window is small enough that per-window progress would just be noise.
     """
     if args.backend in ("qiskit", "cyclosynth"):
         if synth is None:
@@ -1408,7 +1497,9 @@ def compile_dispatch(
                     epsilon=args.epsilon, tol=args.tol, threads=args.cyclosynth_threads
                 )
             )
-        compiled = compile_via_resynthesis(unrolled, synth, optimize=not args.no_optimize)
+        compiled = compile_via_resynthesis(
+            unrolled, synth, optimize=not args.no_optimize, log=log
+        )
         extra = [
             f"1q runs: {synth.n_clifford} Clifford, {synth.n_exact} exact,"
             f" {synth.n_approx} approximated, {synth.n_merged} shortened"
@@ -1780,7 +1871,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    log = (lambda *a: None) if args.quiet else lambda *a: print(*a, flush=True)
+    # **k forwards e.g. end="" to print, which _with_progress uses to overwrite
+    # a single progress line via \r rather than printing one line per update.
+    log = (lambda *a, **k: None) if args.quiet else lambda *a, **k: print(*a, flush=True, **k)
 
     synth: Optional[ResynthesisSynthesizer] = None
     if args.backend == "qiskit":
@@ -1821,7 +1914,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             "the bqskit backend does not support classical control flow"
                         )
                     compiled, extra, error_bound, n_rewrites = compile_dispatch(
-                        unrolled, args, synth
+                        unrolled, args, synth, log=log
                     )
 
                 after = circuit_stats(compiled)
