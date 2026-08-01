@@ -1,13 +1,26 @@
 numpy
 matplotlib
 pandas
-bqskit
+# Editable install from the local bqskit/ clone (branch ZXZXZ-fix), not stock
+# PyPI bqskit: fixes ZXZXZDecomposition doubling synthesis calls for diagonal
+# unitaries (see data_processing/compile_cliffordt.py's decompose_rz_tracked
+# docstring -- ~25% fewer T gates on diagonal-heavy circuits via the bqskit
+# backend). A plain `bqskit` line here would silently reinstall the stock
+# package and lose that fix with no error -- it's still a valid, importable
+# package either way, just worse. Resolved relative to the cwd pip is run
+# from (postCreateCommand runs from the workspace root), not this file's own
+# location -- a pip quirk for local-path editable installs.
+-e ./bqskit
 bqskit-ft
 qiskit>=2.5
 # Optional: fallback rotation synthesiser for data_processing/qiskit_compile_cliffordt.py,
 # used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
 # Already pulled in by bqskit-ft.
 pygridsynth
+# Type checker used to verify data_processing/compile_cliffordt.py during
+# development (pyright data_processing/compile_cliffordt.py). Not a runtime
+# dependency of the pipeline itself.
+pyright
 # TRbO (data_processing/compile_cliffordt.py --bqskit-trbo): numerical joint
 # Rz-rounding optimization pass for the bqskit backend (see
 # https://arxiv.org/abs/2603.25101). Pure Python, no native build -- unlike
@@ -16,16 +29,18 @@ pygridsynth
 trbo @ git+https://github.com/WolfLink/trbo
 # cyclosynth (data_processing/compile_cliffordt.py --backend cyclosynth):
 # a local Rust extension (git submodule at cyclosynth/, not on PyPI), so it
-# can't be a normal line here. Build once with:
+# can't be a normal line here -- built automatically by this devcontainer's
+# postCreateCommand (see .devcontainer/devcontainer.json) instead:
 #   git submodule update --init && pip install maturin
 #   cd cyclosynth && maturin build --release && pip install target/wheels/*.whl
 # (maturin develop --release also works if the active Python is inside a
 # venv/conda env; this repo's devcontainer uses the system interpreter, which
-# maturin develop refuses, hence build+install instead.) See
-# cyclosynth/README.md for system gmp/mpfr requirements and the pinned Rust
-# toolchain (cyclosynth/rust-toolchain.toml). On Python versions newer than
-# pyo3 0.22's supported max (3.13 at last check), the build additionally
-# needs PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 set in the environment.
+# maturin develop refuses, hence build+install instead.) Outside this
+# devcontainer, see cyclosynth/README.md for system gmp/mpfr requirements and
+# the pinned Rust toolchain (cyclosynth/rust-toolchain.toml). On Python
+# versions newer than pyo3 0.22's supported max (3.13 at last check), the
+# build additionally needs PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 set in the
+# environment (also handled by postCreateCommand).
 # PyTorch: CPU-only build installed by default.
 # For GPU support, replace with a CUDA-enabled build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121
