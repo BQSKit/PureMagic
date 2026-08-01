@@ -1208,52 +1208,55 @@ def unroll_to_u_cx(circuit: QuantumCircuit) -> QuantumCircuit:
 
 def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
     """Wrap a resynthesize callback to report percentage progress via log(),
-    overwriting a single line in place (a trailing \\r, no newline until
-    done) rather than printing one line per update, throttled to at most one
-    update per PROGRESS_INTERVAL_SECONDS plus a final update on completion.
+    overwriting a single line in place (a trailing \\r, no newline) rather
+    than printing one line per update, throttled to at most one update per
+    PROGRESS_INTERVAL_SECONDS. Does not itself print a final 100% line --
+    compile_via_resynthesis does that unconditionally once the real pass
+    returns, rather than relying on this wrapper to recognize its own last
+    call (see `count`'s clamp below for why that can't be done reliably by
+    watching `cache` alone).
 
     Time-throttled rather than just percentage-throttled: a circuit with only
     a few dozen blocks would otherwise update close to once per block -- each
     essentially instant if the blocks are cheap (Clifford/exact), far faster
     than the line is readable.  A fast compile (finishing inside one
-    interval) only shows its completion state; a slow one visibly ticks
-    upward for as long as it actually runs.
+    interval) shows no progress line until the unconditional 100%; a slow
+    one visibly ticks upward for as long as it actually runs.
 
     `cache` is the synthesizer's cache dict (CliffordTSynthesizer/
-    CyclosynthSynthesizer's `_expensive_cache()`); `count` only advances when
-    a call actually *grows* it, i.e. a genuine gridsynth/cyclosynth search
-    happened, not on every merged run. Both synthesizers cache by angle/
-    matrix key, so on circuits with a lot of repeated rotations (QFT-family
-    circuits, say) the vast majority of calls are instant cache hits -- with
-    plain block counting, progress used to race through the first few
-    percent (the actual searches) then jump straight to 100% on the cache
-    hits, rather than tracking real elapsed time.  `total` (from
-    estimate_synthesis_calls) is the number of distinct cache misses that
-    will occur, computed the same way, so `count` reaches it exactly -- but
-    unlike the old block-count scheme, `count` can then sit at `total` for
-    many further calls (every remaining cache hit), so `finished` latches
-    the completion print to fire exactly once instead of re-printing "100%"
-    on every one of those trailing calls.
+    CyclosynthSynthesizer's `_expensive_cache()`); `count` advances by
+    however many entries a call actually *adds* to it (not just whether it
+    grew), i.e. genuine gridsynth/cyclosynth searches, not merged runs. A
+    single CliffordTSynthesizer block can need gridsynth for more than one
+    of its Euler angles (Rz and Rx) in one call, growing the cache by 2 or 3
+    at once -- counting only "grew: yes/no" as +1 systematically undercounts
+    (confirmed via data/qasmbench/dnn_n8.qasm: cache grows by 36 total
+    across only 17 growing calls, stalling the old scheme at 47%). Both
+    synthesizers cache by angle/matrix key, so on circuits with a lot of
+    repeated rotations (QFT-family circuits, say) the vast majority of calls
+    are instant cache hits -- with plain block counting, progress used to
+    race through the first few percent (the actual searches) then jump
+    straight to 100% on the cache hits, rather than tracking real elapsed
+    time.  `total` (from estimate_synthesis_calls) is only an ESTIMATE of how
+    many new cache entries will appear -- e.g. CyclosynthSynthesizer's
+    catch-None gridsynth fallback can also legitimately not grow `cache` at
+    all for a block the estimate counted as a future cyclosynth call -- so
+    `count` reaching `total` exactly is not guaranteed; it is clamped at
+    `total` (never shown over 100%) but completion is never inferred from
+    reaching it.
     """
     if total == 0:
         return resynthesize
     count = 0
     last_report = 0.0
-    finished = False
 
     def wrapped(matrix, run):
-        nonlocal count, last_report, finished
-        if finished:
-            return resynthesize(matrix, run)
+        nonlocal count, last_report
         before = len(cache)
         result = resynthesize(matrix, run)
-        if len(cache) > before:
-            count += 1
+        count = min(count + (len(cache) - before), total)
         now = time.monotonic()
-        done = count == total
-        if done:
-            finished = True
-        if done or now - last_report >= PROGRESS_INTERVAL_SECONDS:
+        if now - last_report >= PROGRESS_INTERVAL_SECONDS:
             # Percentage only, not "N/M": M's meaning (distinct new cache
             # misses -- see estimate_synthesis_calls) differs enough between
             # backends that showing the raw counts invited comparing them
@@ -1261,8 +1264,7 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
             # spaces clear any leftover characters from a longer previous
             # update; the string only grows as the percentage gains digits,
             # so this is defensive padding, not required alignment.
-            text = f"\r  {label}: {count * 100 // total}%   "
-            log(text, end="\n" if done else "")
+            log(f"\r  {label}: {count * 100 // total}%   ", end="")
             last_report = now
         return result
 
@@ -1287,10 +1289,17 @@ def compile_via_resynthesis(
     and are expected to be fast).
     """
     total = synth.estimate_synthesis_calls(unrolled)
+    label = "resynthesizing"
     out = rewrite_single_qubit_runs(
         unrolled,
-        _with_progress(synth.synthesize, total, log, "resynthesizing", synth._expensive_cache()),
+        _with_progress(synth.synthesize, total, log, label, synth._expensive_cache()),
     )
+    if total > 0:
+        # Printed unconditionally, not by _with_progress detecting its own
+        # last call: `total` is only an estimate of cache growth (see its
+        # docstring), so the tracked count reaching it exactly isn't
+        # guaranteed -- this is what actually completes the line.
+        log(f"\r  {label}: 100%   ")
     if not optimize:
         return out
     # Cancelling inverses brings new gates together, which lets the next round of
