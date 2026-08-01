@@ -245,10 +245,12 @@ import json
 import math
 import os
 import random
+import subprocess
 import sys
 import tempfile
 import time
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
 
@@ -2021,8 +2023,34 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return args
 
 
+def _git_branch_and_commit() -> tuple[str, str]:
+    """(branch, short commit sha) for the repo this script lives in, or
+    ("unknown", "unknown") if git isn't available or this isn't a checkout.
+
+    Mirrors puremagic.rs's vergen-baked "Git branch: ... | Commit: ..."
+    banner (env!("VERGEN_GIT_BRANCH")/env!("VERGEN_GIT_SHA")), but read at
+    run time: a script has no separate compile step to bake it in at.
+    """
+    repo_dir = Path(__file__).resolve().parent
+    try:
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_dir, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_dir, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return branch, commit[:8]
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return "unknown", "unknown"
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    branch, commit = _git_branch_and_commit()
+    run_time = datetime.now(timezone.utc).isoformat()
+    print(f"compile_cliffordt.py - Git branch: {branch} | Commit: {commit} | Run: {run_time}")
     # **k forwards e.g. end="" to print, which _with_progress uses to overwrite
     # a single progress line via \r rather than printing one line per update.
     log = (lambda *a, **k: None) if args.quiet else lambda *a, **k: print(*a, flush=True, **k)
