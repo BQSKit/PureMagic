@@ -8,6 +8,12 @@ qiskit>=2.5
 # used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
 # Already pulled in by bqskit-ft.
 pygridsynth
+# TRbO (data_processing/compile_cliffordt.py --bqskit-trbo): numerical joint
+# Rz-rounding optimization pass for the bqskit backend (see
+# https://arxiv.org/abs/2603.25101). Pure Python, no native build -- unlike
+# cyclosynth this doesn't need a submodule, just pip's git support, since it
+# isn't published to PyPI.
+trbo @ git+https://github.com/WolfLink/trbo
 # cyclosynth (data_processing/compile_cliffordt.py --backend cyclosynth):
 # a local Rust extension (git submodule at cyclosynth/, not on PyPI), so it
 # can't be a normal line here. Build once with:

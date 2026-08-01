@@ -97,6 +97,33 @@ Pipeline
    rotations that are *exactly* redundant (same parity), while
    ScanningGateRemovalPass's numerical search also catches approximate
    cancellations between rotations that don't share a parity at all.
+
+   --bqskit-trbo: an optional, off-by-default extra stage (needs the
+   optional trbo package -- see requirements.txt) that runs TRbO
+   (arxiv.org/abs/2603.25101) right after RoundToDiscreteZPass, before
+   isolating/synthesising whatever Rz gates remain. Where RoundToDiscreteZPass
+   only checks each Rz independently against --epsilon, TRbO numerically
+   re-optimises a partitioned block's Rz angles *jointly*, rounding as many as
+   possible to Clifford/T-exact while letting the rest absorb the compensating
+   error. Measured: 0% change on qft_N008 and on the pinned
+   hubbard_18_slice600.qasm reference (both have angles that are analytically
+   or physically fixed -- already exactly deduplicated by
+   merge_phase_polynomial where applicable -- so there is no leftover gauge
+   freedom for a joint optimiser to exploit, matching the TRbO paper's own
+   null result on plain QFT); 2-3% fewer T gates on qv_N008_12345 (27084 ->
+   26132-26452 across repeated runs -- see the reproducibility note below), a
+   Haar-random circuit whose ZXZXZDecomposition blocks do have real gauge
+   slack, and which is exactly the circuit class merge_phase_polynomial
+   cannot help (and previously regressed, see unroll_to_u_cx). Off by default
+   because the win is real but circuit-dependent and not free: the numerical
+   optimisation itself cost about 61s for ~250 partition blocks on an
+   8-qubit circuit in measurement, unlike every other pass in this workflow.
+   Also unlike every other part of the bqskit backend, its T-count is not
+   reproducible run to run at a fixed --seed: TRbO's own multi-start search
+   dispatches retries through bqskit's runtime independently of this script's
+   seeding (confirmed directly: two --seed 0 runs of qv_N008_12345 gave 26452
+   and 26239 T), so a --bqskit-trbo run is not safe to treat as a single
+   reproducible data point the way every other number in this file is.
    rewrite_single_qubit_runs (the qiskit/cyclosynth backends' shared
    pipeline) has no equivalent of its own: it only merges consecutive
    single-qubit gates on one wire between CX boundaries, and never tests
@@ -370,6 +397,13 @@ try:  # optional: only needed for --backend cyclosynth (see cyclosynth/README.md
 except ImportError:
     cyclosynth = None
 
+try:  # optional: only needed for --bqskit-trbo (see requirements.txt)
+    import trbo.trbo  # pyright: ignore[reportMissingImports]
+    import trbo.utils  # pyright: ignore[reportMissingImports]
+    import trbo.clift  # pyright: ignore[reportMissingImports]
+except ImportError:
+    trbo = None
+
 # sx/sxdg (sqrt(X) and its inverse) are included because the bqskit backend
 # emits them natively -- bqskit's own Clifford+T gate set treats sx as a
 # Clifford generator in its own right, and the downstream Rust `transpile`
@@ -399,6 +433,13 @@ UNROLL_OPTIMIZATION_LEVEL = 1
 # slower workflows), there is nothing to gain from exposing it as a CLI
 # option; it is fixed at 1 purely because some value has to be picked.
 BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL = 1
+
+# Partition size for --bqskit-trbo's QuickPartitioner stage -- matches
+# trbo.workflows' own default() partition_size. Not exposed as a CLI option in
+# v1: revisit only if real usage shows a need to trade TRbO's own runtime
+# (dominated by per-block multistart numerical optimisation, roughly linear in
+# block count) against how much joint gauge freedom a larger block exposes.
+TRBO_PARTITION_SIZE = 4
 
 # --epsilon's default, shared by all three backends -- see the module
 # docstring's "Rotation synthesis" section for the exact-fidelity
@@ -1782,6 +1823,7 @@ def build_bqskit_workflow(
     synthesis_epsilon: float,
     decompose_rz: bool,
     seed: Optional[int],
+    trbo_flag: bool = False,
 ) -> list[BasePass]:
     """Build this script's own Clifford+T circuit workflow for bqskit.
 
@@ -1800,6 +1842,18 @@ def build_bqskit_workflow(
     Skipping it is safe here because unroll_to_u_cx already guarantees the
     circuit handed to bqskit contains only {u, cx} -- no gate outside
     CliffordTModel's native set for retargeting to act on.
+
+    trbo_flag (--bqskit-trbo) inserts an extra stage right after the second
+    RoundToDiscreteZPass/UnfoldPass pair, where the circuit is genuinely
+    Clifford+Rz -- see the module docstring's bqskit section for what it does
+    and the measurements behind making it opt-in. Applies uniformly whether
+    decompose_rz ends up True or False below, so it combines correctly with
+    --bqskit-inline-decompose-rz either way. Its own optimisation error
+    (bounded per block by success_threshold=synthesis_epsilon) is not
+    captured by this script's error_bound reporting, for the same reason
+    RoundToDiscreteZPass's rounding isn't (see decompose_rz_tracked's
+    docstring): it doesn't run inside a calculate_error_bound=True
+    ForEachBlockPass reachable from a request_data=True compile() call.
     """
     passes: list[BasePass] = [SetRandomSeedPass(seed)] if seed is not None else []
     zxzxz = ForEachBlockPass([ZXZXZDecomposition()], collection_filter=single_qudit_filter)
@@ -1818,6 +1872,32 @@ def build_bqskit_workflow(
         RoundToDiscreteZPass(synthesis_epsilon),
         UnfoldPass(),
     ]
+    if trbo_flag:
+        if trbo is None:
+            raise RuntimeError(
+                "--bqskit-trbo needs the trbo package, which is not "
+                "installed. pip install git+https://github.com/WolfLink/trbo "
+                "(see requirements.txt)."
+            )
+        passes += [
+            QuickPartitioner(TRBO_PARTITION_SIZE),
+            ForEachBlockPass(
+                [
+                    # TRbOPass rejects any gate outside Clifford+T+Rz, including
+                    # IdentityGate -- which RoundToDiscreteZPass/clifford_replace
+                    # can leave behind (see compile_bqskit's own identical cleanup
+                    # for the same gate, done later for a different reason: bqskit
+                    # serialises it as a custom gate the transpile binary chokes
+                    # on). Strip it per-block first rather than once for the whole
+                    # circuit, since QuickPartitioner already needs to run first.
+                    trbo.utils.RemoveGatePass(IdentityGate(1)),
+                    trbo.utils.AppendGatePass(trbo.clift.GlobalPhaseGate()),
+                    trbo.trbo.TRbOPass(success_threshold=synthesis_epsilon),
+                    trbo.utils.RemoveGatePass(trbo.clift.GlobalPhaseGate()),
+                ]
+            ),
+            UnfoldPass(),
+        ]
     if decompose_rz:
         # Matches decompose_rz_tracked's own precision formula below (ceil, not
         # bqskit's int(...)+2 padding) so the two workflows' T counts stay
@@ -1935,6 +2015,7 @@ def compile_bqskit(
     epsilon: float,
     seed: int,
     use_custom_rz_decomposition: bool,
+    trbo_flag: bool = False,
 ) -> tuple[QuantumCircuit, Optional[float]]:
     """Compile an already-{u,cx}-unrolled circuit via bqskit, returning a qiskit
     QuantumCircuit (round-tripped through qiskit's own loader, so it can share
@@ -1944,7 +2025,8 @@ def compile_bqskit(
     from ``decompose_rz_tracked`` -- see its docstring for exactly what it
     covers. Only available when ``use_custom_rz_decomposition`` is True;
     ``None`` otherwise, since bqskit's own ``decompose_rz=True`` path (used
-    when it is False) has no equivalent tracking.
+    when it is False) has no equivalent tracking. ``trbo_flag`` (--bqskit-trbo)
+    is passed straight through to build_bqskit_workflow -- see its docstring.
     """
     error_bound: Optional[float] = None
     with tempfile.TemporaryDirectory() as tmp:
@@ -1968,16 +2050,52 @@ def compile_bqskit(
                     synthesis_epsilon=epsilon,
                     decompose_rz=not use_custom_rz_decomposition,
                     seed=seed,
+                    trbo_flag=trbo_flag,
                 ),
                 BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
                 "circuit",
             )
-        bq_circuit = bqskit_compile(
-            bq_circuit,
-            model=machine,
-            optimization_level=BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
-            seed=seed,
-        )
+        # TRbO's own MatrixDistanceCost.get_grad (trbo/tcount.py) computes
+        # (1 - frac**degree)**(1/degree - 1), a genuine 0**negative
+        # singularity whenever a candidate's fidelity to the target rounds to
+        # exactly 1.0 in floating point -- a symptom of the optimiser having
+        # already converged, not an error. That produces an inf (line 56:
+        # "divide by zero encountered in power"), which the very next line's
+        # p1 * p2 * p3 (line 59: "invalid value encountered in multiply") can
+        # turn into inf * 0 = nan whenever some parameter's own gradient
+        # contribution (p3) happens to vanish for that entry -- same root
+        # cause, one line downstream. numpy warns rather than raises for
+        # either by default, and both surface from inside bqskit's own worker
+        # processes, where a plain warnings.filterwarnings() call here has no
+        # effect (confirmed empirically: those workers do not inherit this
+        # process's warnings filters). Only PYTHONWARNINGS, read by each
+        # worker at its own interpreter startup, reliably reaches them.
+        old_pythonwarnings = os.environ.get("PYTHONWARNINGS")
+        if trbo_flag:
+            suppress_trbo_warning = ",".join(
+                [
+                    "ignore:divide by zero encountered in power:RuntimeWarning:trbo.tcount",
+                    "ignore:invalid value encountered in multiply:RuntimeWarning:trbo.tcount",
+                ]
+            )
+            os.environ["PYTHONWARNINGS"] = (
+                f"{old_pythonwarnings},{suppress_trbo_warning}"
+                if old_pythonwarnings
+                else suppress_trbo_warning
+            )
+        try:
+            bq_circuit = bqskit_compile(
+                bq_circuit,
+                model=machine,
+                optimization_level=BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
+                seed=seed,
+            )
+        finally:
+            if trbo_flag:
+                if old_pythonwarnings is None:
+                    os.environ.pop("PYTHONWARNINGS", None)
+                else:
+                    os.environ["PYTHONWARNINGS"] = old_pythonwarnings
         if use_custom_rz_decomposition:
             bq_circuit, error_bound = decompose_rz_tracked(bq_circuit, epsilon)
 
@@ -2056,6 +2174,7 @@ def compile_dispatch(
         epsilon=args.epsilon,
         seed=args.seed,
         use_custom_rz_decomposition=not args.bqskit_inline_decompose_rz,
+        trbo_flag=args.bqskit_trbo,
     )
     return compiled, [], error_bound, None
 
@@ -2342,6 +2461,25 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "inline workflow does not.",
     )
     parser.add_argument(
+        "--bqskit-trbo",
+        action="store_true",
+        help="bqskit backend only: after RoundToDiscreteZPass, run TRbO "
+        "(numerical joint optimization of remaining Rz angles -- see "
+        "https://arxiv.org/abs/2603.25101) before isolating/synthesizing "
+        "what's left. Off by default: it is a real but circuit-dependent "
+        "T-count win (measured 0%% on QFT-family/Hubbard circuits, ~5%% on "
+        "Haar-random circuits like QV) bought with real wall-clock cost "
+        "(tens of seconds per few hundred partition blocks at default "
+        "settings), unlike this script's other bqskit-workflow passes, "
+        "which are unconditional. Requires the optional trbo package (see "
+        "requirements.txt). Unlike every other part of this script's bqskit "
+        "backend, T-counts are not reproducible run to run at a fixed "
+        "--seed: TRbO's own multi-start search dispatches its retries "
+        "through bqskit's runtime independently of this script's seeding, "
+        "so repeated runs of the same input have been observed to differ "
+        "by roughly 1%% in T count.",
+    )
+    parser.add_argument(
         "--seed",
         "-s",
         type=int,
@@ -2394,10 +2532,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     backend_only_flags = {
         "qiskit": {
             "bqskit_inline_decompose_rz": "--bqskit-inline-decompose-rz",
+            "bqskit_trbo": "--bqskit-trbo",
             "seed": "--seed",
             "cyclosynth_threads": "--cyclosynth-threads",
         },
-        "cyclosynth": {"bqskit_inline_decompose_rz": "--bqskit-inline-decompose-rz", "seed": "--seed"},
+        "cyclosynth": {
+            "bqskit_inline_decompose_rz": "--bqskit-inline-decompose-rz",
+            "bqskit_trbo": "--bqskit-trbo",
+            "seed": "--seed",
+        },
         "bqskit": {
             "no_optimize": "--no-optimize",
             "tol": "--tol",
