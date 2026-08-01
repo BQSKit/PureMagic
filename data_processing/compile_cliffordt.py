@@ -254,6 +254,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
 
+# rsgridsynth's occasional panic (see CliffordTSynthesizer._synthesize_rz) is
+# caught and falls back to pygridsynth, but something in the pyo3/rsgridsynth
+# panic-to-exception path still prints its own message plus a full backtrace
+# to stderr before the catch runs -- confirmed NOT to be the standard Rust
+# panic hook honoring RUST_BACKTRACE (tested with it explicitly set to "0" at
+# the OS level: the backtrace still printed), so this does not suppress it.
+# Kept anyway, defensively: harmless, and setdefault won't override a value
+# the user has deliberately set for their own debugging, in case some other
+# panic in the dependency chain does honor it.
+os.environ.setdefault("RUST_BACKTRACE", "0")
+
 import numpy as np
 from qiskit import QuantumCircuit, qasm2, qasm3, transpile
 from qiskit.circuit import ControlFlowOp, Gate, Qubit
@@ -412,6 +423,13 @@ EXACTNESS_FLOOR = 1e-12
 # not something a user should need to tune, and setting it too small could
 # reintroduce the hang.
 CYCLOSYNTH_NEAR_CLIFFORD_MARGIN = 1e4
+
+# The one specific rsgridsynth panic message CliffordTSynthesizer._synthesize_rz
+# knows is safe to swallow (falls back to pygridsynth, already measured and
+# accounted for in error_bound) -- see _capture_stderr_fd's use there. Matched
+# against str(the caught exception), not the raw captured stderr text: pyo3
+# already surfaces the panic payload as the exception's message.
+KNOWN_GRIDSYNTH_PANIC = "Invalid coefficients for inverse sqrt2 multiplication"
 
 # Non-gate operations that are allowed to survive into the output.
 PASSTHROUGH_OPS = frozenset({"measure", "barrier", "reset", "delay"})
@@ -592,6 +610,34 @@ def circuit_from_word(
         global_phase_between(target, word_matrix(word)) if phase is None else phase
     )
     return circuit
+
+
+@contextlib.contextmanager
+def _capture_stderr_fd():
+    """Redirect the OS-level stderr file descriptor (fd 2) to a temp file for
+    the duration of the block, then always restore it -- including on an
+    unexpected exception, via `finally`, so a bug here can't leave stderr
+    silently broken for the rest of the process.
+
+    Needed because Rust panics (see CliffordTSynthesizer._synthesize_rz)
+    write their message and backtrace directly to fd 2, bypassing Python's
+    sys.stderr object entirely -- contextlib.redirect_stderr only redirects
+    the latter, so it can't intercept them.
+
+    Yields the temp file; `with ... as capture:` binds it before the guarded
+    call runs, so it stays readable in the caller's scope even if that call
+    raises and the exception is caught outside this block. The caller is
+    responsible for seeking/reading (and closing) it afterward.
+    """
+    stderr_fd = 2
+    saved_fd = os.dup(stderr_fd)
+    capture = tempfile.TemporaryFile(mode="w+b")
+    try:
+        os.dup2(capture.fileno(), stderr_fd)
+        yield capture
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(saved_fd)
 
 
 class CliffordTSynthesizer:
@@ -803,15 +849,19 @@ class CliffordTSynthesizer:
         """Ross-Selinger word for Rz(angle), accurate to self.epsilon."""
         if gridsynth_rz is None:
             return self._pygridsynth_word(angle)
+        capture = None
         try:
-            circuit = gridsynth_rz(angle, self.epsilon)
+            with _capture_stderr_fd() as capture:
+                circuit = gridsynth_rz(angle, self.epsilon)
         except BaseException as error:
-            # rsgridsynth 0.2.0 panics on some angles at coarse epsilon ("Invalid
-            # coefficients for inverse sqrt2 multiplication"): 26% of 300 random
-            # angles at 1e-2, 6% at 1e-4, none at 1e-6 or below.  Which angles fail
-            # depends on process state, not just the angle, so retrying is not a
-            # fix.  A pyo3 panic is a BaseException, so it would otherwise escape
-            # the per-file error handling in main().
+            # rsgridsynth 0.2.0 panics on some angles (KNOWN_GRIDSYNTH_PANIC):
+            # 26% of 300 random angles at 1e-2, 6% at 1e-4 in earlier testing --
+            # rare but not confined to coarse epsilon, as first believed: it has
+            # since been observed at the default 1e-8 too, on a large enough
+            # circuit (qv_N036_12345.qasm, 36 qubits). Which angles fail
+            # depends on process state, not just the angle, so retrying is not
+            # a fix. A pyo3 panic is a BaseException, so it would otherwise
+            # escape the per-file error handling in main().
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 raise
             if gridsynth_gates is None:
@@ -820,8 +870,44 @@ class CliffordTSynthesizer:
                     f"{self.epsilon:g} ({type(error).__name__}: {error}). Use a "
                     "smaller --epsilon or install pygridsynth as a fallback."
                 ) from error
+            # Something in the pyo3/rsgridsynth panic path prints its own
+            # message plus a full backtrace directly to fd 2, bypassing
+            # sys.stderr and ignoring RUST_BACKTRACE -- _capture_stderr_fd
+            # caught it so it can be judged rather than shown unconditionally.
+            # The one specific, already-measured-safe panic is swallowed
+            # entirely (already accounted for in error_bound, nothing the
+            # user needs to see); anything else is forwarded verbatim plus a
+            # note, since it hasn't been verified safe to hide.
+            if KNOWN_GRIDSYNTH_PANIC not in str(error):
+                if capture is not None:
+                    capture.seek(0)
+                    raw = capture.read()
+                    if raw:
+                        print(raw.decode(errors="replace"), file=sys.stderr, end="")
+                print(
+                    f"note: qiskit's gridsynth (Rust) raised an unexpected "
+                    f"error on one rotation ({type(error).__name__}: {error}) "
+                    "-- used the pygridsynth fallback instead. This is NOT "
+                    "the known rsgridsynth panic _synthesize_rz was written "
+                    "for (raw Rust output above, if any) -- if this recurs, "
+                    "it may need its own handling.",
+                    file=sys.stderr,
+                )
             return self._pygridsynth_word(angle)
-        return tuple(inst.operation.name for inst in circuit.data)
+        else:
+            # Success: forward any stderr output rsgridsynth wrote without
+            # panicking. Unexpected (nothing has ever been observed here),
+            # but nothing should be silently lost -- the whole point of
+            # capturing rather than discarding.
+            if capture is not None:
+                capture.seek(0)
+                raw = capture.read()
+                if raw:
+                    print(raw.decode(errors="replace"), file=sys.stderr, end="")
+            return tuple(inst.operation.name for inst in circuit.data)
+        finally:
+            if capture is not None:
+                capture.close()
 
     def _pygridsynth_word(self, angle: float) -> tuple[str, ...]:
         """Same rotation via pygridsynth, the implementation bqskit-ft calls."""
