@@ -18,10 +18,19 @@ Pipeline
 --------
 1. Load the QASM file (OpenQASM 2 first, falling back to OpenQASM 3 -- which
    needs the optional `qiskit-qasm3-import` package).
-2. Preopt: transpile to {u, cx} so that every multi-qubit gate (ccx, cswap,
-   cry, rzz, ryy, ...) is broken down into cx plus single-qubit rotations.
-   Both backends resynthesise from this same {u, cx} circuit -- necessary for
-   the qiskit backend (which only knows how to re-synthesise 1-qubit runs, not
+2. Preopt: first merge_phase_polynomial exactly cancels/merges redundant
+   diagonal (rz-family) rotations via their phase-polynomial "parity" (see
+   its docstring) -- e.g. a QFT's CX-ladder-decomposed controlled-phase gates
+   are full of rotations that are exactly redundant with each other in this
+   sense. That merge is not always a net win (moving a rotation to satisfy a
+   global parity match can incidentally cost more than it saves -- see
+   unroll_to_u_cx's docstring), so both the merged and unmerged circuits get
+   transpiled to {u, cx} (so that every multi-qubit gate -- ccx, cswap, cry,
+   rzz, ryy, ... -- is broken down into cx plus single-qubit rotations) and
+   CliffordTSynthesizer.count_real_rotations, a cheap gridsynth-free proxy for
+   actual T-count, picks whichever needs fewer real rotations. All three
+   backends resynthesise from this same {u, cx} circuit -- necessary for the
+   qiskit backend (which only knows how to re-synthesise 1-qubit runs, not
    arbitrary multi-qubit gates) and a real, if smaller, improvement for the
    bqskit backend too (bqskit's own partitioner refragments single-qubit runs
    across 2-qubit block boundaries regardless of input quality, so it cannot
@@ -66,11 +75,35 @@ Pipeline
    GridSynthPass (on by default, --bqskit-inline-decompose-rz uses bqskit's
    own inline decompose_rz=True workflow instead -- see decompose_rz_tracked's
    docstring for what the difference actually is). At the same --epsilon,
-   produces more T gates than the qiskit backend on every benchmark measured
-   so far -- kept for comparison and as an independently implemented
-   Clifford+T compiler, not because it is competitive. Also rejects circuits
-   with classical control flow (bqskit's own Circuit has no concept of it) --
-   the qiskit and cyclosynth backends are the only options for those.
+   produces more T gates than the qiskit backend on every non-QFT benchmark
+   measured so far -- kept for comparison and as an independently implemented
+   Clifford+T compiler, not because it is competitive.
+
+   QFT-family circuits are the one measured exception: there, bqskit can
+   still produce fewer T gates even after merge_phase_polynomial's exact
+   upstream reduction (e.g. qft_N032: 27341 vs qiskit's 42207, ~1.5x fewer --
+   before that preopt step existed, the same comparison was 76466 vs 113142,
+   so the ratio hasn't really changed even though both numbers dropped by
+   more than half). This isn't a synthesis-quality difference -- gridsynth
+   costs the same ~82-86 T per rotation at epsilon=1e-8 regardless of whether
+   qiskit's Rust gridsynth_rz or bqskit's pygridsynth does the synthesis
+   (verified directly, same angles). It comes from build_bqskit_workflow's
+   QuickPartitioner(2) + ScanningGateRemovalPass step, which runs on raw
+   {u,cx} 2-qubit blocks before any Euler decomposition and numerically tests
+   whether each gate can simply be dropped and still keep the block's unitary
+   within --epsilon -- a fundamentally different, approximate mechanism from
+   merge_phase_polynomial's exact parity matching, and one that still finds
+   real reductions merge_phase_polynomial cannot: the latter only merges
+   rotations that are *exactly* redundant (same parity), while
+   ScanningGateRemovalPass's numerical search also catches approximate
+   cancellations between rotations that don't share a parity at all.
+   rewrite_single_qubit_runs (the qiskit/cyclosynth backends' shared
+   pipeline) has no equivalent of its own: it only merges consecutive
+   single-qubit gates on one wire between CX boundaries, and never tests
+   whether an entire gate can be dropped from a multi-gate block. Also rejects
+   circuits with classical control flow (bqskit's own Circuit has no concept
+   of it) -- the qiskit and cyclosynth backends are the only options for
+   those.
 
    cyclosynth: shares the qiskit backend's rewrite_single_qubit_runs pipeline
    entirely (merge each maximal single-qubit run into one 2x2 matrix, clean up
@@ -815,6 +848,39 @@ class CliffordTSynthesizer:
         rewrite_single_qubit_runs(circuit, counter)
         return len(new_keys)
 
+    def count_real_rotations(self, circuit: QuantumCircuit) -> int:
+        """Total count of non-Clifford, non-pi/4-multiple Euler angles across
+        every 1-qubit run in `circuit`, counted per OCCURRENCE -- unlike
+        estimate_synthesis_calls, this does NOT deduplicate by angle. Each
+        occurrence costs roughly the same ~constant T regardless of whether
+        its angle turns out to be a cache hit or a fresh gridsynth search
+        (gridsynth's cost is ~3*log2(1/epsilon) per rotation, largely
+        independent of the angle), so occurrence count -- not distinct-angle
+        count -- is the right cheap proxy for a circuit's actual T-count
+        without running gridsynth on it at all.
+
+        Used by unroll_to_u_cx to choose between merge_phase_polynomial's
+        output and the unmerged circuit: that merge is an exact rewrite, but
+        not always a net T-count win (see its docstring) -- this gives a
+        gridsynth-free way to check which candidate is actually cheaper
+        before committing to either.
+        """
+        total = 0
+
+        def counter(matrix, run):
+            nonlocal total
+            if self._exact(matrix) is not None:
+                return None
+            for inst in self._decomposer(matrix).data:
+                if not inst.operation.params:
+                    continue
+                if not self._is_pi_4_multiple(inst.operation.params[0]):
+                    total += 1
+            return None
+
+        rewrite_single_qubit_runs(circuit, counter)
+        return total
+
     def _expensive_cache(self) -> dict:
         """The cache whose growth marks a genuine gridsynth search, as
         opposed to a cache hit or an exact/Clifford block -- watched by
@@ -1288,7 +1354,119 @@ def operation_counts_cost(circuit: QuantumCircuit) -> tuple[int, int]:
     return t_count, sum(n for name, n in counts.items() if name != "barrier")
 
 
-def unroll_to_u_cx(circuit: QuantumCircuit) -> QuantumCircuit:
+PHASE_MERGE_BASIS = ["cx", "rz", "ry", "rx", "h", "x", "y", "z", "s", "sdg", "t", "tdg", "sx", "sxdg"]
+
+# angle contributed by one occurrence of each diagonal single-qubit gate --
+# used by merge_phase_polynomial to fold every occurrence into one rz per
+# distinct "parity" (see its docstring).  Deliberately a small, exact,
+# gate-name-keyed table rather than a numeric matrix check: this pass runs
+# before any 1-qubit fusion, precisely so every occurrence still has its own
+# recognisable name.
+DIAGONAL_1Q_ANGLE = {
+    "rz": lambda params: float(params[0]),
+    "z": lambda params: math.pi,
+    "s": lambda params: math.pi / 2,
+    "sdg": lambda params: -math.pi / 2,
+    "t": lambda params: math.pi / 4,
+    "tdg": lambda params: -math.pi / 4,
+}
+
+
+def merge_phase_polynomial(circuit: QuantumCircuit) -> QuantumCircuit:
+    """Exactly merge/cancel redundant diagonal (rz-family) rotations via their
+    phase-polynomial "parity" (the t-par technique of Amy, Maslov, Mosca).
+
+    Two rz-family gates anywhere in a {cx, diagonal-gate} region of the
+    circuit commute and add exactly whenever they act on the same XOR-parity
+    of the original input qubits at the time each is applied -- regardless of
+    which physical qubit holds that parity or what runs in between, since cx
+    and every diagonal gate commute freely with each other. This matters a
+    lot for CX-ladder-decomposed controlled-phase gates (cx, rz(-a), cx,
+    rz(a)), which is exactly how QFT-family circuits' controlled-phase gates
+    show up after decomposition: measured on qft_N032, this drops the number
+    of rotations that actually need gridsynth from 1350 to 522. Verified
+    correct (not just counted) by comparing a merged circuit's Operator
+    against the original on qft_N008: matched to 2.5e-15 after correcting for
+    global phase.
+
+    Tracks each qubit's parity as a Python int bitmask (bit i = "depends on
+    original qubit i"), updated by cx as parity[target] ^= parity[control].
+    Any gate this doesn't specifically recognise as diagonal -- h/x/y/rx/ry/
+    sx/sxdg, any 2+-qubit gate other than cx, measurement, reset, control
+    flow -- resets every qubit it touches to a fresh symbol never reused
+    elsewhere, rather than trying to track what it does. That's conservative
+    by construction: an unrecognised gate can only cause a missed merge
+    opportunity, never an incorrect one, since two occurrences can only share
+    a parity key if every operation on every contributing qubit in between
+    was one of the diagonal gates or cx gates this function explicitly
+    understands to commute freely.
+
+    Must run before unroll_to_u_cx's own {u,cx} transpile: that call's
+    UNROLL_OPTIMIZATION_LEVEL fuses maximal single-qubit runs into one u3
+    gate, which would bake a genuinely mergeable rz together with a
+    neighbouring non-diagonal rotation (e.g. an H immediately before or
+    after it, as in QFT's own per-qubit "rz; h; rz" runs) into one opaque,
+    unaddressable non-diagonal matrix. Runs its own translate-only
+    (optimization_level=0, so no 1-qubit fusion) decompose to PHASE_MERGE_BASIS
+    first, both to keep every original gate's name intact for classification
+    and to break down whatever compound gates the input used (ccx, cp, crz,
+    rzz, cswap, ...) into cx plus this vocabulary.
+
+    No CLI flag: this is an exact, tolerance-free rewrite (no epsilon spent),
+    the same category as unroll_to_u_cx itself, not a tunable knob -- runs
+    unconditionally for all three backends. Does not recurse into
+    control-flow bodies (resets their qubits' parity instead, like any other
+    unrecognised construct) and does not attempt to also reduce cx count
+    (qiskit's own synth_cnot_phase_aam GraySynth implementation could do
+    that from the same merged {parity: angle} table, but rebuilding the cx
+    ladder from scratch is a separate, riskier change for no extra T-count
+    benefit -- left as possible future work).
+    """
+    decomposed = transpile(circuit, basis_gates=PHASE_MERGE_BASIS, optimization_level=0)
+    n = decomposed.num_qubits
+    parity = [1 << i for i in range(n)]
+    next_symbol = n
+
+    group_key: list[Optional[int]] = []
+    group_total: dict[int, float] = {}
+    group_last_index: dict[int, int] = {}
+
+    for i, instr in enumerate(decomposed.data):
+        operation = instr.operation
+        name = operation.name
+        qubits = [decomposed.find_bit(q).index for q in instr.qubits]
+        if name == "cx":
+            c, t = qubits
+            parity[t] ^= parity[c]
+            group_key.append(None)
+        elif name in DIAGONAL_1Q_ANGLE:
+            key = parity[qubits[0]]
+            group_key.append(key)
+            group_total[key] = group_total.get(key, 0.0) + DIAGONAL_1Q_ANGLE[name](operation.params)
+            group_last_index[key] = i
+        elif name == "barrier":
+            group_key.append(None)
+        else:
+            for q in qubits:
+                parity[q] = 1 << next_symbol
+                next_symbol += 1
+            group_key.append(None)
+
+    out = decomposed.copy_empty_like()
+    for i, instr in enumerate(decomposed.data):
+        key = group_key[i]
+        if key is None:
+            out.append(instr)
+            continue
+        if i != group_last_index[key]:
+            continue  # an earlier occurrence of this parity already covers it
+        total = group_total[key] % (2 * math.pi)
+        if total > EXACTNESS_FLOOR:
+            out.rz(total, instr.qubits[0])
+    return out
+
+
+def unroll_to_u_cx(circuit: QuantumCircuit, epsilon: float = EPSILON_DEFAULT) -> QuantumCircuit:
     """The {u,cx} unroll + optimization step all three backends resynthesise from.
 
     Structurally necessary, not just an optimization: it is what breaks
@@ -1296,8 +1474,30 @@ def unroll_to_u_cx(circuit: QuantumCircuit) -> QuantumCircuit:
     (ccx, cp, rzz, ...) down into {1-qubit unitary, cx}.  UNROLL_OPTIMIZATION_LEVEL
     also matters a great deal for how well single-qubit runs merge before
     resynthesis (see its comment).
+
+    merge_phase_polynomial runs first on a separate candidate (see its own
+    docstring for why it can't run after this call's 1-qubit fusion), exactly
+    cancelling/merging redundant diagonal rotations before anything here has a
+    chance to obscure them -- but that merge is not always a net win: moving a
+    rotation to satisfy a global parity match can incidentally break a
+    neighbouring gate's *local* gauge-cancellation (see merge_phase_
+    polynomial's docstring), costing more real rotations than it saves on
+    circuits without much genuine redundancy to find (measured 10% more T on
+    a random Quantum Volume benchmark, vs. ~2.7x fewer on a QFT one). Rather
+    than guess which applies, both the merged and unmerged candidates are
+    unrolled and CliffordTSynthesizer.count_real_rotations -- cheap, no
+    gridsynth involved -- picks whichever needs fewer real rotations. `epsilon`
+    only affects that comparison's Clifford/exact tolerance, not either
+    candidate's actual gate content.
     """
-    return transpile(circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL)
+    merged_unrolled = transpile(
+        merge_phase_polynomial(circuit), basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL
+    )
+    unmerged_unrolled = transpile(circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL)
+    probe = CliffordTSynthesizer(epsilon=epsilon)
+    if probe.count_real_rotations(merged_unrolled) <= probe.count_real_rotations(unmerged_unrolled):
+        return merged_unrolled
+    return unmerged_unrolled
 
 
 def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
@@ -1437,7 +1637,7 @@ def compile_via_resynthesis(
     synth: ResynthesisSynthesizer,
     optimize: bool = True,
     max_rounds: int = 5,
-    log=lambda *a: None,
+    log=lambda *a, **k: None,
 ) -> QuantumCircuit:
     """Re-synthesise an already-{u,cx}-unrolled circuit over Clifford+T, then clean up.
 
@@ -1813,7 +2013,7 @@ def compile_dispatch(
     unrolled: QuantumCircuit,
     args: argparse.Namespace,
     synth: Optional[ResynthesisSynthesizer] = None,
-    log=lambda *a: None,
+    log=lambda *a, **k: None,
 ) -> tuple[QuantumCircuit, list[str], Optional[float], Optional[int]]:
     """Compile an already-unrolled circuit via whichever backend args.backend selects.
 
@@ -1955,7 +2155,7 @@ def windowed_fidelity(
         window = _random_window(source, WINDOW_VERIFY_MAX_QUBITS, WINDOW_VERIFY_MAX_OPS, rng)
         if window is None:
             continue
-        compiled_window, _, _, _ = compile_dispatch(unroll_to_u_cx(window), args)
+        compiled_window, _, _, _ = compile_dispatch(unroll_to_u_cx(window, args.epsilon), args)
         qubits = compiled_window.num_qubits
         cost = (operation_counts_cost(compiled_window)[1] + operation_counts_cost(window)[1]) * (
             2**qubits
@@ -2277,7 +2477,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 before = circuit_stats(circuit)
 
                 with timed("preopt", timings):
-                    unrolled = unroll_to_u_cx(circuit)
+                    unrolled = unroll_to_u_cx(circuit, args.epsilon)
 
                 with timed("compile", timings):
                     if args.backend == "bqskit" and has_control_flow(circuit):
