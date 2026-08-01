@@ -86,6 +86,10 @@ Pipeline
    (see CyclosynthSynthesizer's docstring for measured numbers) -- needs the
    cyclosynth extension built separately (it is a git submodule, not a PyPI
    package; see cyclosynth/README.md and this repo's requirements.txt).
+   Blocks whose target lands within CYCLOSYNTH_NEAR_CLIFFORD_MARGIN of a
+   Clifford element are instead routed to the qiskit backend's gridsynth
+   path: cyclosynth's search can hang or fail to terminate on such targets
+   (e.g. a QFT's deep phase gates) -- see cyclosynth-bug-report.md.
 
 The qiskit and cyclosynth backends report percentage progress through the
 main resynthesis pass (silenced by -q, like all other logging) --
@@ -395,6 +399,18 @@ GRIDSYNTH_DPS = 128
 # against it is only meaningful down to about this much floating-point noise.
 EXACTNESS_FLOOR = 1e-12
 
+# cyclosynth's Clifford+T search can become pathologically slow, or fail to
+# terminate, for targets whose distance to the nearest Clifford element is
+# much smaller than epsilon but still requires genuine (non-exact) synthesis
+# -- see cyclosynth-bug-report.md. Measured at EPSILON_DEFAULT (1e-8): solves
+# (slowly, ~8s) at ~5e-6 distance, doesn't return in 15s+ at ~2e-6 and below
+# -- a continuum, not a sharp cutoff. This margin (1e4 * epsilon = 1e-4 at
+# EPSILON_DEFAULT) sits well clear of the observed danger zone with
+# comfortable safety margin. Not exposed via --cli: it's a safety heuristic,
+# not something a user should need to tune, and setting it too small could
+# reintroduce the hang.
+CYCLOSYNTH_NEAR_CLIFFORD_MARGIN = 1e4
+
 # Non-gate operations that are allowed to survive into the output.
 PASSTHROUGH_OPS = frozenset({"measure", "barrier", "reset", "delay"})
 
@@ -498,6 +514,16 @@ def word_error(target: np.ndarray, word: Iterable[str]) -> tuple[float, float]:
     built = word_matrix(word)
     phase = global_phase_between(target, built)
     return spectral_error(target, built, phase), phase
+
+
+def nearest_clifford_distance(matrix: np.ndarray, clifford_words: dict) -> float:
+    """Spectral-norm distance from `matrix` to the closest of the 24
+    single-qubit Clifford elements in `clifford_words` -- cheap (24 small
+    matrix ops). Used to detect "near-Clifford but not close enough to treat
+    as exact" targets, which cyclosynth's search can hang or fail on (see
+    cyclosynth-bug-report.md and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
+    """
+    return min(word_error(matrix, word)[0] for word in clifford_words.values())
 
 
 def rz_pi_4_word(k: int) -> tuple[str, ...]:
@@ -612,17 +638,30 @@ class CliffordTSynthesizer:
 
     def synthesize(self, matrix: np.ndarray, _run=None) -> QuantumCircuit:
         """Return a 1-qubit Clifford+T circuit implementing `matrix`."""
+        circuit, kind, error = self._synthesize_uncounted(matrix)
+        if kind == "clifford":
+            self.n_clifford += 1
+        elif kind == "approx":
+            self.n_approx += 1
+        else:
+            self.n_exact += 1
+        self._record(error)
+        return circuit
+
+    def _synthesize_uncounted(self, matrix: np.ndarray) -> tuple[QuantumCircuit, str, float]:
+        """(circuit, kind, error) for `matrix`, without touching counters or
+        error_bound -- kind is "clifford"/"pi_4" (exact path) or "approx"
+        (gridsynth path). Split out of synthesize() so
+        CyclosynthSynthesizer's gridsynth fallback (see its docstring) can
+        reuse this computation while accounting the result into its OWN
+        counters, rather than this instance's.
+        """
         exact = self._exact(matrix)
         if exact is not None:
-            circuit, kind, error = exact
-            if kind == "clifford":
-                self.n_clifford += 1
-            else:
-                self.n_exact += 1
-            self._record(error)
-            return circuit
-        self.n_approx += 1
-        return self._gridsynth(matrix)
+            return exact
+        word = self._euler_word(self._decomposer(matrix), self._gridsynth_word)
+        error, phase = word_error(matrix, word)
+        return circuit_from_word(word, matrix, phase), "approx", error
 
     def shorten_run(self, matrix: np.ndarray, run: list[Gate]) -> Optional[QuantumCircuit]:
         """Shorten an already-compiled run of Clifford+T gates.
@@ -748,13 +787,6 @@ class CliffordTSynthesizer:
     def _pi_4_word(self, angle: float) -> tuple[str, ...]:
         return rz_pi_4_word(round(angle / PI_4))
 
-    def _gridsynth(self, matrix: np.ndarray) -> QuantumCircuit:
-        """Approximate via ZXZ Euler angles, each Rz handed to gridsynth."""
-        word = self._euler_word(self._decomposer(matrix), self._gridsynth_word)
-        error, phase = word_error(matrix, word)
-        self._record(error)
-        return circuit_from_word(word, matrix, phase)
-
     def _gridsynth_word(self, angle: float) -> tuple[str, ...]:
         if self._is_pi_4_multiple(angle):
             return self._pi_4_word(angle)
@@ -871,6 +903,13 @@ class CyclosynthSynthesizer:
         self._clifford_words = build_clifford_words()
         self._synth = cyclosynth.Synthesizer(epsilon=epsilon, sqrt_t=False)
         self._cache: dict[tuple, tuple[str, ...]] = {}
+        # Fallback synthesizer for blocks too close to a Clifford element for
+        # cyclosynth's search to handle safely (see _resynthesize and
+        # CYCLOSYNTH_NEAR_CLIFFORD_MARGIN). Its own counters are never read --
+        # _synthesize_uncounted doesn't populate them -- only its (circuit,
+        # kind, error) return and its gridsynth cache (for repeat near-Clifford
+        # angles) are used.
+        self._fallback = CliffordTSynthesizer(epsilon=epsilon, tol=self.tol)
         self.reset_counters()
 
     def reset_counters(self) -> None:
@@ -878,6 +917,7 @@ class CyclosynthSynthesizer:
         self.n_exact = 0
         self.n_approx = 0
         self.n_merged = 0
+        self.n_gridsynth_fallback = 0
         self.max_error = 0.0
         self.error_bound = 0.0
 
@@ -891,6 +931,8 @@ class CyclosynthSynthesizer:
             self.n_clifford += 1
         elif kind == "exact":
             self.n_exact += 1
+        elif kind == "gridsynth_fallback":
+            self.n_gridsynth_fallback += 1
         else:
             self.n_approx += 1
         self._record(error)
@@ -914,7 +956,17 @@ class CyclosynthSynthesizer:
         (a diamond-distance bound) for accounting -- always re-measures the
         built word's spectral-norm error via word_error, exactly like
         CliffordTSynthesizer's own paths, so error_bound/max_error stay one
-        homogeneous, backend-comparable metric (see module docstring)."""
+        homogeneous, backend-comparable metric (see module docstring).
+
+        Blocks whose target is very close to (but not within tol of) a
+        Clifford element are routed to CliffordTSynthesizer's gridsynth path
+        (self._fallback) instead of cyclosynth: cyclosynth's lattice search
+        can become pathologically slow or fail to terminate for such targets
+        (see cyclosynth-bug-report.md and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
+        The catch-None branch below is a defense-in-depth backstop for the
+        same failure mode slipping past that check -- it protects against a
+        clean empty result, not an actual hang.
+        """
         key = canonical_key(matrix)
         word = self._clifford_words.get(key)
         if word is not None:
@@ -922,18 +974,17 @@ class CyclosynthSynthesizer:
             if error <= self.tol:
                 return circuit_from_word(word, matrix, phase), "clifford", error
 
+        if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
+            circuit, _, error = self._fallback._synthesize_uncounted(matrix)
+            return circuit, "gridsynth_fallback", error
+
         word = self._cache.get(key)
         if word is None:
             theta, phi, lam = self._zyz_angles(matrix)
             result = self._synth.synthesize_u3(theta, phi, lam)
             if result is None or result.gates is None:
-                raise RuntimeError(
-                    f"cyclosynth found no Clifford+T circuit within epsilon="
-                    f"{self.epsilon:g} for ZYZ angles (theta={theta:.6g}, "
-                    f"phi={phi:.6g}, lam={lam:.6g}). Unexpected at epsilon >= "
-                    "1e-10 (cyclosynth's own validated range); try a larger "
-                    "--epsilon."
-                )
+                circuit, _, error = self._fallback._synthesize_uncounted(matrix)
+                return circuit, "gridsynth_fallback", error
             # cyclosynth's gate string is in matrix order (leftmost = leftmost
             # matrix factor, confirmed empirically against word_matrix/
             # spectral_error), so it is applied in reverse -- same convention
@@ -957,8 +1008,11 @@ class CyclosynthSynthesizer:
 
         Deliberately does not call _resynthesize itself: on a genuine miss
         that would trigger the real, expensive synthesize_u3 call. Instead
-        it inlines just the Clifford-check gating from the start of
-        _resynthesize, which must stay in sync with that method.
+        it inlines just the Clifford-check and near-Clifford-fallback gating
+        from the start of _resynthesize, which must stay in sync with that
+        method -- blocks routed to the gridsynth fallback never touch
+        self._cache, so they must not be counted as future cyclosynth misses
+        either.
 
         `self._cache` may already hold entries from an earlier circuit
         (compile_dispatch's callers can reuse one synth across a batch of
@@ -976,6 +1030,8 @@ class CyclosynthSynthesizer:
                 error, _ = word_error(matrix, word)
                 if error <= self.tol:
                     return None
+            if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
+                return None
             if key not in already_cached:
                 new_keys.add(key)
             return None
@@ -1196,10 +1252,14 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
         if done:
             finished = True
         if done or now - last_report >= PROGRESS_INTERVAL_SECONDS:
-            # Trailing spaces clear any leftover characters from a longer
-            # previous update; the string only grows as count/pct gain
-            # digits, so this is defensive padding, not required alignment.
-            text = f"\r  {label}: {count}/{total} ({count * 100 // total}%)   "
+            # Percentage only, not "N/M": M's meaning (distinct new cache
+            # misses -- see estimate_synthesis_calls) differs enough between
+            # backends that showing the raw counts invited comparing them
+            # directly across backends, which isn't meaningful. Trailing
+            # spaces clear any leftover characters from a longer previous
+            # update; the string only grows as the percentage gains digits,
+            # so this is defensive padding, not required alignment.
+            text = f"\r  {label}: {count * 100 // total}%   "
             log(text, end="\n" if done else "")
             last_report = now
         return result
@@ -1586,9 +1646,15 @@ def compile_dispatch(
         compiled = compile_via_resynthesis(
             unrolled, synth, optimize=not args.no_optimize, log=log
         )
+        # CliffordTSynthesizer has no gridsynth-fallback concept of its own
+        # (gridsynth *is* its synthesis) -- getattr rather than a shared
+        # counter so this stays 0/absent for that backend without needing a
+        # dead always-zero attribute on it.
+        n_fallback = getattr(synth, "n_gridsynth_fallback", 0)
+        fallback_note = f", {n_fallback} gridsynth-fallback" if n_fallback else ""
         extra = [
             f"1q runs: {synth.n_clifford} Clifford, {synth.n_exact} exact,"
-            f" {synth.n_approx} approximated, {synth.n_merged} shortened"
+            f" {synth.n_approx} approximated, {synth.n_merged} shortened{fallback_note}"
             f" (worst rewrite {synth.max_error:.2e}, total {synth.error_bound:.2e})"
         ]
         return compiled, extra, synth.error_bound, synth.n_approx + synth.n_merged
@@ -2053,6 +2119,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "runs_exact": synth.n_exact if synth else None,
             "runs_approximated": synth.n_approx if synth else None,
             "runs_shortened": synth.n_merged if synth else None,
+            "runs_gridsynth_fallback": getattr(synth, "n_gridsynth_fallback", None) if synth else None,
             "tol": synth.tol if synth else None,
             "max_rewrite_error": synth.max_error if synth else None,
             "error_bound": error_bound,
