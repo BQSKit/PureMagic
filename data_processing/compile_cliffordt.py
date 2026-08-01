@@ -91,15 +91,23 @@ Pipeline
    path: cyclosynth's search can hang or fail to terminate on such targets
    (e.g. a QFT's deep phase gates) -- see cyclosynth-bug-report.md.
 
-The qiskit and cyclosynth backends report percentage progress through the
-main resynthesis pass (silenced by -q, like all other logging) --
-compile_via_resynthesis's shared pipeline makes this cheap to add once for
-both. Progress is weighted by actual gridsynth/cyclosynth calls (cache
-misses), not by block count: both synthesizers cache by angle/matrix key, so
-on circuits with a lot of repeated rotations (QFT-family circuits, say) the
-vast majority of blocks are instant cache hits, and counting them equally
-would make progress look stuck near 0% until the last moment, then jump to
-100% -- see estimate_synthesis_calls/_with_progress. bqskit reports none: it exposes no public per-block progress callback,
+The qiskit and cyclosynth backends report percentage progress through both
+the main resynthesis pass and each cleanup round after it (silenced by -q,
+like all other logging) -- compile_via_resynthesis's shared pipeline makes
+this cheap to add once for both. The main pass is weighted by actual
+gridsynth/cyclosynth calls (cache misses), not by block count: both
+synthesizers cache by angle/matrix key, so on circuits with a lot of
+repeated rotations (QFT-family circuits, say) the vast majority of blocks
+are instant cache hits, and counting them equally would make progress look
+stuck near 0% until the last moment, then jump to 100% -- see
+estimate_synthesis_calls/_with_progress. Cleanup rounds instead weight by
+plain block count (count_resynthesis_blocks/_with_block_progress):
+shorten_run never calls gridsynth/cyclosynth, so there is no cache-hit/
+cache-miss split to correct for there, but on a large enough circuit those
+rounds are not the "expected to be fast" afterthought they once looked like
+-- measured on a 36-qubit, ~1.2M-gate QV circuit, each of 5 cleanup rounds
+took about as long as the main resynthesis pass itself, entirely silent
+before this was added. bqskit reports none: it exposes no public per-block progress callback,
 and the only usable signal (DEBUG-level runtime log lines, one per block)
 would need splitting decompose_rz_tracked's currently-atomic compile() call
 in two -- with the two halves' error bounds recombined by hand to avoid
@@ -1357,6 +1365,73 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
     return wrapped
 
 
+def count_resynthesis_blocks(circuit: QuantumCircuit) -> int:
+    """How many times rewrite_single_qubit_runs will call its callback on
+    `circuit`, without doing anything else -- only 2x2 matrix merges, no
+    gridsynth/cyclosynth/shorten_run calls, so this is cheap even for large
+    circuits. Used as the denominator for _with_block_progress, unlike
+    estimate_synthesis_calls (which counts cache misses specifically for the
+    main resynthesis pass) -- shorten_run has no such cache-hit/cache-miss
+    split to weight by (see _with_block_progress), so a plain block count is
+    the right denominator for it.
+    """
+    count = 0
+
+    def counter(matrix, run):
+        nonlocal count
+        count += 1
+        return None
+
+    rewrite_single_qubit_runs(circuit, counter)
+    return count
+
+
+def _with_block_progress(
+    callback, total: int, log, label: str, round_num: int, max_rounds: int
+):
+    """Wrap a rewrite_single_qubit_runs callback to report percentage
+    progress via log(), the same single-line \\r-overwrite/time-throttle
+    scheme as _with_progress -- but counting every call as one unit of work,
+    unlike _with_progress's cache-growth weighting.
+
+    Built for shorten_run (compile_via_resynthesis's cleanup rounds): unlike
+    synthesize(), shorten_run never calls gridsynth/cyclosynth -- every call
+    does similarly cheap "exact" work (a Clifford-table lookup plus a block
+    collapse over the run's own gates), roughly proportional to the run's
+    length, not split into rare-expensive-search vs. common-instant-cache-hit
+    the way synthesize() is. So plain per-call counting doesn't have the
+    "races through cache hits" distortion _with_progress was built to avoid
+    -- there's no cache to watch here in the first place.
+
+    `round_num`/`max_rounds` blend this round's own 0-100% into a single
+    running "cleanup" percentage spanning all cleanup rounds, rather than
+    resetting to 0% (and printing a new line) at the start of each round --
+    this round contributes one `1/max_rounds` slice of the overall range,
+    offset by the rounds already completed. Since a round can converge (and
+    the cleanup loop break) before max_rounds is reached, this can plateau
+    below 100% -- compile_via_resynthesis prints the final 100% itself, the
+    same way and for the same reason _with_progress does for the main pass.
+    """
+    if total == 0:
+        return callback
+    count = 0
+    last_report = 0.0
+
+    def wrapped(matrix, run):
+        nonlocal count, last_report
+        result = callback(matrix, run)
+        count = min(count + 1, total)
+        now = time.monotonic()
+        if now - last_report >= PROGRESS_INTERVAL_SECONDS:
+            round_pct = count * 100 // total
+            overall_pct = ((round_num - 1) * 100 + round_pct) // max_rounds
+            log(f"\r  {label}: {overall_pct}%   ", end="")
+            last_report = now
+        return result
+
+    return wrapped
+
+
 def compile_via_resynthesis(
     unrolled: QuantumCircuit,
     synth: ResynthesisSynthesizer,
@@ -1370,9 +1445,14 @@ def compile_via_resynthesis(
     qubit runs via the same rewrite_single_qubit_runs/cancel_inverses/
     shorten_run cleanup loop, differing only in what `synth` does with a
     matrix (see CliffordTSynthesizer vs CyclosynthSynthesizer). `log` reports
-    percentage progress through the main resynthesis pass only, not the
-    shorten_run cleanup rounds below (those mostly hit the exact/cache paths
-    and are expected to be fast).
+    percentage progress through both the main resynthesis pass and each
+    cleanup round below: shorten_run's own per-call cost is cheap (no
+    gridsynth/cyclosynth search, just exact rewrites -- see
+    _with_block_progress), but on a large enough circuit the sheer number of
+    calls across up to max_rounds full passes dominates total compile time
+    just as much as the main pass does (measured on a 36-qubit, ~1.2M-gate
+    QV circuit: ~28s resynthesizing, then ~16s per cleanup round for 5
+    rounds -- silent before this was added).
     """
     total = synth.estimate_synthesis_calls(unrolled)
     label = "resynthesizing"
@@ -1393,11 +1473,27 @@ def compile_via_resynthesis(
     # cancellation and the block collapses are exact; the whole-run rewrite in
     # shorten_run can spend up to --tol per run, and does so at most once per
     # round, which synth.error_bound accounts for.
-    for _ in range(max_rounds):
+    cleanup_label = "cleanup"
+    any_cleanup_progress = False
+    for round_num in range(1, max_rounds + 1):
         cost = gate_cost(out)
-        out = cancel_inverses(rewrite_single_qubit_runs(out, synth.shorten_run))
+        round_total = count_resynthesis_blocks(out)
+        any_cleanup_progress = any_cleanup_progress or round_total > 0
+        shortened = rewrite_single_qubit_runs(
+            out,
+            _with_block_progress(
+                synth.shorten_run, round_total, log, cleanup_label, round_num, max_rounds
+            ),
+        )
+        out = cancel_inverses(shortened)
         if gate_cost(out) >= cost:
             break
+    if any_cleanup_progress:
+        # Printed unconditionally for the same reason the main pass's 100% is
+        # (see above): the loop can break before max_rounds is reached, in
+        # which case _with_block_progress's blended percentage plateaus
+        # below 100% on its own.
+        log(f"\r  {cleanup_label}: 100%   ")
     return out
 
 
