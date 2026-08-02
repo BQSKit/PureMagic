@@ -11,6 +11,17 @@
 		"--gpus",
 		"all"
 	],
+	// Keep Claude Code's state (session transcripts, /resume history, memory) in a
+	// named volume so it survives a container rebuild. Without this it lives in the
+	// container filesystem and every rebuild silently discards it. The volume is
+	// created root-owned on first use, so postCreateCommand chowns it -- see below.
+	"mounts": [
+		{
+			"source": "puremagic-claude-state",
+			"target": "/home/vscode/.claude",
+			"type": "volume"
+		}
+	],
 	"features": {
 		"ghcr.io/devcontainers/features/python:1": {
 			"installTools": true,
@@ -27,18 +38,20 @@
 	// Rust toolchain (cyclosynth/rust-toolchain.toml). PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 	// is needed because this image's Python is newer than pyo3 0.22's documented
 	// max (3.13 at last check); harmless to set unconditionally otherwise.
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
+	// The leading chown fixes the root-owned /home/vscode/.claude volume on the
+	// rebuild that first creates it; a no-op on every rebuild after that.
+	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
 	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
 	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
 	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs && git lfs install && git lfs pull && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
+	// Claude Code signs in through the claude.ai browser login, which stores OAuth
+	// tokens in ~/.claude/.credentials.json (persisted by the volume mount above).
+	// The ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL passthroughs that used to live
+	// here were for API-key or proxy/gateway auth and are deliberately gone: an
+	// AUTH_TOKEN set on the host takes precedence over the OAuth credentials and
+	// would silently switch auth paths. Pick models with /model rather than
+	// reinstating the ANTHROPIC_*_MODEL passthroughs.
 	"remoteEnv": {
-		"ANTHROPIC_AUTH_TOKEN": "${localEnv:ANTHROPIC_AUTH_TOKEN}",
-		"ANTHROPIC_BASE_URL": "${localEnv:ANTHROPIC_BASE_URL}",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL": "${localEnv:ANTHROPIC_DEFAULT_HAIKU_MODEL}",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL": "${localEnv:ANTHROPIC_DEFAULT_SONNET_MODEL}",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL": "${localEnv:ANTHROPIC_DEFAULT_OPUS_MODEL}",
-		"ANTHROPIC_MODEL": "${localEnv:ANTHROPIC_MODEL}",
-		"CLAUDE_CODE_SUBAGENT_MODEL": "${localEnv:CLAUDE_CODE_SUBAGENT_MODEL}",
 		"DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
 		"DISABLE_TELEMETRY": "1",
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"

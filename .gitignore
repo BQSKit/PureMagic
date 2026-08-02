@@ -1,6 +1,8 @@
 __pycache__
 .vscode
 .env
+# Pre-rebuild snapshot of ~/.claude -- contains OAuth credentials, never commit
+.claude-state-backup/
 results
 target
 notes
