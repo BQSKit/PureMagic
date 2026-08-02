@@ -1541,16 +1541,49 @@ def unroll_to_u_cx(circuit: QuantumCircuit, epsilon: float = EPSILON_DEFAULT) ->
     return unmerged_unrolled
 
 
-def _progress_line(log, label: str, pct: int, *, final: bool = False) -> None:
-    """Emit one progress update: overwrites a single line in place (a
-    trailing \\r) on a terminal, same as before. Redirected to a file, \\r has
-    no such meaning -- it's just a literal byte -- so every throttled update
-    would otherwise pile up on one line as ^M-separated junk; there, print a
-    normal, independent line per update instead (with no padding, since
-    there's no previous line's leftover characters to clear).
+def _no_log(*_a, **_k) -> None:
+    """The -q/--quiet log() implementation, named so _progress_line can
+    recognize it by identity and skip its own output (including the
+    /dev/tty path, which bypasses log() and so wouldn't otherwise see -q)."""
+
+
+def _progress_tty():
+    """Lazily open /dev/tty for direct terminal writes, cached for the life
+    of the process. Returns None if there is no controlling terminal at all
+    (headless: CI, a detached cron job, `nohup` with no pty).
     """
-    if sys.stdout.isatty():
-        log(f"\r  {label}: {pct}%   ", end="\n" if final else "")
+    if not hasattr(_progress_tty, "_handle"):
+        try:
+            _progress_tty._handle = open("/dev/tty", "w")
+        except OSError:
+            _progress_tty._handle = None
+    return _progress_tty._handle
+
+
+def _progress_line(log, label: str, pct: int, *, final: bool = False) -> None:
+    """Emit one progress update, overwriting a single line in place (a
+    trailing \\r) exactly as before.
+
+    Writes straight to /dev/tty rather than through log()/stdout, whenever a
+    controlling terminal exists -- checking sys.stdout.isatty() instead is
+    not enough: piped through `tee` (or any pipe), stdout is never a tty even
+    though a real terminal is watching on the other end, and tee duplicates
+    whatever reaches stdout byte-for-byte into its file, so a \\r-overwrite
+    written there shows up as ^M-separated junk in the file no matter what.
+    Writing to /dev/tty directly is invisible to tee/redirection entirely:
+    the terminal still gets the live single-line ticker, and anything
+    capturing stdout gets none of these bytes at all.
+
+    Falls back to one plain line per update via log() only when there's no
+    controlling terminal whatsoever (fully headless), so a persistent log
+    still shows some progress instead of nothing. `log` being the no-op
+    (quiet mode, see _no_log) suppresses this the same as everywhere else.
+    """
+    if log is _no_log:
+        return
+    tty = _progress_tty()
+    if tty is not None:
+        print(f"\r  {label}: {pct}%   ", end="\n" if final else "", file=tty, flush=True)
     else:
         log(f"  {label}: {pct}%")
 
@@ -2601,7 +2634,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"compile_cliffordt.py - Git branch: {branch} | Commit: {commit} | Run: {run_time}")
     # **k forwards e.g. end="" to print, which _with_progress uses to overwrite
     # a single progress line via \r rather than printing one line per update.
-    log = (lambda *a, **k: None) if args.quiet else lambda *a, **k: print(*a, flush=True, **k)
+    log = _no_log if args.quiet else lambda *a, **k: print(*a, flush=True, **k)
 
     synth: Optional[ResynthesisSynthesizer] = None
     if args.backend == "qiskit":
