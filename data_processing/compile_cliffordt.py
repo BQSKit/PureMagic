@@ -309,6 +309,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import math
 import os
@@ -1547,17 +1548,16 @@ def _no_log(*_a, **_k) -> None:
     /dev/tty path, which bypasses log() and so wouldn't otherwise see -q)."""
 
 
+@functools.cache
 def _progress_tty():
-    """Lazily open /dev/tty for direct terminal writes, cached for the life
-    of the process. Returns None if there is no controlling terminal at all
-    (headless: CI, a detached cron job, `nohup` with no pty).
+    """Lazily open /dev/tty for direct terminal writes, memoized for the
+    life of the process. Returns None if there is no controlling terminal at
+    all (headless: CI, a detached cron job, `nohup` with no pty).
     """
-    if not hasattr(_progress_tty, "_handle"):
-        try:
-            _progress_tty._handle = open("/dev/tty", "w")
-        except OSError:
-            _progress_tty._handle = None
-    return _progress_tty._handle
+    try:
+        return open("/dev/tty", "w")
+    except OSError:
+        return None
 
 
 def _progress_line(log, label: str, pct: int, *, final: bool = False) -> None:
