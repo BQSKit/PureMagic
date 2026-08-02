@@ -1541,10 +1541,24 @@ def unroll_to_u_cx(circuit: QuantumCircuit, epsilon: float = EPSILON_DEFAULT) ->
     return unmerged_unrolled
 
 
+def _progress_line(log, label: str, pct: int, *, final: bool = False) -> None:
+    """Emit one progress update: overwrites a single line in place (a
+    trailing \\r) on a terminal, same as before. Redirected to a file, \\r has
+    no such meaning -- it's just a literal byte -- so every throttled update
+    would otherwise pile up on one line as ^M-separated junk; there, print a
+    normal, independent line per update instead (with no padding, since
+    there's no previous line's leftover characters to clear).
+    """
+    if sys.stdout.isatty():
+        log(f"\r  {label}: {pct}%   ", end="\n" if final else "")
+    else:
+        log(f"  {label}: {pct}%")
+
+
 def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
-    """Wrap a resynthesize callback to report percentage progress via log(),
-    overwriting a single line in place (a trailing \\r, no newline) rather
-    than printing one line per update, throttled to at most one update per
+    """Wrap a resynthesize callback to report percentage progress via
+    _progress_line (overwriting a single line in place on a terminal, one
+    line per update otherwise), throttled to at most one update per
     PROGRESS_INTERVAL_SECONDS. Does not itself print a final 100% line --
     compile_via_resynthesis does that unconditionally once the real pass
     returns, rather than relying on this wrapper to recognize its own last
@@ -1599,7 +1613,7 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
             # spaces clear any leftover characters from a longer previous
             # update; the string only grows as the percentage gains digits,
             # so this is defensive padding, not required alignment.
-            log(f"\r  {label}: {count * 100 // total}%   ", end="")
+            _progress_line(log, label, count * 100 // total)
             last_report = now
         return result
 
@@ -1631,9 +1645,9 @@ def _with_block_progress(
     callback, total: int, log, label: str, round_num: int, max_rounds: int
 ):
     """Wrap a rewrite_single_qubit_runs callback to report percentage
-    progress via log(), the same single-line \\r-overwrite/time-throttle
-    scheme as _with_progress -- but counting every call as one unit of work,
-    unlike _with_progress's cache-growth weighting.
+    progress via _progress_line, the same time-throttle scheme as
+    _with_progress -- but counting every call as one unit of work, unlike
+    _with_progress's cache-growth weighting.
 
     Built for shorten_run (compile_via_resynthesis's cleanup rounds): unlike
     synthesize(), shorten_run never calls gridsynth/cyclosynth -- every call
@@ -1666,7 +1680,7 @@ def _with_block_progress(
         if now - last_report >= PROGRESS_INTERVAL_SECONDS:
             round_pct = count * 100 // total
             overall_pct = ((round_num - 1) * 100 + round_pct) // max_rounds
-            log(f"\r  {label}: {overall_pct}%   ", end="")
+            _progress_line(log, label, overall_pct)
             last_report = now
         return result
 
@@ -1706,7 +1720,7 @@ def compile_via_resynthesis(
         # last call: `total` is only an estimate of cache growth (see its
         # docstring), so the tracked count reaching it exactly isn't
         # guaranteed -- this is what actually completes the line.
-        log(f"\r  {label}: 100%   ")
+        _progress_line(log, label, 100, final=True)
     if not optimize:
         return out
     # Cancelling inverses brings new gates together, which lets the next round of
@@ -1734,7 +1748,7 @@ def compile_via_resynthesis(
         # (see above): the loop can break before max_rounds is reached, in
         # which case _with_block_progress's blended percentage plateaus
         # below 100% on its own.
-        log(f"\r  {cleanup_label}: 100%   ")
+        _progress_line(log, cleanup_label, 100, final=True)
     return out
 
 
