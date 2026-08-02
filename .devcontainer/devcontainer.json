@@ -40,7 +40,10 @@
 	// max (3.13 at last check); harmless to set unconditionally otherwise.
 	// The leading chown fixes the root-owned /home/vscode/.claude volume on the
 	// rebuild that first creates it; a no-op on every rebuild after that.
-	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
+	// core.hooksPath arms the tracked .githooks/ (see .githooks/commit-msg and
+	// CLAUDE.md); it lives in .git/config, which a rebuild would otherwise carry
+	// over silently but a fresh clone would not have at all.
+	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && git config core.hooksPath .githooks && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
 	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
 	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
 	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs && git lfs install && git lfs pull && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
