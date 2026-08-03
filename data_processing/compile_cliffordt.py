@@ -132,6 +132,28 @@ Pipeline
    of it) -- the qiskit and cyclosynth backends are the only options for
    those.
 
+   --bqskit-cyclosynth: another optional, off-by-default stage (needs the
+   optional cyclosynth extension module -- see requirements.txt), replacing
+   the final ZXZXZDecomposition+GridSynthPass single-qubit-block synthesis
+   stage with CyclosynthBlockSynthesisPass: cyclosynth's joint ZYZ lattice
+   search per block instead of gridsynth's per-Rz Ross-Selinger synthesis --
+   see the "cyclosynth" paragraph below and CyclosynthBlockSynthesisPass's
+   docstring for the mechanism. Runs after --bqskit-trbo (if also passed):
+   the two attack T-count at different, non-overlapping pipeline stages --
+   TRbO reduces how many Rz rotations need synthesis at all, by rounding some
+   to Clifford/T-exact via joint gauge freedom, while cyclosynth only changes
+   how whatever residual rotations are left get synthesised -- so combining
+   them stacks both wins rather than picking one or the other. Blocks
+   cyclosynth's search can hang or fail on (near-Clifford targets, or a
+   result-less call -- see the near-Clifford routing note in the
+   "cyclosynth" paragraph below, which applies identically here) are left
+   untouched by CyclosynthBlockSynthesisPass and caught by a trailing
+   IsolateRZGatePass+GridSynthPass mop-up stage instead -- run at the top
+   level of the workflow, not nested inside CyclosynthBlockSynthesisPass
+   itself, since that nesting reproducibly triggered a race in bqskit's own
+   runtime (RuntimeTask.cancel() on a task with no coroutine yet -- see
+   CyclosynthBlockSynthesisPass's docstring).
+
    cyclosynth: shares the qiskit backend's rewrite_single_qubit_runs pipeline
    entirely (merge each maximal single-qubit run into one 2x2 matrix, clean up
    the same way afterward), differing only in how a non-Clifford block gets
@@ -357,6 +379,7 @@ from bqskit import Circuit
 from bqskit.compiler import Compiler
 from bqskit.compiler.basepass import BasePass
 from bqskit.compiler.compile import compile as bqskit_compile
+from bqskit.compiler.passdata import PassData
 from bqskit.compiler.registry import register_workflow
 # bqskit-ft is a separate distribution installed alongside the editable-cloned
 # bqskit/ (see its __init__.py for how bqskit.ft resolves at runtime via
@@ -372,6 +395,17 @@ from bqskit.ft.ftpasses.gridsynth import GridSynthPass  # pyright: ignore[report
 from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass  # pyright: ignore[reportMissingImports]
 from bqskit.ft.rules.isolate_rz import IsolateRZGatePass  # pyright: ignore[reportMissingImports]
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
+# Aliased: qiskit's gate classes of the same bare names are already imported
+# above (HGate, SGate, SdgGate, TGate, TdgGate, XGate, YGate, ZGate) -- an
+# unaliased import here would silently shadow them for the rest of the file.
+from bqskit.ir.gates import HGate as BqskitHGate
+from bqskit.ir.gates import SGate as BqskitSGate
+from bqskit.ir.gates import SdgGate as BqskitSdgGate
+from bqskit.ir.gates import TGate as BqskitTGate
+from bqskit.ir.gates import TdgGate as BqskitTdgGate
+from bqskit.ir.gates import XGate as BqskitXGate
+from bqskit.ir.gates import YGate as BqskitYGate
+from bqskit.ir.gates import ZGate as BqskitZGate
 from bqskit.passes.control.foreach import ForEachBlockPass
 from bqskit.passes.partitioning.quick import QuickPartitioner
 from bqskit.passes.partitioning.single import GroupSingleQuditGatePass
@@ -485,6 +519,20 @@ GRIDSYNTH_NAMES = {"H": "h", "S": "s", "T": "t", "X": "x"}
 # cyclosynth's alphabet is {H,S,T,X,Y,Z}; lowercase = dagger (only S/T have one).
 CYCLOSYNTH_GATE_NAMES = {
     "H": "h", "S": "s", "s": "sdg", "T": "t", "t": "tdg", "X": "x", "Y": "y", "Z": "z",
+}
+
+# bqskit-gate-object equivalent of CYCLOSYNTH_GATE_NAMES's qiskit gate names,
+# for building a bqskit Circuit directly from a cyclosynth word (see
+# CyclosynthBlockSynthesisPass).
+BQSKIT_GATE_FOR_NAME = {
+    "h": BqskitHGate(),
+    "s": BqskitSGate(),
+    "sdg": BqskitSdgGate(),
+    "t": BqskitTGate(),
+    "tdg": BqskitTdgGate(),
+    "x": BqskitXGate(),
+    "y": BqskitYGate(),
+    "z": BqskitZGate(),
 }
 
 # Working precision pygridsynth is driven at, matching bqskit's GridSynthPass.
@@ -627,6 +675,39 @@ def nearest_clifford_distance(matrix: np.ndarray, clifford_words: dict) -> float
     cyclosynth-bug-report.md and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
     """
     return min(word_error(matrix, word)[0] for word in clifford_words.values())
+
+
+def zyz_angles(decomposer: OneQubitEulerDecomposer, matrix: np.ndarray) -> tuple[float, float, float]:
+    """(theta, phi, lam) matching cyclosynth's synthesize_u3 = qiskit's
+    U3 = Rz(phi)*Ry(theta)*Rz(lam). OneQubitEulerDecomposer drops trivial
+    instructions (e.g. a lone T decomposes to just one rz), so angles are
+    assigned by name/position, not a fixed index. Shared by CyclosynthSynthesizer
+    (the qiskit-circuit resynthesis path) and CyclosynthBlockSynthesisPass (the
+    bqskit-native one)."""
+    theta = phi = lam = 0.0
+    seen_ry = False
+    for inst in decomposer(matrix).data:
+        name, angle = inst.operation.name, inst.operation.params[0]
+        if name == "ry":
+            theta, seen_ry = angle, True
+        elif name == "rz":
+            if seen_ry:
+                phi = angle
+            else:
+                lam = angle
+        else:  # pragma: no cover - ZYZ only emits ry/rz
+            raise RuntimeError(f"unexpected gate {name} in ZYZ decomposition")
+    return theta, phi, lam
+
+
+def gridsynth_precision(synthesis_epsilon: float) -> int:
+    """Digits of precision for GridSynthPass at this epsilon -- ceil (not
+    bqskit's own int(...)+2, which pads to 100x tighter than requested) rounds
+    up only enough to still meet synthesis_epsilon. Shared by
+    build_bqskit_workflow, decompose_rz_tracked, and
+    CyclosynthBlockSynthesisPass's fallback workflow, so all three stay in
+    sync regardless of which final-synthesis path a run takes."""
+    return math.ceil(math.log10(1 / synthesis_epsilon))
 
 
 def rz_pi_4_word(k: int) -> tuple[str, ...]:
@@ -1184,7 +1265,7 @@ class CyclosynthSynthesizer:
 
         word = self._cache.get(key)
         if word is None:
-            theta, phi, lam = self._zyz_angles(matrix)
+            theta, phi, lam = zyz_angles(self._decomposer, matrix)
             result = self._synth.synthesize_u3(theta, phi, lam)
             if result is None or result.gates is None:
                 circuit, _, error = self._fallback._synthesize_uncounted(matrix)
@@ -1249,31 +1330,125 @@ class CyclosynthSynthesizer:
         _with_progress to weight progress by real work, not block count."""
         return self._cache
 
-    def _zyz_angles(self, matrix: np.ndarray) -> tuple[float, float, float]:
-        """(theta, phi, lam) matching cyclosynth's synthesize_u3 = qiskit's
-        U3 = Rz(phi)*Ry(theta)*Rz(lam). OneQubitEulerDecomposer drops trivial
-        instructions (e.g. a lone T decomposes to just one rz), so angles are
-        assigned by name/position, not a fixed index."""
-        theta = phi = lam = 0.0
-        seen_ry = False
-        for inst in self._decomposer(matrix).data:
-            name, angle = inst.operation.name, inst.operation.params[0]
-            if name == "ry":
-                theta, seen_ry = angle, True
-            elif name == "rz":
-                if seen_ry:
-                    phi = angle
-                else:
-                    lam = angle
-            else:  # pragma: no cover - ZYZ only emits ry/rz
-                raise RuntimeError(f"unexpected gate {name} in ZYZ decomposition")
-        return theta, phi, lam
-
 
 # The synthesizer interface compile_via_resynthesis's pipeline expects
 # (epsilon, tol, the n_*/max_error/error_bound counters, reset_counters(),
 # synthesize(), shorten_run()) -- shared by the qiskit and cyclosynth backends.
 ResynthesisSynthesizer = Union[CliffordTSynthesizer, CyclosynthSynthesizer]
+
+
+class CyclosynthBlockSynthesisPass(BasePass):
+    """Re-synthesise a single-qubit block via cyclosynth's joint ZYZ lattice
+    search -- the bqskit-native counterpart to CyclosynthSynthesizer's
+    _resynthesize, built from bqskit primitives (Circuit.get_unitary/become)
+    instead of qiskit ones, so it can be dropped into a ForEachBlockPass right
+    where ZXZXZDecomposition sits in build_bqskit_workflow. Two-tier logic:
+    exact Clifford-table hit, then cyclosynth's joint synthesis for everything
+    else.
+
+    Blocks this pass declines to handle -- near-Clifford targets cyclosynth's
+    search can hang on (see cyclosynth-bug-report.md and
+    CYCLOSYNTH_NEAR_CLIFFORD_MARGIN), or cases where cyclosynth returns no
+    result -- are left completely untouched (no circuit.become() call) rather
+    than resynthesised inline via a nested GridSynthPass fallback. An earlier
+    version ran that fallback as its own Workflow/ForEachBlockPass from inside
+    this pass's run() -- i.e. a second, nested level of bqskit's runtime task
+    dispatch, on top of the ForEachBlockPass already dispatching this pass
+    itself -- which reproducibly triggered a pre-existing race in bqskit's
+    own runtime (RuntimeTask.cancel() raising "Task was cancelled with None
+    coroutine.", from worker.py's recv_incoming thread calling _handle_cancel
+    concurrently with _add_task's non-atomic "register task, then start it"
+    sequence on the main worker thread), seen on dnn_n16.qasm's many
+    real-cyclosynth-synthesis blocks. Untouched blocks instead fall through to
+    build_final_synthesis_passes' own mop-up stage (IsolateRZGatePass +
+    GridSynthPass), which runs at the same top level as every other pass in
+    this file's workflows -- never nested inside another dispatched task, so
+    it can't hit this race.
+
+    Global phase is never tracked here, matching ZXZXZDecomposition's own
+    unconditional phase drop -- bqskit's error-bound accounting
+    (UnitaryMatrix.get_distance_from) and this file's own fidelity checks are
+    all phase-invariant, so there is nothing to reconcile.
+    """
+
+    def __init__(self, synthesis_epsilon: float = EPSILON_DEFAULT) -> None:
+        if cyclosynth is None:
+            raise RuntimeError(
+                "--bqskit-cyclosynth needs the cyclosynth extension module, "
+                "which is not installed. See cyclosynth/README.md."
+            )
+        self.epsilon = synthesis_epsilon
+        self.tol = max(synthesis_epsilon, EXACTNESS_FLOOR)
+        self._decomposer = OneQubitEulerDecomposer(basis="ZYZ")
+        self._clifford_words = build_clifford_words()
+        self._cache: dict[tuple, tuple[str, ...]] = {}
+        # Built lazily (see _synthesizer/__getstate__ below), not here: bqskit's
+        # ForEachBlockPass ships each sub-pass instance to a worker process via
+        # pickle, and cyclosynth.Synthesizer is a PyO3/Rust object that cannot
+        # be pickled ("cannot pickle 'builtins.Synthesizer' object").
+        self._synth = None
+
+    def __getstate__(self) -> dict:
+        # Drop the unpicklable cyclosynth.Synthesizer before this pass is
+        # shipped to a bqskit worker process; _synthesizer() rebuilds it
+        # lazily, once per process, on first actual use there.
+        state = self.__dict__.copy()
+        state["_synth"] = None
+        return state
+
+    def _synthesizer(self):
+        if self._synth is None:
+            assert cyclosynth is not None  # guaranteed by __init__'s guard
+            self._synth = cyclosynth.Synthesizer(epsilon=self.epsilon, sqrt_t=False)
+        return self._synth
+
+    def _word_circuit(self, word: tuple[str, ...]) -> Circuit:
+        new_circuit = Circuit(1)
+        for name in word:
+            new_circuit.append_gate(BQSKIT_GATE_FOR_NAME[name], [0])
+        return new_circuit
+
+    async def run(self, circuit: Circuit, data: PassData) -> None:
+        if circuit.num_qudits != 1 or circuit.radixes[0] != 2:
+            raise ValueError(
+                "CyclosynthBlockSynthesisPass only works on single-qubit "
+                f"blocks. Got {circuit.num_qudits} qudits, radixes {circuit.radixes}."
+            )
+
+        matrix = np.asarray(circuit.get_unitary())
+        key = canonical_key(matrix)
+
+        # Tier 1: exact Clifford-table hit.
+        word = self._clifford_words.get(key)
+        if word is not None:
+            error, _ = word_error(matrix, word)
+            if error <= self.tol:
+                circuit.become(self._word_circuit(word))
+                return
+
+        # Tier 2: near-Clifford-but-not-exact -- route away from cyclosynth,
+        # whose search can hang on these targets. Leave the block untouched;
+        # build_final_synthesis_passes' top-level mop-up stage (IsolateRZGatePass
+        # + GridSynthPass) catches it afterward -- see this class's docstring
+        # for why that mop-up isn't done inline, here, via a nested Workflow.
+        if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
+            return
+
+        # Tier 3: cyclosynth's joint ZYZ synthesis.
+        word = self._cache.get(key)
+        if word is None:
+            theta, phi, lam = zyz_angles(self._decomposer, matrix)
+            result = self._synthesizer().synthesize_u3(theta, phi, lam)
+            if result is None or result.gates is None:
+                # Leave untouched, same as the near-Clifford case above.
+                return
+            # Same matrix-order-vs-circuit-order reversal as
+            # CyclosynthSynthesizer._resynthesize (confirmed there against
+            # word_matrix/spectral_error).
+            word = tuple(CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates))
+            self._cache[key] = word
+
+        circuit.become(self._word_circuit(word))
 
 
 def load_circuit(path: Path) -> QuantumCircuit:
@@ -1866,11 +2041,70 @@ def non_basis_ops(circuit: QuantumCircuit) -> dict[str, int]:
     }
 
 
+def build_final_synthesis_passes(
+    synthesis_epsilon: float,
+    cyclosynth_flag: bool,
+    calculate_error_bound: bool = False,
+) -> list[BasePass]:
+    """The final single-qubit-block -> Clifford+T stage, shared by
+    build_bqskit_workflow (inline, calculate_error_bound=False) and
+    decompose_rz_tracked (tracked, calculate_error_bound=True) so both stay in
+    sync regardless of which final-synthesis backend --bqskit-cyclosynth
+    selects.
+
+    cyclosynth_flag=False (default): bqskit's own IsolateRZGatePass +
+    GridSynthPass, one call per isolated Rz gate.
+
+    cyclosynth_flag=True: CyclosynthBlockSynthesisPass instead, one joint
+    ZYZ-lattice-search call per single-qubit block (see its docstring), plus a
+    trailing IsolateRZGatePass+GridSynthPass mop-up stage for whatever blocks
+    CyclosynthBlockSynthesisPass declined to handle (near-Clifford targets, or
+    cyclosynth returning no result) and therefore left untouched -- this is
+    the --bqskit-cyclosynth path. The mop-up runs at this function's own top
+    level, the same as every other pass built here, rather than being invoked
+    from inside CyclosynthBlockSynthesisPass itself: nesting a second
+    ForEachBlockPass inside a pass that is itself already dispatched by one
+    reproducibly triggered a race in bqskit's own runtime (see
+    CyclosynthBlockSynthesisPass's docstring).
+    """
+    precision = gridsynth_precision(synthesis_epsilon)
+    if cyclosynth_flag:
+        if cyclosynth is None:
+            raise RuntimeError(
+                "--bqskit-cyclosynth needs the cyclosynth extension module, "
+                "which is not installed. See cyclosynth/README.md."
+            )
+        return [
+            GroupSingleQuditGatePass(),
+            ForEachBlockPass(
+                [CyclosynthBlockSynthesisPass(synthesis_epsilon)],
+                collection_filter=single_qudit_filter,
+                calculate_error_bound=calculate_error_bound,
+            ),
+            UnfoldPass(),
+            IsolateRZGatePass(),
+            ForEachBlockPass(
+                [GridSynthPass(precision=precision)],
+                calculate_error_bound=calculate_error_bound,
+            ),
+            UnfoldPass(),
+        ]
+    return [
+        IsolateRZGatePass(),
+        ForEachBlockPass(
+            [GridSynthPass(precision=precision)],
+            calculate_error_bound=calculate_error_bound,
+        ),
+        UnfoldPass(),
+    ]
+
+
 def build_bqskit_workflow(
     synthesis_epsilon: float,
     decompose_rz: bool,
     seed: Optional[int],
     trbo_flag: bool = False,
+    cyclosynth_flag: bool = False,
 ) -> list[BasePass]:
     """Build this script's own Clifford+T circuit workflow for bqskit.
 
@@ -1901,6 +2135,15 @@ def build_bqskit_workflow(
     RoundToDiscreteZPass's rounding isn't (see decompose_rz_tracked's
     docstring): it doesn't run inside a calculate_error_bound=True
     ForEachBlockPass reachable from a request_data=True compile() call.
+
+    cyclosynth_flag (--bqskit-cyclosynth) swaps which final-synthesis stage
+    build_final_synthesis_passes builds below: cyclosynth's joint ZYZ search
+    per single-qubit block instead of bqskit's own per-Rz GridSynthPass. It
+    runs after trbo_flag's stage (if also set), so TRbO gets first crack at
+    rounding Rz angles via gauge freedom and cyclosynth only has to
+    re-synthesise whatever residual block unitary is left -- the two are
+    independent, non-overlapping T-count wins (see CyclosynthBlockSynthesisPass's
+    docstring) rather than alternatives.
     """
     passes: list[BasePass] = [SetRandomSeedPass(seed)] if seed is not None else []
     zxzxz = ForEachBlockPass([ZXZXZDecomposition()], collection_filter=single_qudit_filter)
@@ -1946,21 +2189,15 @@ def build_bqskit_workflow(
             UnfoldPass(),
         ]
     if decompose_rz:
-        # Matches decompose_rz_tracked's own precision formula below (ceil, not
-        # bqskit's int(...)+2 padding) so the two workflows' T counts stay
-        # comparable regardless of which one a run ends up using.
-        precision = math.ceil(math.log10(1 / synthesis_epsilon))
-        passes += [
-            IsolateRZGatePass(),
-            ForEachBlockPass([GridSynthPass(precision=precision)]),
-            UnfoldPass(),
-        ]
+        passes += build_final_synthesis_passes(synthesis_epsilon, cyclosynth_flag)
     passes += [LogErrorPass()]
     return passes
 
 
 def decompose_rz_tracked(
-    circuit: Circuit, synthesis_epsilon: float = EPSILON_DEFAULT
+    circuit: Circuit,
+    synthesis_epsilon: float = EPSILON_DEFAULT,
+    cyclosynth_flag: bool = False,
 ) -> tuple[Circuit, float]:
     """Take a {Clifford, RZ} circuit to Clifford+T, tracking an error bound.
 
@@ -2002,8 +2239,10 @@ def decompose_rz_tracked(
     qiskit's own subadditive sum approximates). This is analogous to, but
     narrower in scope than, the qiskit backend's ``error_bound``: it covers
     ZXZXZDecomposition (contributes ~0, since the gauge-collapse rewrite is
-    exact by construction) and GridSynthPass (the real source of error here),
-    but not RoundToDiscreteZPass's own rounding (which isn't run inside a
+    exact by construction) and the final synthesis stage build_final_synthesis_passes
+    builds (GridSynthPass, or CyclosynthBlockSynthesisPass when cyclosynth_flag
+    is set -- the real source of error here either way), but not
+    RoundToDiscreteZPass's own rounding (which isn't run inside a
     ForEachBlockPass, so isn't measured by this mechanism, and could in
     principle spend up to synthesis_epsilon per rounded rotation without being
     counted) or anything from bqskit's own earlier 2-qubit block instantiation
@@ -2013,12 +2252,6 @@ def decompose_rz_tracked(
     ForEachBlockPass calls with calculate_error_bound, so there is no
     equivalent bound to read there.
     """
-    # bqskit's own build_cliffordt_workflow computes this as
-    # int(log10(1/synthesis_epsilon)) + 2, padding to 100x tighter than
-    # synthesis_epsilon. ceil (not int, which truncates) here instead only
-    # rounds up enough to guarantee the digit-count still meets
-    # synthesis_epsilon for non-power-of-10 values, without that overshoot.
-    precision = math.ceil(math.log10(1 / synthesis_epsilon))
     passes = [
         GroupSingleQuditGatePass(),
         ForEachBlockPass(
@@ -2030,10 +2263,7 @@ def decompose_rz_tracked(
         UnfoldPass(),
         RoundToDiscreteZPass(synthesis_epsilon),
         UnfoldPass(),
-        IsolateRZGatePass(),
-        ForEachBlockPass([GridSynthPass(precision=precision)], calculate_error_bound=True),
-        UnfoldPass(),
-    ]
+    ] + build_final_synthesis_passes(synthesis_epsilon, cyclosynth_flag, calculate_error_bound=True)
     with Compiler() as compiler:
         out, data = compiler.compile(circuit, passes, request_data=True)
     return out, data.error
@@ -2063,6 +2293,8 @@ def compile_bqskit(
     seed: int,
     use_custom_rz_decomposition: bool,
     trbo_flag: bool = False,
+    cyclosynth_flag: bool = False,
+    cyclosynth_threads: Optional[int] = None,
 ) -> tuple[QuantumCircuit, Optional[float]]:
     """Compile an already-{u,cx}-unrolled circuit via bqskit, returning a qiskit
     QuantumCircuit (round-tripped through qiskit's own loader, so it can share
@@ -2074,6 +2306,10 @@ def compile_bqskit(
     ``None`` otherwise, since bqskit's own ``decompose_rz=True`` path (used
     when it is False) has no equivalent tracking. ``trbo_flag`` (--bqskit-trbo)
     is passed straight through to build_bqskit_workflow -- see its docstring.
+    ``cyclosynth_flag`` (--bqskit-cyclosynth) is likewise passed straight
+    through to build_bqskit_workflow/decompose_rz_tracked -- whichever of the
+    two ends up running the final synthesis stage, depending on
+    use_custom_rz_decomposition.
     """
     error_bound: Optional[float] = None
     with tempfile.TemporaryDirectory() as tmp:
@@ -2098,53 +2334,77 @@ def compile_bqskit(
                     decompose_rz=not use_custom_rz_decomposition,
                     seed=seed,
                     trbo_flag=trbo_flag,
+                    cyclosynth_flag=cyclosynth_flag,
                 ),
                 BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
                 "circuit",
             )
-        # TRbO's own MatrixDistanceCost.get_grad (trbo/tcount.py) computes
-        # (1 - frac**degree)**(1/degree - 1), a genuine 0**negative
-        # singularity whenever a candidate's fidelity to the target rounds to
-        # exactly 1.0 in floating point -- a symptom of the optimiser having
-        # already converged, not an error. That produces an inf (line 56:
-        # "divide by zero encountered in power"), which the very next line's
-        # p1 * p2 * p3 (line 59: "invalid value encountered in multiply") can
-        # turn into inf * 0 = nan whenever some parameter's own gradient
-        # contribution (p3) happens to vanish for that entry -- same root
-        # cause, one line downstream. numpy warns rather than raises for
-        # either by default, and both surface from inside bqskit's own worker
-        # processes, where a plain warnings.filterwarnings() call here has no
-        # effect (confirmed empirically: those workers do not inherit this
-        # process's warnings filters). Only PYTHONWARNINGS, read by each
-        # worker at its own interpreter startup, reliably reaches them.
-        old_pythonwarnings = os.environ.get("PYTHONWARNINGS")
-        if trbo_flag:
-            suppress_trbo_warning = ",".join(
-                [
-                    "ignore:divide by zero encountered in power:RuntimeWarning:trbo.tcount",
-                    "ignore:invalid value encountered in multiply:RuntimeWarning:trbo.tcount",
-                ]
-            )
-            os.environ["PYTHONWARNINGS"] = (
-                f"{old_pythonwarnings},{suppress_trbo_warning}"
-                if old_pythonwarnings
-                else suppress_trbo_warning
+
+        # Oversubscription guard for --bqskit-cyclosynth: bqskit's own
+        # worker-process parallelism x rayon's per-process all-cores default
+        # (each worker builds its own rayon pool on first use) multiply out
+        # badly. Default to single-threaded per pool unless the user opted
+        # into more via --cyclosynth-threads -- same env var
+        # CyclosynthSynthesizer's own --backend cyclosynth path reads, and the
+        # same "set before first use, in the parent process, so child workers
+        # inherit it at spawn time" mechanism it already depends on.
+        old_rayon_threads = os.environ.get("RAYON_NUM_THREADS")
+        if cyclosynth_flag:
+            os.environ["RAYON_NUM_THREADS"] = (
+                str(cyclosynth_threads) if cyclosynth_threads is not None else "1"
             )
         try:
-            bq_circuit = bqskit_compile(
-                bq_circuit,
-                model=machine,
-                optimization_level=BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
-                seed=seed,
-            )
-        finally:
+            # TRbO's own MatrixDistanceCost.get_grad (trbo/tcount.py) computes
+            # (1 - frac**degree)**(1/degree - 1), a genuine 0**negative
+            # singularity whenever a candidate's fidelity to the target rounds to
+            # exactly 1.0 in floating point -- a symptom of the optimiser having
+            # already converged, not an error. That produces an inf (line 56:
+            # "divide by zero encountered in power"), which the very next line's
+            # p1 * p2 * p3 (line 59: "invalid value encountered in multiply") can
+            # turn into inf * 0 = nan whenever some parameter's own gradient
+            # contribution (p3) happens to vanish for that entry -- same root
+            # cause, one line downstream. numpy warns rather than raises for
+            # either by default, and both surface from inside bqskit's own worker
+            # processes, where a plain warnings.filterwarnings() call here has no
+            # effect (confirmed empirically: those workers do not inherit this
+            # process's warnings filters). Only PYTHONWARNINGS, read by each
+            # worker at its own interpreter startup, reliably reaches them.
+            old_pythonwarnings = os.environ.get("PYTHONWARNINGS")
             if trbo_flag:
-                if old_pythonwarnings is None:
-                    os.environ.pop("PYTHONWARNINGS", None)
+                suppress_trbo_warning = ",".join(
+                    [
+                        "ignore:divide by zero encountered in power:RuntimeWarning:trbo.tcount",
+                        "ignore:invalid value encountered in multiply:RuntimeWarning:trbo.tcount",
+                    ]
+                )
+                os.environ["PYTHONWARNINGS"] = (
+                    f"{old_pythonwarnings},{suppress_trbo_warning}"
+                    if old_pythonwarnings
+                    else suppress_trbo_warning
+                )
+            try:
+                bq_circuit = bqskit_compile(
+                    bq_circuit,
+                    model=machine,
+                    optimization_level=BQSKIT_WORKFLOW_OPTIMIZATION_LEVEL,
+                    seed=seed,
+                )
+            finally:
+                if trbo_flag:
+                    if old_pythonwarnings is None:
+                        os.environ.pop("PYTHONWARNINGS", None)
+                    else:
+                        os.environ["PYTHONWARNINGS"] = old_pythonwarnings
+            if use_custom_rz_decomposition:
+                bq_circuit, error_bound = decompose_rz_tracked(
+                    bq_circuit, epsilon, cyclosynth_flag=cyclosynth_flag
+                )
+        finally:
+            if cyclosynth_flag:
+                if old_rayon_threads is None:
+                    os.environ.pop("RAYON_NUM_THREADS", None)
                 else:
-                    os.environ["PYTHONWARNINGS"] = old_pythonwarnings
-        if use_custom_rz_decomposition:
-            bq_circuit, error_bound = decompose_rz_tracked(bq_circuit, epsilon)
+                    os.environ["RAYON_NUM_THREADS"] = old_rayon_threads
 
         # Flatten any CircuitGate wrappers bqskit may have left around
         # sub-circuits (e.g. U3Gate wrapped in a CircuitGate).  Without this,
@@ -2222,6 +2482,8 @@ def compile_dispatch(
         seed=args.seed,
         use_custom_rz_decomposition=not args.bqskit_inline_decompose_rz,
         trbo_flag=args.bqskit_trbo,
+        cyclosynth_flag=args.bqskit_cyclosynth,
+        cyclosynth_threads=args.cyclosynth_threads,
     )
     return compiled, [], error_bound, None
 
@@ -2527,6 +2789,21 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "by roughly 1%% in T count.",
     )
     parser.add_argument(
+        "--bqskit-cyclosynth",
+        action="store_true",
+        help="bqskit backend only: replace the final "
+        "ZXZXZDecomposition+GridSynthPass single-qubit-block synthesis stage "
+        "with cyclosynth's joint ZYZ lattice search (see --backend "
+        "cyclosynth), with a trailing IsolateRZGatePass+GridSynthPass mop-up "
+        "stage for blocks cyclosynth's search can hang on (near-Clifford "
+        "blocks) or fails to return a result for. Runs after --bqskit-trbo "
+        "(if also passed), so TRbO gets first crack at rounding Rz angles "
+        "via gauge freedom and cyclosynth only re-synthesises whatever "
+        "residual block unitary is left -- the two are independent, "
+        "non-overlapping T-count wins rather than alternatives. Needs the "
+        "optional cyclosynth extension module (see cyclosynth/README.md).",
+    )
+    parser.add_argument(
         "--seed",
         "-s",
         type=int,
@@ -2542,10 +2819,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--cyclosynth-threads",
         type=int,
         default=None,
-        help="cyclosynth backend only: threads for cyclosynth's own lattice "
-        "search (sets RAYON_NUM_THREADS). Defaults to rayon's own default "
-        "(all cores) for speed; cyclosynth has no per-call seed, so its "
-        "results (both the exact word and the overall T-count) are only "
+        help="cyclosynth backend, or bqskit backend with --bqskit-cyclosynth: "
+        "threads for cyclosynth's own lattice search (sets "
+        "RAYON_NUM_THREADS). Defaults to rayon's own default (all cores) for "
+        "the cyclosynth backend, but to 1 for --bqskit-cyclosynth (see its "
+        "help text for why); cyclosynth has no per-call seed, so its results "
+        "(both the exact word and the overall T-count) are only "
         "reproducible run to run at --cyclosynth-threads 1, which was "
         "measured at this repo's EPSILON_DEFAULT to cost about 15x the "
         "compile time of the multi-threaded default (see "
@@ -2580,18 +2859,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "qiskit": {
             "bqskit_inline_decompose_rz": "--bqskit-inline-decompose-rz",
             "bqskit_trbo": "--bqskit-trbo",
+            "bqskit_cyclosynth": "--bqskit-cyclosynth",
             "seed": "--seed",
             "cyclosynth_threads": "--cyclosynth-threads",
         },
         "cyclosynth": {
             "bqskit_inline_decompose_rz": "--bqskit-inline-decompose-rz",
             "bqskit_trbo": "--bqskit-trbo",
+            "bqskit_cyclosynth": "--bqskit-cyclosynth",
             "seed": "--seed",
         },
         "bqskit": {
             "no_optimize": "--no-optimize",
             "tol": "--tol",
-            "cyclosynth_threads": "--cyclosynth-threads",
         },
     }
     for dest, flag in backend_only_flags[args.backend].items():
