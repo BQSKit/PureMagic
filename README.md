@@ -108,21 +108,43 @@ pip install -r requirements.txt
 python data_processing/compile_cliffordt.py circuit.qasm
 ```
 
-This produces `circuit.cliffordt.qasm` using qiskit's own resynthesis pipeline (the default
-`--backend`). Pass `--backend bqskit` to compile with [BQSKit](https://bqskit.readthedocs.io/)
-instead:
+This produces `circuit.cliffordt.qasm`. Three backends are available via `--backend`:
 
-```bash
-python data_processing/compile_cliffordt.py circuit.qasm --backend bqskit
-```
+| Backend | Description |
+|---|---|
+| `qiskit` (default) | Resynthesises each maximal single-qubit run via a ZXZ decomposition, gridsynthing each Rz rotation with qiskit's own Rust Ross-Selinger implementation (falling back to [`pygridsynth`](https://github.com/inmzhang/pygridsynth) for the rare angle it panics on). Fastest option, with low T gate counts compared to default `bqskit`. |
+| `bqskit` | Compiles via [BQSKit](https://bqskit.readthedocs.io/) with a custom workflow built around its `ScanningGateRemovalPass`, which gives this backend an edge over the other two specifically on QFT-family circuits. Rejects circuits with classical control flow (BQSKit's own `Circuit` has no concept of it) -- `qiskit` and `cyclosynth` are the only options for those. Has two optional, off-by-default extra stages (see below). |
+| `cyclosynth` | Shares the `qiskit` backend's resynthesis pipeline, but re-synthesises each single-qubit block by handing its full ZYZ Euler-angle triple to [cyclosynth](https://github.com/mtweiden/cyclosynth) in one call, rather than gridsynth-ing up to three rotations independently. Usually fewer T gates than either of the other two, at real but not prohibitive compile-time cost. Needs the `cyclosynth` git submodule built locally (`git submodule update --init` then see `cyclosynth/README.md`) -- not required for the other two backends. |
 
-qiskit is the default because it emits substantially fewer T gates than bqskit on every benchmark
-measured so far; the bqskit backend is kept for comparison and as an independently implemented
-compiler, and rejects circuits with classical control flow (bqskit's own `Circuit` has no concept
-of it). Either backend's output works as input to Step 2. A basis check and error bound are always
+The `bqskit` backend's two extra stages compose with its base workflow and with each other, rather
+than being alternatives to pick between:
+
+- `--bqskit-trbo` runs [TRbO](https://github.com/WolfLink/trbo) (T Reduction by Optimization) right
+  before final synthesis, numerically re-optimising a partitioned block's Rz angles jointly so more
+  of them round to Clifford/T for free. A real T-count win on circuits with genuine gauge freedom
+  (e.g. Haar-random-like circuits); no help on circuits whose angles are already exactly
+  deduplicated (e.g. QFT). Needs the optional `trbo` package (see `requirements.txt`).
+- `--bqskit-cyclosynth` replaces `bqskit`'s own per-Rz gridsynth final-synthesis stage with
+  cyclosynth's joint per-block search (see the `cyclosynth` backend above), falling back to
+  gridsynth for the handful of blocks cyclosynth's search can't safely handle. Needs the same
+  `cyclosynth` submodule as the `cyclosynth` backend.
+
+TRbO reduces how many rotations need synthesis at all; cyclosynth only changes how whatever
+residual rotations are left get synthesised -- so `--backend bqskit --bqskit-trbo
+--bqskit-cyclosynth` combines all three backends' individual strengths (QFT structure, gauge-freedom
+rounding, and joint-block synthesis) into a single compile, rather than requiring a different
+backend per circuit family.
+
+Any backend's output works as input to Step 2. A basis check and error bound are always
 reported; run with `--help` to see all options, including `--verify` (fidelity checks against the
 input -- exact, single-statevector, or automatic random-window sampling, whichever the circuit's
 size allows) and `--stats` (per-circuit JSON statistics, including per-stage timings).
+
+**Acknowledgements**: the `--bqskit-trbo` stage runs [WolfLink/trbo](https://github.com/WolfLink/trbo),
+implementing the technique described in Marc Davis's ["T Count as a Numerically Solvable Optimization
+Problem"](https://arxiv.org/abs/2603.25101). The `cyclosynth` backend and `--bqskit-cyclosynth` stage
+run [mtweiden/cyclosynth](https://github.com/mtweiden/cyclosynth), implementing the lattice-search
+algorithm of [Morisaki et al.](https://arxiv.org/abs/2510.05816).
 
 ### Step 2 — Transpile to `.trans` format (Rust)
 
@@ -192,7 +214,8 @@ src/
                         #   fitted to Figure 15 of arXiv:2409.17595
 
 data_processing/        # Python/shell tooling; not built by cargo
-├── compile_cliffordt.py     # Compile QASM → Clifford+T QASM (qiskit or bqskit, --backend)
+├── compile_cliffordt.py     # Compile QASM → Clifford+T QASM (--backend qiskit/bqskit/cyclosynth,
+│                                #   plus --bqskit-trbo/--bqskit-cyclosynth for the bqskit backend)
 ├── bqskit_compile_cliffordt.py # Standalone BQSKit-only compiler; superseded by
 │                                #   compile_cliffordt.py --backend bqskit, kept for reference
 ├── flasq_lower_bound.py     # FLASQ lower bound (Algorithm 1 of Beverland et al.)
