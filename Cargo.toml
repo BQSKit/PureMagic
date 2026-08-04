@@ -19,7 +19,7 @@ log = "0.4"
 simple-logging = "2.0"
 colored = "2"
 # Optional performance improvements
-#rayon = "1.7"     # For parallel processing
+rayon = "1.10"     # For parallel processing (TRbO multi-start dispatch)
 #dashmap = "5.4"   # For concurrent maps
 #parking_lot = "0.12" # More efficient mutexes
 # Python bindings
@@ -27,6 +27,14 @@ colored = "2"
 #numpy = "0.19"
 
 indexmap = "2.11"
+
+# Clifford+T compilation pipeline (compile_cliffordt bin)
+nalgebra = "0.34"
+num-complex = "0.4"
+rsgridsynth = "0.2.2"
+cyclosynth = { path = "cyclosynth", default-features = false }
+# NLS instantiation (Stage 4/5) is hand-rolled Levenberg-Marquardt over
+# nalgebra rather than an external solver crate -- see instantiate.rs.
 
 #[dependencies.pyo3-built]
 #version = "0.4"
@@ -54,6 +62,10 @@ path = "src/gen_circuit.rs"
 [[bin]]
 name = "circuit_stats"
 path = "src/circuit_stats.rs"
+
+[[bin]]
+name = "compile_cliffordt"
+path = "src/compile_cliffordt.rs"
 
 [profile.release]
 opt-level = 3

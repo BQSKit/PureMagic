@@ -682,16 +682,6 @@ def zyz_angles(decomposer: OneQubitEulerDecomposer, matrix: np.ndarray) -> tuple
     return theta, phi, lam
 
 
-def gridsynth_precision(synthesis_epsilon: float) -> int:
-    """Digits of precision for GridSynthPass at this epsilon -- ceil (not
-    bqskit's own int(...)+2, which pads to 100x tighter than requested) rounds
-    up only enough to still meet synthesis_epsilon. Shared by
-    build_bqskit_workflow, decompose_rz_tracked, and
-    CyclosynthBlockSynthesisPass's fallback workflow, so all three stay in
-    sync regardless of which final-synthesis path a run takes."""
-    return math.ceil(math.log10(1 / synthesis_epsilon))
-
-
 def rz_pi_4_word(k: int) -> tuple[str, ...]:
     """Shortest Clifford+T word (up to global phase) for Rz(k * pi/4)."""
     return {
@@ -2047,7 +2037,6 @@ def build_final_synthesis_passes(
     reproducibly triggered a race in bqskit's own runtime (see
     CyclosynthBlockSynthesisPass's docstring).
     """
-    precision = gridsynth_precision(synthesis_epsilon)
     if cyclosynth_flag:
         if cyclosynth is None:
             raise RuntimeError(
@@ -2064,7 +2053,7 @@ def build_final_synthesis_passes(
             UnfoldPass(),
             IsolateRZGatePass(),
             ForEachBlockPass(
-                [GridSynthPass(precision=precision)],
+                [GridSynthPass(algorithmic_error=synthesis_epsilon)],
                 calculate_error_bound=True,
             ),
             UnfoldPass(),
@@ -2072,7 +2061,7 @@ def build_final_synthesis_passes(
     return [
         IsolateRZGatePass(),
         ForEachBlockPass(
-            [GridSynthPass(precision=precision)],
+            [GridSynthPass(algorithmic_error=synthesis_epsilon)],
             calculate_error_bound=True,
         ),
         UnfoldPass(),
