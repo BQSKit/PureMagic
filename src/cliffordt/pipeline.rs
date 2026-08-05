@@ -82,11 +82,18 @@ pub struct PipelineConfig {
     pub seed: u64,
     pub trbo: bool,
     pub cyclosynth: bool,
+    /// Let Stage 4 drop a block that's within `epsilon` *infidelity* of a
+    /// simpler circuit, not just within `epsilon` operator-norm distance --
+    /// see `stage4_scan_removal.rs::ScanConfig::approx_cancel` for the full
+    /// rationale. Off by default: the resulting error is always measured
+    /// exactly and folded into the returned error bound, but it can be far
+    /// larger per approximate cancellation than `epsilon` itself.
+    pub approx_cancel: bool,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
-        PipelineConfig { epsilon: 1e-8, seed: 0, trbo: false, cyclosynth: false }
+        PipelineConfig { epsilon: 1e-8, seed: 0, trbo: false, cyclosynth: false, approx_cancel: false }
     }
 }
 
@@ -270,19 +277,20 @@ pub fn compile(
     // Stage 4: windowed multi-qubit resynthesis.
     let t = Instant::now();
     let partitioned = partition(&current, 2);
-    let scan_config = ScanConfig { success_threshold: config.epsilon, ..ScanConfig::default() };
+    let scan_config = ScanConfig { success_threshold: config.epsilon, approx_cancel: config.approx_cancel, ..ScanConfig::default() };
     // No cache to weight by here (unlike Stage 6) -- every block does
     // similarly-cheap exact work, so plain per-block counting is the right
     // progress denominator, the same reasoning `_with_block_progress` uses
     // for the Python reference's cleanup rounds.
     let (num_blocks, _) = block_stats(&partitioned);
     let progress = ProgressTracker::new("windowed resynthesis", num_blocks);
-    let scanned = partitioned.for_each_block(|inner| {
+    let (scanned, scan_errors) = partitioned.for_each_block_with(|inner| {
         let result = scanning_gate_removal(inner, &scan_config);
         progress.add(1);
         result
     });
     progress.finish();
+    let stage4_error: f64 = scan_errors.iter().sum();
     current = scanned.unfold();
     on_stage(StageReport {
         name: "stage 4: windowed resynthesis".to_string(),
@@ -383,7 +391,11 @@ pub fn compile(
         grouped.for_each_block_with(synth_one)
     };
     progress.finish();
-    let total_error: f64 = errors.iter().sum();
+    // Stage 4's own approximate-cancellation error (see stage4_error above)
+    // is folded in here too -- previously untracked entirely (even at the
+    // strict, non-approx_cancel tier), so the reported bound now properly
+    // reflects every stage that can spend accuracy, not just Stage 6.
+    let total_error: f64 = stage4_error + errors.iter().sum::<f64>();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);
     on_stage(StageReport {
@@ -417,7 +429,7 @@ mod tests {
         c.push(Gate::S, vec![1]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-8, seed: 0, trbo: false, cyclosynth: false };
+        let config = PipelineConfig { epsilon: 1e-8, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert_eq!(t_count(&compiled), 0);
@@ -433,7 +445,7 @@ mod tests {
         c.push(Gate::H, vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-6, seed: 0, trbo: false, cyclosynth: false };
+        let config = PipelineConfig { epsilon: 1e-6, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(t_count(&compiled) > 0, "a generic rotation should need some T gates");
@@ -465,7 +477,7 @@ mod tests {
         c.push(Gate::Rz(0.9), vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-6, seed: 11, trbo: true, cyclosynth: false };
+        let config = PipelineConfig { epsilon: 1e-6, seed: 11, trbo: true, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);
@@ -479,11 +491,45 @@ mod tests {
         c.push(Gate::H, vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-6, seed: 3, trbo: false, cyclosynth: true };
+        let config = PipelineConfig { epsilon: 1e-6, seed: 3, cyclosynth: true, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);
         assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
+    }
+
+    /// End-to-end check that `approx_cancel` is "properly accounted", not
+    /// just a number that changed: a circuit shaped like the motivating
+    /// qft_n63.qasm case (a lone Cx;Rz;Cx block whose angle sits just
+    /// outside plain operator-norm epsilon of a Clifford point, but well
+    /// within epsilon infidelity) should report a visibly larger error
+    /// bound with the flag on -- and the *actual* distance from the
+    /// original circuit must never exceed that reported bound, on or off.
+    #[test]
+    fn approx_cancel_properly_accounts_for_a_near_clifford_block() {
+        let theta = 2.0 * std::f64::consts::PI - 2e-4;
+        let mut c = Circuit::new(2);
+        c.push(Gate::Cx, vec![1, 0]);
+        c.push(Gate::Rz(theta), vec![0]);
+        c.push(Gate::Cx, vec![1, 0]);
+        let original = c.get_unitary();
+
+        let strict_config = PipelineConfig { epsilon: 1e-8, ..PipelineConfig::default() };
+        let (strict_compiled, strict_bound) = compile(&c, &strict_config, |_| {});
+
+        let approx_config = PipelineConfig { epsilon: 1e-8, approx_cancel: true, ..PipelineConfig::default() };
+        let (approx_compiled, approx_bound) = compile(&c, &approx_config, |_| {});
+
+        assert!(
+            approx_bound > strict_bound * 100.0,
+            "approx_cancel should visibly spend far more of the error budget here (strict={strict_bound}, approx={approx_bound})"
+        );
+
+        // The critical rigor check, matching the same 10x compounding
+        // slack main.rs's own --verify warning already uses: the reported
+        // bound must never be violated by the true distance, on or off.
+        assert!(distance(&original, &strict_compiled.get_unitary()) <= strict_bound * 10.0 + 1e-9);
+        assert!(distance(&original, &approx_compiled.get_unitary()) <= approx_bound * 10.0 + 1e-9);
     }
 
     #[test]

@@ -48,6 +48,18 @@ struct Args {
     #[arg(long)]
     cyclosynth: bool,
 
+    /// Let Stage 4 drop a block that's within epsilon *infidelity* of a
+    /// simpler circuit, not just within epsilon operator-norm distance --
+    /// matches bqskit's own ScanningGateRemovalPass mechanism, tolerating
+    /// angular deviations up to roughly sqrt(epsilon) per approximate
+    /// cancellation instead of epsilon directly. Every such approximation
+    /// is measured exactly and folded into the reported upper error bound
+    /// (which will then legitimately be larger than without this flag),
+    /// so the guarantee stays rigorous, but real per-cancellation error
+    /// can be far larger than epsilon itself -- off by default.
+    #[arg(long)]
+    approx_cancel: bool,
+
     /// Recompute exact unitary fidelity against the original circuit
     /// after compiling (only practical for small qubit counts).
     #[arg(long)]
@@ -153,8 +165,8 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={})",
-        args.epsilon, args.seed, args.trbo, args.cyclosynth
+        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={}, approx_cancel={})",
+        args.epsilon, args.seed, args.trbo, args.cyclosynth, args.approx_cancel
     );
 
     let mut failures = 0usize;
@@ -176,7 +188,13 @@ fn main() {
         let before = compute_stats(&circuit);
         let original_unitary = if args.verify && circuit.n_qubits <= 10 { Some(circuit.get_unitary()) } else { None };
 
-        let config = PipelineConfig { epsilon: args.epsilon, seed: args.seed, trbo: args.trbo, cyclosynth: args.cyclosynth };
+        let config = PipelineConfig {
+            epsilon: args.epsilon,
+            seed: args.seed,
+            trbo: args.trbo,
+            cyclosynth: args.cyclosynth,
+            approx_cancel: args.approx_cancel,
+        };
 
         let compile_start = Instant::now();
         let mut prev_gates = total_gate_count(&circuit);

@@ -53,6 +53,24 @@ pub fn distance(target: &Unitary, built: &Unitary) -> f64 {
     spectral_error(target, built, phase)
 }
 
+/// Process-fidelity-based infidelity between two same-dimension unitaries:
+/// `1 - |Tr(target^dagger * built)|^2 / dim^2`. Global-phase invariant
+/// automatically (no separate phase alignment needed, unlike `distance`),
+/// and quadratic in the operator-norm error near a match (roughly
+/// `distance^2` for a small deviation) rather than linear like `distance`
+/// itself -- see `stage4_scan_removal.rs`'s `approx_cancel` for why that
+/// distinction matters (it lets a much larger angular deviation pass the
+/// same nominal epsilon threshold). A standard, well-defined quantity in
+/// its own right; not an attempt to reproduce bqskit's own internal cost
+/// function bit-for-bit (its exact scaling constant isn't published or
+/// inspectable -- it lives in a compiled `bqskitrs` extension), just a
+/// principled criterion with the same quadratic character.
+pub fn infidelity(target: &Unitary, built: &Unitary) -> f64 {
+    let dim = target.nrows() as f64;
+    let overlap = (built.adjoint() * target).trace().norm();
+    1.0 - (overlap * overlap) / (dim * dim)
+}
+
 /// Bit of qubit `q` (0 = most significant) within an `n`-qubit basis index.
 /// Only used by `embed`.
 fn bit(x: usize, q: usize, n: usize) -> usize {

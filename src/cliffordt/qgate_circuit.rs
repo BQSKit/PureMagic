@@ -293,22 +293,15 @@ impl Circuit {
     /// Apply `f` to the inner circuit of every top-level `Block` operation,
     /// in parallel across blocks (they're independent windows by
     /// construction -- that's the whole point of partitioning); non-block
-    /// operations pass through unchanged. Mirrors bqskit's
+    /// operations pass through unchanged, and `f` also returns a per-block
+    /// value of type `T`, collected (in block order, one entry per `Block`
+    /// op) for the caller to aggregate afterward -- since `f` runs in
+    /// parallel across blocks, it can't just mutate a captured counter the
+    /// way a sequential `for` loop could. Mirrors bqskit's
     /// `ForEachBlockPass`, but bqskit distributes this work across a
     /// process pool per block, not just within one block's own solver
     /// calls -- `f` must be `Sync` (no captured mutable state) for the
-    /// same reason. Use `for_each_block_with` instead when the caller
-    /// needs to aggregate per-block statistics.
-    pub fn for_each_block(&self, f: impl Fn(&Circuit) -> Circuit + Sync) -> Circuit {
-        let (out, _): (Circuit, Vec<()>) = self.for_each_block_with(|inner| (f(inner), ()));
-        out
-    }
-
-    /// Like `for_each_block`, but `f` also returns a per-block value of
-    /// type `T`, collected (in block order, one entry per `Block` op) for
-    /// the caller to aggregate afterward -- since `f` runs in parallel
-    /// across blocks, it can't just mutate a captured counter the way a
-    /// sequential `for` loop could.
+    /// same reason.
     pub fn for_each_block_with<T: Send>(&self, f: impl Fn(&Circuit) -> (Circuit, T) + Sync) -> (Circuit, Vec<T>) {
         let results: Vec<(Operation, Option<T>)> = self
             .ops
