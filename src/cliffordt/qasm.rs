@@ -184,7 +184,8 @@ fn parse_gate_line(line: &str) -> Result<(String, Vec<f64>, Vec<usize>), String>
 
 /// Parse a numeric angle expression: plain floats, and `pi`-relative forms
 /// commonly emitted by QASM exporters -- `pi`, `-pi/2`, `pi/4`, `3*pi/8`,
-/// and (qiskit's own `qasm2.dump` convention) `pi*0.35`, pi first.
+/// `7*pi/2` (qiskit's own `qasm2.dump` convention for a rational multiple of
+/// pi with a numerator other than 1), and `pi*0.35`, pi first.
 fn parse_angle_expr(s: &str) -> Option<f64> {
     let s = s.trim();
     if s.is_empty() {
@@ -195,22 +196,26 @@ fn parse_angle_expr(s: &str) -> Option<f64> {
     }
     let lower = s.to_lowercase();
     let (sign, lower) = if let Some(stripped) = lower.strip_prefix('-') { (-1.0, stripped) } else { (1.0, lower.as_str()) };
-    if lower == "pi" {
-        return Some(sign * std::f64::consts::PI);
-    }
-    if let Some(rest) = lower.strip_prefix("pi/") {
-        let denom: f64 = rest.parse().ok()?;
-        return Some(sign * std::f64::consts::PI / denom);
-    }
-    if let Some(rest) = lower.strip_prefix("pi*") {
-        let numer: f64 = rest.parse().ok()?;
-        return Some(sign * numer * std::f64::consts::PI);
-    }
-    if let Some(rest) = lower.strip_suffix("*pi") {
-        let numer: f64 = rest.parse().ok()?;
-        return Some(sign * numer * std::f64::consts::PI);
-    }
-    None
+
+    // Peel off at most one trailing "/denom" first -- e.g. "7*pi/2" becomes
+    // main="7*pi", denom=2.0 -- so the multiply-form checks below don't also
+    // need to special-case a divisor tacked on the end of them.
+    let (main, denom) = match lower.rfind('/') {
+        Some(idx) => (&lower[..idx], lower[idx + 1..].parse::<f64>().ok()?),
+        None => (lower, 1.0),
+    };
+
+    let numer = if main == "pi" {
+        1.0
+    } else if let Some(rest) = main.strip_prefix("pi*") {
+        rest.parse().ok()?
+    } else if let Some(rest) = main.strip_suffix("*pi") {
+        rest.parse().ok()?
+    } else {
+        return None;
+    };
+
+    Some(sign * numer * std::f64::consts::PI / denom)
 }
 
 /// Split `gate NAME(p0, p1, ...) q0, q1, ...` (an optional trailing `{`
@@ -549,6 +554,32 @@ mod tests {
         let mut c = Circuit::new(3);
         push_gate(&mut c, "fredkin", &[], &[0, 1, 2]).unwrap();
         assert_eq!(c.ops.len(), 17);
+    }
+
+    /// Regression test: qiskit's `qasm2.dump` emits `N*pi/M` for a rational
+    /// multiple of pi whose numerator isn't 1 (e.g. `7*pi/2`), which crashed
+    /// the loader on real QV benchmark circuits -- none of the parser's three
+    /// original branches (`pi/N`, `pi*N`, `N*pi`) matched a combined
+    /// multiply-then-divide expression.
+    #[test]
+    fn angle_expr_handles_numerator_and_denominator_together() {
+        let pi = std::f64::consts::PI;
+        assert!((parse_angle_expr("7*pi/2").unwrap() - 7.0 * pi / 2.0).abs() < 1e-12);
+        assert!((parse_angle_expr("-7*pi/2").unwrap() - (-7.0 * pi / 2.0)).abs() < 1e-12);
+        assert!((parse_angle_expr("3*pi/8").unwrap() - 3.0 * pi / 8.0).abs() < 1e-12);
+        assert!((parse_angle_expr("pi*3/8").unwrap() - 3.0 * pi / 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_expr_still_handles_simple_forms() {
+        let pi = std::f64::consts::PI;
+        assert!((parse_angle_expr("pi").unwrap() - pi).abs() < 1e-12);
+        assert!((parse_angle_expr("-pi").unwrap() - (-pi)).abs() < 1e-12);
+        assert!((parse_angle_expr("pi/4").unwrap() - pi / 4.0).abs() < 1e-12);
+        assert!((parse_angle_expr("pi*0.35").unwrap() - pi * 0.35).abs() < 1e-12);
+        assert!((parse_angle_expr("1.23").unwrap() - 1.23).abs() < 1e-12);
+        assert!(parse_angle_expr("banana").is_none());
+        assert!(parse_angle_expr("pi/").is_none());
     }
 
     fn rx_matrix(theta: f64) -> crate::cliffordt::matrix::Unitary {
