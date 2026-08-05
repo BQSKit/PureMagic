@@ -16,6 +16,7 @@ use crate::cliffordt::clifford::CliffordTable;
 use crate::cliffordt::group_single_qubit::group_single_qubit_gates;
 use crate::cliffordt::matrix::distance;
 use crate::cliffordt::partition::partition;
+use crate::cliffordt::progress::ProgressTracker;
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
 use crate::cliffordt::stage4_scan_removal::{scanning_gate_removal, ScanConfig};
@@ -240,7 +241,18 @@ pub fn compile(
     let t = Instant::now();
     let partitioned = partition(&current, 2);
     let scan_config = ScanConfig { success_threshold: config.epsilon, ..ScanConfig::default() };
-    let scanned = partitioned.for_each_block(|inner| scanning_gate_removal(inner, &scan_config));
+    // No cache to weight by here (unlike Stage 6) -- every block does
+    // similarly-cheap exact work, so plain per-block counting is the right
+    // progress denominator, the same reasoning `_with_block_progress` uses
+    // for the Python reference's cleanup rounds.
+    let (num_blocks, _) = block_stats(&partitioned);
+    let progress = ProgressTracker::new("windowed resynthesis", num_blocks);
+    let scanned = partitioned.for_each_block(|inner| {
+        let result = scanning_gate_removal(inner, &scan_config);
+        progress.add(1);
+        result
+    });
+    progress.finish();
     current = scanned.unfold();
     on_stage(StageReport {
         name: "stage 4: windowed resynthesis".to_string(),
@@ -261,12 +273,19 @@ pub fn compile(
         let t = Instant::now();
         let partitioned = partition(&current, 4);
         let trbo_config = TrboConfig { success_threshold: config.epsilon, seed: config.seed, ..TrboConfig::default() };
+        // Every block runs its own NLS optimization from scratch (no cache
+        // to weight by), so -- like Stage 4 -- plain per-block counting is
+        // the right progress denominator.
+        let (num_blocks, _) = block_stats(&partitioned);
+        let progress = ProgressTracker::new("TRbO", num_blocks);
         let (optimized, deltas) = partitioned.for_each_block_with(|inner| {
             let before = inner.num_params();
             let result = trbo_optimize(inner, &trbo_config);
             let after = result.num_params();
+            progress.add(1);
             (result, (before, after))
         });
+        progress.finish();
         current = optimized.unfold();
         let num_blocks = deltas.len();
         let num_improved = deltas.iter().filter(|(before, after)| after < before).count();
@@ -296,12 +315,28 @@ pub fn compile(
     // circuits that caching the expensive non-Clifford synthesis path
     // across blocks is a large, real win, not a micro-optimization.
     let synth_cache = SynthCache::new();
+    // Weight by actual cache growth, not call count -- mirrors
+    // `_with_progress` in the Python reference: most repeated rotations are
+    // instant cache hits, so counting every call equally would race through
+    // them and then stall on the rare, genuinely expensive misses. `total`
+    // is the number of non-Clifford blocks, an upper bound on how many new
+    // cache entries can appear (repeats collapse to fewer); the Clifford
+    // short-circuit below never touches the cache, so it's excluded from
+    // both the total and the count.
+    let total_synth = grouped
+        .ops
+        .iter()
+        .filter(|op| matches!(&op.gate, Gate::Block(inner) if !inner.is_all_clifford()))
+        .count();
+    let progress = ProgressTracker::new("final synthesis", total_synth);
     let synth_one = |inner: &Circuit| {
         if inner.is_all_clifford() {
             return (inner.clone(), 0.0);
         }
         let target = inner.get_unitary();
+        let before = synth_cache.len();
         let result = synthesize_block_cached(&target, &table, &synth_config, &synth_cache);
+        progress.add(synth_cache.len() - before);
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
@@ -317,6 +352,7 @@ pub fn compile(
     } else {
         grouped.for_each_block_with(synth_one)
     };
+    progress.finish();
     let total_error: f64 = errors.iter().sum();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);

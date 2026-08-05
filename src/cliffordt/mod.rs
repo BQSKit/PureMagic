@@ -4,6 +4,7 @@ pub mod instantiate;
 pub mod matrix;
 pub mod partition;
 pub mod pipeline;
+pub mod progress;
 pub mod qasm;
 pub mod qasm_write;
 pub mod qgate_circuit;

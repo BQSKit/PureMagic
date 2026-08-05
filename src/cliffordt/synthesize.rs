@@ -267,6 +267,17 @@ impl SynthCache {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Number of distinct targets synthesized so far -- watched around a
+    /// call to `synthesize_block_cached` to weight progress by genuine new
+    /// synthesis work rather than plain call count, the same distinction
+    /// `_with_progress` draws in the Python reference (see its own doc
+    /// comment): most repeated rotations are instant cache hits, so a call
+    /// count would race through them and then stall on the rare expensive
+    /// misses.
+    pub fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
 }
 
 /// Like `synthesize_block`, but looks up/populates `cache` around the
