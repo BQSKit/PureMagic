@@ -161,17 +161,28 @@ fn main() {
         let (compiled, error_bound) = compile(&circuit, &config, |report| {
             let gates = total_gate_count(report.circuit);
             let rz = total_rz_count(report.circuit);
-            println!(
-                "  [{}] {:.2}s -- gates: {} -> {} ({:+}), Rz remaining: {} -> {} ({:+})",
-                report.name,
-                report.elapsed.as_secs_f64(),
-                prev_gates,
-                gates,
-                gates as i64 - prev_gates as i64,
-                prev_rz,
-                rz,
-                rz as i64 - prev_rz as i64,
-            );
+            match &report.detail {
+                // Some stages (blocking, exact-Clifford) have a
+                // contribution a generic gate/Rz delta can't show, or
+                // actively misrepresents -- see pipeline.rs's StageReport
+                // doc comment for why.
+                Some(detail) => {
+                    println!("  [{}] {:.2}s -- {}", report.name, report.elapsed.as_secs_f64(), detail);
+                }
+                None => {
+                    println!(
+                        "  [{}] {:.2}s -- gates: {} -> {} ({:+}), Rz remaining: {} -> {} ({:+})",
+                        report.name,
+                        report.elapsed.as_secs_f64(),
+                        prev_gates,
+                        gates,
+                        gates as i64 - prev_gates as i64,
+                        prev_rz,
+                        rz,
+                        rz as i64 - prev_rz as i64,
+                    );
+                }
+            }
             prev_gates = gates;
             prev_rz = rz;
         });

@@ -47,6 +47,15 @@ pub struct FitResult {
 /// Single Levenberg-Marquardt run of `residual_fn` from `x0`.
 pub fn lm_fit(residual_fn: impl Fn(&[f64]) -> DVector<f64> + Sync, x0: &[f64], max_iters: usize) -> FitResult {
     let n = x0.len();
+    if n == 0 {
+        // Nothing to vary (e.g. a template with zero free Rz angles, now
+        // that the global phase is resolved analytically inside
+        // `residual_fn` rather than fit as an extra parameter) -- a 0x0
+        // normal-equations solve isn't something nalgebra handles, and
+        // there's nothing to optimize anyway.
+        let r = residual_fn(x0);
+        return FitResult { params: Vec::new(), cost_norm: r.norm_squared().max(0.0).sqrt() };
+    }
     let mut params = DVector::from_column_slice(x0);
     let mut lambda = 1e-3_f64;
     let mut r = residual_fn(params.as_slice());
@@ -141,16 +150,25 @@ pub fn lm_fit_multistart(
         )
 }
 
-/// Residual vector (real, imag interleaved over every matrix entry) for
-/// `circuit_template` with its Rz angles set to `params[..num_params]` and
-/// an extra free global phase `params[num_params]`, against `target`.
+/// Global-phase-invariant residual vector (real, imag interleaved over
+/// every matrix entry) for `circuit_template` with its Rz angles set to
+/// `params`, against `target`. The aligning phase is computed
+/// analytically (`matrix::global_phase_between`, the same optimal-phase
+/// formula the final `distance()` verification metric uses) rather than
+/// fit as an extra free parameter -- mirrors trbo's own
+/// `HilbertSchmidtResidualsGenerator` ("global-phase-aware... cost is zero
+/// if target and circuit unitary differ only by a global phase"). Adding
+/// a fitted phase parameter instead (this function's original approach)
+/// forces the optimizer to also resolve an extra periodic dimension that
+/// has a closed-form answer at every evaluation -- a strictly harder
+/// landscape for no benefit, confirmed as a real gap against the actual
+/// upstream `trbo` package's approach.
 pub fn fidelity_residuals(circuit_template: &Circuit, target: &Unitary, params: &[f64]) -> DVector<f64> {
-    let n_rz = circuit_template.num_params();
     let mut c = circuit_template.clone();
-    c.set_params(&params[..n_rz]);
-    let phase = params[n_rz];
-    let rot = C64::new(phase.cos(), phase.sin());
+    c.set_params(params);
     let built = c.get_unitary();
+    let phase = crate::cliffordt::matrix::global_phase_between(target, &built);
+    let rot = C64::new(phase.cos(), phase.sin());
     let dim = built.nrows();
     let mut r = DVector::zeros(2 * dim * dim);
     let mut k = 0;
@@ -165,9 +183,10 @@ pub fn fidelity_residuals(circuit_template: &Circuit, target: &Unitary, params: 
     r
 }
 
-/// Fit `circuit_template`'s Rz angles (plus a free global phase) to best
-/// match `target`, from several random starts plus the template's current
-/// parameters and an all-zero start (often already close).
+/// Fit `circuit_template`'s Rz angles to best match `target` (up to global
+/// phase, resolved analytically inside `fidelity_residuals`), from several
+/// random starts plus the template's current parameters and an all-zero
+/// start (often already close).
 pub fn instantiate_multistart(
     circuit_template: &Circuit,
     target: &Unitary,
@@ -176,24 +195,20 @@ pub fn instantiate_multistart(
     seed: u64,
 ) -> FitResultDistance {
     let n_rz = circuit_template.num_params();
-    let n = n_rz + 1;
 
-    let mut extra_starts = vec![vec![0.0; n]];
-    let mut current = circuit_template.params();
-    current.push(0.0);
-    extra_starts.push(current);
+    let extra_starts = vec![vec![0.0; n_rz], circuit_template.params()];
 
     let template = circuit_template.clone();
     let target = target.clone();
     let fit = lm_fit_multistart(
         move |p| fidelity_residuals(&template, &target, p),
-        n,
+        n_rz,
         &extra_starts,
         n_starts,
         max_iters,
         seed,
     );
-    FitResultDistance { params: fit.params[..n_rz].to_vec(), distance: fit.cost_norm }
+    FitResultDistance { params: fit.params, distance: fit.cost_norm }
 }
 
 /// Like `FitResult`, but with the residual norm relabeled as a "distance"

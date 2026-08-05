@@ -27,7 +27,13 @@ pub struct TrboConfig {
 
 impl Default for TrboConfig {
     fn default() -> Self {
-        TrboConfig { success_threshold: 1e-8, multistarts: 8, max_iters: 150, seed: 0 }
+        // Matches the actual upstream `trbo` package's own default
+        // (`TReductionByOptimiationPass.__init__`'s `multistarts: int = 64`,
+        // used unmodified by `compile_cliffordt.py`'s call site) -- our
+        // hand-rolled finite-difference LM solver is weaker per-attempt
+        // than trbo's Ceres-backed one, so matching its restart count
+        // matters more here, not less.
+        TrboConfig { success_threshold: 1e-8, multistarts: 64, max_iters: 150, seed: 0 }
     }
 }
 
@@ -99,23 +105,17 @@ fn deviation(params: &[f64], period: f64) -> Vec<f64> {
         .collect()
 }
 
-/// Fidelity residuals concatenated with a `dim`-scaled residual per one of
-/// the `n_round` smallest angle-deviations (mirrors `SumResidualsGenerator`
-/// of `MatrixDistanceCost` + `RoundSmallestNResiduals`).
-fn combined_residuals(
-    circuit_template: &Circuit,
-    target: &Unitary,
-    params: &[f64],
-    n_rz: usize,
-    period: f64,
-    n_round: usize,
-) -> DVector<f64> {
+/// Fidelity residuals (global-phase-invariant, see `fidelity_residuals`)
+/// concatenated with a `dim`-scaled residual per one of the `n_round`
+/// smallest angle-deviations (mirrors `SumResidualsGenerator` of
+/// `MatrixDistanceCost` + `RoundSmallestNResiduals`).
+fn combined_residuals(circuit_template: &Circuit, target: &Unitary, params: &[f64], period: f64, n_round: usize) -> DVector<f64> {
     let fid = fidelity_residuals(circuit_template, target, params);
     if n_round == 0 {
         return fid;
     }
     let dim = (1usize << circuit_template.n_qubits) as f64;
-    let mut devs = deviation(&params[..n_rz], period);
+    let mut devs = deviation(params, period);
     devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut out = DVector::zeros(fid.len() + n_round);
     out.rows_mut(0, fid.len()).copy_from(&fid);
@@ -126,8 +126,7 @@ fn combined_residuals(
 }
 
 /// Jointly fit `circuit_template`'s Rz angles (biased toward getting
-/// `n_round` of them close to `disc`'s grid) against `target`; returns just
-/// the Rz angles (global phase dropped).
+/// `n_round` of them close to `disc`'s grid) against `target`.
 fn fit_with_rounding_bias(
     circuit_template: &Circuit,
     target: &Unitary,
@@ -137,24 +136,20 @@ fn fit_with_rounding_bias(
     seed: u64,
 ) -> Vec<f64> {
     let n_rz = circuit_template.num_params();
-    let n = n_rz + 1;
-    let mut extra_starts = vec![vec![0.0; n]];
-    let mut current = circuit_template.params();
-    current.push(0.0);
-    extra_starts.push(current);
+    let extra_starts = vec![vec![0.0; n_rz], circuit_template.params()];
 
     let template = circuit_template.clone();
     let target_c = target.clone();
     let period = disc.period();
     let fit = lm_fit_multistart(
-        move |p| combined_residuals(&template, &target_c, p, n_rz, period, n_round),
-        n,
+        move |p| combined_residuals(&template, &target_c, p, period, n_round),
+        n_rz,
         &extra_starts,
         config.multistarts,
         config.max_iters,
         seed,
     );
-    fit.params[..n_rz].to_vec()
+    fit.params
 }
 
 /// Binary search over how many angles can be rounded to `disc`'s grid

@@ -60,6 +60,24 @@ pub fn compute_stats(circuit: &Circuit) -> Stats {
     }
 }
 
+/// (number of Stage 1 `Block`s formed, total single-qubit gates grouped
+/// inside them). Blocking's own contribution is invisible to gate/Rz
+/// counts -- it only repackages gates into `Block`s, never removes any
+/// (`total_gate_count` recurses into `Block`, so the total is unchanged
+/// by construction) -- so this is the metric that actually reflects what
+/// the stage did, rather than a delta that's always zero.
+pub fn block_stats(circuit: &Circuit) -> (usize, usize) {
+    let mut num_blocks = 0;
+    let mut grouped_gates = 0;
+    for op in &circuit.ops {
+        if let Gate::Block(inner) = &op.gate {
+            num_blocks += 1;
+            grouped_gates += inner.ops.len();
+        }
+    }
+    (num_blocks, grouped_gates)
+}
+
 /// Gate kinds that shouldn't survive to a finished Clifford+T circuit --
 /// anything counted here means an earlier stage left work undone (a stray
 /// `Rz`/`U3` that never reached Stage 6, or a `Block` that was never
@@ -99,6 +117,27 @@ pub fn non_basis_ops(circuit: &Circuit) -> Vec<(&'static str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_stats_counts_blocks_and_their_grouped_gates() {
+        let mut inner_a = Circuit::new(1);
+        inner_a.push(Gate::H, vec![0]);
+        inner_a.push(Gate::T, vec![0]);
+        let mut inner_b = Circuit::new(1);
+        inner_b.push(Gate::S, vec![0]);
+        let mut c = Circuit::new(2);
+        c.push(Gate::Block(Box::new(inner_a)), vec![0]);
+        c.push(Gate::Block(Box::new(inner_b)), vec![1]);
+        c.push(Gate::Cx, vec![0, 1]);
+        assert_eq!(block_stats(&c), (2, 3));
+    }
+
+    #[test]
+    fn block_stats_is_zero_for_a_circuit_with_no_blocks() {
+        let mut c = Circuit::new(1);
+        c.push(Gate::H, vec![0]);
+        assert_eq!(block_stats(&c), (0, 0));
+    }
 
     #[test]
     fn non_basis_ops_is_empty_for_a_pure_clifford_t_circuit() {
