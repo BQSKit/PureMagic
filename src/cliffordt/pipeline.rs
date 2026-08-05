@@ -1,14 +1,14 @@
-//! Orchestrates all six stages into one `compile` entry point, in the same
-//! relative order as `build_bqskit_workflow` in
-//! `data_processing/compile_cliffordt.py`: blocking -> exact-Clifford ->
-//! rounding (the "gauge collapse" cycle) -> windowed multi-qubit
-//! resynthesis -> gauge collapse again -> TRbO (if enabled) -> gauge
-//! collapse a *second* time -> final synthesis. Running the gauge-collapse
-//! cycle both before and after TRbO is deliberate, not redundant -- this
-//! session's earlier work on the actual Python pipeline found removing the
-//! second run regressed T-count by ~1.4%, since re-checking for exact
-//! Clifford hits after TRbO's angle adjustments exposes coincidences the
-//! first pass alone doesn't.
+//! Orchestrates all stages into one `compile` entry point, in the same
+//! relative order as `build_bqskit_workflow`/`unroll_to_u_cx` in
+//! `data_processing/compile_cliffordt.py`: exact phase-polynomial merge ->
+//! blocking -> exact-Clifford -> rounding (the "gauge collapse" cycle) ->
+//! windowed multi-qubit resynthesis -> gauge collapse again -> TRbO (if
+//! enabled) -> gauge collapse a *second* time -> final synthesis. Running
+//! the gauge-collapse cycle both before and after TRbO is deliberate, not
+//! redundant -- this session's earlier work on the actual Python pipeline
+//! found removing the second run regressed T-count by ~1.4%, since
+//! re-checking for exact Clifford hits after TRbO's angle adjustments
+//! exposes coincidences the first pass alone doesn't.
 
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use crate::cliffordt::clifford::CliffordTable;
 use crate::cliffordt::group_single_qubit::group_single_qubit_gates;
 use crate::cliffordt::matrix::distance;
 use crate::cliffordt::partition::partition;
+use crate::cliffordt::phase_merge::{count_real_rotations, merge_phase_polynomial};
 use crate::cliffordt::progress::ProgressTracker;
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
@@ -234,8 +235,37 @@ pub fn compile(
 ) -> (Circuit, f64) {
     let table = CliffordTable::build();
 
+    // Stage 0: exact phase-polynomial merge of redundant diagonal
+    // rotations (see phase_merge.rs) -- must run first, before Stage 1
+    // ever groups gates into blocks, for the same reason the Python
+    // reference's own merge_phase_polynomial runs before its 1-qubit
+    // fusion: fusing a genuinely mergeable Rz together with a neighboring
+    // non-diagonal gate first would bake it into one opaque matrix this
+    // pass could no longer address. Not always a net win (see
+    // phase_merge.rs's docs), so pick whichever candidate needs fewer
+    // real (non-Clifford) rotations, mirroring unroll_to_u_cx's own
+    // merged-vs-unmerged selection.
+    let t = Instant::now();
+    let merged = merge_phase_polynomial(circuit);
+    let merged_real = count_real_rotations(&merged, config.epsilon);
+    let unmerged_real = count_real_rotations(circuit, config.epsilon);
+    let (preopt, chosen_real, other_real, used_merge) = if merged_real <= unmerged_real {
+        (merged, merged_real, unmerged_real, true)
+    } else {
+        (circuit.clone(), unmerged_real, merged_real, false)
+    };
+    on_stage(StageReport {
+        name: "stage 0: phase-polynomial merge".to_string(),
+        elapsed: t.elapsed(),
+        circuit: &preopt,
+        detail: Some(format!(
+            "{} candidate chosen: {chosen_real} real rotation(s) needing synthesis (vs {other_real} for the alternative)",
+            if used_merge { "merged" } else { "unmerged" }
+        )),
+    });
+
     // Gauge collapse (Stages 1-3).
-    let mut current = gauge_collapse(circuit, config.epsilon, &table, "initial", &mut on_stage);
+    let mut current = gauge_collapse(&preopt, config.epsilon, &table, "initial", &mut on_stage);
 
     // Stage 4: windowed multi-qubit resynthesis.
     let t = Instant::now();

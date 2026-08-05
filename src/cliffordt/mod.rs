@@ -3,6 +3,7 @@ pub mod group_single_qubit;
 pub mod instantiate;
 pub mod matrix;
 pub mod partition;
+pub mod phase_merge;
 pub mod pipeline;
 pub mod progress;
 pub mod qasm;
