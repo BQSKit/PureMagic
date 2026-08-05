@@ -135,7 +135,11 @@ fn main() {
     // That's the real cause of a stack-overflow crash fixed differently
     // (by serializing Stage 6 instead) in an earlier commit -- this claims
     // the pool correctly instead of just reducing contention around the
-    // underlying problem.
+    // underlying problem. Stage 6 is *also* still serialized when cyclosynth
+    // is enabled (see `Circuit::for_each_block_with_sequential`), but that's
+    // now purely a throughput fix (avoiding oversubscription-driven
+    // slowdown, not a crash) -- this pool setup is what actually addresses
+    // the correctness/safety risk, independent of that.
     let _ = rayon::ThreadPoolBuilder::new().stack_size(16 * 1024 * 1024).build_global();
 
     let args = Args::parse();

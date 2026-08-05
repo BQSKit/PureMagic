@@ -305,14 +305,18 @@ pub fn compile(
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
-    // Running Stage 6 in parallel across blocks is safe even with
-    // cyclosynth enabled (which parallelizes its own search internally):
-    // `main()` claims rayon's global thread pool with 16 MiB worker stacks
-    // before anything else can, so cyclosynth's own oversized-stack
-    // requirement (see cyclosynth::synthesis::mod.rs's own doc comment) is
-    // actually satisfied instead of silently losing that race to whichever
-    // of this pipeline's own earlier rayon usage ran first.
-    let (synthesized, errors) = grouped.for_each_block_with(synth_one);
+    // cyclosynth parallelizes its own search internally, so run Stage 6
+    // sequentially at this level when it's enabled rather than nesting it
+    // inside this crate's own per-block rayon parallelism -- see
+    // `for_each_block_with_sequential`'s doc comment for the throughput
+    // numbers behind why (this is no longer about the stack-overflow risk
+    // `main()`'s pool setup already fixes on its own; it's about avoiding
+    // oversubscription slowdown even once that's safe).
+    let (synthesized, errors) = if synth_config.use_cyclosynth {
+        grouped.for_each_block_with_sequential(synth_one)
+    } else {
+        grouped.for_each_block_with(synth_one)
+    };
     let total_error: f64 = errors.iter().sum();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);

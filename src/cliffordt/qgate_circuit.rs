@@ -333,6 +333,35 @@ impl Circuit {
         }
         (Circuit { n_qubits: self.n_qubits, ops }, extras)
     }
+
+    /// Like `for_each_block_with`, but processes blocks one at a time on the
+    /// current thread instead of in parallel via rayon. Needed for `f`
+    /// closures that already parallelize internally (e.g. cyclosynth's own
+    /// `rayon::scope`/`par_iter`-based lattice search): nesting many
+    /// concurrent outer blocks, each *also* trying to use the whole rayon
+    /// pool internally, oversubscribes it badly -- measured on
+    /// `dnn_n8.qasm --cyclosynth`, individual calls that take ~2-3s with
+    /// exclusive access to the pool ballooned to 55-111s when 20 of them
+    /// ran at once via the parallel path, even after fixing the separate
+    /// stack-overflow risk this same oversubscription caused (a properly-
+    /// sized global pool stops the crash, but not this slowdown). Going
+    /// sequential at this level lets each call have the whole pool to
+    /// itself: Stage 6 dropped from 111.6s to 42.2s on the same circuit,
+    /// with the slowest individual call dropping from 111.5s to 3.0s.
+    pub fn for_each_block_with_sequential<T>(&self, f: impl Fn(&Circuit) -> (Circuit, T)) -> (Circuit, Vec<T>) {
+        let mut ops = Vec::with_capacity(self.ops.len());
+        let mut extras = Vec::new();
+        for op in &self.ops {
+            if let Gate::Block(inner) = &op.gate {
+                let (new_inner, extra) = f(inner);
+                ops.push(Operation { gate: Gate::Block(Box::new(new_inner)), qubits: op.qubits.clone() });
+                extras.push(extra);
+            } else {
+                ops.push(op.clone());
+            }
+        }
+        (Circuit { n_qubits: self.n_qubits, ops }, extras)
+    }
 }
 
 #[cfg(test)]
