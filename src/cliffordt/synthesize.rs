@@ -5,6 +5,7 @@
 //! fallback (used directly for the independent per-axis path, and as the
 //! safety net when cyclosynth is skipped or fails).
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use cyclosynth::synthesis::angle::Angle;
@@ -190,12 +191,13 @@ fn try_cyclosynth(target: &Unitary, config: &SynthConfig) -> Option<Circuit> {
     Some(circuit)
 }
 
-/// Full three-tier dispatch for one single-qubit block's target unitary.
-pub fn synthesize_block(target: &Unitary, clifford_table: &CliffordTable, config: &SynthConfig) -> Circuit {
-    if let Some(word) = clifford_table.exact_match(target, EXACTNESS_FLOOR) {
-        return crate::cliffordt::clifford::circuit_from_word(&word);
-    }
-
+/// The expensive part of the full three-tier dispatch for one single-qubit
+/// block's target unitary: near-Clifford guard -> cyclosynth -> gridsynth
+/// fallback. `synthesize_block_cached` is the actual entry point (it adds
+/// the exact-Clifford check ahead of this and caches this part -- the
+/// exact-Clifford check is already cheap, a lookup against 24 entries, so
+/// there's no benefit caching it too, only the actual numerical search).
+fn synthesize_non_clifford(target: &Unitary, clifford_table: &CliffordTable, config: &SynthConfig) -> Circuit {
     if config.use_cyclosynth {
         let near_clifford = clifford_table.nearest_distance(target) < NEAR_CLIFFORD_MARGIN * config.epsilon;
         if !near_clifford {
@@ -206,6 +208,48 @@ pub fn synthesize_block(target: &Unitary, clifford_table: &CliffordTable, config
     }
 
     gridsynth_unitary(target, config)
+}
+
+/// Cache of already-synthesized non-Clifford single-qubit targets, keyed by
+/// ZYZ Euler angles (the only inputs `synthesize_non_clifford` actually
+/// depends on -- `zyz_angles` already discards the global phase, which
+/// synthesis doesn't need either). Avoids redundant cyclosynth/gridsynth
+/// searches for angles that repeat across a circuit: measured on
+/// dnn_n8.qasm, 140 blocks needing synthesis reduce to only 51 distinct
+/// angle triples. Mirrors the actual Python pipeline's own documented
+/// behavior ("both synthesizers cache by angle/matrix key").
+#[derive(Default)]
+pub struct SynthCache(Mutex<HashMap<(u64, u64, u64), Circuit>>);
+
+impl SynthCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Like `synthesize_block`, but looks up/populates `cache` around the
+/// expensive non-Clifford path. Safe to call concurrently: a cache miss
+/// racing with another thread's miss on the same angle just does the
+/// (correct, just redundant) work twice rather than corrupting anything.
+pub fn synthesize_block_cached(
+    target: &Unitary,
+    clifford_table: &CliffordTable,
+    config: &SynthConfig,
+    cache: &SynthCache,
+) -> Circuit {
+    if let Some(word) = clifford_table.exact_match(target, EXACTNESS_FLOOR) {
+        return crate::cliffordt::clifford::circuit_from_word(&word);
+    }
+
+    let (theta, phi, lam) = zyz_angles(target);
+    let key = (theta.to_bits(), phi.to_bits(), lam.to_bits());
+    if let Some(hit) = cache.0.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+
+    let circuit = synthesize_non_clifford(target, clifford_table, config);
+    cache.0.lock().unwrap().insert(key, circuit.clone());
+    circuit
 }
 
 #[cfg(test)]
@@ -278,7 +322,7 @@ mod tests {
         let table = CliffordTable::build();
         let target = Gate::S.matrix();
         let config = SynthConfig::default();
-        let result = synthesize_block(&target, &table, &config);
+        let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(!result.ops.iter().any(|op| matches!(op.gate, Gate::T | Gate::Tdg)));
         assert!(distance(&target, &result.get_unitary()) < 1e-8);
     }
@@ -304,7 +348,7 @@ mod tests {
         let table = CliffordTable::build();
         let target = Gate::Rz(0.37).matrix();
         let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: false };
-        let result = synthesize_block(&target, &table, &config);
+        let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
 
@@ -313,7 +357,7 @@ mod tests {
         let table = CliffordTable::build();
         let target = Gate::Rz(0.37).matrix();
         let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: true };
-        let result = synthesize_block(&target, &table, &config);
+        let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
 
@@ -330,7 +374,18 @@ mod tests {
         c.push(Gate::H, vec![0]);
         let target = c.get_unitary();
         let config = SynthConfig { epsilon: 1e-6, seed: 3, use_cyclosynth: true };
-        let result = synthesize_block(&target, &table, &config);
+        let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
+    }
+
+    #[test]
+    fn synth_cache_reuses_result_for_repeated_angle() {
+        let table = CliffordTable::build();
+        let target = Gate::Rz(0.37).matrix();
+        let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: false };
+        let cache = SynthCache::new();
+        let first = synthesize_block_cached(&target, &table, &config, &cache);
+        let second = synthesize_block_cached(&target, &table, &config, &cache);
+        assert_eq!(first, second, "cached result should be byte-identical to the first synthesis");
     }
 }

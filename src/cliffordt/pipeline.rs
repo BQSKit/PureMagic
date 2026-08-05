@@ -20,7 +20,7 @@ use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
 use crate::cliffordt::stage4_scan_removal::{scanning_gate_removal, ScanConfig};
 use crate::cliffordt::stats::block_stats;
-use crate::cliffordt::synthesize::{synthesize_block, SynthConfig};
+use crate::cliffordt::synthesize::{synthesize_block_cached, SynthCache, SynthConfig};
 use crate::cliffordt::trbo::{trbo_optimize, TrboConfig};
 
 /// Total gate count, recursing into `Block` sub-circuits (the circuit is
@@ -291,24 +291,28 @@ pub fn compile(
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
     let synth_config = SynthConfig { epsilon: config.epsilon, seed: config.seed, use_cyclosynth: config.cyclosynth };
+    // Shared across all blocks (including in parallel -- see SynthCache's
+    // own doc comment): repeated rotation angles are common enough in real
+    // circuits that caching the expensive non-Clifford synthesis path
+    // across blocks is a large, real win, not a micro-optimization.
+    let synth_cache = SynthCache::new();
     let synth_one = |inner: &Circuit| {
         if inner.is_all_clifford() {
             return (inner.clone(), 0.0);
         }
         let target = inner.get_unitary();
-        let result = synthesize_block(&target, &table, &synth_config);
+        let result = synthesize_block_cached(&target, &table, &synth_config, &synth_cache);
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
-    // cyclosynth parallelizes its own search internally, so run Stage 6
-    // sequentially at this level when it's enabled rather than nesting it
-    // inside this crate's own per-block rayon parallelism -- see
-    // `for_each_block_with_sequential`'s doc comment for why.
-    let (synthesized, errors) = if synth_config.use_cyclosynth {
-        grouped.for_each_block_with_sequential(synth_one)
-    } else {
-        grouped.for_each_block_with(synth_one)
-    };
+    // Running Stage 6 in parallel across blocks is safe even with
+    // cyclosynth enabled (which parallelizes its own search internally):
+    // `main()` claims rayon's global thread pool with 16 MiB worker stacks
+    // before anything else can, so cyclosynth's own oversized-stack
+    // requirement (see cyclosynth::synthesis::mod.rs's own doc comment) is
+    // actually satisfied instead of silently losing that race to whichever
+    // of this pipeline's own earlier rayon usage ran first.
+    let (synthesized, errors) = grouped.for_each_block_with(synth_one);
     let total_error: f64 = errors.iter().sum();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);

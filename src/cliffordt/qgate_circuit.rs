@@ -333,32 +333,6 @@ impl Circuit {
         }
         (Circuit { n_qubits: self.n_qubits, ops }, extras)
     }
-
-    /// Like `for_each_block_with`, but processes blocks one at a time on the
-    /// current thread instead of in parallel via rayon. Needed for `f`
-    /// closures that already parallelize internally (e.g. cyclosynth's own
-    /// `rayon::scope`/`par_iter`-based lattice search): nesting that inside
-    /// this crate's own per-block rayon parallelism oversubscribes the same
-    /// global thread pool from both directions, which can turn what's
-    /// meant to be thread-parallel work-stealing into much deeper
-    /// synchronous call-stack recursion under contention -- confirmed as
-    /// the actual cause of a real stack-overflow crash on
-    /// `dnn_n8.qasm --trbo --cyclosynth` (reproduced, then fixed, via this
-    /// method taking Stage 6's cyclosynth path off the shared pool).
-    pub fn for_each_block_with_sequential<T>(&self, f: impl Fn(&Circuit) -> (Circuit, T)) -> (Circuit, Vec<T>) {
-        let mut ops = Vec::with_capacity(self.ops.len());
-        let mut extras = Vec::new();
-        for op in &self.ops {
-            if let Gate::Block(inner) = &op.gate {
-                let (new_inner, extra) = f(inner);
-                ops.push(Operation { gate: Gate::Block(Box::new(new_inner)), qubits: op.qubits.clone() });
-                extras.push(extra);
-            } else {
-                ops.push(op.clone());
-            }
-        }
-        (Circuit { n_qubits: self.n_qubits, ops }, extras)
-    }
 }
 
 #[cfg(test)]

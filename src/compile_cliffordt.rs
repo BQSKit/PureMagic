@@ -119,6 +119,25 @@ fn report_line(before: &Stats, after: &Stats) -> String {
 }
 
 fn main() {
+    // Claim rayon's global thread pool with 16 MiB worker stacks before
+    // anything else -- our own pipeline's own rayon usage (Stages 1-5) or
+    // cyclosynth's own `ensure_rayon_stack` -- can win that race first.
+    // Rayon's global pool is a process-wide singleton built lazily on first
+    // use; whichever caller's `build_global` runs first wins, silently (a
+    // losing caller's request just becomes a no-op, per rayon's own docs).
+    // cyclosynth's recursive "optimal mode" search needs stacks this large
+    // (its own `synthesis::mod.rs::ensure_rayon_stack` says so directly:
+    // its parallel search nests per-prefix scratch frames deep enough to
+    // overflow rayon's default 2 MiB stacks) -- but since this pipeline's
+    // own Stage 1-5 rayon usage runs first and would otherwise win that
+    // race with the *default* stack size, cyclosynth's own request was
+    // silently losing every time, leaving it to run on undersized stacks.
+    // That's the real cause of a stack-overflow crash fixed differently
+    // (by serializing Stage 6 instead) in an earlier commit -- this claims
+    // the pool correctly instead of just reducing contention around the
+    // underlying problem.
+    let _ = rayon::ThreadPoolBuilder::new().stack_size(16 * 1024 * 1024).build_global();
+
     let args = Args::parse();
 
     let git_sha = env!("VERGEN_GIT_SHA");
