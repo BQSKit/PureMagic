@@ -11,10 +11,10 @@
 //! exactly rounded," found via multi-start nonlinear least squares and a
 //! binary search over N, then a deterministic snap-to-grid.
 
-use nalgebra::DVector;
+use nalgebra::{DMatrix, DVector};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
-use crate::cliffordt::instantiate::{fidelity_residuals, instantiate_multistart, lm_fit_multistart};
+use crate::cliffordt::instantiate::{fidelity_residuals, fidelity_residuals_and_jacobian, instantiate_multistart, lm_fit_multistart};
 use crate::cliffordt::matrix::{distance, Unitary};
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
@@ -92,17 +92,26 @@ fn rounded_gate(val: f64, disc: Discretization) -> Vec<Gate> {
     }
 }
 
-/// Distance of each angle from the nearest multiple of `period` -- mirrors
+/// Deviation of a single angle from the nearest multiple of `period`.
+fn deviation_single(p: f64, period: f64) -> f64 {
+    let shifted = (p - period / 2.0).rem_euclid(period);
+    (shifted - period / 2.0).abs() / 2.0
+}
+
+/// Deviation of each angle from the nearest multiple of `period` -- mirrors
 /// `tcount.get_deviation_arr` (without a blacklist: every parameter passed
 /// in here is already known to be a genuine free Rz angle).
 fn deviation(params: &[f64], period: f64) -> Vec<f64> {
-    params
-        .iter()
-        .map(|&p| {
-            let shifted = (p - period / 2.0).rem_euclid(period);
-            (shifted - period / 2.0).abs() / 2.0
-        })
-        .collect()
+    params.iter().map(|&p| deviation_single(p, period)).collect()
+}
+
+/// `d(deviation)/dp`, exact almost everywhere (`deviation` is piecewise
+/// linear with slope +-1/2; the derivative is undefined only exactly at the
+/// wrap/kink points, a measure-zero set no floating-point parameter lands
+/// on in practice).
+fn deviation_derivative(p: f64, period: f64) -> f64 {
+    let shifted = (p - period / 2.0).rem_euclid(period);
+    (shifted - period / 2.0).signum() / 2.0
 }
 
 /// Fidelity residuals (global-phase-invariant, see `fidelity_residuals`)
@@ -125,8 +134,60 @@ fn combined_residuals(circuit_template: &Circuit, target: &Unitary, params: &[f6
     out
 }
 
+/// `combined_residuals`'s value *and* its analytic Jacobian, computed
+/// together off one shared `fidelity_residuals_and_jacobian` call: its rows
+/// unchanged, plus one row per one of the `n_round` smallest deviations --
+/// each such row is `deviation_derivative` (scaled by `dim`) in the column
+/// of the *specific* parameter that produced that smallest deviation, zero
+/// in every other column. Valid almost everywhere: which parameter lands
+/// among the `n_round` smallest is a locally constant, discrete selection
+/// (`combined_residuals` re-sorts at every evaluation, so a parameter
+/// crossing another's rank is itself already handled the next time the
+/// residual/Jacobian pair is (re-)evaluated at the new point -- exactly how
+/// a numerical Jacobian would behave here too, just cheaper).
+fn combined_residuals_and_jacobian(
+    circuit_template: &Circuit,
+    target: &Unitary,
+    params: &[f64],
+    period: f64,
+    n_round: usize,
+) -> (DVector<f64>, DMatrix<f64>) {
+    let (fid, fid_jac) = fidelity_residuals_and_jacobian(circuit_template, target, params);
+    if n_round == 0 {
+        return (fid, fid_jac);
+    }
+    let dim = (1usize << circuit_template.n_qubits) as f64;
+    let n = params.len();
+    let mut idx_dev: Vec<(usize, f64)> = params.iter().enumerate().map(|(i, &p)| (i, deviation_single(p, period))).collect();
+    idx_dev.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    let m = fid.len();
+    let mut r = DVector::zeros(m + n_round);
+    r.rows_mut(0, m).copy_from(&fid);
+    let mut jac = DMatrix::zeros(m + n_round, n);
+    jac.view_mut((0, 0), (m, n)).copy_from(&fid_jac);
+    for (row, &(param_idx, d)) in idx_dev[..n_round].iter().enumerate() {
+        r[m + row] = d * dim;
+        jac[(m + row, param_idx)] = deviation_derivative(params[param_idx], period) * dim;
+    }
+    (r, jac)
+}
+
 /// Jointly fit `circuit_template`'s Rz angles (biased toward getting
 /// `n_round` of them close to `disc`'s grid) against `target`.
+///
+/// Before launching the expensive multistart search, tries `known_good`
+/// (typically the previous binary-search probe's accepted params) and the
+/// template's own unmodified params via a single, optimization-free
+/// residual evaluation each -- mirrors `trbo`'s own `validated_optimization`
+/// ("Try known good sets of parameters before introducing randomness"),
+/// which is often enough on its own (`n_round=0` always qualifies; angles
+/// already exactly on the grid from an earlier stage need no refitting).
+/// `combined_residuals`'s Euclidean norm is the Frobenius norm of the
+/// (phase-aligned) fidelity part, which upper-bounds `matrix::distance`'s
+/// spectral norm -- so this check is a safe (never a false positive)
+/// stand-in for the `distance(...) < success_threshold` test the caller
+/// ultimately relies on.
 fn fit_with_rounding_bias(
     circuit_template: &Circuit,
     target: &Unitary,
@@ -134,20 +195,34 @@ fn fit_with_rounding_bias(
     disc: Discretization,
     config: &TrboConfig,
     seed: u64,
+    known_good: &[Vec<f64>],
 ) -> Vec<f64> {
     let n_rz = circuit_template.num_params();
-    let extra_starts = vec![vec![0.0; n_rz], circuit_template.params()];
+    let period = disc.period();
+
+    let original_params = circuit_template.params();
+    for guess in known_good.iter().chain(std::iter::once(&original_params)) {
+        if guess.len() != n_rz {
+            continue;
+        }
+        let cost = combined_residuals(circuit_template, target, guess, period, n_round).norm();
+        if cost < config.success_threshold {
+            return guess.clone();
+        }
+    }
+
+    let extra_starts = vec![vec![0.0; n_rz], original_params];
 
     let template = circuit_template.clone();
     let target_c = target.clone();
-    let period = disc.period();
     let fit = lm_fit_multistart(
-        move |p| combined_residuals(&template, &target_c, p, period, n_round),
+        move |p| combined_residuals_and_jacobian(&template, &target_c, p, period, n_round),
         n_rz,
         &extra_starts,
         config.multistarts,
         config.max_iters,
         seed,
+        config.success_threshold,
     );
     fit.params
 }
@@ -170,7 +245,8 @@ fn optimize_for_discretization(circuit: &Circuit, target: &Unitary, disc: Discre
     while low <= high {
         let mid = low + (high - low) / 2;
         let seed = config.seed ^ (mid as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let params = fit_with_rounding_bias(circuit, target, mid, disc, config, seed);
+        let known_good = [best_params.clone()];
+        let params = fit_with_rounding_bias(circuit, target, mid, disc, config, seed, &known_good);
 
         let mut fitted = circuit.clone();
         fitted.set_params(&params);
@@ -220,7 +296,8 @@ fn optimize_for_discretization(circuit: &Circuit, target: &Unitary, disc: Discre
     // Verify, with a fidelity-only fallback re-fit of whatever Rz angles
     // remain if the snap pushed things slightly out of tolerance.
     if distance(target, &out.get_unitary()) > config.success_threshold && out.num_params() > 0 {
-        let refit = instantiate_multistart(&out, target, config.multistarts, config.max_iters, config.seed);
+        let refit =
+            instantiate_multistart(&out, target, config.multistarts, config.max_iters, config.seed, config.success_threshold);
         if refit.distance < distance(target, &out.get_unitary()) {
             out.set_params(&refit.params);
         }

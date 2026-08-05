@@ -33,8 +33,10 @@ nalgebra = "0.34"
 num-complex = "0.4"
 rsgridsynth = "0.2.2"
 cyclosynth = { path = "cyclosynth", default-features = false }
-# NLS instantiation (Stage 4/5) is hand-rolled Levenberg-Marquardt over
-# nalgebra rather than an external solver crate -- see instantiate.rs.
+# NLS instantiation (Stage 4/5) uses the rust-cv `levenberg-marquardt`
+# crate (a nalgebra-native port of MINPACK's trust-region LM) instead of
+# a hand-rolled solver -- see instantiate.rs.
+levenberg-marquardt = "0.15"
 
 #[dependencies.pyo3-built]
 #version = "0.4"

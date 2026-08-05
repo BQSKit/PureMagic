@@ -5,6 +5,8 @@
 //! fallback (used directly for the independent per-axis path, and as the
 //! safety net when cyclosynth is skipped or fails).
 
+use std::sync::Mutex;
+
 use cyclosynth::synthesis::angle::Angle;
 use cyclosynth::synthesis::Synthesizer;
 use rsgridsynth::config::config_from_theta_epsilon;
@@ -13,6 +15,24 @@ use rsgridsynth::gridsynth::gridsynth_gates;
 use crate::cliffordt::clifford::CliffordTable;
 use crate::cliffordt::matrix::{Unitary, C64};
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
+
+/// rsgridsynth keeps its arbitrary-precision search state in a
+/// process-global `AtomicUsize` (`PREC_BITS` in its own `common.rs`),
+/// read/bumped by `gridsynth_gates` itself rather than threaded through as
+/// per-call state. That's fine sequentially, but under this pipeline's
+/// block-level parallelism (`Circuit::for_each_block`), concurrent calls on
+/// different threads can read or reset each other's in-flight precision
+/// state, making the exact (still individually valid, within-epsilon) gate
+/// sequence depend on scheduling -- confirmed empirically (two runs with
+/// the same seed produced the same T-count but a different gate sequence
+/// in one block). Serializing every call through this lock restores
+/// reproducibility for a given seed. Gridsynth's own search dominates each
+/// block's cost anyway (up to 3 calls per block, ZYZ decomposition and
+/// bookkeeping around it is cheap by comparison), so this reverts Stage 6
+/// specifically to close to its pre-parallelization sequential time --
+/// small relative to total runtime, and Stage 4/5 (which never call
+/// gridsynth) are unaffected.
+static GRIDSYNTH_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct SynthConfig {
     pub epsilon: f64,
@@ -69,6 +89,7 @@ pub fn zyz_angles(target: &Unitary) -> (f64, f64, f64) {
 /// during its search), the opposite of cyclosynth's -- reversed here so
 /// every caller in this module can just push characters left-to-right.
 fn gridsynth_rz_word(theta: f64, epsilon: f64, seed: u64) -> Vec<Gate> {
+    let _guard = GRIDSYNTH_LOCK.lock().unwrap();
     let mut config = config_from_theta_epsilon(theta, epsilon, seed, false, true);
     let result = gridsynth_gates(&mut config);
     result

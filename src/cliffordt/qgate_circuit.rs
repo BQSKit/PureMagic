@@ -6,6 +6,8 @@
 //! which represents *already-transpiled* Pauli-product circuits for lattice
 //! surgery scheduling -- a different stage of the overall pipeline.
 
+use rayon::prelude::*;
+
 use crate::cliffordt::matrix::{identity, Unitary, C64};
 
 fn re(x: f64) -> C64 {
@@ -211,6 +213,60 @@ impl Circuit {
         self.ops.iter().filter(|op| op.gate.is_rz()).count()
     }
 
+    /// The circuit's unitary (same value `get_unitary` returns) together
+    /// with analytic `d(unitary)/d(theta)` for each `Rz` gate, in the same
+    /// program order as `params()`. Used by `instantiate.rs`'s analytic
+    /// Jacobian instead of perturbing each parameter and rebuilding the
+    /// whole unitary from scratch (this module's old approach): each
+    /// derivative is `Suffix_k * (-i/2 * Z) * embed(Rz(theta_k)) * Prefix_k`
+    /// where `Prefix_k`/`Suffix_k` are the composed unitaries of every gate
+    /// strictly before/after gate `k` -- so computing every derivative
+    /// costs one forward sweep (building all prefixes -- the last of which
+    /// *is* the circuit's unitary, returned here instead of paying for a
+    /// separate `get_unitary()` call) plus one backward sweep (all
+    /// suffixes) over the circuit's actual gate count, not one full rebuild
+    /// per free parameter.
+    pub fn unitary_and_rz_derivatives(&self) -> (Unitary, Vec<Unitary>) {
+        let dim = 1usize << self.n_qubits;
+
+        // prefixes[k] = product of ops[0..k) (ops[0] applied first, i.e.
+        // rightmost in the matrix product) -- built incrementally via the
+        // same left-multiply `apply_gate_inplace` uses for `get_unitary`.
+        // prefixes[n] is exactly what `get_unitary` would return.
+        let mut prefixes: Vec<Unitary> = Vec::with_capacity(self.ops.len() + 1);
+        prefixes.push(identity(dim));
+        for op in &self.ops {
+            let mut u = prefixes.last().unwrap().clone();
+            crate::cliffordt::matrix::apply_gate_inplace(&mut u, &op.gate.matrix(), &op.qubits, self.n_qubits);
+            prefixes.push(u);
+        }
+        let built = prefixes.last().unwrap().clone();
+
+        // suffixes[k] = product of ops[k..n) (i.e. everything from k
+        // onward, ops[k] applied first so it's rightmost); suffixes[n] = I.
+        // Built back-to-front: suffixes[k] = suffixes[k+1] * embed(ops[k]).
+        // Uses the dense `embed` (not the in-place slice trick) since this
+        // is a right-multiply, not a left-multiply -- fine at these block
+        // sizes (dim <= 16 or so).
+        let n = self.ops.len();
+        let mut suffixes: Vec<Unitary> = vec![identity(dim); n + 1];
+        for k in (0..n).rev() {
+            let embedded = crate::cliffordt::matrix::embed(&self.ops[k].gate.matrix(), &self.ops[k].qubits, self.n_qubits);
+            suffixes[k] = &suffixes[k + 1] * &embedded;
+        }
+
+        let mut derivs = Vec::with_capacity(self.num_params());
+        for (k, op) in self.ops.iter().enumerate() {
+            if let Gate::Rz(theta) = op.gate {
+                // d/dtheta Rz(theta) = -i/2 * Z * Rz(theta).
+                let d_local = Gate::Z.matrix() * Gate::Rz(theta).matrix() * C64::new(0.0, -0.5);
+                let d_embedded = crate::cliffordt::matrix::embed(&d_local, &op.qubits, self.n_qubits);
+                derivs.push(&suffixes[k + 1] * &d_embedded * &prefixes[k]);
+            }
+        }
+        (built, derivs)
+    }
+
     pub fn is_all_clifford(&self) -> bool {
         self.ops.iter().all(|op| op.gate.is_clifford())
     }
@@ -234,20 +290,48 @@ impl Circuit {
         out
     }
 
-    /// Apply `f` to the inner circuit of every top-level `Block` operation;
-    /// non-block operations pass through unchanged. Mirrors bqskit's
-    /// `ForEachBlockPass`.
-    pub fn for_each_block(&self, mut f: impl FnMut(&Circuit) -> Circuit) -> Circuit {
-        let mut out = Circuit::new(self.n_qubits);
-        for op in &self.ops {
-            if let Gate::Block(inner) = &op.gate {
-                let new_inner = f(inner);
-                out.push(Gate::Block(Box::new(new_inner)), op.qubits.clone());
-            } else {
-                out.ops.push(op.clone());
+    /// Apply `f` to the inner circuit of every top-level `Block` operation,
+    /// in parallel across blocks (they're independent windows by
+    /// construction -- that's the whole point of partitioning); non-block
+    /// operations pass through unchanged. Mirrors bqskit's
+    /// `ForEachBlockPass`, but bqskit distributes this work across a
+    /// process pool per block, not just within one block's own solver
+    /// calls -- `f` must be `Sync` (no captured mutable state) for the
+    /// same reason. Use `for_each_block_with` instead when the caller
+    /// needs to aggregate per-block statistics.
+    pub fn for_each_block(&self, f: impl Fn(&Circuit) -> Circuit + Sync) -> Circuit {
+        let (out, _): (Circuit, Vec<()>) = self.for_each_block_with(|inner| (f(inner), ()));
+        out
+    }
+
+    /// Like `for_each_block`, but `f` also returns a per-block value of
+    /// type `T`, collected (in block order, one entry per `Block` op) for
+    /// the caller to aggregate afterward -- since `f` runs in parallel
+    /// across blocks, it can't just mutate a captured counter the way a
+    /// sequential `for` loop could.
+    pub fn for_each_block_with<T: Send>(&self, f: impl Fn(&Circuit) -> (Circuit, T) + Sync) -> (Circuit, Vec<T>) {
+        let results: Vec<(Operation, Option<T>)> = self
+            .ops
+            .par_iter()
+            .map(|op| {
+                if let Gate::Block(inner) = &op.gate {
+                    let (new_inner, extra) = f(inner);
+                    (Operation { gate: Gate::Block(Box::new(new_inner)), qubits: op.qubits.clone() }, Some(extra))
+                } else {
+                    (op.clone(), None)
+                }
+            })
+            .collect();
+
+        let mut ops = Vec::with_capacity(results.len());
+        let mut extras = Vec::new();
+        for (op, extra) in results {
+            ops.push(op);
+            if let Some(e) = extra {
+                extras.push(e);
             }
         }
-        out
+        (Circuit { n_qubits: self.n_qubits, ops }, extras)
     }
 }
 
@@ -309,6 +393,37 @@ mod tests {
         assert_eq!(c.params(), vec![0.3, 1.2]);
         c.set_params(&[0.7, -0.4]);
         assert_eq!(c.params(), vec![0.7, -0.4]);
+    }
+
+    #[test]
+    fn rz_unitary_derivatives_matches_finite_difference() {
+        let mut c = Circuit::new(2);
+        c.push(Gate::H, vec![0]);
+        c.push(Gate::Rz(0.3), vec![0]);
+        c.push(Gate::Cx, vec![0, 1]);
+        c.push(Gate::Rz(-0.7), vec![1]);
+        c.push(Gate::S, vec![1]);
+        c.push(Gate::Rz(1.1), vec![0]);
+
+        let (built, derivs) = c.unitary_and_rz_derivatives();
+        assert!(distance(&built, &c.get_unitary()) < 1e-12);
+        let params = c.params();
+        assert_eq!(derivs.len(), params.len());
+
+        const H: f64 = 1e-6;
+        for (k, d_analytic) in derivs.iter().enumerate() {
+            let mut p_plus = params.clone();
+            p_plus[k] += H;
+            let mut p_minus = params.clone();
+            p_minus[k] -= H;
+            let mut c_plus = c.clone();
+            c_plus.set_params(&p_plus);
+            let mut c_minus = c.clone();
+            c_minus.set_params(&p_minus);
+            let numeric = (c_plus.get_unitary() - c_minus.get_unitary()) / C64::new(2.0 * H, 0.0);
+            let diff_norm = (d_analytic - &numeric).norm();
+            assert!(diff_norm < 1e-6, "param {k}: analytic vs numeric derivative differ by {diff_norm}");
+        }
     }
 
     #[test]

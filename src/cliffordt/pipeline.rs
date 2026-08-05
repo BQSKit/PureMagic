@@ -126,22 +126,23 @@ fn gauge_collapse(
     // `collapse_clifford_blocks`'s `len(shortest) > len(block): keep
     // original` guard in the Python reference.
     let t = Instant::now();
-    let mut blocks_matched = 0usize;
-    let mut size_before = 0usize;
-    let mut size_after = 0usize;
-    let mut rz_consumed = 0usize;
-    let mut blocks_exposed = 0usize;
-    let checked = current.for_each_block(|inner| {
+    enum Stage2Outcome {
+        Matched { size_before: usize, size_after: usize, rz_consumed: usize },
+        Exposed,
+        Unchanged,
+    }
+    let (checked, outcomes) = current.for_each_block_with(|inner| {
         let target = inner.get_unitary();
         match table.exact_match(&target, 1e-10) {
             Some(word) if word.len() <= inner.ops.len() => {
-                blocks_matched += 1;
-                size_before += inner.ops.len();
-                size_after += word.len();
-                rz_consumed += inner.ops.iter().filter(|op| op.gate.is_rz()).count();
-                crate::cliffordt::clifford::circuit_from_word(&word)
+                let outcome = Stage2Outcome::Matched {
+                    size_before: inner.ops.len(),
+                    size_after: word.len(),
+                    rz_consumed: inner.ops.iter().filter(|op| op.gate.is_rz()).count(),
+                };
+                (crate::cliffordt::clifford::circuit_from_word(&word), outcome)
             }
-            Some(_) => inner.clone(),
+            Some(_) => (inner.clone(), Stage2Outcome::Unchanged),
             None => {
                 // Not an exact Clifford. A `U3` gate here would otherwise
                 // be permanently invisible to every later stage (only
@@ -152,15 +153,32 @@ fn gauge_collapse(
                 // gates, so leave it untouched (decomposing it further
                 // would only add gates for no benefit).
                 if inner.ops.iter().any(|op| matches!(op.gate, Gate::U3(..))) {
-                    blocks_exposed += 1;
-                    crate::cliffordt::clifford::decompose_to_rz_canonical(&target)
+                    (crate::cliffordt::clifford::decompose_to_rz_canonical(&target), Stage2Outcome::Exposed)
                 } else {
-                    inner.clone()
+                    (inner.clone(), Stage2Outcome::Unchanged)
                 }
             }
         }
     });
     current = checked.unfold();
+
+    let mut blocks_matched = 0usize;
+    let mut size_before = 0usize;
+    let mut size_after = 0usize;
+    let mut rz_consumed = 0usize;
+    let mut blocks_exposed = 0usize;
+    for outcome in &outcomes {
+        match outcome {
+            Stage2Outcome::Matched { size_before: b, size_after: a, rz_consumed: rz } => {
+                blocks_matched += 1;
+                size_before += b;
+                size_after += a;
+                rz_consumed += rz;
+            }
+            Stage2Outcome::Exposed => blocks_exposed += 1,
+            Stage2Outcome::Unchanged => {}
+        }
+    }
     let detail = format!(
         "{blocks_matched}/{num_blocks} blocks matched an exact Clifford{}, {rz_consumed} Rz gates consumed for free{}",
         if blocks_matched > 0 {
@@ -243,23 +261,17 @@ pub fn compile(
         let t = Instant::now();
         let partitioned = partition(&current, 4);
         let trbo_config = TrboConfig { success_threshold: config.epsilon, seed: config.seed, ..TrboConfig::default() };
-        let mut num_blocks = 0usize;
-        let mut num_improved = 0usize;
-        let mut rz_before = 0usize;
-        let mut rz_after = 0usize;
-        let optimized = partitioned.for_each_block(|inner| {
-            num_blocks += 1;
+        let (optimized, deltas) = partitioned.for_each_block_with(|inner| {
             let before = inner.num_params();
             let result = trbo_optimize(inner, &trbo_config);
             let after = result.num_params();
-            rz_before += before;
-            rz_after += after;
-            if after < before {
-                num_improved += 1;
-            }
-            result
+            (result, (before, after))
         });
         current = optimized.unfold();
+        let num_blocks = deltas.len();
+        let num_improved = deltas.iter().filter(|(before, after)| after < before).count();
+        let rz_before: usize = deltas.iter().map(|(before, _)| before).sum();
+        let rz_after: usize = deltas.iter().map(|(_, after)| after).sum();
         let detail = format!(
             "{num_improved}/{num_blocks} blocks improved, Rz: {rz_before} -> {rz_after} ({:+})",
             rz_after as i64 - rz_before as i64
@@ -278,17 +290,17 @@ pub fn compile(
     // Stage 6: final synthesis of whatever continuous rotation remains.
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
-    let mut total_error = 0.0_f64;
     let synth_config = SynthConfig { epsilon: config.epsilon, seed: config.seed, use_cyclosynth: config.cyclosynth };
-    let synthesized = grouped.for_each_block(|inner| {
+    let (synthesized, errors) = grouped.for_each_block_with(|inner| {
         if inner.is_all_clifford() {
-            return inner.clone();
+            return (inner.clone(), 0.0);
         }
         let target = inner.get_unitary();
         let result = synthesize_block(&target, &table, &synth_config);
-        total_error += distance(&target, &result.get_unitary());
-        result
+        let error = distance(&target, &result.get_unitary());
+        (result, error)
     });
+    let total_error: f64 = errors.iter().sum();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);
     on_stage(StageReport {

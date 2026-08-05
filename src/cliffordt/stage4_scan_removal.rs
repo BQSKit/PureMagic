@@ -36,7 +36,14 @@ pub fn scanning_gate_removal(circuit: &Circuit, config: &ScanConfig) -> Circuit 
         let removed = slots[idx].take();
         let candidate = build_circuit(circuit.n_qubits, &slots);
 
-        let fit = instantiate_multistart(&candidate, &target, config.n_starts, config.max_iters, config.seed ^ idx as u64);
+        let fit = instantiate_multistart(
+            &candidate,
+            &target,
+            config.n_starts,
+            config.max_iters,
+            config.seed ^ idx as u64,
+            config.success_threshold,
+        );
 
         if fit.distance < config.success_threshold {
             apply_params_to_slots(&mut slots, &fit.params);

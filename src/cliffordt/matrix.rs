@@ -54,16 +54,14 @@ pub fn distance(target: &Unitary, built: &Unitary) -> f64 {
 }
 
 /// Bit of qubit `q` (0 = most significant) within an `n`-qubit basis index.
-/// Only used by `embed` (test-only, see its own doc comment).
-#[cfg(test)]
+/// Only used by `embed`.
 fn bit(x: usize, q: usize, n: usize) -> usize {
     (x >> (n - 1 - q)) & 1
 }
 
 /// Sub-index formed by reading the bits at `qubits` (in the given order,
 /// first entry = most significant) out of a full `n`-qubit basis index.
-/// Only used by `embed` (test-only, see its own doc comment).
-#[cfg(test)]
+/// Only used by `embed`.
 fn local_index(x: usize, qubits: &[usize], n: usize) -> usize {
     let mut idx = 0;
     for &q in qubits {
@@ -131,12 +129,13 @@ pub fn apply_gate_inplace(u: &mut Unitary, gate: &Unitary, qubits: &[usize], n_q
 /// space. Entries where the full basis states disagree on any qubit outside
 /// `qubits` are zero (the gate acts as identity there).
 ///
-/// Superseded by `apply_gate_inplace` for actual circuit composition (see
-/// its doc comment for why); kept as the simple, obviously-correct
-/// reference implementation `apply_gate_inplace`'s own tests check against,
-/// so test-only rather than removed.
-#[cfg(test)]
-fn embed(gate: &Unitary, qubits: &[usize], n_qubits: usize) -> Unitary {
+/// Superseded by `apply_gate_inplace` for whole-circuit composition (see
+/// its doc comment for why); the O(dim^3)-regardless-of-k dense cost this
+/// pays is fine for the small per-block unitaries `instantiate.rs`'s
+/// analytic Jacobian needs (one embed per gate, not per residual
+/// evaluation), and it's also `apply_gate_inplace`'s own reference
+/// implementation, checked against it in this module's tests.
+pub(crate) fn embed(gate: &Unitary, qubits: &[usize], n_qubits: usize) -> Unitary {
     let k = qubits.len();
     debug_assert_eq!(gate.nrows(), 1usize << k);
     debug_assert_eq!(gate.ncols(), 1usize << k);
