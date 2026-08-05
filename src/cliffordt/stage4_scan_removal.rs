@@ -6,9 +6,20 @@
 //! target unitary -- not just checking the unmodified remainder, which is
 //! what makes this more than a static redundancy check (see the plan
 //! doc's Context section).
+//!
+//! That per-op loop has a structural blind spot: it only ever tries
+//! removing ONE op at a time, so a block that's redundant only as a whole
+//! -- e.g. two adjacent identical parameter-free `Cx` gates, which cancel
+//! to the identity together but neither removal alone gets anywhere close
+//! -- is invisible to it (confirmed on `qft_n63.qasm`, where 595 of 1953
+//! Stage 4 blocks were exactly `Cx(a,b); Cx(a,b)`, entirely dead weight
+//! left over once `phase_merge.rs` cancelled the diagonal gate that used
+//! to sit between them, none of which this pass removed). `whole_block_
+//! is_redundant` checks that specific case directly before the per-op loop
+//! even runs.
 
 use crate::cliffordt::instantiate::instantiate_multistart;
-use crate::cliffordt::matrix::Unitary;
+use crate::cliffordt::matrix::{distance, identity, Unitary};
 use crate::cliffordt::qgate_circuit::{Circuit, Operation};
 
 pub struct ScanConfig {
@@ -27,6 +38,13 @@ impl Default for ScanConfig {
 
 pub fn scanning_gate_removal(circuit: &Circuit, config: &ScanConfig) -> Circuit {
     let target: Unitary = circuit.get_unitary();
+
+    // Whole-block check first -- see module docs for why the per-op loop
+    // below can never find this case on its own.
+    if distance(&target, &identity(1 << circuit.n_qubits)) < config.success_threshold {
+        return Circuit::new(circuit.n_qubits);
+    }
+
     let mut slots: Vec<Option<Operation>> = circuit.ops.iter().cloned().map(Some).collect();
 
     let order: Vec<usize> =
@@ -77,7 +95,6 @@ fn apply_params_to_slots(slots: &mut [Option<Operation>], params: &[f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cliffordt::matrix::distance;
     use crate::cliffordt::qgate_circuit::Gate;
 
     #[test]
@@ -113,6 +130,34 @@ mod tests {
         c.push(Gate::Rz(-0.77), vec![0]);
         let original_unitary = c.get_unitary();
         let result = scanning_gate_removal(&c, &ScanConfig::default());
+        assert!(distance(&original_unitary, &result.get_unitary()) < 1e-6);
+    }
+
+    /// Regression test for the bug this fixes: two adjacent identical `Cx`
+    /// gates and nothing else -- the exact shape found dead in `qft_n63.qasm`
+    /// blocks left over by `phase_merge.rs`. Neither individual removal
+    /// ever gets close to identity, so only a whole-block check catches it.
+    #[test]
+    fn two_identical_adjacent_cx_gates_cancel_to_an_empty_block() {
+        let mut c = Circuit::new(2);
+        c.push(Gate::Cx, vec![1, 0]);
+        c.push(Gate::Cx, vec![1, 0]);
+        let result = scanning_gate_removal(&c, &ScanConfig::default());
+        assert!(result.ops.is_empty(), "expected the whole redundant block to be dropped, got {:?}", result.ops);
+    }
+
+    /// A block with the same two `Cx` gates plus a genuine, non-redundant
+    /// `Rz` between them must NOT be emptied -- the whole-block check must
+    /// only fire when the block is truly the identity.
+    #[test]
+    fn cx_sandwiched_real_rotation_is_not_dropped() {
+        let mut c = Circuit::new(2);
+        c.push(Gate::Cx, vec![1, 0]);
+        c.push(Gate::Rz(0.6), vec![0]);
+        c.push(Gate::Cx, vec![1, 0]);
+        let original_unitary = c.get_unitary();
+        let result = scanning_gate_removal(&c, &ScanConfig::default());
+        assert!(!result.ops.is_empty(), "a genuine ZZ-type rotation must not be dropped");
         assert!(distance(&original_unitary, &result.get_unitary()) < 1e-6);
     }
 }
