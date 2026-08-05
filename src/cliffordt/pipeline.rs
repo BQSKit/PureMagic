@@ -291,7 +291,7 @@ pub fn compile(
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
     let synth_config = SynthConfig { epsilon: config.epsilon, seed: config.seed, use_cyclosynth: config.cyclosynth };
-    let (synthesized, errors) = grouped.for_each_block_with(|inner| {
+    let synth_one = |inner: &Circuit| {
         if inner.is_all_clifford() {
             return (inner.clone(), 0.0);
         }
@@ -299,7 +299,16 @@ pub fn compile(
         let result = synthesize_block(&target, &table, &synth_config);
         let error = distance(&target, &result.get_unitary());
         (result, error)
-    });
+    };
+    // cyclosynth parallelizes its own search internally, so run Stage 6
+    // sequentially at this level when it's enabled rather than nesting it
+    // inside this crate's own per-block rayon parallelism -- see
+    // `for_each_block_with_sequential`'s doc comment for why.
+    let (synthesized, errors) = if synth_config.use_cyclosynth {
+        grouped.for_each_block_with_sequential(synth_one)
+    } else {
+        grouped.for_each_block_with(synth_one)
+    };
     let total_error: f64 = errors.iter().sum();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);
