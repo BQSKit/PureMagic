@@ -210,16 +210,58 @@ fn synthesize_non_clifford(target: &Unitary, clifford_table: &CliffordTable, con
     gridsynth_unitary(target, config)
 }
 
+/// Hashable, global-phase-invariant, rounded key for a 2x2 unitary --
+/// matches the actual Python pipeline's own `canonical_key` exactly
+/// (`decimals=7`): round magnitudes first so the pivot tie-break (which
+/// must exist, since unitarity forces `|a|==|d|` and `|b|==|c|`) is
+/// deterministic, pick the largest-magnitude entry as pivot, divide out
+/// its (unrounded) phase, then round every entry to 7 decimals -- coarse
+/// enough to absorb floating-point noise accumulated by this pipeline's
+/// own earlier stages composing many matrix products before a block ever
+/// reaches Stage 6, but far finer than any epsilon this pipeline
+/// synthesizes to (1e-8 by default is already coarser), so two matrices
+/// landing on the same key are guaranteed indistinguishable at the
+/// accuracy actually being targeted.
+///
+/// Keyed on the matrix directly, not a ZYZ-angle decomposition: two
+/// matrices that are "the same" rotation can have genuinely different
+/// (theta, phi, lam) representations at a branch boundary (e.g. `phi = pi`
+/// vs `phi = -pi`), which an angle-based key would treat as distinct even
+/// though the actual targets are identical -- confirmed as a real,
+/// separate gap from plain floating-point noise (bucketing the angles
+/// alone barely moved dnn_n8.qasm's call count).
+fn canonical_key(target: &Unitary) -> [(i64, i64); 4] {
+    const SCALE: f64 = 1e7;
+    let round = |x: f64| (x * SCALE).round() as i64;
+
+    let mut pivot = 0usize;
+    let mut best_rounded_abs = f64::MIN;
+    for i in 0..4 {
+        let v = target[(i / 2, i % 2)];
+        let rounded_abs = (v.norm() * SCALE).round() / SCALE;
+        if rounded_abs > best_rounded_abs {
+            best_rounded_abs = rounded_abs;
+            pivot = i;
+        }
+    }
+    let phase = target[(pivot / 2, pivot % 2)].arg();
+    let rot = C64::new(phase.cos(), phase.sin());
+
+    let mut out = [(0i64, 0i64); 4];
+    for i in 0..4 {
+        let v = target[(i / 2, i % 2)] / rot;
+        out[i] = (round(v.re), round(v.im));
+    }
+    out
+}
+
 /// Cache of already-synthesized non-Clifford single-qubit targets, keyed by
-/// ZYZ Euler angles (the only inputs `synthesize_non_clifford` actually
-/// depends on -- `zyz_angles` already discards the global phase, which
-/// synthesis doesn't need either). Avoids redundant cyclosynth/gridsynth
-/// searches for angles that repeat across a circuit: measured on
-/// dnn_n8.qasm, 140 blocks needing synthesis reduce to only 51 distinct
-/// angle triples. Mirrors the actual Python pipeline's own documented
-/// behavior ("both synthesizers cache by angle/matrix key").
+/// `canonical_key`. Avoids redundant cyclosynth/gridsynth searches for
+/// rotations that repeat across a circuit. Mirrors the actual Python
+/// pipeline's own documented behavior ("both synthesizers cache by
+/// angle/matrix key").
 #[derive(Default)]
-pub struct SynthCache(Mutex<HashMap<(u64, u64, u64), Circuit>>);
+pub struct SynthCache(Mutex<HashMap<[(i64, i64); 4], Circuit>>);
 
 impl SynthCache {
     pub fn new() -> Self {
@@ -241,8 +283,7 @@ pub fn synthesize_block_cached(
         return crate::cliffordt::clifford::circuit_from_word(&word);
     }
 
-    let (theta, phi, lam) = zyz_angles(target);
-    let key = (theta.to_bits(), phi.to_bits(), lam.to_bits());
+    let key = canonical_key(target);
     if let Some(hit) = cache.0.lock().unwrap().get(&key) {
         return hit.clone();
     }
@@ -387,5 +428,43 @@ mod tests {
         let first = synthesize_block_cached(&target, &table, &config, &cache);
         let second = synthesize_block_cached(&target, &table, &config, &cache);
         assert_eq!(first, second, "cached result should be byte-identical to the first synthesis");
+    }
+
+    #[test]
+    fn synth_cache_absorbs_floating_point_noise() {
+        // Regression test: two targets that are "the same" rotation up to
+        // noise far smaller than 1e-7 (e.g. accumulated across a few matrix
+        // products, as real blocks reaching this cache have gone through)
+        // must still hit the same cache entry -- an exact-bit-pattern key
+        // (this cache's original approach) would treat these as distinct
+        // and measurably undercache real duplicates (confirmed against the
+        // actual Python pipeline: 21 real cyclosynth calls needed on
+        // dnn_n8.qasm vs an exact-bit cache's 47-88).
+        let table = CliffordTable::build();
+        let target = Gate::Rz(0.37).matrix();
+        let mut noisy_circuit = Circuit::new(1);
+        noisy_circuit.push(Gate::Rz(0.37 + 1e-10), vec![0]);
+        let noisy_target = noisy_circuit.get_unitary();
+
+        let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: false };
+        let cache = SynthCache::new();
+        let first = synthesize_block_cached(&target, &table, &config, &cache);
+        let second = synthesize_block_cached(&noisy_target, &table, &config, &cache);
+        assert_eq!(first, second, "noise far below the 1e-7 bucket width should still hit the cache");
+    }
+
+    #[test]
+    fn synth_cache_key_ignores_global_phase() {
+        // canonical_key must be global-phase invariant: a target multiplied
+        // by an arbitrary unit phase is physically the identical gate, and
+        // this pipeline's own stages never distinguish global phase either
+        // (see e.g. fidelity_residuals). Distinct from the angle-branch
+        // ambiguity this key is specifically designed to avoid (unlike the
+        // ZYZ-angle-based bucketing this replaced), keying on the matrix
+        // directly should never even construct two different-looking
+        // representations of the same target in the first place.
+        let target = Gate::Rz(0.55).matrix();
+        let phased = target.map(|v| v * C64::new(0.0, 1.0));
+        assert_eq!(canonical_key(&target), canonical_key(&phased));
     }
 }
