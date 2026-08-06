@@ -16,30 +16,30 @@ rewritten away. The qiskit and cyclosynth backends never produce either.
 
 Pipeline
 --------
-1. Load the QASM file (OpenQASM 2 first, falling back to OpenQASM 3 -- which
-   needs the optional `qiskit-qasm3-import` package).
-2. Preopt: first merge_phase_polynomial exactly cancels/merges redundant
-   diagonal (rz-family) rotations via their phase-polynomial "parity" (see
-   its docstring) -- e.g. a QFT's CX-ladder-decomposed controlled-phase gates
-   are full of rotations that are exactly redundant with each other in this
-   sense. That merge is not always a net win (moving a rotation to satisfy a
-   global parity match can incidentally cost more than it saves -- see
-   unroll_to_u_cx's docstring), so both the merged and unmerged circuits get
-   transpiled to {u, cx} (so that every multi-qubit gate -- ccx, cswap, cry,
-   rzz, ryy, ... -- is broken down into cx plus single-qubit rotations) and
-   CliffordTSynthesizer.count_real_rotations, a cheap gridsynth-free proxy for
-   actual T-count, picks whichever needs fewer real rotations. All three
-   backends resynthesise from this same {u, cx} circuit -- necessary for the
-   qiskit backend (which only knows how to re-synthesise 1-qubit runs, not
-   arbitrary multi-qubit gates) and a real, if smaller, improvement for the
-   bqskit backend too (bqskit's own partitioner refragments single-qubit runs
-   across 2-qubit block boundaries regardless of input quality, so it cannot
-   benefit from the preopt step as much as qiskit's own pipeline does).
-3. Resynthesise over Clifford+T (--backend qiskit, the default, bqskit, or
-   cyclosynth):
+- Load the QASM file (OpenQASM 2 first, falling back to OpenQASM 3 -- which
+  needs the optional `qiskit-qasm3-import` package).
+- Preopt: first merge_phase_polynomial exactly cancels/merges redundant
+  diagonal (rz-family) rotations via their phase-polynomial "parity" (see
+  its docstring) -- e.g. a QFT's CX-ladder-decomposed controlled-phase gates
+  are full of rotations that are exactly redundant with each other in this
+  sense. That merge is not always a net win (moving a rotation to satisfy a
+  global parity match can incidentally cost more than it saves -- see
+  unroll_to_u_cx's docstring), so both the merged and unmerged circuits get
+  transpiled to {u, cx} (so that every multi-qubit gate -- ccx, cswap, cry,
+  rzz, ryy, ... -- is broken down into cx plus single-qubit rotations) and
+  CliffordTSynthesizer.count_real_rotations, a cheap gridsynth-free proxy for
+  actual T-count, picks whichever needs fewer real rotations. All three
+  backends resynthesise from this same {u, cx} circuit -- necessary for the
+  qiskit backend (which only knows how to re-synthesise single-qubit runs,
+  not arbitrary multi-qubit gates) and a real, if smaller, improvement for
+  the bqskit backend too (bqskit's own partitioner refragments single-qubit
+  runs across block boundaries regardless of input quality, so it cannot
+  benefit from the preopt step as much as qiskit's own pipeline does).
+- Resynthesise over Clifford+T (--backend qiskit, the default, bqskit, or
+  cyclosynth):
 
    qiskit: merge each maximal run of consecutive single-qubit gates on a wire
-   into one 2x2 matrix, then re-synthesise that matrix:
+   into one matrix, then re-synthesise that matrix:
      * Clifford            -> shortest word in {h, s, sdg, x, y, z} (BFS table).
      * exactly representable -> exact sequence.  A gate is exact iff its ZXZ
        Euler angles are all integer multiples of pi/4, since Rz(k*pi/4) is a
@@ -49,15 +49,15 @@ Pipeline
      Neither "exact" path is taken on trust: the word it produces is measured
      against the target and rejected if it is off by more than --tol, which
      defaults to --epsilon.  The check matters because the Clifford lookup key
-     rounds to 7 decimals -- deliberately, so that gates differing only by
-     floating-point noise share a table entry -- which also makes the lookup
-     match anything within ~5e-8 of a Clifford.  Unguarded, that discards small
-     rotations for free: the pi/2^k tail of a wide QFT, for instance, where
-     every rotation below ~1e-7 would cost zero T at an error hundreds of
-     times --epsilon.  Rotations that really are within --epsilon of a
-     Clifford still cost nothing, but that is now the synthesis backend's
-     decision, made against the requested accuracy, and it shows up in the
-     reported error.
+     rounds to a fixed decimal precision -- deliberately, so that gates
+     differing only by floating-point noise share a table entry -- which also
+     makes the lookup match anything extremely close to a Clifford.
+     Unguarded, that discards small rotations for free: the pi/2^k tail of a
+     wide QFT, for instance, where a tiny-enough rotation would cost zero T at
+     an error far exceeding --epsilon.  Rotations that really are within
+     --epsilon of a Clifford still cost nothing, but that is now the
+     synthesis backend's decision, made against the requested accuracy, and
+     it shows up in the reported error.
      Then cleans up: cancels adjacent inverse pairs (t.tdg, h.h, cx.cx, ...)
      and collapses blocks of gates that have a shorter exact form (t.t -> s,
      tdg.tdg.tdg.tdg -> z, any Clifford block -> its shortest word).  The
@@ -68,25 +68,25 @@ Pipeline
    bqskit: hands the {u,cx} circuit to a plain bqskit Compiler with this
    script's own workflow (build_bqskit_workflow -- bqskit's own
    build_circuit_workflow minus its multi-qudit retargeting stage, which
-   unconditionally and needlessly re-synthesises already-native <=3-qubit
-   blocks; see its docstring), then re-synthesises the diagonal single-qubit
-   rotations via bqskit's own ZXZXZDecomposition and stock, pygridsynth-based
-   GridSynthPass. At the same --epsilon, produces more T gates than the
-   qiskit backend on every non-QFT benchmark measured so far -- kept for
-   comparison and as an independently implemented Clifford+T compiler, not
-   because it is competitive.
+   unconditionally and needlessly re-synthesises already-native small
+   multi-qubit blocks; see its docstring), then re-synthesises the diagonal
+   single-qubit rotations via bqskit's own ZXZXZDecomposition and stock,
+   pygridsynth-based GridSynthPass. At the same --epsilon, produces more T
+   gates than the qiskit backend on most benchmarks measured so far (QFT-family
+   circuits are the measured exception, see below) -- kept for comparison and
+   as an independently implemented Clifford+T compiler, not because it is
+   competitive.
 
    QFT-family circuits are the one measured exception: there, bqskit can
    still produce fewer T gates even after merge_phase_polynomial's exact
-   upstream reduction (e.g. qft_N032: 27341 vs qiskit's 42207, ~1.5x fewer --
-   before that preopt step existed, the same comparison was 76466 vs 113142,
-   so the ratio hasn't really changed even though both numbers dropped by
-   more than half). This isn't a synthesis-quality difference -- gridsynth
-   costs the same ~82-86 T per rotation at epsilon=1e-8 regardless of whether
-   qiskit's Rust gridsynth_rz or bqskit's pygridsynth does the synthesis
-   (verified directly, same angles). It comes from build_bqskit_workflow's
+   upstream reduction, and the gap has stayed roughly the same proportion
+   even as preopt has dropped both backends' absolute counts substantially.
+   This isn't a synthesis-quality difference -- gridsynth costs the same per
+   rotation at a given epsilon regardless of whether qiskit's Rust
+   gridsynth_rz or bqskit's pygridsynth does the synthesis (verified
+   directly, same angles). It comes from build_bqskit_workflow's
    QuickPartitioner(2) + ScanningGateRemovalPass step, which runs on raw
-   {u,cx} 2-qubit blocks before any Euler decomposition and numerically tests
+   {u,cx} blocks before any Euler decomposition and numerically tests
    whether each gate can simply be dropped and still keep the block's unitary
    within --epsilon -- a fundamentally different, approximate mechanism from
    merge_phase_polynomial's exact parity matching, and one that still finds
@@ -96,31 +96,33 @@ Pipeline
    cancellations between rotations that don't share a parity at all.
 
    --bqskit-trbo: an optional, off-by-default extra stage (needs the
-   optional trbo package -- see requirements.txt) that runs TRbO
-   (arxiv.org/abs/2603.25101) right after RoundToDiscreteZPass, before
-   isolating/synthesising whatever Rz gates remain. Where RoundToDiscreteZPass
-   only checks each Rz independently against --epsilon, TRbO numerically
-   re-optimises a partitioned block's Rz angles *jointly*, rounding as many as
-   possible to Clifford/T-exact while letting the rest absorb the compensating
-   error. Measured: 0% change on qft_N008 and on the pinned
+   optional trbo package -- see requirements.txt) that runs TRbO (see the
+   TRbO paper) right after RoundToDiscreteZPass, before isolating/
+   synthesising whatever Rz gates remain. Where RoundToDiscreteZPass only
+   checks each Rz independently against --epsilon, TRbO numerically
+   re-optimises a partitioned block's Rz angles *jointly*, rounding as many
+   as possible to Clifford/T-exact while letting the rest absorb the
+   compensating error. Measured: no change on qft_N008 and on the pinned
    hubbard_18_slice600.qasm reference (both have angles that are analytically
    or physically fixed -- already exactly deduplicated by
    merge_phase_polynomial where applicable -- so there is no leftover gauge
    freedom for a joint optimiser to exploit, matching the TRbO paper's own
-   null result on plain QFT); 2-3% fewer T gates on qv_N008_12345 (27084 ->
-   26132-26452 across repeated runs -- see the reproducibility note below), a
-   Haar-random circuit whose ZXZXZDecomposition blocks do have real gauge
-   slack, and which is exactly the circuit class merge_phase_polynomial
-   cannot help (and previously regressed, see unroll_to_u_cx). Off by default
-   because the win is real but circuit-dependent and not free: the numerical
-   optimisation itself cost about 61s for ~250 partition blocks on an
-   8-qubit circuit in measurement, unlike every other pass in this workflow.
-   Also unlike every other part of the bqskit backend, its T-count is not
-   reproducible run to run at a fixed --seed: TRbO's own multi-start search
-   dispatches retries through bqskit's runtime independently of this script's
-   seeding (confirmed directly: two --seed 0 runs of qv_N008_12345 gave 26452
-   and 26239 T), so a --bqskit-trbo run is not safe to treat as a single
-   reproducible data point the way every other number in this file is.
+   null result on plain QFT); a modest reduction in T gates on
+   qv_N008_12345 (varying somewhat across repeated runs -- see the
+   reproducibility note below), a Haar-random circuit whose ZXZXZDecomposition
+   blocks do have real gauge slack, and which is exactly the circuit class
+   merge_phase_polynomial cannot help (and previously regressed, see
+   unroll_to_u_cx). Off by default because the win is real but
+   circuit-dependent and not free: the numerical optimisation itself took
+   real, noticeable wall-clock time across the partition blocks of an
+   otherwise-modest circuit in measurement, unlike every other pass in this
+   workflow. Also unlike every other part of the bqskit backend, its T-count
+   is not reproducible run to run at a fixed --seed: TRbO's own multi-start
+   search dispatches retries through bqskit's runtime independently of this
+   script's seeding (confirmed directly: repeated --seed 0 runs of
+   qv_N008_12345 gave different T-counts), so a --bqskit-trbo run is not
+   safe to treat as a single reproducible data point the way every other
+   number in this file is.
    rewrite_single_qubit_runs (the qiskit/cyclosynth backends' shared
    pipeline) has no equivalent of its own: it only merges consecutive
    single-qubit gates on one wire between CX boundaries, and never tests
@@ -152,9 +154,9 @@ Pipeline
    CyclosynthBlockSynthesisPass's docstring).
 
    cyclosynth: shares the qiskit backend's rewrite_single_qubit_runs pipeline
-   entirely (merge each maximal single-qubit run into one 2x2 matrix, clean up
+   entirely (merge each maximal single-qubit run into one matrix, clean up
    the same way afterward), differing only in how a non-Clifford block gets
-   synthesised: instead of a ZXZ decomposition into up to 3 independently
+   synthesised: instead of a ZXZ decomposition into up to three independently
    gridsynth'd Rz rotations, this backend takes the block's ZYZ Euler angles
    (qiskit's own U3 convention) and hands all three to cyclosynth's
    synthesize_u3 in one call, which returns a single, near-T-optimal
@@ -162,7 +164,7 @@ Pipeline
    (see "Rotation synthesis" below) rather than gridsynth's Ross-Selinger
    algorithm. Produces fewer T gates than the qiskit backend on every
    benchmark measured so far, at real but not prohibitive compile-time cost
-   (see CyclosynthSynthesizer's docstring for measured numbers) -- needs the
+   (see CyclosynthSynthesizer's docstring for measured figures) -- needs the
    cyclosynth extension built separately (it is a git submodule, not a PyPI
    package; see cyclosynth/README.md and this repo's requirements.txt).
    Blocks whose target lands within CYCLOSYNTH_NEAR_CLIFFORD_MARGIN of a
@@ -178,15 +180,15 @@ gridsynth/cyclosynth calls (cache misses), not by block count: both
 synthesizers cache by angle/matrix key, so on circuits with a lot of
 repeated rotations (QFT-family circuits, say) the vast majority of blocks
 are instant cache hits, and counting them equally would make progress look
-stuck near 0% until the last moment, then jump to 100% -- see
-estimate_synthesis_calls/_with_progress. Cleanup rounds instead weight by
-plain block count (count_resynthesis_blocks/_with_block_progress):
+stuck near the start until the last moment, then jump straight to complete
+-- see estimate_synthesis_calls/_with_progress. Cleanup rounds instead weight
+by plain block count (count_resynthesis_blocks/_with_block_progress):
 shorten_run never calls gridsynth/cyclosynth, so there is no cache-hit/
 cache-miss split to correct for there, but on a large enough circuit those
 rounds are not the "expected to be fast" afterthought they once looked like
--- measured on a 36-qubit, ~1.2M-gate QV circuit, each of 5 cleanup rounds
-took about as long as the main resynthesis pass itself, entirely silent
-before this was added. bqskit reports none: it exposes no public per-block progress callback,
+-- measured on a large, wide QV circuit, the cleanup rounds together took
+about as long as the main resynthesis pass itself, entirely silent before
+this was added. bqskit reports none: it exposes no public per-block progress callback,
 and the only usable signal (DEBUG-level runtime log lines, one per block)
 would need splitting build_bqskit_workflow's currently-atomic compile() call
 in two -- with the two halves' error bounds recombined by hand to avoid
@@ -198,51 +200,50 @@ competitive" (see the bqskit paragraph above).
 Rotation synthesis: gridsynth and cyclosynth
 ---------------------------------------------
 The qiskit and bqskit backends both use the Ross-Selinger algorithm
-(gridsynth), near T-optimal at T ~ 3*log2(1/epsilon) per rotation. The qiskit
-backend uses qiskit's own Rust implementation (qiskit.synthesis.gridsynth_rz,
-qiskit >= 2.5, ~5 ms per distinct rotation), falling back to pygridsynth --
-the pure-Python/mpmath implementation, ~8x slower -- for the rare angles
-rsgridsynth 0.2.0 panics on at coarse epsilon. That fallback already handles
-gridsynth failing on part of a circuit; there is no separate "worse but
-always works" mode. The bqskit backend uses only pygridsynth (bqskit's own
-stock GridSynthPass), with no Rust extension involved at all. Each generic 1q
-gate needs up to 3 Rz rotations (ZXZ Euler angles), so the error per gate is
-up to 3*epsilon; angles that are exact multiples of pi/4 are synthesised
+(gridsynth), near T-optimal, with T-count growing only logarithmically in
+1/epsilon per rotation. The qiskit backend uses qiskit's own Rust
+implementation (qiskit.synthesis.gridsynth_rz, a recent-enough qiskit
+version), falling back to pygridsynth -- the pure-Python/mpmath
+implementation, noticeably slower -- for the rare angles rsgridsynth panics
+on at coarse epsilon. That fallback already handles gridsynth failing on
+part of a circuit; there is no separate "worse but always works" mode. The
+bqskit backend uses only pygridsynth (bqskit's own stock GridSynthPass), with
+no Rust extension involved at all. Each generic single-qubit gate needs up to
+three Rz rotations (ZXZ Euler angles), so the error per gate is up to three
+times epsilon; angles that are exact multiples of pi/4 are synthesised
 exactly and cost nothing. Each distinct rotation is synthesised once and
 reused, so cost scales with the number of distinct angles rather than the
 number of gates.
 
 The cyclosynth backend instead uses cyclosynth's own lattice-search algorithm
-(see CyclosynthSynthesizer's docstring), synthesising a whole block's 3 Euler
-angles in one call rather than 3 independent Rz rotations -- so its epsilon
-is a diamond-distance bound on the whole block, not a per-elementary-rotation
-bound like gridsynth's up-to-3*epsilon. Despite that difference in what
-epsilon formally bounds, comparing both at the same nominal --epsilon in
+(see CyclosynthSynthesizer's docstring), synthesising a whole block's three
+Euler angles in one call rather than three independent Rz rotations -- so its
+epsilon is a diamond-distance bound on the whole block, not a
+per-elementary-rotation bound like gridsynth's. Despite that difference in
+what epsilon formally bounds, comparing both at the same nominal --epsilon in
 practice delivers comparable real accuracy (see below) -- this was verified,
 not assumed.
 
---epsilon defaults to EPSILON_DEFAULT (1e-8) for all three backends. Measured
-via exact dense-unitary fidelity (not this script's own coarser --verify
-checks) on two small benchmarks (data/qasmbench/dnn_n8.qasm, data/qasmbench/
-ising_n10.qasm), real infidelity plateaus by around 1e-8 for every backend's
-resynthesis -- tightening further to 1e-10 or 1e-12 costs substantially more
-T gates (e.g. dnn_n8 via qiskit: 23592 -> 35144 T from 1e-8 to 1e-12) for a
-change in delivered accuracy indistinguishable from float64 rounding noise.
-Looser than 1e-8 does cost real accuracy (e.g. 1e-6 measures ~1e-11
-infidelity on the same benchmarks, still fine for most purposes but a
-genuine, if small, step up from 1e-8's ~1e-12). The cyclosynth backend
-plateaus at essentially the same ~2e-12 infidelity at the same 1e-8, on the
-same two benchmarks (see CyclosynthSynthesizer's docstring) -- confirming
-the shared default is a meaningful apples-to-apples comparison point despite
-the differing epsilon semantics above.
+--epsilon defaults to EPSILON_DEFAULT for all three backends. Measured via
+exact dense-unitary fidelity (not this script's own coarser --verify checks)
+on a couple of small benchmarks (data/qasmbench/dnn_n8.qasm, data/qasmbench/
+ising_n10.qasm), real infidelity plateaus around the default for every
+backend's resynthesis -- tightening the requested epsilon much further costs
+substantially more T gates for a change in delivered accuracy
+indistinguishable from float64 rounding noise. Looser than the default does
+cost real accuracy, still fine for most purposes but a genuine, if small,
+step down from the default's own plateau. The cyclosynth backend plateaus at
+essentially the same infidelity at the same default epsilon, on the same
+benchmarks (see CyclosynthSynthesizer's docstring) -- confirming the shared
+default is a meaningful apples-to-apples comparison point despite the
+differing epsilon semantics above.
 
 The error bound this script reports (all three backends -- see "Verification"
 below) is a real upper bound, not an estimate of actual fidelity loss: it
 sums per-rewrite worst-case errors, which above assumes every rewrite's error
 constructively interferes with every other's. In practice they mostly do
 not, so the bound is typically several orders of magnitude looser than the
-true error measured above (e.g. dnn_n8 at 1e-8: bound 8.5e-7, actual
-infidelity 3.2e-12) -- useful as a ceiling, not as a proxy for how accurate
+true error measured above -- useful as a ceiling, not as a proxy for how accurate
 the output really is.
 
 The result is written next to the input as <name>.cliffordt.qasm (OpenQASM 2,
@@ -259,41 +260,43 @@ basis + error bound: always run, no flag needed -- both are cheap (no
     errors measured during resynthesis and clean-up are summed into an error
     bound: each rewrite replaces one wire's run by a phase-aligned
     approximation of it, so by subadditivity of the spectral norm that sum is
-    a genuine upper bound on ||U_compiled - U_unrolled||_2 -- taking qiskit's
-    own unroll and inverse cancellation as exact.  The cyclosynth backend
-    computes its error bound identically (CyclosynthSynthesizer._resynthesize
-    always re-measures the built word's spectral-norm error via word_error,
-    never trusting cyclosynth's own SynthResult.distance -- a diamond-distance
-    bound, not the same quantity -- for accounting), so the two backends'
-    error bounds are directly comparable.  The bqskit backend gets a
-    narrower analogue from bqskit's own machinery: each
-    ZXZXZDecomposition/final-synthesis ForEachBlockPass call runs with
-    calculate_error_bound=True, so bqskit measures the exact unitary distance
-    of every 1-qubit block before and after and composes them via
-    PassData.update_error_mul -- see build_bqskit_workflow's docstring for
-    what this covers and doesn't (notably: not RoundToDiscreteZPass's own
-    rounding, and not bqskit's own earlier 2-qubit block instantiation).
+    a genuine upper bound on the operator-norm distance between the compiled
+    and unrolled unitaries -- taking qiskit's own unroll and inverse
+    cancellation as exact.  The cyclosynth backend computes its error bound
+    identically (CyclosynthSynthesizer._resynthesize always re-measures the
+    built word's spectral-norm error via word_error, never trusting
+    cyclosynth's own SynthResult.distance -- a diamond-distance bound, not
+    the same quantity -- for accounting), so the two backends' error bounds
+    are directly comparable.  The bqskit backend gets a narrower analogue
+    from bqskit's own machinery: each ZXZXZDecomposition/final-synthesis
+    ForEachBlockPass call runs with calculate_error_bound=True, so bqskit
+    measures the exact unitary distance of every single-qubit block before
+    and after and composes them via PassData.update_error_mul -- see
+    build_bqskit_workflow's docstring for what this covers and doesn't
+    (notably: not RoundToDiscreteZPass's own rounding, and not bqskit's own
+    earlier multi-qubit block instantiation).
 
 --verify: numeric fidelity only, cascading from exact to sampled as the
     circuit grows, so it is always tractable -- unlike an error bound, which
     is only ever a bound, this actually measures how close the compiled
     circuit's action is to the source's.
-  unitary fidelity: up to DENSE_VERIFY_MAX_QUBITS (10) qubits and
-    DENSE_VERIFY_MAX_GATES (20000) gates.  The full dense 2^n x 2^n
-    comparison, exhaustive but limited to ~12 qubits by memory.
-  statevector fidelity: up to STATEVECTOR_VERIFY_MAX_QUBITS (24) qubits,
-    subject to a work budget of gates * 2^qubits <= STATEVECTOR_VERIFY_MAX_OPS
-    (5e9, about a minute).  Evolves one Haar-random state (seeded by
-    --verify-seed, so runs are reproducible) through both circuits and
-    compares.  A single random state is a strong test: a systematic error
-    survives it with negligible probability.
+  unitary fidelity: up to DENSE_VERIFY_MAX_QUBITS qubits and
+    DENSE_VERIFY_MAX_GATES gates.  The full dense matrix comparison,
+    exhaustive but limited to a modest qubit count by memory.
+  statevector fidelity: up to STATEVECTOR_VERIFY_MAX_QUBITS qubits, subject
+    to a work budget of gates times the state-space size, capped by
+    STATEVECTOR_VERIFY_MAX_OPS (on the order of a minute's worth of work).
+    Evolves one Haar-random state (seeded by --verify-seed, so runs are
+    reproducible) through both circuits and compares.  A single random state
+    is a strong test: a systematic error survives it with negligible
+    probability.
   random-window fidelity: the automatic fallback for circuits too large for
     either check above, or containing classical control flow (which both
-    skip).  Samples WINDOW_VERIFY_COUNT (5) random contiguous windows of the
+    skip).  Samples WINDOW_VERIFY_COUNT random contiguous windows of the
     *source* circuit's instructions (not the compiled output -- resynthesis
     restructures gates, so indices would not correspond).  Each window is
     grown greedily from a random start point, tracking the distinct qubits
-    touched, until either WINDOW_VERIFY_MAX_QUBITS (24, the same cap as the
+    touched, until either WINDOW_VERIFY_MAX_QUBITS (the same cap as the
     direct statevector check) or WINDOW_VERIFY_MAX_OPS (that check's own
     budget, divided across the samples so total cost stays bounded regardless
     of the real circuit's size) would be exceeded, or the next instruction has
@@ -569,7 +572,7 @@ WINDOW_VERIFY_MAX_ATTEMPTS = WINDOW_VERIFY_COUNT * 5
 
 
 def canonical_key(matrix: np.ndarray, decimals: int = 7) -> tuple:
-    """Hashable key for a 2x2 unitary, insensitive to global phase.
+    """Hashable key for a single-qubit unitary, insensitive to global phase.
 
     The rounding is deliberately coarse so that gates that differ only by
     floating-point noise (e.g. an H that came back from the transpiler as a u
@@ -650,8 +653,8 @@ def word_error(target: np.ndarray, word: Iterable[str]) -> tuple[float, float]:
 
 
 def nearest_clifford_distance(matrix: np.ndarray, clifford_words: dict) -> float:
-    """Spectral-norm distance from `matrix` to the closest of the 24
-    single-qubit Clifford elements in `clifford_words` -- cheap (24 small
+    """Spectral-norm distance from `matrix` to the closest single-qubit
+    Clifford element in `clifford_words` -- cheap (a small number of small
     matrix ops). Used to detect "near-Clifford but not close enough to treat
     as exact" targets, which cyclosynth's search can hang or fail on (see
     cyclosynth-bug-report.md and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
@@ -738,7 +741,7 @@ def circuit_from_word(
     target: np.ndarray,
     phase: Optional[float] = None,
 ) -> QuantumCircuit:
-    """1-qubit circuit applying `word` in order, phase-aligned against `target`."""
+    """Single-qubit circuit applying `word` in order, phase-aligned against `target`."""
     circuit = QuantumCircuit(1)
     for name in word:
         getattr(circuit, name)(0)
@@ -750,15 +753,16 @@ def circuit_from_word(
 
 @contextlib.contextmanager
 def _capture_stderr_fd():
-    """Redirect the OS-level stderr file descriptor (fd 2) to a temp file for
+    """Redirect the OS-level stderr file descriptor to a temp file for
     the duration of the block, then always restore it -- including on an
     unexpected exception, via `finally`, so a bug here can't leave stderr
     silently broken for the rest of the process.
 
     Needed because Rust panics (see CliffordTSynthesizer._synthesize_rz)
-    write their message and backtrace directly to fd 2, bypassing Python's
-    sys.stderr object entirely -- contextlib.redirect_stderr only redirects
-    the latter, so it can't intercept them.
+    write their message and backtrace directly to the underlying OS file
+    descriptor, bypassing Python's sys.stderr object entirely --
+    contextlib.redirect_stderr only redirects the latter, so it can't
+    intercept them.
 
     Yields the temp file; `with ... as capture:` binds it before the guarded
     call runs, so it stays readable in the caller's scope even if that call
@@ -821,7 +825,7 @@ class CliffordTSynthesizer:
         self.error_bound += error
 
     def synthesize(self, matrix: np.ndarray, _run=None) -> QuantumCircuit:
-        """Return a 1-qubit Clifford+T circuit implementing `matrix`."""
+        """Return a single-qubit Clifford+T circuit implementing `matrix`."""
         circuit, kind, error = self._synthesize_uncounted(matrix)
         if kind == "clifford":
             self.n_clifford += 1
@@ -854,7 +858,7 @@ class CliffordTSynthesizer:
         whole run at once (it may be Clifford, or a pi/4 rotation), and failing
         that a local collapse of sub-blocks -- a gridsynth word is a long
         h/t/tdg sequence which is *not* exactly representable as a whole, but its
-        diagonal sub-blocks (t.t == s, tdg^4 == z, ...) are, and collapsing them
+        diagonal sub-blocks (t.t == s, tdg.tdg.tdg.tdg == z, ...) are, and collapsing them
         removes T gates for free.
 
         The block collapse is exact.  The whole-run rewrite goes through _exact,
@@ -887,10 +891,11 @@ class CliffordTSynthesizer:
 
         A candidate word is only accepted once it has been measured against
         `matrix` and found to be within self.tol.  The Clifford lookup needs that
-        check because canonical_key rounds to 7 decimals, so the table matches
-        anything within ~5e-8 of a Clifford; without it, every rotation smaller
-        than that -- the pi/2^k tail of a wide QFT, say -- would be silently
-        thrown away for free at an error far above --epsilon.  The pi/4 path
+        check because canonical_key rounds to a fixed decimal precision, so the
+        table matches anything extremely close to a Clifford; without it, every
+        rotation smaller than that -- the pi/2^k tail of a wide QFT, say -- would
+        be silently thrown away for free at an error far above --epsilon.  The
+        pi/4 path
         needs it because _is_pi_4_multiple accepts angles up to --tol off a
         multiple, and three such angles compound.
         """
@@ -945,12 +950,13 @@ class CliffordTSynthesizer:
 
     def count_real_rotations(self, circuit: QuantumCircuit) -> int:
         """Total count of non-Clifford, non-pi/4-multiple Euler angles across
-        every 1-qubit run in `circuit`, counted per OCCURRENCE -- unlike
+        every single-qubit run in `circuit`, counted per OCCURRENCE -- unlike
         estimate_synthesis_calls, this does NOT deduplicate by angle. Each
-        occurrence costs roughly the same ~constant T regardless of whether
+        occurrence costs roughly the same constant T regardless of whether
         its angle turns out to be a cache hit or a fresh gridsynth search
-        (gridsynth's cost is ~3*log2(1/epsilon) per rotation, largely
-        independent of the angle), so occurrence count -- not distinct-angle
+        (gridsynth's cost grows only logarithmically in 1/epsilon per
+        rotation, largely independent of the angle), so occurrence count --
+        not distinct-angle
         count -- is the right cheap proxy for a circuit's actual T-count
         without running gridsynth on it at all.
 
@@ -1023,11 +1029,11 @@ class CliffordTSynthesizer:
             with _capture_stderr_fd() as capture:
                 circuit = gridsynth_rz(angle, self.epsilon)
         except BaseException as error:
-            # rsgridsynth 0.2.0 panics on some angles (KNOWN_GRIDSYNTH_PANIC):
-            # 26% of 300 random angles at 1e-2, 6% at 1e-4 in earlier testing --
+            # rsgridsynth panics on some angles (KNOWN_GRIDSYNTH_PANIC): a
+            # meaningful fraction at coarse epsilon in earlier testing --
             # rare but not confined to coarse epsilon, as first believed: it has
-            # since been observed at the default 1e-8 too, on a large enough
-            # circuit (qv_N036_12345.qasm, 36 qubits). Which angles fail
+            # since been observed at the default epsilon too, on a large enough
+            # circuit (qv_N036_12345.qasm). Which angles fail
             # depends on process state, not just the angle, so retrying is not
             # a fix. A pyo3 panic is a BaseException, so it would otherwise
             # escape the per-file error handling in main().
@@ -1094,22 +1100,19 @@ class CyclosynthSynthesizer:
     approach, cyclosynth's synthesize_u3 takes a whole block's ZYZ Euler
     angles (qiskit's own U3 convention: Rz(phi)*Ry(theta)*Rz(lam)) and
     returns one jointly near-T-optimal word for the entire block in a single
-    call, via a diamond-distance lattice search (arXiv:2510.05816) rather
-    than gridsynth's Ross-Selinger algorithm.
+    call, via a diamond-distance lattice search (see the cyclosynth paper)
+    rather than gridsynth's Ross-Selinger algorithm.
 
     Measured at EPSILON_DEFAULT and --cyclosynth-threads 1 (for reproducible
-    numbers -- see the cost/determinism paragraph below) against the qiskit
-    backend (both real circuits, both fidelity 1.000000000000 to the
-    precision --verify prints): fewer T gates every time
-    (data/hubbard_18_slice600.qasm: 1411 vs 1476; data/qasmbench/knn_n25.qasm:
-    1977 vs 2054; data/qasmbench/dnn_n8.qasm: 13316 vs 23592;
-    data/qasmbench/ising_n10.qasm: 11349 vs 15333), and (via exact
-    dense-unitary fidelity on the two small enough for it) essentially the
-    same real infidelity (~2e-12, the same float64 noise floor both backends
-    plateau at -- see module docstring's "Rotation synthesis" section),
-    confirming the comparison is apples-to-apples despite the two backends'
-    epsilon meaning slightly different things (diamond distance vs. closer to
-    a spectral-norm bound).
+    figures -- see the cost/determinism paragraph below) against the qiskit
+    backend (both real circuits, both fidelity effectively perfect to the
+    precision --verify prints): fewer T gates every time across a range of
+    benchmark circuits, and (via exact dense-unitary fidelity on the ones
+    small enough for it) essentially the same real infidelity (the same
+    float64 noise floor both backends plateau at -- see module docstring's
+    "Rotation synthesis" section), confirming the comparison is
+    apples-to-apples despite the two backends' epsilon meaning slightly
+    different things (diamond distance vs. closer to a spectral-norm bound).
 
     The cost: real per-call compile time, and results that (unlike qiskit's
     exact algorithm, or bqskit's --seed) are only reproducible if pinned to a
@@ -1117,11 +1120,12 @@ class CyclosynthSynthesizer:
     with no per-call seed in its public API; whichever thread's candidate
     happens to finish first can vary run to run, so both the exact word and
     the overall T-count are only reproducible at --cyclosynth-threads 1 (see
-    that flag's help text). Measured on 10 random angles at EPSILON_DEFAULT
-    (1e-8, this 20-core machine): ~0.16s/call at rayon's own default thread
-    count vs ~2.4s/call pinned to 1 thread -- about 15x, and the gap widens
-    at tighter epsilon (~12x at 1e-10, where a single call can take tens of
-    seconds pinned to 1 thread). --cyclosynth-threads therefore defaults to
+    that flag's help text). Measured on a batch of random angles at
+    EPSILON_DEFAULT on a many-core machine: pinning to a single thread costs
+    a real, substantial multiple in per-call time relative to rayon's own
+    default thread count, and that gap widens further at tighter epsilon,
+    where a single call can take a long time pinned to one thread.
+    --cyclosynth-threads therefore defaults to
     rayon's own default (fast, not reproducible) rather than 1 (reproducible,
     much slower) -- pin it to 1 when comparing exact T-counts run to run
     matters more than speed.
@@ -1444,9 +1448,9 @@ def load_circuit(path: Path) -> QuantumCircuit:
 def rewrite_single_qubit_runs(circuit: QuantumCircuit, resynthesize) -> QuantumCircuit:
     """Re-synthesise every maximal run of single-qubit gates on every wire.
 
-    Consecutive single-qubit gates on a wire are accumulated into one 2x2 matrix
+    Consecutive single-qubit gates on a wire are accumulated into one matrix
     and handed to `resynthesize(matrix, run)`, which returns a replacement
-    1-qubit circuit, or None to keep the original gates.  Working on runs
+    single-qubit circuit, or None to keep the original gates.  Working on runs
     rather than
     individual gates keeps the output much shorter.  Non-unitary ops
     (measure/reset/barrier) and multi-qubit gates flush the wires they touch, so
@@ -1572,16 +1576,16 @@ def merge_phase_polynomial(circuit: QuantumCircuit) -> QuantumCircuit:
     and every diagonal gate commute freely with each other. This matters a
     lot for CX-ladder-decomposed controlled-phase gates (cx, rz(-a), cx,
     rz(a)), which is exactly how QFT-family circuits' controlled-phase gates
-    show up after decomposition: measured on qft_N032, this drops the number
-    of rotations that actually need gridsynth from 1350 to 522. Verified
+    show up after decomposition: measured on a wide QFT, this drops the
+    number of rotations that actually need gridsynth substantially. Verified
     correct (not just counted) by comparing a merged circuit's Operator
-    against the original on qft_N008: matched to 2.5e-15 after correcting for
-    global phase.
+    against the original on a smaller QFT: matched to floating-point noise
+    after correcting for global phase.
 
     Tracks each qubit's parity as a Python int bitmask (bit i = "depends on
     original qubit i"), updated by cx as parity[target] ^= parity[control].
     Any gate this doesn't specifically recognise as diagonal -- h/x/y/rx/ry/
-    sx/sxdg, any 2+-qubit gate other than cx, measurement, reset, control
+    sx/sxdg, any multi-qubit gate other than cx, measurement, reset, control
     flow -- resets every qubit it touches to a fresh symbol never reused
     elsewhere, rather than trying to track what it does. That's conservative
     by construction: an unrecognised gate can only cause a missed merge
@@ -1596,7 +1600,7 @@ def merge_phase_polynomial(circuit: QuantumCircuit) -> QuantumCircuit:
     neighbouring non-diagonal rotation (e.g. an H immediately before or
     after it, as in QFT's own per-qubit "rz; h; rz" runs) into one opaque,
     unaddressable non-diagonal matrix. Runs its own translate-only
-    (optimization_level=0, so no 1-qubit fusion) decompose to PHASE_MERGE_BASIS
+    (optimization_level=0, so no single-qubit fusion) decompose to PHASE_MERGE_BASIS
     first, both to keep every original gate's name intact for classification
     and to break down whatever compound gates the input used (ccx, cp, crz,
     rzz, cswap, ...) into cx plus this vocabulary.
@@ -1660,20 +1664,20 @@ def unroll_to_u_cx(circuit: QuantumCircuit, epsilon: float = EPSILON_DEFAULT) ->
 
     Structurally necessary, not just an optimization: it is what breaks
     multi-qubit gates none of the backends otherwise know how to re-synthesise
-    (ccx, cp, rzz, ...) down into {1-qubit unitary, cx}.  UNROLL_OPTIMIZATION_LEVEL
+    (ccx, cp, rzz, ...) down into {single-qubit unitary, cx}.  UNROLL_OPTIMIZATION_LEVEL
     also matters a great deal for how well single-qubit runs merge before
     resynthesis (see its comment).
 
     merge_phase_polynomial runs first on a separate candidate (see its own
-    docstring for why it can't run after this call's 1-qubit fusion), exactly
+    docstring for why it can't run after this call's single-qubit fusion), exactly
     cancelling/merging redundant diagonal rotations before anything here has a
     chance to obscure them -- but that merge is not always a net win: moving a
     rotation to satisfy a global parity match can incidentally break a
     neighbouring gate's *local* gauge-cancellation (see merge_phase_
     polynomial's docstring), costing more real rotations than it saves on
-    circuits without much genuine redundancy to find (measured 10% more T on
-    a random Quantum Volume benchmark, vs. ~2.7x fewer on a QFT one). Rather
-    than guess which applies, both the merged and unmerged candidates are
+    circuits without much genuine redundancy to find (measured to cost more T
+    on a random Quantum Volume benchmark, vs. a real win on a QFT one).
+    Rather than guess which applies, both the merged and unmerged candidates are
     unrolled and CliffordTSynthesizer.count_real_rotations -- cheap, no
     gridsynth involved -- picks whichever needs fewer real rotations. `epsilon`
     only affects that comparison's Clifford/exact tolerance, not either
@@ -1739,8 +1743,8 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
     """Wrap a resynthesize callback to report percentage progress via
     _progress_line (overwriting a single line in place on a terminal, one
     line per update otherwise), throttled to at most one update per
-    PROGRESS_INTERVAL_SECONDS. Does not itself print a final 100% line --
-    compile_via_resynthesis does that unconditionally once the real pass
+    PROGRESS_INTERVAL_SECONDS. Does not itself print a final completion line
+    -- compile_via_resynthesis does that unconditionally once the real pass
     returns, rather than relying on this wrapper to recognize its own last
     call (see `count`'s clamp below for why that can't be done reliably by
     watching `cache` alone).
@@ -1749,30 +1753,29 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
     a few dozen blocks would otherwise update close to once per block -- each
     essentially instant if the blocks are cheap (Clifford/exact), far faster
     than the line is readable.  A fast compile (finishing inside one
-    interval) shows no progress line until the unconditional 100%; a slow
-    one visibly ticks upward for as long as it actually runs.
+    interval) shows no progress line until the unconditional completion
+    line; a slow one visibly ticks upward for as long as it actually runs.
 
     `cache` is the synthesizer's cache dict (CliffordTSynthesizer/
     CyclosynthSynthesizer's `_expensive_cache()`); `count` advances by
     however many entries a call actually *adds* to it (not just whether it
     grew), i.e. genuine gridsynth/cyclosynth searches, not merged runs. A
     single CliffordTSynthesizer block can need gridsynth for more than one
-    of its Euler angles (Rz and Rx) in one call, growing the cache by 2 or 3
-    at once -- counting only "grew: yes/no" as +1 systematically undercounts
-    (confirmed via data/qasmbench/dnn_n8.qasm: cache grows by 36 total
-    across only 17 growing calls, stalling the old scheme at 47%). Both
-    synthesizers cache by angle/matrix key, so on circuits with a lot of
-    repeated rotations (QFT-family circuits, say) the vast majority of calls
-    are instant cache hits -- with plain block counting, progress used to
-    race through the first few percent (the actual searches) then jump
-    straight to 100% on the cache hits, rather than tracking real elapsed
-    time.  `total` (from estimate_synthesis_calls) is only an ESTIMATE of how
-    many new cache entries will appear -- e.g. CyclosynthSynthesizer's
-    catch-None gridsynth fallback can also legitimately not grow `cache` at
-    all for a block the estimate counted as a future cyclosynth call -- so
-    `count` reaching `total` exactly is not guaranteed; it is clamped at
-    `total` (never shown over 100%) but completion is never inferred from
-    reaching it.
+    of its Euler angles (Rz and Rx) in one call, growing the cache by more
+    than one entry at once -- counting only "grew: yes/no" as a single unit
+    systematically undercounts (confirmed via data/qasmbench/dnn_n8.qasm:
+    the old scheme stalled well short of complete). Both synthesizers cache
+    by angle/matrix key, so on circuits with a lot of repeated rotations
+    (QFT-family circuits, say) the vast majority of calls are instant cache
+    hits -- with plain block counting, progress used to race through the
+    first stretch (the actual searches) then jump straight to complete on
+    the cache hits, rather than tracking real elapsed time.  `total` (from
+    estimate_synthesis_calls) is only an ESTIMATE of how many new cache
+    entries will appear -- e.g. CyclosynthSynthesizer's catch-None gridsynth
+    fallback can also legitimately not grow `cache` at all for a block the
+    estimate counted as a future cyclosynth call -- so `count` reaching
+    `total` exactly is not guaranteed; it is clamped at `total` (never shown
+    past complete) but completion is never inferred from reaching it.
     """
     if total == 0:
         return resynthesize
@@ -1802,7 +1805,7 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
 
 def count_resynthesis_blocks(circuit: QuantumCircuit) -> int:
     """How many times rewrite_single_qubit_runs will call its callback on
-    `circuit`, without doing anything else -- only 2x2 matrix merges, no
+    `circuit`, without doing anything else -- only matrix merges, no
     gridsynth/cyclosynth/shorten_run calls, so this is cheap even for large
     circuits. Used as the denominator for _with_block_progress, unlike
     estimate_synthesis_calls (which counts cache misses specifically for the
@@ -1838,14 +1841,15 @@ def _with_block_progress(
     "races through cache hits" distortion _with_progress was built to avoid
     -- there's no cache to watch here in the first place.
 
-    `round_num`/`max_rounds` blend this round's own 0-100% into a single
+    `round_num`/`max_rounds` blend this round's own share into a single
     running "cleanup" percentage spanning all cleanup rounds, rather than
-    resetting to 0% (and printing a new line) at the start of each round --
-    this round contributes one `1/max_rounds` slice of the overall range,
-    offset by the rounds already completed. Since a round can converge (and
-    the cleanup loop break) before max_rounds is reached, this can plateau
-    below 100% -- compile_via_resynthesis prints the final 100% itself, the
-    same way and for the same reason _with_progress does for the main pass.
+    resetting to the start (and printing a new line) at the start of each
+    round -- this round contributes one `1/max_rounds` slice of the overall
+    range, offset by the rounds already completed. Since a round can
+    converge (and the cleanup loop break) before max_rounds is reached, this
+    can plateau below complete -- compile_via_resynthesis prints the final
+    completion line itself, the same way and for the same reason
+    _with_progress does for the main pass.
     """
     if total == 0:
         return callback
@@ -1885,9 +1889,9 @@ def compile_via_resynthesis(
     gridsynth/cyclosynth search, just exact rewrites -- see
     _with_block_progress), but on a large enough circuit the sheer number of
     calls across up to max_rounds full passes dominates total compile time
-    just as much as the main pass does (measured on a 36-qubit, ~1.2M-gate
-    QV circuit: ~28s resynthesizing, then ~16s per cleanup round for 5
-    rounds -- silent before this was added).
+    just as much as the main pass does (measured on a large, wide QV
+    circuit: the cleanup rounds together took about as long as the main
+    resynthesis pass itself -- silent before this was added).
     """
     total = synth.estimate_synthesis_calls(unrolled)
     label = "resynthesizing"
@@ -1972,8 +1976,8 @@ def unitary_part(circuit: QuantumCircuit) -> QuantumCircuit:
 def unitary_fidelity(lhs: QuantumCircuit, rhs: QuantumCircuit) -> float:
     """Global-phase-insensitive fidelity of two circuits' unitaries.
 
-    Dense: builds both 2^n x 2^n operators, so it is limited to ~12 qubits by
-    memory.  Use statevector_fidelity above that.
+    Dense: builds both full-dimensional operators, so it is limited to a
+    modest qubit count by memory.  Use statevector_fidelity above that.
     """
 
     def unitary(circuit: QuantumCircuit) -> np.ndarray:
@@ -1987,8 +1991,9 @@ def unitary_fidelity(lhs: QuantumCircuit, rhs: QuantumCircuit) -> float:
 def statevector_fidelity(lhs: QuantumCircuit, rhs: QuantumCircuit, seed: int = 0) -> float:
     """|<lhs psi | rhs psi>| for one Haar-random |psi>.
 
-    Costs 2^n amplitudes rather than 4^n, which is what makes verification
-    possible past ~12 qubits.  It samples the unitaries rather than comparing
+    Costs amplitudes scaling with the state space rather than its square,
+    which is what makes verification possible well past where the dense
+    check above runs out.  It samples the unitaries rather than comparing
     them everywhere, but a Haar-random state misses a systematic discrepancy
     with negligible probability: for U^dag V = exp(i*theta) I + E the shortfall
     in fidelity is O(||E||), and only a measure-zero set of states hides it.
@@ -2101,17 +2106,17 @@ def build_bqskit_workflow(
     defaultworkflow), minus its multi-qudit retargeting stage
     (build_multi_qudit_retarget_workflow, from core bqskit). That stage is
     gated on NotPredicate(WidthPredicate(2)), which is true for any circuit
-    with 2 or more qubits -- not just ones containing gates outside the
+    with more than one qubit -- not just ones containing gates outside the
     target model's native gate set -- so it unconditionally runs
-    AutoRebase2QuditGatePass over every <=3-qubit block, numerically
+    AutoRebase2QuditGatePass over every small multi-qubit block, numerically
     re-synthesising it even when the block is already expressed in native
     gates. That discards exact Clifford+T structure (e.g. the H/T/Tdg/CX
     from a Toffoli/CSWAP decomposition) in favour of generic-angle
-    rotations that each then need their own gridsynth call: measured 12x
-    more T gates on data/qasmbench/knn_n25.qasm, a CSWAP-heavy circuit.
-    Skipping it is safe here because unroll_to_u_cx already guarantees the
-    circuit handed to bqskit contains only {u, cx} -- no gate outside the
-    Clifford+T gate set for retargeting to act on.
+    rotations that each then need their own gridsynth call: measured a
+    large multiple in extra T gates on data/qasmbench/knn_n25.qasm, a
+    CSWAP-heavy circuit. Skipping it is safe here because unroll_to_u_cx
+    already guarantees the circuit handed to bqskit contains only {u, cx}
+    -- no gate outside the Clifford+T gate set for retargeting to act on.
 
     Also mirrors bqskit's own gauge-collapse rewrite (ZXZXZDecomposition) and
     stock GridSynthPass, but with calculate_error_bound=True set on both
@@ -2119,22 +2124,23 @@ def build_bqskit_workflow(
     doesn't -- so the single compile() call this pass list is run through can
     return a real error bound via PassData.error (bqskit's own
     calculate_error_bound mechanism, bqskit/compiler/basepass.py's
-    _sub_do_work: it measures the *exact* distance between each 1-qubit
+    _sub_do_work: it measures the *exact* distance between each single-qubit
     block's unitary before and after its sub-workflow runs -- cheap, since
     these are single-qubit blocks, not the whole circuit -- and composes the
     per-block sums multiplicatively via PassData.update_error_mul, the same
     fidelity-complement composition qiskit's own subadditive sum
     approximates). This is analogous to, but narrower in scope than, the
     qiskit backend's error_bound: it covers ZXZXZDecomposition (contributes
-    ~0, since the gauge-collapse rewrite is exact by construction) and the
-    final synthesis stage build_final_synthesis_passes builds (GridSynthPass,
-    or CyclosynthBlockSynthesisPass when cyclosynth_flag is set -- the real
-    source of error here either way), but not RoundToDiscreteZPass's own
-    rounding (which isn't run inside a ForEachBlockPass, so isn't measured by
-    this mechanism, and could in principle spend up to synthesis_epsilon per
-    rounded rotation without being counted), TRbO's own optimisation error
-    (bounded per block by success_threshold=synthesis_epsilon, same reason),
-    or anything from bqskit's own earlier 2-qubit block instantiation.
+    essentially nothing, since the gauge-collapse rewrite is exact by
+    construction) and the final synthesis stage build_final_synthesis_passes
+    builds (GridSynthPass, or CyclosynthBlockSynthesisPass when
+    cyclosynth_flag is set -- the real source of error here either way), but
+    not RoundToDiscreteZPass's own rounding (which isn't run inside a
+    ForEachBlockPass, so isn't measured by this mechanism, and could in
+    principle spend up to synthesis_epsilon per rounded rotation without
+    being counted), TRbO's own optimisation error (bounded per block by
+    success_threshold=synthesis_epsilon, same reason), or anything from
+    bqskit's own earlier multi-qubit block instantiation.
 
     bqskit's stock ZXZXZDecomposition has a gauge bug: for a diagonal target,
     the middle rotation is Clifford, so how the total rotation splits between
@@ -2146,7 +2152,7 @@ def build_bqskit_workflow(
     BQSKit/bqskit), not patched locally here -- this function uses whichever
     ZXZXZDecomposition is active. ``pip install -e ./bqskit`` activates the
     fix ahead of an upstream release; without it (stock bqskit from PyPI),
-    diagonal-heavy circuits cost ~25% more T gates via this backend.
+    diagonal-heavy circuits cost substantially more T gates via this backend.
 
     trbo_flag (--bqskit-trbo) inserts an extra stage right after the second
     RoundToDiscreteZPass/UnfoldPass pair, where the circuit is genuinely
@@ -2169,9 +2175,9 @@ def build_bqskit_workflow(
     block exposes additional exact-Clifford gauge collapses the first pass's
     decomposition doesn't, since ZXZXZDecomposition's gauge freedom can shift
     once RoundToDiscreteZPass has rounded some rotations. Confirmed by direct
-    A/B measurement on dnn_n16.qasm: 48758 T with the cycle run twice, 49446 T
-    (+1.4%) with it run only once. Running it a third time finds nothing
-    further (checked on the same benchmark).
+    A/B measurement on dnn_n16.qasm: a real, if modest, T-count reduction
+    from running the cycle twice rather than once. Running it a third time
+    finds nothing further (checked on the same benchmark).
     """
     # ScanningGateRemovalPass and TRbOPass both judge success via bqskit's
     # HilbertSchmidtCost/ResidualsGenerator, not an operator-norm distance --
@@ -2494,8 +2500,8 @@ def windowed_fidelity(
 
     _random_window's own budget check only bounds the *source* window's gate
     count, which isn't the whole story: Clifford+T compilation can blow gate
-    count up by two orders of magnitude (a 59-gate window was measured
-    compiling to 6944 gates), and the fidelity check's real cost depends on
+    count up by orders of magnitude (a small window was measured compiling
+    to a much larger one), and the fidelity check's real cost depends on
     the *compiled* circuit's size, not the source's. So the ops budget is
     checked again here, after compiling, using both circuits' real gate counts
     -- exactly the same check the direct statevector path above already makes.
