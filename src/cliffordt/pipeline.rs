@@ -88,6 +88,12 @@ pub struct PipelineConfig {
     /// exactly and folded into the returned error bound, but it can be far
     /// larger per approximate cancellation than `epsilon` itself.
     pub approx_cancel: bool,
+    /// Skip every gauge-collapse cycle (all three: initial, post stage 2,
+    /// post TRbO), for isolating its contribution to the final result.
+    pub skip_gauge_collapse: bool,
+    /// Skip Stage 2 (windowed multi-qubit resynthesis), for isolating its
+    /// contribution to the final result.
+    pub skip_windowed_resynthesis: bool,
 }
 
 impl Default for PipelineConfig {
@@ -98,6 +104,8 @@ impl Default for PipelineConfig {
             trbo: false,
             cyclosynth: false,
             approx_cancel: false,
+            skip_gauge_collapse: false,
+            skip_windowed_resynthesis: false,
         }
     }
 }
@@ -221,38 +229,49 @@ pub fn compile(
     });
 
     // Stage 1: gauge collapse (blocking + exact-Clifford + rounding).
-    let mut current = gauge_collapse(&preopt, config.epsilon, &table, "initial", &mut on_stage);
+    let mut current = if config.skip_gauge_collapse {
+        preopt.clone()
+    } else {
+        gauge_collapse(&preopt, config.epsilon, &table, "initial", &mut on_stage)
+    };
 
     // Stage 2: windowed multi-qubit resynthesis.
-    let t = Instant::now();
-    let partitioned = partition(&current, 2);
-    let scan_config = ScanConfig {
-        success_threshold: config.epsilon,
-        approx_cancel: config.approx_cancel,
-        ..ScanConfig::default()
+    let stage2_error: f64 = if config.skip_windowed_resynthesis {
+        0.0
+    } else {
+        let t = Instant::now();
+        let partitioned = partition(&current, 2);
+        let scan_config = ScanConfig {
+            success_threshold: config.epsilon,
+            approx_cancel: config.approx_cancel,
+            ..ScanConfig::default()
+        };
+        // No cache to weight by here (unlike Stage 4) -- every block does
+        // similarly-cheap exact work, so plain per-block counting is the
+        // right progress denominator.
+        let (num_blocks, _) = block_stats(&partitioned);
+        let progress = ProgressTracker::new("windowed resynthesis", num_blocks);
+        let (scanned, scan_errors) = partitioned.for_each_block_with(|inner| {
+            let result = scanning_gate_removal(inner, &scan_config);
+            progress.add(1);
+            result
+        });
+        progress.finish();
+        let stage2_error: f64 = scan_errors.iter().sum();
+        current = scanned.unfold();
+        on_stage(StageReport {
+            name: "stage 2: windowed resynthesis".to_string(),
+            elapsed: t.elapsed(),
+            circuit: &current,
+            detail: None,
+        });
+        stage2_error
     };
-    // No cache to weight by here (unlike Stage 4) -- every block does
-    // similarly-cheap exact work, so plain per-block counting is the right
-    // progress denominator.
-    let (num_blocks, _) = block_stats(&partitioned);
-    let progress = ProgressTracker::new("windowed resynthesis", num_blocks);
-    let (scanned, scan_errors) = partitioned.for_each_block_with(|inner| {
-        let result = scanning_gate_removal(inner, &scan_config);
-        progress.add(1);
-        result
-    });
-    progress.finish();
-    let stage2_error: f64 = scan_errors.iter().sum();
-    current = scanned.unfold();
-    on_stage(StageReport {
-        name: "stage 2: windowed resynthesis".to_string(),
-        elapsed: t.elapsed(),
-        circuit: &current,
-        detail: None,
-    });
 
     // Gauge collapse again before TRbO.
-    current = gauge_collapse(&current, config.epsilon, &table, "post stage 2", &mut on_stage);
+    if !config.skip_gauge_collapse {
+        current = gauge_collapse(&current, config.epsilon, &table, "post stage 2", &mut on_stage);
+    }
 
     // Stage 3: TRbO gauge-freedom optimization (optional). Its payoff is
     // per-block Rz reduction via gauge freedom across a wider window than
@@ -297,7 +316,9 @@ pub fn compile(
         });
 
         // Gauge collapse a third time -- not redundant, see module docs.
-        current = gauge_collapse(&current, config.epsilon, &table, "post TRbO", &mut on_stage);
+        if !config.skip_gauge_collapse {
+            current = gauge_collapse(&current, config.epsilon, &table, "post TRbO", &mut on_stage);
+        }
     }
 
     // Stage 4: final synthesis of whatever continuous rotation remains.
@@ -510,5 +531,52 @@ mod tests {
                 op.gate
             );
         }
+    }
+
+    #[test]
+    fn skip_gauge_collapse_omits_stage_1_but_still_compiles_correctly() {
+        let mut c = Circuit::new(1);
+        c.push(Gate::Rz(std::f64::consts::FRAC_PI_4), vec![0]);
+        c.push(Gate::Rz(std::f64::consts::FRAC_PI_4), vec![0]);
+        let original = c.get_unitary();
+
+        let config = PipelineConfig {
+            epsilon: 1e-6,
+            skip_gauge_collapse: true,
+            ..PipelineConfig::default()
+        };
+        let mut stage_names = Vec::new();
+        let (compiled, error_bound) = compile(&c, &config, |report| stage_names.push(report.name));
+
+        assert!(
+            !stage_names.iter().any(|name| name.contains("gauge collapse")),
+            "gauge collapse should not run: {stage_names:?}"
+        );
+        assert!(error_bound < 1e-5);
+        assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
+    }
+
+    #[test]
+    fn skip_windowed_resynthesis_omits_stage_2_but_still_compiles_correctly() {
+        let mut c = Circuit::new(2);
+        c.push(Gate::Rz(0.3), vec![0]);
+        c.push(Gate::Cx, vec![0, 1]);
+        c.push(Gate::Rz(-0.3), vec![1]);
+        let original = c.get_unitary();
+
+        let config = PipelineConfig {
+            epsilon: 1e-6,
+            skip_windowed_resynthesis: true,
+            ..PipelineConfig::default()
+        };
+        let mut stage_names = Vec::new();
+        let (compiled, error_bound) = compile(&c, &config, |report| stage_names.push(report.name));
+
+        assert!(
+            !stage_names.iter().any(|name| name.contains("windowed resynthesis")),
+            "windowed resynthesis should not run: {stage_names:?}"
+        );
+        assert!(error_bound < 1e-5);
+        assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
     }
 }

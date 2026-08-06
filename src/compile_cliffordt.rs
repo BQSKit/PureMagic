@@ -1,6 +1,6 @@
 //! Compile an arbitrary circuit down to Clifford+T.
 //!
-//! Runs a six-stage compilation pipeline. Terminal output includes a git
+//! Runs a five-stage compilation pipeline. Terminal output includes a git
 //! banner, backend params, per-circuit before/after stats, and a timing
 //! breakdown.
 
@@ -57,6 +57,16 @@ struct Args {
     /// after compiling (only practical for small qubit counts).
     #[arg(long)]
     verify: bool,
+
+    /// Skip every gauge-collapse cycle (Stage 1, run initially, post
+    /// stage 2, and post TRbO), to isolate its contribution to the result.
+    #[arg(long)]
+    skip_gauge_collapse: bool,
+
+    /// Skip Stage 2 (windowed multi-qubit resynthesis), to isolate its
+    /// contribution to the result.
+    #[arg(long)]
+    skip_windowed_resynthesis: bool,
 }
 
 fn output_path(input: &str, output: &Option<String>, multiple_inputs: bool) -> String {
@@ -142,8 +152,14 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={}, approx_cancel={})",
-        args.epsilon, args.seed, args.trbo, args.cyclosynth, args.approx_cancel
+        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={})",
+        args.epsilon,
+        args.seed,
+        args.trbo,
+        args.cyclosynth,
+        args.approx_cancel,
+        args.skip_gauge_collapse,
+        args.skip_windowed_resynthesis
     );
 
     let mut failures = 0usize;
@@ -172,6 +188,8 @@ fn main() {
             trbo: args.trbo,
             cyclosynth: args.cyclosynth,
             approx_cancel: args.approx_cancel,
+            skip_gauge_collapse: args.skip_gauge_collapse,
+            skip_windowed_resynthesis: args.skip_windowed_resynthesis,
         };
 
         let compile_start = Instant::now();
