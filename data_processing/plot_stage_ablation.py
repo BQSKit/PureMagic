@@ -2,20 +2,28 @@
 """Chart how much each Clifford+T pipeline stage contributes to the final T
 count, for the largest circuit in each benchmark family.
 
-Reads four `compile_cliffordt` (rust) run logs from
+Reads five `compile_cliffordt` (rust) run logs from
 data/all_compiled_pipe-testing/, covering increasing pipeline functionality:
 
-    no_opt      --skip-gauge-collapse --skip-windowed-resynthesis --skip-phase-merge
-    no_resynth  --skip-windowed-resynthesis
-    basic       (all stages, gridsynth final synthesis)
-    cyclosynth  (all stages, cyclosynth final synthesis)
+    no_opt          --skip-gauge-collapse --skip-windowed-resynthesis --skip-phase-merge
+    cyclosynth_only --skip-gauge-collapse --skip-windowed-resynthesis --cyclosynth
+    no_resynth      --skip-windowed-resynthesis
+    basic           (all stages, gridsynth final synthesis)
+    cyclosynth      (all stages, cyclosynth final synthesis)
+
+cyclosynth_only isolates cyclosynth's own contribution: same skipped stages as
+no_opt, just gridsynth swapped for cyclosynth in Stage 4 -- so comparing those
+two bars directly shows what cyclosynth alone is worth, before gauge collapse
+or windowed resynthesis get a chance to help. (Its log predates
+--skip-phase-merge, so Stage 0 still ran there, unlike no_opt -- a small,
+mostly negligible mismatch except on qft/ising, see below.)
 
 For each family's largest circuit, T counts are normalized to that circuit's
 qiskit-backend T count (data/all_compiled_qiskit/out), matching the indexing
 convention plot_gate_counts.py already uses -- circuits span too wide a range
 of absolute T counts to compare on one linear axis otherwise.
 
-Each family gets a cluster of four side-by-side bars, one per configuration,
+Each family gets a cluster of five side-by-side bars, one per configuration,
 so a stage's occasional regression (it makes that particular circuit
 slightly worse) just shows up as a taller bar to its left neighbor's right,
 with no special-casing needed the way a stacked/waterfall rendering would.
@@ -40,13 +48,15 @@ PIPE_DIR = REPO_ROOT / "data/all_compiled_pipe-testing"
 
 RUNS = {
     "no_opt": PIPE_DIR / "out-no-gauge-collapse-no-resynthesis-no-phase",
+    "cyclosynth_only": PIPE_DIR / "out-no-gauge-collapse-no-resynthesis-cyclosynth",
     "no_resynth": PIPE_DIR / "out-no-resynthesis",
     "basic": PIPE_DIR / "out-basic",
     "cyclosynth": PIPE_DIR / "out-cyclosynth",
 }
-CONFIG_ORDER = ["no_opt", "no_resynth", "basic", "cyclosynth"]
+CONFIG_ORDER = ["no_opt", "cyclosynth_only", "no_resynth", "basic", "cyclosynth"]
 CONFIG_LABELS = {
     "no_opt": "no optimization",
+    "cyclosynth_only": "cyclosynth alone",
     "no_resynth": "+ phase merge & gauge collapse",
     "basic": "+ windowed resynthesis",
     "cyclosynth": "+ cyclosynth final synthesis",
@@ -76,13 +86,14 @@ SUMMARY_RE = re.compile(r"(\d+) qubits, \d+ gates -> \d+ gates \(T=(\d+),")
 # darkest (most optimized), in CONFIG_ORDER.
 CONFIG_COLORS = {
     "no_opt": "#c9daf8",
+    "cyclosynth_only": "#9dbdee",
     "no_resynth": "#7aa8e8",
     "basic": "#2a78d6",
     "cyclosynth": "#0d3472",
 }
 SURFACE = "#fcfcfb"
 INK = "#1a1a19"
-BAR_WIDTH = 0.2
+BAR_WIDTH = 0.16
 
 
 def parse_t_counts(path: Path) -> dict[str, int]:
@@ -158,7 +169,7 @@ def main():
     top_max = max(max(values[c]) for c in CONFIG_ORDER) * 1.08
 
     fig, (ax_top, ax_bottom) = plt.subplots(
-        2, 1, figsize=(15, 8), sharex=True, gridspec_kw={"height_ratios": [1, 3], "hspace": 0.08}
+        2, 1, figsize=(17, 8), sharex=True, gridspec_kw={"height_ratios": [1, 3], "hspace": 0.08}
     )
 
     draw_groups(ax_bottom, values, (0, bottom_max))
