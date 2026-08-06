@@ -37,6 +37,7 @@ crushing every other bar flat.
 
 Usage: ./plot_stage_ablation.py [-o OUTPUT.png]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +62,7 @@ CONFIG_LABELS = {
     "no_resynth": "+ phase merge & gauge collapse",
     "basic": "+ windowed resynthesis",
     "cyclosynth": "+ cyclosynth final synthesis",
-    "cyclosynth_only": "cyclosynth alone (not part of the progression)",
+    "cyclosynth_only": "cyclosynth alone",
 }
 QISKIT_OUT = REPO_ROOT / "data/all_compiled_qiskit/out"
 
@@ -133,14 +134,26 @@ def draw_groups(ax, values, ylim):
         xs = [fi + offset for fi in range(n_families)]
         heights = values[config]
         bars = ax.bar(
-            xs, heights, width=BAR_WIDTH * 0.92, color=CONFIG_COLORS[config],
-            edgecolor=SURFACE, linewidth=0.5,
+            xs,
+            heights,
+            width=BAR_WIDTH * 0.92,
+            color=CONFIG_COLORS[config],
+            edgecolor=SURFACE,
+            linewidth=0.5,
         )
         for xi, h, bar in zip(xs, heights, bars):
             if not (ylim[0] < h <= ylim[1]):
                 continue
-            ax.text(xi, h + (ylim[1] - ylim[0]) * 0.012, f"{h:.0f}", ha="center",
-                     va="bottom", fontsize=6.5, color=INK, rotation=90)
+            ax.text(
+                xi,
+                h + (ylim[1] - ylim[0]) * 0.012,
+                f"{h:.0f}",
+                ha="center",
+                va="bottom",
+                fontsize=6.5,
+                color=INK,
+                rotation=90,
+            )
 
 
 def main():
@@ -192,7 +205,12 @@ def main():
     ax_top.tick_params(bottom=False)
     d = 0.5
     break_kwargs = dict(
-        marker=[(-1, -d), (1, d)], markersize=10, linestyle="none", color=INK, mec=INK, mew=1,
+        marker=[(-1, -d), (1, d)],
+        markersize=10,
+        linestyle="none",
+        color=INK,
+        mec=INK,
+        mew=1,
         clip_on=False,
     )
     ax_top.plot([0, 1], [0, 0], transform=ax_top.transAxes, **break_kwargs)
@@ -201,20 +219,26 @@ def main():
     ax_bottom.set_xticks(range(n_families))
     ax_bottom.set_xticklabels(labels, fontsize=10)
     ax_bottom.set_xlim(-0.6, n_families - 0.4)
-    fig.text(0.5, 0.015, "  ".join(f"{f}={c}" for f, c in FAMILIES.items()), ha="center", fontsize=6.5)
-    fig.text(0.02, 0.5, "T gates (% of qiskit backend)", va="center", rotation="vertical", fontsize=10)
+    fig.text(
+        0.5, 0.015, "  ".join(f"{f}={c}" for f, c in FAMILIES.items()), ha="center", fontsize=6.5
+    )
+    fig.text(
+        0.02, 0.5, "T gates (% of qiskit backend)", va="center", rotation="vertical", fontsize=10
+    )
     ax_top.set_title(
         "Pipeline stage contribution to T count, largest circuit per family\n"
         "(one bar per configuration, increasing functionality left to right)"
     )
 
-    legend_handles = [
-        plt.Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER
-    ] + [plt.Line2D([0], [0], **baseline_line_kwargs)]
+    legend_handles = [plt.Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER] + [
+        plt.Line2D([0], [0], **baseline_line_kwargs)
+    ]
     ax_top.legend(
         legend_handles,
         [CONFIG_LABELS[c] for c in CONFIG_ORDER] + ["qiskit baseline (100%)"],
-        loc="upper left", fontsize=8, framealpha=0.9,
+        loc="upper left",
+        fontsize=8,
+        framealpha=0.9,
     )
 
     fig.tight_layout(rect=(0.03, 0.05, 1, 1))
