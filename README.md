@@ -108,6 +108,20 @@ pip install -r requirements.txt
 python data_processing/compile_cliffordt.py circuit.qasm
 ```
 
+Outside the dev container, also set `PYTHONPATH` to this repo's `bqskit/` directory before
+running the script (every backend imports `bqskit` unconditionally, not just `--backend bqskit`):
+
+```bash
+export PYTHONPATH="$(pwd)/bqskit"
+```
+
+Without it, `from bqskit import Circuit` fails with `ImportError: cannot import name 'Circuit'
+from 'bqskit' (unknown location)`: `bqskit-ft`'s own install lands in `site-packages/bqskit/ft/`,
+which -- without this repo's own `bqskit/` on `sys.path` ahead of it -- Python resolves as a bare
+namespace package instead of the editable clone that actually defines `Circuit`. The dev container
+sets this automatically (see `.devcontainer/devcontainer.json`'s `containerEnv`); outside it, it's
+on you.
+
 This produces `circuit.cliffordt.qasm`. Three backends are available via `--backend`:
 
 | Backend | Description |
