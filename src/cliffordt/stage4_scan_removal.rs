@@ -1,25 +1,20 @@
 //! Stage 2's per-block search: `ScanningGateRemovalPass`.
 //!
 //! Scans a block's gates from one side, tentatively removing each one and
-//! renumerically re-fitting the remaining continuous parameters (via
+//! numerically re-fitting the remaining continuous parameters (via
 //! `instantiate.rs`'s shared NLS engine) against the block's original
 //! target unitary -- not just checking the unmodified remainder, which is
-//! what makes this more than a static redundancy check (see the plan
-//! doc's Context section).
+//! what makes this more than a static redundancy check.
 //!
 //! That per-op loop has a structural blind spot: it only ever tries
 //! removing ONE op at a time, so a block that's redundant only as a whole
 //! -- e.g. two adjacent identical parameter-free `Cx` gates, which cancel
 //! to the identity together but neither removal alone gets anywhere close
-//! -- is invisible to it (confirmed on `qft_n63.qasm`, where 595 of 1953
-//! Stage 2 blocks were exactly `Cx(a,b); Cx(a,b)`, entirely dead weight
-//! left over once `phase_merge.rs` cancelled the diagonal gate that used
-//! to sit between them, none of which this pass removed). `whole_block_
-//! is_redundant` checks that specific case directly before the per-op loop
-//! even runs.
+//! -- is invisible to it. `scanning_gate_removal` checks that whole-block
+//! case directly before the per-op loop even runs.
 
 use crate::cliffordt::instantiate::instantiate_multistart;
-use crate::cliffordt::matrix::{distance, identity, infidelity, Unitary};
+use crate::cliffordt::matrix::{Unitary, distance, identity, infidelity};
 use crate::cliffordt::qgate_circuit::{Circuit, Operation};
 
 pub struct ScanConfig {
@@ -31,26 +26,30 @@ pub struct ScanConfig {
     /// When true, also accept a removal whose resulting circuit is within
     /// `success_threshold` *infidelity* of the block's target, not just
     /// within `success_threshold` operator-norm `distance` -- matching
-    /// bqskit's own `ScanningGateRemovalPass`, which uses
-    /// `HilbertSchmidtResidualsGenerator` (a cost quadratic in the operator
-    /// error) against the same nominal threshold. Since infidelity scales
+    /// bqskit's own `ScanningGateRemovalPass`. Since infidelity scales
     /// roughly as `distance^2` near a match, this tolerates angular
     /// deviations up to roughly `sqrt(success_threshold)` instead of
-    /// `success_threshold` directly -- confirmed as the actual mechanism
-    /// behind bqskit's real-rotation-count reduction on `qft_n63.qasm`
-    /// (1275 -> ~680), which our own operator-norm-only criterion missed
-    /// almost entirely. Off by default: the resulting per-block error is
-    /// always measured exactly and returned (see `scanning_gate_removal`'s
-    /// return type) rather than assumed, so the pipeline's additive error
-    /// bound stays rigorous either way -- but the actual error with this on
-    /// can be far larger per approximate cancellation than `epsilon`
-    /// itself, which is why it's opt-in rather than always applied.
+    /// `success_threshold` directly, which is what lets it find reductions
+    /// an operator-norm-only criterion misses. Off by default: the
+    /// resulting per-block error is always measured exactly and returned
+    /// (see `scanning_gate_removal`'s return type) rather than assumed, so
+    /// the pipeline's additive error bound stays rigorous either way -- but
+    /// the actual error with this on can be far larger per approximate
+    /// cancellation than `epsilon` itself, which is why it's opt-in rather
+    /// than always applied.
     pub approx_cancel: bool,
 }
 
 impl Default for ScanConfig {
     fn default() -> Self {
-        ScanConfig { success_threshold: 1e-8, start_from_left: true, n_starts: 4, max_iters: 100, seed: 0, approx_cancel: false }
+        ScanConfig {
+            success_threshold: 1e-8,
+            start_from_left: true,
+            n_starts: 4,
+            max_iters: 100,
+            seed: 0,
+            approx_cancel: false,
+        }
     }
 }
 
@@ -62,7 +61,11 @@ impl Default for ScanConfig {
 /// additive error-bound accounting.
 fn accept(target: &Unitary, built: &Unitary, config: &ScanConfig) -> (bool, f64) {
     let d = distance(target, built);
-    let ok = if config.approx_cancel { infidelity(target, built) < config.success_threshold } else { d < config.success_threshold };
+    let ok = if config.approx_cancel {
+        infidelity(target, built) < config.success_threshold
+    } else {
+        d < config.success_threshold
+    };
     (ok, d)
 }
 
@@ -84,8 +87,11 @@ pub fn scanning_gate_removal(circuit: &Circuit, config: &ScanConfig) -> (Circuit
     let mut slots: Vec<Option<Operation>> = circuit.ops.iter().cloned().map(Some).collect();
     let mut last_error = 0.0;
 
-    let order: Vec<usize> =
-        if config.start_from_left { (0..slots.len()).collect() } else { (0..slots.len()).rev().collect() };
+    let order: Vec<usize> = if config.start_from_left {
+        (0..slots.len()).collect()
+    } else {
+        (0..slots.len()).rev().collect()
+    };
 
     for idx in order {
         let removed = slots[idx].take();
@@ -156,7 +162,10 @@ mod tests {
         // The returned error must be the real, correctly-computed distance
         // -- not just "some small untracked value" -- and consistent with
         // what we just measured directly above.
-        assert!(error >= 0.0 && error < 1e-6, "reported error {error} inconsistent with the actual distance");
+        assert!(
+            error >= 0.0 && error < 1e-6,
+            "reported error {error} inconsistent with the actual distance"
+        );
     }
 
     #[test]
@@ -180,17 +189,21 @@ mod tests {
         assert!(distance(&original_unitary, &result.get_unitary()) < 1e-6);
     }
 
-    /// Regression test for the bug this fixes: two adjacent identical `Cx`
-    /// gates and nothing else -- the exact shape found dead in `qft_n63.qasm`
-    /// blocks left over by `phase_merge.rs`. Neither individual removal
-    /// ever gets close to identity, so only a whole-block check catches it.
+    /// Regression test: two adjacent identical `Cx` gates and nothing else
+    /// (dead weight `phase_merge.rs` can leave behind) -- neither
+    /// individual removal ever gets close to identity, so only a
+    /// whole-block check catches it.
     #[test]
     fn two_identical_adjacent_cx_gates_cancel_to_an_empty_block() {
         let mut c = Circuit::new(2);
         c.push(Gate::Cx, vec![1, 0]);
         c.push(Gate::Cx, vec![1, 0]);
         let (result, _error) = scanning_gate_removal(&c, &ScanConfig::default());
-        assert!(result.ops.is_empty(), "expected the whole redundant block to be dropped, got {:?}", result.ops);
+        assert!(
+            result.ops.is_empty(),
+            "expected the whole redundant block to be dropped, got {:?}",
+            result.ops
+        );
     }
 
     /// A block with the same two `Cx` gates plus a genuine, non-redundant
@@ -211,9 +224,7 @@ mod tests {
     /// The motivating case: a `Cx; Rz(theta); Cx` block where theta is
     /// close to a multiple of 2*pi by more than epsilon in angle (so it's
     /// NOT within operator-norm epsilon of the identity) but well within
-    /// epsilon *infidelity* -- the actual mechanism behind bqskit's own
-    /// ScanningGateRemovalPass finding reductions ours doesn't (see module
-    /// docs). Mirrors a real removed block found on qft_n63.qasm.
+    /// epsilon *infidelity* (see `ScanConfig::approx_cancel`'s doc comment).
     #[test]
     fn approx_cancel_drops_a_near_clifford_block_the_default_config_must_not() {
         let theta = 2.0 * std::f64::consts::PI - 2e-4;
@@ -230,11 +241,17 @@ mod tests {
         assert!(distance(&target, &identity(4)) > default_config.success_threshold);
 
         let (result, _error) = scanning_gate_removal(&c, &default_config);
-        assert!(!result.ops.is_empty(), "without approx_cancel, this near-but-not-exact block must survive");
+        assert!(
+            !result.ops.is_empty(),
+            "without approx_cancel, this near-but-not-exact block must survive"
+        );
 
         let approx_config = ScanConfig { approx_cancel: true, ..ScanConfig::default() };
         let (result, error) = scanning_gate_removal(&c, &approx_config);
-        assert!(result.ops.is_empty(), "with approx_cancel, this near-Clifford block should be dropped entirely");
+        assert!(
+            result.ops.is_empty(),
+            "with approx_cancel, this near-Clifford block should be dropped entirely"
+        );
         // The reported error must be the REAL operator-norm cost of that
         // approximation, not silently reported as epsilon-sized -- this is
         // the whole point of "properly accounted".
@@ -243,6 +260,9 @@ mod tests {
             (error - actual_distance).abs() < 1e-12,
             "returned error {error} should equal the real distance {actual_distance}"
         );
-        assert!(error > default_config.success_threshold, "the accounted error should visibly exceed epsilon, not hide it");
+        assert!(
+            error > default_config.success_threshold,
+            "the accounted error should visibly exceed epsilon, not hide it"
+        );
     }
 }

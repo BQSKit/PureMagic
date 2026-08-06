@@ -42,7 +42,7 @@ def dascot_square_sparse_qubit_count(n: int) -> dict:
           'total'    - total logical qubits = data + routing + magic
           'grid_side'- side length of the final grid
     """
-    s = math.ceil(math.sqrt(n))  # ceil(sqrt(N))
+    s = math.ceil(math.sqrt(n))
 
     # Inner grid (before border): (2s+1) x (2s+1)
     inner_side = 2 * s + 1
@@ -169,7 +169,7 @@ def dascot_compact_qubit_count(n: int) -> dict:
           'grid_width'  - width (columns) of the final grid
           'grid_height' - height (rows) of the final grid
     """
-    c = math.ceil(n / 2)  # ceil(N/2)
+    c = math.ceil(n / 2)
 
     # Inner grid (before border): 3 rows x (2c-1) columns
     inner_width = 2 * c - 1

@@ -14,10 +14,8 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Topological layout of a surface code quantum processor.
-///
-/// Nodes are either Data (logical qubit patches), Magic (magic state cultivators),
-/// or Bus (routing ancilla in bus-routing mode). Each data qubit has two nodes:
-/// one for the X stabiliser patch and one for the Z stabiliser patch.
+/// Nodes are Data (logical qubit patches, one X-patch node and one Z-patch node per
+/// qubit), Magic (magic-state cultivators), or Bus (routing ancilla in bus-routing mode).
 pub(crate) struct TopoGraph {
     pub(crate) nodes: Vec<Node>,
     pub labels: Vec<String>,
@@ -99,9 +97,8 @@ impl TopoGraph {
         } else {
             self.gen_pure_magic_topo(min_n_qubits, ancilla_rows, sides_only);
         }
-        // Link each data node to its X/Z partner (same qubit, opposite basis).
-        // Data nodes are generated in pairs: even qubit index = X, odd = Z.
-        // The paired node has the adjacent qubit number and the same basis suffix.
+        // Record each data node's "paired" node: the same-basis node on the adjacent
+        // qubit (qubit+1 if even, qubit-1 if odd).
         let node_ids: Vec<u16> = self.nodes.iter().map(|node| node.id).collect();
         for node_id in node_ids {
             let node = self.node(node_id);
@@ -116,7 +113,6 @@ impl TopoGraph {
                     .ok()
                     .unwrap();
                 let term = label.chars().last().map(|c| c.to_string()).unwrap();
-                // Even qubit pairs with qubit+1; odd qubit pairs with qubit-1.
                 let pair_qubit = if qubit % 2 == 0 { qubit + 1 } else { qubit - 1 };
                 let paired_node_label = format!("d{}{}", pair_qubit, term);
                 self.node_mut(node_id).paired_data_id =
@@ -275,11 +271,7 @@ impl TopoGraph {
             self.n_data_qubits,
             self.n_data_qubits as f64 / total
         );
-        println!(
-            "  bus:          {} ({:.3})",
-            self.n_bus_qubits,
-            self.n_bus_qubits as f64 / total
-        );
+        println!("  bus:          {} ({:.3})", self.n_bus_qubits, self.n_bus_qubits as f64 / total);
         println!(
             "  magic:        {} ({:.3})",
             self.n_magic_qubits,
@@ -311,9 +303,8 @@ impl TopoGraph {
         self.data_ids[qubit as usize][basis_idx]
     }
 
-    /// Returns true if this magic node is actively cultivating (started but not yet ready).
-    /// A node is ready when `cultivation_time == 0`; it is cultivating when
-    /// `busy_count < cultivation_time` (i.e. it has been assigned a time but not finished).
+    /// True if this magic node has started cultivating but isn't ready yet: it has a
+    /// nonzero `cultivation_time` and `busy_count` hasn't reached it.
     pub(crate) fn is_cultivating(&self, node_id: u16) -> bool {
         self.cultivation_times[node_id as usize] > 0
             && self.busy_counts[node_id as usize] < self.cultivation_times[node_id as usize]
@@ -359,8 +350,7 @@ impl TopoGraph {
     }
 
     pub(crate) fn plot(
-        &self, fname_added: &str, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
-        title_str: &str,
+        &self, fname_added: &str, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)], title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         TopoGraphPlotter::new(self).plot(fname_added, pp_paths, title_str)
     }
@@ -437,7 +427,6 @@ impl TopoGraph {
         Ok(())
     }
 
-    /// Returns the node type used for routing nodes in the current routing mode.
     #[inline]
     fn routing_node_type(&self) -> NodeType {
         if self.use_magic_routing { NodeType::Magic } else { NodeType::Bus }
@@ -456,8 +445,7 @@ impl TopoGraph {
         self.add_border_row(0);
         self.add_border_column(0);
 
-        let max_qi =
-            if min_n_qubits % 2 == 0 { 2 * min_n_qubits } else { 2 * min_n_qubits + 1 };
+        let max_qi = if min_n_qubits % 2 == 0 { 2 * min_n_qubits } else { 2 * min_n_qubits + 1 };
         let mut qi = 0;
         for col in 1..self.n_cols - 1 {
             if col % 2 == 0 {
@@ -495,8 +483,7 @@ impl TopoGraph {
         self.node_grid = vec![vec![None; self.n_rows]; self.n_cols];
 
         self.add_border_row_compact(0);
-        let max_qi =
-            if min_n_qubits % 2 == 0 { 2 * min_n_qubits } else { 2 * min_n_qubits + 1 };
+        let max_qi = if min_n_qubits % 2 == 0 { 2 * min_n_qubits } else { 2 * min_n_qubits + 1 };
         let mut qi = 0;
         for col in 0..self.n_cols {
             if col % 2 == 1 {
@@ -537,8 +524,7 @@ impl TopoGraph {
         self.n_cols = patch_cols * col_spacing + col_spacing - 1;
         self.node_grid = vec![vec![None; self.n_rows]; self.n_cols];
         let mut qi = 0;
-        let max_qi =
-            if min_n_qubits % 2 == 0 { 2 * min_n_qubits } else { 2 * min_n_qubits + 1 };
+        let max_qi = if min_n_qubits % 2 == 0 { 2 * min_n_qubits } else { 2 * min_n_qubits + 1 };
         let row_gap = 1 + row_spacing;
         for col in 0..self.n_cols {
             for row in 0..self.n_rows {
@@ -566,21 +552,15 @@ impl TopoGraph {
         println!("Generated topology with dimensions: {} {}", self.n_cols, self.n_rows);
     }
 
-    /// Adds a pair of data nodes (left and right) at grid position (col, row).
-    /// `qi` is the base qubit index (even); the two nodes get labels `d{q}X/Z` and `d{q+1}X/Z`.
-    /// Positions are offset by ±0.25 so the two nodes sit side-by-side within the column.
+    /// Adds a pair of data nodes (left and right) at grid position (col, row); `qi` is the
+    /// base (even) qubit index. Positions are offset by ±0.25 so they sit side-by-side.
     fn add_double_data_qubit(&mut self, qi: usize, col: usize, row: usize, is_x: bool) {
         let q = if is_x { qi / 2 } else { qi / 2 - 1 };
         let op = if is_x { 'X' } else { 'Z' };
         let fname1 = format!("d{}{}", q, op);
         let id1 = self.n_nodes as u16;
-        let node1 = Node::new(
-            id1,
-            None,
-            col as f32 - 0.25,
-            (self.n_rows - 1 - row) as f32,
-            NodeType::Data,
-        );
+        let node1 =
+            Node::new(id1, None, col as f32 - 0.25, (self.n_rows - 1 - row) as f32, NodeType::Data);
         self.nodes.push(node1);
         self.labels.push(fname1.clone());
         self.busy_counts.push(0);
@@ -589,13 +569,8 @@ impl TopoGraph {
         self.n_nodes += 1;
         let id2 = self.n_nodes as u16;
         let fname2 = format!("d{}{}", q + 1, op);
-        let node2 = Node::new(
-            id2,
-            None,
-            col as f32 + 0.25,
-            (self.n_rows - 1 - row) as f32,
-            NodeType::Data,
-        );
+        let node2 =
+            Node::new(id2, None, col as f32 + 0.25, (self.n_rows - 1 - row) as f32, NodeType::Data);
         self.nodes.push(node2);
         self.labels.push(fname2.clone());
         self.busy_counts.push(0);
@@ -656,13 +631,10 @@ impl TopoGraph {
         }
     }
 
-    /// Establishes edges between adjacent nodes (4-connectivity).
-    ///
-    /// Horizontal edges connect every node to its left nb.
-    /// Vertical edges connect routing nodes to each other (not to data nodes directly).
-    /// When `sides_only` is false, additional vertical edges connect Z data nodes to
-    /// the routing node two rows above, and X data nodes to the routing node two rows
-    /// below — these are the "top/bottom" connections used for Y-basis operators.
+    /// Establishes edges between adjacent nodes (4-connectivity): horizontal edges link
+    /// every node to its left neighbour; vertical edges link routing nodes to each other,
+    /// not data nodes directly. Unless `sides_only`, Z data nodes also connect up and X
+    /// data nodes down to the routing node two rows away — these support Y-basis operators.
     fn set_edges(&mut self, sides_only: bool) {
         let mut edges_to_add = Vec::new();
         let mut vert_data_edges_to_add = Vec::new();
@@ -676,7 +648,6 @@ impl TopoGraph {
                         }
                     }
                     if !sides_only {
-                        // Z data node: connect upward to the routing node 2 rows above.
                         if row > 1 {
                             if label.starts_with('d') && label.ends_with('Z') {
                                 if let Some(ref up_label) = self.node_grid[col][row - 2].clone() {
@@ -687,7 +658,6 @@ impl TopoGraph {
                                 }
                             }
                         }
-                        // X data node: connect downward to the routing node 2 rows below.
                         if row < self.n_rows - 2 {
                             if label.starts_with('d') && label.ends_with('X') {
                                 if let Some(ref up_label) = self.node_grid[col][row + 2].clone() {
@@ -709,8 +679,7 @@ impl TopoGraph {
                 }
             }
         }
-        // For horizontal edges involving a double-data-qubit label (e.g. "d0/1X"),
-        // connect only the left or right individual data node to the routing nb.
+        // For a double-data-qubit label (e.g. "d0/1X"), connect only the left/right data node.
         for (label1, label2) in edges_to_add {
             if label1.starts_with('d') {
                 if let Some(d) = Self::data_label_side(&label1, true) {
@@ -730,9 +699,8 @@ impl TopoGraph {
                 self.add_edge(n1, n2);
             }
         }
-        // Vertical data edges connect both individual data nodes in a pair to the
-        // routing node above/below (add_nb is used directly to avoid double-counting
-        // n_edges, since these are not standard bidirectional topology edges).
+        // Both data nodes in a pair connect to the routing node above/below; add_nb is
+        // called directly (not add_edge) so these links don't double-count n_edges.
         for (label1, label2) in vert_data_edges_to_add {
             let (data_label, bus_label) =
                 if label1.starts_with('d') { (label1, label2) } else { (label2, label1) };
@@ -794,11 +762,7 @@ mod tests {
     fn gen_pure_magic_topo_has_enough_data_qubits() {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
-        assert!(
-            topo.n_data_qubits >= 4,
-            "expected >= 4 data qubits, got {}",
-            topo.n_data_qubits
-        );
+        assert!(topo.n_data_qubits >= 4, "expected >= 4 data qubits, got {}", topo.n_data_qubits);
     }
 
     #[test]
@@ -813,10 +777,7 @@ mod tests {
     fn gen_pure_magic_topo_total_qubits_consistent() {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
-        assert_eq!(
-            topo.n_qubits,
-            topo.n_data_qubits + topo.n_bus_qubits + topo.n_magic_qubits
-        );
+        assert_eq!(topo.n_qubits, topo.n_data_qubits + topo.n_bus_qubits + topo.n_magic_qubits);
     }
 
     #[test]
@@ -924,10 +885,7 @@ mod tests {
         let before_total = topo.n_qubits;
         topo.update_statistics();
         assert_eq!(topo.n_qubits, before_total, "update_statistics should be idempotent");
-        assert_eq!(
-            topo.n_qubits,
-            topo.n_data_qubits + topo.n_bus_qubits + topo.n_magic_qubits
-        );
+        assert_eq!(topo.n_qubits, topo.n_data_qubits + topo.n_bus_qubits + topo.n_magic_qubits);
     }
 
     #[test]

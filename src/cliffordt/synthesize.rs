@@ -1,38 +1,30 @@
 //! Stage 4: final synthesis of whatever continuous rotation survives all
-//! earlier stages, via the three-tier dispatch described throughout this
-//! session -- exact Clifford hit (free) -> near-Clifford numerical-
-//! stability guard -> cyclosynth's joint ZYZ lattice search -> rsgridsynth
-//! fallback (used directly for the independent per-axis path, and as the
-//! safety net when cyclosynth is skipped or fails).
+//! earlier stages, via a three-tier dispatch: exact Clifford hit (free) ->
+//! near-Clifford numerical-stability guard -> cyclosynth's joint ZYZ
+//! lattice search -> rsgridsynth fallback (used directly for the
+//! independent per-axis path, and as the safety net when cyclosynth is
+//! skipped or fails).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use cyclosynth::synthesis::angle::Angle;
 use cyclosynth::synthesis::Synthesizer;
+use cyclosynth::synthesis::angle::Angle;
 use rsgridsynth::config::config_from_theta_epsilon;
 use rsgridsynth::gridsynth::gridsynth_gates;
 
 use crate::cliffordt::clifford::CliffordTable;
-use crate::cliffordt::matrix::{Unitary, C64};
+use crate::cliffordt::matrix::{C64, Unitary};
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
 /// rsgridsynth keeps its arbitrary-precision search state in a
-/// process-global `AtomicUsize` (`PREC_BITS` in its own `common.rs`),
-/// read/bumped by `gridsynth_gates` itself rather than threaded through as
-/// per-call state. That's fine sequentially, but under this pipeline's
-/// block-level parallelism (`Circuit::for_each_block`), concurrent calls on
-/// different threads can read or reset each other's in-flight precision
-/// state, making the exact (still individually valid, within-epsilon) gate
-/// sequence depend on scheduling -- confirmed empirically (two runs with
-/// the same seed produced the same T-count but a different gate sequence
-/// in one block). Serializing every call through this lock restores
-/// reproducibility for a given seed. Gridsynth's own search dominates each
-/// block's cost anyway (up to 3 calls per block, ZYZ decomposition and
-/// bookkeeping around it is cheap by comparison), so this reverts Stage 4
-/// specifically to close to its pre-parallelization sequential time --
-/// small relative to total runtime, and Stage 2/3 (which never call
-/// gridsynth) are unaffected.
+/// process-global `AtomicUsize` (`PREC_BITS` in its own `common.rs`) rather
+/// than per-call state, so concurrent calls on different threads can read
+/// or reset each other's in-flight precision state, making the (still
+/// individually valid, within-epsilon) gate sequence depend on scheduling.
+/// Serializing every call through this lock restores reproducibility for a
+/// given seed; gridsynth's own search dominates each block's cost anyway,
+/// so this has little effect on Stage 4's total runtime.
 static GRIDSYNTH_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct SynthConfig {
@@ -55,25 +47,11 @@ impl Default for SynthConfig {
 const EXACTNESS_FLOOR: f64 = 1e-12;
 /// A block within this many multiples of epsilon of a Clifford point is
 /// treated as "too close to call" for cyclosynth's lattice search (which
-/// can behave unpredictably right at a near-singular point -- see
-/// `notes/cyclosynth-bug-report.md`: a per-prefix L²-LLL blowup, not the
-/// SE search itself) and routed to the independent-axis fallback instead.
-///
-/// Tuned against `qft_n63.qasm --cyclosynth` (2026-08-06): a margin sweep
-/// found a sharp cliff between 300 and 150 (Stage 4 time roughly triples,
-/// 31s -> 100s, for a T-count that's actually slightly *worse* at 150 --
-/// noise in exactly which borderline gates cross the threshold, not a real
-/// trend reversal) and only marginal further T-count gains below that (100
-/// gets within 0.16% of 300's T-count at 5x the time). 300 sits right at
-/// that knee -- within 0.02% of the best T-count seen anywhere in the
-/// sweep, at close to the fastest observed time. For reference, this is
-/// 30x more aggressive than the old default (10) and ~33x less aggressive
-/// than the Python reference pipeline's own tuned value (1e4), which
-/// leaves more T-count on the table (106763 vs 105806) for not much of a
-/// time saving over 300. Not re-validated against other circuit shapes --
-/// QFT's near-Clifford rotation profile is fairly extreme and specific, so
-/// a circuit with a different near-Clifford angle distribution could have
-/// its own cliff elsewhere.
+/// can behave unpredictably right at a near-singular point -- a per-prefix
+/// L²-LLL blowup, not the SE search itself) and routed to the
+/// independent-axis fallback instead. Empirically tuned as a time/T-count
+/// tradeoff on QFT-shaped circuits; not re-validated against other
+/// near-Clifford angle distributions.
 const NEAR_CLIFFORD_MARGIN: f64 = 300.0;
 
 /// Extract ZYZ Euler angles `(theta, phi, lam)` such that
@@ -142,14 +120,8 @@ fn ry_word_via_rz(theta: f64, epsilon: f64, seed: u64) -> Vec<Gate> {
 /// synthesize each axis separately via rsgridsynth.
 ///
 /// Uses the *full* `config.epsilon` per axis, not a conservatively-split
-/// epsilon/3 -- matching `data_processing/compile_cliffordt.py`'s own
-/// `gridsynth_precision`, which computes one precision from the whole
-/// synthesis epsilon and reuses it for every Rz gate regardless of how
-/// many end up needing synthesis in a block. A per-axis split was tried
-/// initially (worst-case triangle-inequality accounting) but measurably
-/// inflated T-count relative to the Python pipeline for no corresponding
-/// fidelity benefit the accumulated-error-bound bookkeeping doesn't
-/// already cover.
+/// epsilon/3: a per-axis split measurably inflated T-count for no
+/// corresponding fidelity benefit.
 pub fn gridsynth_unitary(target: &Unitary, config: &SynthConfig) -> Circuit {
     let (theta, phi, lam) = zyz_angles(target);
 
@@ -169,16 +141,12 @@ pub fn gridsynth_unitary(target: &Unitary, config: &SynthConfig) -> Circuit {
 /// Cyclosynth's joint ZYZ lattice search; `None` if it fails to find a
 /// result (falls back to `gridsynth_unitary` at the call site).
 ///
-/// Empirically confirmed (via round-trip testing against `zyz_angles`,
-/// whose own convention is separately validated by direct matrix
-/// reconstruction) that `synthesize_u3`'s actual behavior does not match
-/// its doc comment ("U3(θ,φ,λ) ≡ ZYZ(α=φ, β=θ, γ=λ)", i.e.
-/// `Rz(phi)*Ry(theta)*Rz(lam)`): it actually produces
-/// `Rz(phi_arg)*Ry(-theta_arg)*Rz(lam_arg)` with `phi_arg`/`lam_arg`
-/// swapped relative to the doc's own labels. Compensated here by calling
-/// it with `(-theta, lam, phi)` instead of `(theta, phi, lam)`, which was
-/// verified to reproduce the intended `Rz(phi)*Ry(theta)*Rz(lam)` target
-/// to cyclosynth's own reported precision.
+/// `synthesize_u3`'s actual behavior does not match its own doc comment
+/// ("U3(θ,φ,λ) ≡ ZYZ(α=φ, β=θ, γ=λ)", i.e. `Rz(phi)*Ry(theta)*Rz(lam)`):
+/// it actually produces `Rz(phi_arg)*Ry(-theta_arg)*Rz(lam_arg)` with
+/// `phi_arg`/`lam_arg` swapped relative to the doc's own labels.
+/// Compensated here by calling it with `(-theta, lam, phi)` instead of
+/// `(theta, phi, lam)`.
 fn try_cyclosynth(target: &Unitary, config: &SynthConfig) -> Option<Circuit> {
     let (theta, phi, lam) = zyz_angles(target);
     let synth = Synthesizer::new(config.epsilon, false);
@@ -187,10 +155,8 @@ fn try_cyclosynth(target: &Unitary, config: &SynthConfig) -> Option<Circuit> {
 
     let mut circuit = Circuit::new(1);
     for c in gates.chars() {
-        // Uppercase = the gate; lowercase = its dagger (confirmed against
-        // cyclosynth's own source -- e.g. `synthesis/decomposer.rs`'s
-        // `'s' => U2T::s().dagger()`, `'t' => U2T::t().dagger()` -- not
-        // documented in the public doc comment, which only lists the
+        // Uppercase = the gate; lowercase = its dagger -- not documented in
+        // cyclosynth's own public doc comment, which only lists the
         // uppercase alphabet.
         let gate = match c {
             'H' => Gate::H,
@@ -214,9 +180,12 @@ fn try_cyclosynth(target: &Unitary, config: &SynthConfig) -> Option<Circuit> {
 /// the exact-Clifford check ahead of this and caches this part -- the
 /// exact-Clifford check is already cheap, a lookup against 24 entries, so
 /// there's no benefit caching it too, only the actual numerical search).
-fn synthesize_non_clifford(target: &Unitary, clifford_table: &CliffordTable, config: &SynthConfig) -> Circuit {
+fn synthesize_non_clifford(
+    target: &Unitary, clifford_table: &CliffordTable, config: &SynthConfig,
+) -> Circuit {
     if config.use_cyclosynth {
-        let near_clifford = clifford_table.nearest_distance(target) < NEAR_CLIFFORD_MARGIN * config.epsilon;
+        let near_clifford =
+            clifford_table.nearest_distance(target) < NEAR_CLIFFORD_MARGIN * config.epsilon;
         if !near_clifford {
             if let Some(circuit) = try_cyclosynth(target, config) {
                 return circuit;
@@ -227,26 +196,19 @@ fn synthesize_non_clifford(target: &Unitary, clifford_table: &CliffordTable, con
     gridsynth_unitary(target, config)
 }
 
-/// Hashable, global-phase-invariant, rounded key for a 2x2 unitary --
-/// matches the actual Python pipeline's own `canonical_key` exactly
-/// (`decimals=7`): round magnitudes first so the pivot tie-break (which
-/// must exist, since unitarity forces `|a|==|d|` and `|b|==|c|`) is
-/// deterministic, pick the largest-magnitude entry as pivot, divide out
-/// its (unrounded) phase, then round every entry to 7 decimals -- coarse
-/// enough to absorb floating-point noise accumulated by this pipeline's
-/// own earlier stages composing many matrix products before a block ever
-/// reaches Stage 4, but far finer than any epsilon this pipeline
-/// synthesizes to (1e-8 by default is already coarser), so two matrices
-/// landing on the same key are guaranteed indistinguishable at the
-/// accuracy actually being targeted.
+/// Hashable, global-phase-invariant, rounded key for a 2x2 unitary: round
+/// magnitudes first so the pivot tie-break is deterministic (unitarity
+/// forces `|a|==|d|` and `|b|==|c|`), pick the largest-magnitude entry as
+/// pivot, divide out its (unrounded) phase, then round every entry to 7
+/// decimals -- coarse enough to absorb floating-point noise accumulated by
+/// earlier stages, but far finer than any epsilon this pipeline
+/// synthesizes to.
 ///
 /// Keyed on the matrix directly, not a ZYZ-angle decomposition: two
 /// matrices that are "the same" rotation can have genuinely different
 /// (theta, phi, lam) representations at a branch boundary (e.g. `phi = pi`
-/// vs `phi = -pi`), which an angle-based key would treat as distinct even
-/// though the actual targets are identical -- confirmed as a real,
-/// separate gap from plain floating-point noise (bucketing the angles
-/// alone barely moved dnn_n8.qasm's call count).
+/// vs `phi = -pi`), which an angle-based key would wrongly treat as
+/// distinct.
 fn canonical_key(target: &Unitary) -> [(i64, i64); 4] {
     const SCALE: f64 = 1e7;
     let round = |x: f64| (x * SCALE).round() as i64;
@@ -274,9 +236,7 @@ fn canonical_key(target: &Unitary) -> [(i64, i64); 4] {
 
 /// Cache of already-synthesized non-Clifford single-qubit targets, keyed by
 /// `canonical_key`. Avoids redundant cyclosynth/gridsynth searches for
-/// rotations that repeat across a circuit. Mirrors the actual Python
-/// pipeline's own documented behavior ("both synthesizers cache by
-/// angle/matrix key").
+/// rotations that repeat across a circuit.
 #[derive(Default)]
 pub struct SynthCache(Mutex<HashMap<[(i64, i64); 4], Circuit>>);
 
@@ -285,11 +245,9 @@ impl SynthCache {
         Self::default()
     }
 
-    /// Number of distinct targets synthesized so far -- watched around a
-    /// call to `synthesize_block_cached` to weight progress by genuine new
-    /// synthesis work rather than plain call count, the same distinction
-    /// `_with_progress` draws in the Python reference (see its own doc
-    /// comment): most repeated rotations are instant cache hits, so a call
+    /// Number of distinct targets synthesized so far -- used to weight
+    /// progress by genuine new synthesis work rather than plain call count,
+    /// since most repeated rotations are instant cache hits and a call
     /// count would race through them and then stall on the rare expensive
     /// misses.
     pub fn len(&self) -> usize {
@@ -302,10 +260,7 @@ impl SynthCache {
 /// racing with another thread's miss on the same angle just does the
 /// (correct, just redundant) work twice rather than corrupting anything.
 pub fn synthesize_block_cached(
-    target: &Unitary,
-    clifford_table: &CliffordTable,
-    config: &SynthConfig,
-    cache: &SynthCache,
+    target: &Unitary, clifford_table: &CliffordTable, config: &SynthConfig, cache: &SynthCache,
 ) -> Circuit {
     if let Some(word) = clifford_table.exact_match(target, EXACTNESS_FLOOR) {
         return crate::cliffordt::clifford::circuit_from_word(&word);
@@ -331,7 +286,12 @@ mod tests {
         Unitary::from_row_slice(
             2,
             2,
-            &[C64::new(h.cos(), 0.0), C64::new(-h.sin(), 0.0), C64::new(h.sin(), 0.0), C64::new(h.cos(), 0.0)],
+            &[
+                C64::new(h.cos(), 0.0),
+                C64::new(-h.sin(), 0.0),
+                C64::new(h.sin(), 0.0),
+                C64::new(h.cos(), 0.0),
+            ],
         )
     }
 
@@ -343,7 +303,7 @@ mod tests {
         // circuit is overkill; just multiply matrices directly here.
         let rz_lam = Gate::Rz(lam).matrix();
         let rz_phi = Gate::Rz(phi).matrix();
-        let _ = c; // silence unused warning from the scratch circuit above
+        let _ = c;
         rz_phi * ry * rz_lam
     }
 
@@ -432,11 +392,10 @@ mod tests {
 
     #[test]
     fn synthesize_block_via_cyclosynth_handles_nonzero_theta() {
-        // Regression test: cyclosynth's `synthesize_u3` does not actually
-        // match its own doc comment for targets with a genuine Ry (theta)
-        // component -- a target built purely from Rz gates (theta == 0)
-        // can't expose this, since Ry(0) is the identity regardless of
-        // sign convention. This target (Rz then H) has theta == pi/2.
+        // A target built purely from Rz gates has theta == 0, where the
+        // sign-convention bug in try_cyclosynth's doc comment can't show up
+        // (Ry(0) is the identity either way). This target (Rz then H) has
+        // theta == pi/2.
         let table = CliffordTable::build();
         let mut c = Circuit::new(1);
         c.push(Gate::Rz(0.6), vec![0]);
@@ -460,14 +419,10 @@ mod tests {
 
     #[test]
     fn synth_cache_absorbs_floating_point_noise() {
-        // Regression test: two targets that are "the same" rotation up to
-        // noise far smaller than 1e-7 (e.g. accumulated across a few matrix
-        // products, as real blocks reaching this cache have gone through)
-        // must still hit the same cache entry -- an exact-bit-pattern key
-        // (this cache's original approach) would treat these as distinct
-        // and measurably undercache real duplicates (confirmed against the
-        // actual Python pipeline: 21 real cyclosynth calls needed on
-        // dnn_n8.qasm vs an exact-bit cache's 47-88).
+        // Two targets that are "the same" rotation up to noise far smaller
+        // than 1e-7 must still hit the same cache entry -- an
+        // exact-bit-pattern key would treat these as distinct and
+        // undercache real duplicates.
         let table = CliffordTable::build();
         let target = Gate::Rz(0.37).matrix();
         let mut noisy_circuit = Circuit::new(1);
@@ -478,19 +433,16 @@ mod tests {
         let cache = SynthCache::new();
         let first = synthesize_block_cached(&target, &table, &config, &cache);
         let second = synthesize_block_cached(&noisy_target, &table, &config, &cache);
-        assert_eq!(first, second, "noise far below the 1e-7 bucket width should still hit the cache");
+        assert_eq!(
+            first, second,
+            "noise far below the 1e-7 bucket width should still hit the cache"
+        );
     }
 
     #[test]
     fn synth_cache_key_ignores_global_phase() {
         // canonical_key must be global-phase invariant: a target multiplied
-        // by an arbitrary unit phase is physically the identical gate, and
-        // this pipeline's own stages never distinguish global phase either
-        // (see e.g. fidelity_residuals). Distinct from the angle-branch
-        // ambiguity this key is specifically designed to avoid (unlike the
-        // ZYZ-angle-based bucketing this replaced), keying on the matrix
-        // directly should never even construct two different-looking
-        // representations of the same target in the first place.
+        // by an arbitrary unit phase is physically the identical gate.
         let target = Gate::Rz(0.55).matrix();
         let phased = target.map(|v| v * C64::new(0.0, 1.0));
         assert_eq!(canonical_key(&target), canonical_key(&phased));

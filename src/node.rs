@@ -11,7 +11,6 @@ pub(crate) enum NodeType {
 /// Maximum number of neighbours a node can have (4 grid + 2 data = 6).
 pub(crate) const MAX_NBS: usize = 6;
 
-/// A node in the topological graph.
 /// `nbs` is a fixed-size inline array to avoid heap allocation in the A* inner loop.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node {

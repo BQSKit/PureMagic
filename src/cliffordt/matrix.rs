@@ -1,8 +1,5 @@
 //! Complex unitary matrices and the distance metric used throughout the
 //! Clifford+T pipeline: a global-phase-aligned spectral-norm distance.
-//!
-//! Mirrors `global_phase_between`/`spectral_error` from
-//! `data_processing/compile_cliffordt.py`.
 
 use nalgebra::{Complex, DMatrix};
 
@@ -253,10 +250,22 @@ mod tests {
             4,
             4,
             &[
-                C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
             ],
         );
         let embedded = embed(&cx, &[0, 1], 2);
@@ -271,20 +280,44 @@ mod tests {
             4,
             4,
             &[
-                C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
             ],
         );
         let swap = Unitary::from_row_slice(
             4,
             4,
             &[
-                C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0),
-                C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(1.0, 0.0),
             ],
         );
         let embedded = embed(&cx, &[1, 0], 2);

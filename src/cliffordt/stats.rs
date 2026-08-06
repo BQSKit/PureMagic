@@ -1,8 +1,7 @@
-//! Circuit statistics for reporting, matching the depth/T-depth model
-//! established for `compile_cliffordt.py`: per-qubit running depth
-//! counters, each gate taking the max over its touched qubits (+1 always
-//! for `depth`, +1 only when the gate is T/Tdg for `t_depth`), then
-//! writing that value back to every touched qubit regardless.
+//! Circuit statistics for reporting: per-qubit running depth counters, each
+//! gate taking the max over its touched qubits (+1 always for `depth`, +1
+//! only when the gate is T/Tdg for `t_depth`), then writing that value back
+//! to every touched qubit regardless.
 
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
@@ -61,11 +60,9 @@ pub fn compute_stats(circuit: &Circuit) -> Stats {
 }
 
 /// (number of Stage 1 `Block`s formed, total single-qubit gates grouped
-/// inside them). Blocking's own contribution is invisible to gate/Rz
-/// counts -- it only repackages gates into `Block`s, never removes any
-/// (`total_gate_count` recurses into `Block`, so the total is unchanged
-/// by construction) -- so this is the metric that actually reflects what
-/// the stage did, rather than a delta that's always zero.
+/// inside them). Blocking never changes gate/Rz counts -- it only
+/// repackages gates into `Block`s -- so this is the metric that actually
+/// reflects what the stage did, rather than a delta that's always zero.
 pub fn block_stats(circuit: &Circuit) -> (usize, usize) {
     let mut num_blocks = 0;
     let mut grouped_gates = 0;
@@ -81,10 +78,9 @@ pub fn block_stats(circuit: &Circuit) -> (usize, usize) {
 /// Gate kinds that shouldn't survive to a finished Clifford+T circuit --
 /// anything counted here means an earlier stage left work undone (a stray
 /// `Rz`/`U3` that never reached Stage 4, or a `Block` that was never
-/// unfolded), not a legitimate part of the result. Mirrors
-/// `non_basis_ops` in `compile_cliffordt.py`, recursing into any leftover
-/// `Block` defensively (the pipeline always unfolds before returning, so
-/// this should never actually fire in practice).
+/// unfolded), not a legitimate part of the result. Recurses into any
+/// leftover `Block` defensively (the pipeline always unfolds before
+/// returning, so this should never actually fire in practice).
 pub fn non_basis_ops(circuit: &Circuit) -> Vec<(&'static str, usize)> {
     fn gate_name(gate: &Gate) -> Option<&'static str> {
         match gate {

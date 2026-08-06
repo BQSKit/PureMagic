@@ -1,14 +1,13 @@
-//! Orchestrates all stages into one `compile` entry point, in the same
-//! relative order as `build_bqskit_workflow`/`unroll_to_u_cx` in
-//! `data_processing/compile_cliffordt.py`: exact phase-polynomial merge ->
-//! gauge collapse (blocking + exact-Clifford + rounding, run and reported as
-//! one combined stage) -> windowed multi-qubit resynthesis -> gauge collapse
-//! again -> TRbO (if enabled) -> gauge collapse a *third* time -> final
-//! synthesis. Running the gauge-collapse cycle both before and after TRbO is
-//! deliberate, not redundant -- this session's earlier work on the actual
-//! Python pipeline found removing the second run regressed T-count by ~1.4%,
-//! since re-checking for exact Clifford hits after TRbO's angle adjustments
-//! exposes coincidences the first pass alone doesn't.
+//! Orchestrates all stages into one `compile` entry point: exact
+//! phase-polynomial merge -> gauge collapse (blocking + exact-Clifford +
+//! rounding, run and reported as one combined stage) -> windowed
+//! multi-qubit resynthesis -> gauge collapse again -> TRbO (if enabled) ->
+//! gauge collapse a *third* time -> final synthesis. Running the
+//! gauge-collapse cycle both before and after TRbO is deliberate, not
+//! redundant: skipping the second run measurably regresses T-count (by
+//! ~1.4% on measured circuits), since re-checking for exact Clifford hits
+//! after TRbO's angle adjustments exposes coincidences the first pass
+//! alone doesn't.
 
 use std::time::{Duration, Instant};
 
@@ -20,10 +19,10 @@ use crate::cliffordt::phase_merge::{count_real_rotations, merge_phase_polynomial
 use crate::cliffordt::progress::ProgressTracker;
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
-use crate::cliffordt::stage4_scan_removal::{scanning_gate_removal, ScanConfig};
+use crate::cliffordt::stage4_scan_removal::{ScanConfig, scanning_gate_removal};
 use crate::cliffordt::stats::block_stats;
-use crate::cliffordt::synthesize::{synthesize_block_cached, SynthCache, SynthConfig};
-use crate::cliffordt::trbo::{trbo_optimize, TrboConfig};
+use crate::cliffordt::synthesize::{SynthCache, SynthConfig, synthesize_block_cached};
+use crate::cliffordt::trbo::{TrboConfig, trbo_optimize};
 
 /// Total gate count, recursing into `Block` sub-circuits (the circuit is
 /// only ever fully flat right after an `unfold`; at other points it may
@@ -93,7 +92,13 @@ pub struct PipelineConfig {
 
 impl Default for PipelineConfig {
     fn default() -> Self {
-        PipelineConfig { epsilon: 1e-8, seed: 0, trbo: false, cyclosynth: false, approx_cancel: false }
+        PipelineConfig {
+            epsilon: 1e-8,
+            seed: 0,
+            trbo: false,
+            cyclosynth: false,
+            approx_cancel: false,
+        }
     }
 }
 
@@ -105,10 +110,7 @@ impl Default for PipelineConfig {
 /// not forced through anything lossy -- this stage never introduces
 /// approximation error.
 fn gauge_collapse(
-    circuit: &Circuit,
-    epsilon: f64,
-    table: &CliffordTable,
-    cycle: &str,
+    circuit: &Circuit, epsilon: f64, table: &CliffordTable, cycle: &str,
     on_stage: &mut impl FnMut(StageReport),
 ) -> Circuit {
     let t = Instant::now();
@@ -123,13 +125,13 @@ fn gauge_collapse(
     // block worse: if the shortest word happens to be longer than the
     // block's current gate count (rare now that the table's generating set
     // includes every native Clifford gate, not just H/S, but still
-    // possible), the original gates are left alone. Mirrors
-    // `collapse_clifford_blocks`'s `len(shortest) > len(block): keep
-    // original` guard in the Python reference.
+    // possible), the original gates are left alone.
     let (checked, _) = grouped.for_each_block_with(|inner| {
         let target = inner.get_unitary();
         match table.exact_match(&target, 1e-10) {
-            Some(word) if word.len() <= inner.ops.len() => (crate::cliffordt::clifford::circuit_from_word(&word), ()),
+            Some(word) if word.len() <= inner.ops.len() => {
+                (crate::cliffordt::clifford::circuit_from_word(&word), ())
+            }
             Some(_) => (inner.clone(), ()),
             None => {
                 // Not an exact Clifford. A `U3` gate here would otherwise
@@ -151,13 +153,12 @@ fn gauge_collapse(
     let mut current = checked.unfold();
 
     // A block whose rotation was hidden inside an opaque `U3` gate (not
-    // counted by `total_rz_count` at all) turns into up to 3 freshly visible
-    // `Rz`s once exposed -- so `rz_before` can legitimately undercount how
-    // much continuous rotation this circuit already had, and this midpoint
-    // can be *larger* than `rz_before` even though nothing new was created.
-    // Reporting it separately from the final (post-rounding) count keeps
-    // that exposure jump from being read as regression, and keeps rounding's
-    // own contribution visible instead of buried in one net number.
+    // counted by `total_rz_count` at all) turns into up to 3 freshly
+    // visible `Rz`s once exposed -- so `rz_before` can legitimately
+    // undercount the circuit's existing continuous rotation, and this
+    // midpoint can be *larger* than `rz_before` even though nothing new was
+    // created. Reporting it separately keeps that exposure jump from being
+    // read as a regression.
     let rz_exposed = total_rz_count(&current);
 
     current = round_to_discrete_z(&current, epsilon);
@@ -189,22 +190,17 @@ fn gauge_collapse(
 /// num_blocks_synthesized` of the original, and in practice far tighter
 /// since most blocks cost zero).
 pub fn compile(
-    circuit: &Circuit,
-    config: &PipelineConfig,
-    mut on_stage: impl FnMut(StageReport),
+    circuit: &Circuit, config: &PipelineConfig, mut on_stage: impl FnMut(StageReport),
 ) -> (Circuit, f64) {
     let table = CliffordTable::build();
 
     // Stage 0: exact phase-polynomial merge of redundant diagonal
     // rotations (see phase_merge.rs) -- must run first, before Stage 1
-    // ever groups gates into blocks, for the same reason the Python
-    // reference's own merge_phase_polynomial runs before its 1-qubit
-    // fusion: fusing a genuinely mergeable Rz together with a neighboring
-    // non-diagonal gate first would bake it into one opaque matrix this
-    // pass could no longer address. Not always a net win (see
-    // phase_merge.rs's docs), so pick whichever candidate needs fewer
-    // real (non-Clifford) rotations, mirroring unroll_to_u_cx's own
-    // merged-vs-unmerged selection.
+    // ever groups gates into blocks: fusing a genuinely mergeable Rz
+    // together with a neighboring non-diagonal gate first would bake it
+    // into one opaque matrix this pass could no longer address. Not always
+    // a net win (see phase_merge.rs's docs), so pick whichever candidate
+    // needs fewer real (non-Clifford) rotations.
     let t = Instant::now();
     let merged = merge_phase_polynomial(circuit);
     let merged_real = count_real_rotations(&merged, config.epsilon);
@@ -230,11 +226,14 @@ pub fn compile(
     // Stage 2: windowed multi-qubit resynthesis.
     let t = Instant::now();
     let partitioned = partition(&current, 2);
-    let scan_config = ScanConfig { success_threshold: config.epsilon, approx_cancel: config.approx_cancel, ..ScanConfig::default() };
+    let scan_config = ScanConfig {
+        success_threshold: config.epsilon,
+        approx_cancel: config.approx_cancel,
+        ..ScanConfig::default()
+    };
     // No cache to weight by here (unlike Stage 4) -- every block does
     // similarly-cheap exact work, so plain per-block counting is the right
-    // progress denominator, the same reasoning `_with_block_progress` uses
-    // for the Python reference's cleanup rounds.
+    // progress denominator.
     let (num_blocks, _) = block_stats(&partitioned);
     let progress = ProgressTracker::new("windowed resynthesis", num_blocks);
     let (scanned, scan_errors) = partitioned.for_each_block_with(|inner| {
@@ -263,7 +262,11 @@ pub fn compile(
     if config.trbo {
         let t = Instant::now();
         let partitioned = partition(&current, 4);
-        let trbo_config = TrboConfig { success_threshold: config.epsilon, seed: config.seed, ..TrboConfig::default() };
+        let trbo_config = TrboConfig {
+            success_threshold: config.epsilon,
+            seed: config.seed,
+            ..TrboConfig::default()
+        };
         // Every block runs its own NLS optimization from scratch (no cache
         // to weight by), so -- like Stage 2 -- plain per-block counting is
         // the right progress denominator.
@@ -300,20 +303,23 @@ pub fn compile(
     // Stage 4: final synthesis of whatever continuous rotation remains.
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
-    let synth_config = SynthConfig { epsilon: config.epsilon, seed: config.seed, use_cyclosynth: config.cyclosynth };
+    let synth_config = SynthConfig {
+        epsilon: config.epsilon,
+        seed: config.seed,
+        use_cyclosynth: config.cyclosynth,
+    };
     // Shared across all blocks (including in parallel -- see SynthCache's
     // own doc comment): repeated rotation angles are common enough in real
     // circuits that caching the expensive non-Clifford synthesis path
     // across blocks is a large, real win, not a micro-optimization.
     let synth_cache = SynthCache::new();
-    // Weight by actual cache growth, not call count -- mirrors
-    // `_with_progress` in the Python reference: most repeated rotations are
-    // instant cache hits, so counting every call equally would race through
-    // them and then stall on the rare, genuinely expensive misses. `total`
-    // is the number of non-Clifford blocks, an upper bound on how many new
-    // cache entries can appear (repeats collapse to fewer); the Clifford
-    // short-circuit below never touches the cache, so it's excluded from
-    // both the total and the count.
+    // Weight by actual cache growth, not call count: most repeated
+    // rotations are instant cache hits, so counting every call equally
+    // would race through them and then stall on the rare, genuinely
+    // expensive misses. `total` is the number of non-Clifford blocks, an
+    // upper bound on how many new cache entries can appear (repeats
+    // collapse to fewer); the Clifford short-circuit below never touches
+    // the cache, so it's excluded from both the total and the count.
     let total_synth = grouped
         .ops
         .iter()
@@ -333,11 +339,9 @@ pub fn compile(
     };
     // cyclosynth parallelizes its own search internally, so run Stage 4
     // sequentially at this level when it's enabled rather than nesting it
-    // inside this crate's own per-block rayon parallelism -- see
-    // `for_each_block_with_sequential`'s doc comment for the throughput
-    // numbers behind why (this is no longer about the stack-overflow risk
-    // `main()`'s pool setup already fixes on its own; it's about avoiding
-    // oversubscription slowdown even once that's safe).
+    // inside this crate's own per-block rayon parallelism -- avoids
+    // oversubscription slowdown (see `for_each_block_with_sequential`'s doc
+    // comment for measured throughput).
     let (synthesized, errors) = if synth_config.use_cyclosynth {
         grouped.for_each_block_with_sequential(synth_one)
     } else {
@@ -345,9 +349,8 @@ pub fn compile(
     };
     progress.finish();
     // Stage 2's own approximate-cancellation error (see stage2_error above)
-    // is folded in here too -- previously untracked entirely (even at the
-    // strict, non-approx_cancel tier), so the reported bound now properly
-    // reflects every stage that can spend accuracy, not just Stage 4.
+    // is folded in here too, so the reported bound reflects every stage
+    // that can spend accuracy, not just Stage 4.
     let total_error: f64 = stage2_error + errors.iter().sum::<f64>();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);
@@ -430,7 +433,8 @@ mod tests {
         c.push(Gate::Rz(0.9), vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-6, seed: 11, trbo: true, ..PipelineConfig::default() };
+        let config =
+            PipelineConfig { epsilon: 1e-6, seed: 11, trbo: true, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);
@@ -444,7 +448,12 @@ mod tests {
         c.push(Gate::H, vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-6, seed: 3, cyclosynth: true, ..PipelineConfig::default() };
+        let config = PipelineConfig {
+            epsilon: 1e-6,
+            seed: 3,
+            cyclosynth: true,
+            ..PipelineConfig::default()
+        };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);
@@ -470,7 +479,8 @@ mod tests {
         let strict_config = PipelineConfig { epsilon: 1e-8, ..PipelineConfig::default() };
         let (strict_compiled, strict_bound) = compile(&c, &strict_config, |_| {});
 
-        let approx_config = PipelineConfig { epsilon: 1e-8, approx_cancel: true, ..PipelineConfig::default() };
+        let approx_config =
+            PipelineConfig { epsilon: 1e-8, approx_cancel: true, ..PipelineConfig::default() };
         let (approx_compiled, approx_bound) = compile(&c, &approx_config, |_| {});
 
         assert!(
@@ -502,4 +512,3 @@ mod tests {
         }
     }
 }
-

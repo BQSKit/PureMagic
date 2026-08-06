@@ -2,8 +2,7 @@ use crate::node::NodeType;
 use crate::topograph::TopoGraph;
 use crate::treegraph::TreeGraph;
 
-/// Result of a pathfinding computation.
-/// `PathFound(None)` marks `used[]` but skips tree construction (non-plotting mode).
+/// `PathFound(None)` marks `used[]` but skips tree construction (non-plotting mode);
 /// `PathFound(Some(tree))` builds and returns a full routing tree (plotting mode).
 #[derive(Debug)]
 pub(crate) enum PathResult {
@@ -15,13 +14,10 @@ pub(crate) enum PathResult {
 /// f_cost = g + h ≤ 2 × grid_diameter ≈ 112, so 256 gives ample headroom.
 const BUCKET_COUNT: usize = 256;
 
-/// State container for A* pathfinding computations.
-///
-/// Uses a generation-counter to avoid O(N) array resets between calls: `epoch` is
-/// bumped once per `compute` call; a node slot is valid iff its stored `open_epochs`
-/// or `closed_epochs` value matches the current epoch.
-/// The priority queue is a bucket queue (Dial's algorithm) over integer f-costs,
-/// giving O(1) push and amortised O(1) pop without comparison overhead.
+/// Uses a generation-counter (`epoch`) to avoid O(N) array resets between calls: a
+/// node slot is valid iff its stored `open_epochs`/`closed_epochs` matches the current epoch.
+/// The priority queue is a bucket queue (Dial's algorithm) over integer f-costs, giving
+/// O(1) push and amortised O(1) pop without comparison overhead.
 pub(crate) struct AStar {
     /// `u16::MAX` means "no parent" (search root).
     parent: Vec<u16>,
@@ -75,10 +71,8 @@ impl AStar {
     }
 
     /// A* from first root to the nearest ready, unused magic node.
-    /// Each `terminal_ids[i]` is attached to `root_ids[i]` in the returned tree.
-    /// Remaining roots not on the main path are stitched in via adjacent tree nodes.
-    /// When `plotting` is false, marks `used[]` and returns `PathFound(None)`.
-    /// When `plotting` is true, builds and returns `PathFound(Some(tree))`.
+    /// Each `terminal_ids[i]` is attached to `root_ids[i]` in the returned tree;
+    /// remaining roots not on the main path are stitched in via adjacent tree nodes.
     pub(crate) fn compute(
         &mut self, terminal_ids: &[u16], root_ids: &[u16], topo: &TopoGraph, used: &mut Vec<bool>,
         ready_magic_positions: &[(f32, f32)], plotting: bool,
@@ -99,8 +93,7 @@ impl AStar {
         }
         self.bucket_min = 0;
 
-        // Seed the search from the first root; additional roots (Y-gate pairs) are
-        // stitched into the tree after the main path is found in finish_path.
+        // Seed from the first root; other roots (Y-gate pairs) are stitched in later by finish_path.
         let root_id = root_ids[0];
         debug_assert!(!used[root_id as usize]);
         self.g_cost[root_id as usize] = 0;
@@ -108,9 +101,8 @@ impl AStar {
         self.open_epochs[root_id as usize] = epoch;
         let (h, ready_idx) = Self::heuristic(topo.node(root_id).pos, ready_magic_positions);
         self.bucket_push(h, root_id);
-        // Pin the heuristic target to the nearest ready magic node at search start.
-        // Using a fixed target keeps the heuristic admissible even as other magic
-        // nodes become used during the search.
+        // Fix the heuristic target at search start so it stays admissible even as
+        // other magic nodes become used during the search.
         let ready_pos = ready_magic_positions[ready_idx];
 
         while let Some(node_id) = self.bucket_pop(epoch) {
@@ -125,8 +117,7 @@ impl AStar {
                 return self.finish_path(node_id, root_ids, terminal_ids, topo, used, plotting);
             }
 
-            // In bus-routing mode, magic nodes are only valid as the T-gate goal
-            // (cultivator), not as routing intermediaries.
+            // In bus-routing mode, magic nodes are only a valid T-gate goal, not routing intermediaries.
             if !topo.use_magic_routing && node_type == NodeType::Magic {
                 continue;
             }
@@ -143,8 +134,7 @@ impl AStar {
                 if nb_type == NodeType::Data {
                     continue;
                 }
-                // Early-exit: a ready magic nb is the optimal goal — no shorter
-                // path can exist since g+1 is the minimum reachable cost from here.
+                // Early-exit: a ready magic nb is optimal here since g+1 is the minimum reachable cost.
                 if nb_type == NodeType::Magic && nb_cultivation == 0 {
                     self.parent[nb_id as usize] = node_id;
                     self.open_epochs[nb_id as usize] = epoch;
@@ -326,7 +316,7 @@ mod tests {
         let ready = vec![(5.0f32, 5.0f32)];
         let (dist, idx) = AStar::test_heuristic((2.0, 2.0), &ready);
         assert_eq!(idx, 0);
-        assert_eq!(dist, 6); // |5-2| + |5-2| = 6
+        assert_eq!(dist, 6);
     }
 
     #[test]

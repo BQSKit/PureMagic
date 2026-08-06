@@ -261,7 +261,7 @@ mod tests {
     fn stop_without_start_is_noop() {
         let mut timers = AccumTimers::new();
         let idx = timers.add_or_get("t");
-        timers.stop(idx); // should not panic
+        timers.stop(idx);
         let (_, t) = timers.timers.get_index(idx).unwrap();
         assert_eq!(t.n_intervals, 0);
     }
@@ -269,8 +269,8 @@ mod tests {
     #[test]
     fn start_stop_out_of_bounds_index_is_noop() {
         let mut timers = AccumTimers::new();
-        timers.start(999); // no panic
-        timers.stop(999); // no panic
+        timers.start(999);
+        timers.stop(999);
     }
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
         let mut timers = AccumTimers::default();
         let i1 = timers.add_or_get("alpha");
         let i2 = timers.add_or_get("beta");
-        let i3 = timers.add_or_get("alpha"); // same as first
+        let i3 = timers.add_or_get("alpha");
         assert_ne!(i1, i2);
         assert_eq!(i1, i3);
     }
@@ -321,7 +321,6 @@ mod tests {
         let idx = timers.add_or_get("t1");
         timers.start(idx);
         timers.stop(idx);
-        // Second round
         timers.start(idx);
         timers.stop(idx);
     }

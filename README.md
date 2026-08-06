@@ -230,8 +230,6 @@ src/
 data_processing/        # Python/shell tooling; not built by cargo
 ├── compile_cliffordt.py     # Compile QASM → Clifford+T QASM (--backend qiskit/bqskit/cyclosynth,
 │                                #   plus --bqskit-trbo/--bqskit-cyclosynth for the bqskit backend)
-├── bqskit_compile_cliffordt.py # Standalone BQSKit-only compiler; superseded by
-│                                #   compile_cliffordt.py --backend bqskit, kept for reference
 ├── flasq_lower_bound.py     # FLASQ lower bound (Algorithm 1 of Beverland et al.)
 ├── dascot_qubit_count.py    # Logical qubit counts for DASCOT square-sparse/compact
 ├── analyze_wisq.py          # Summarise WISQ JSON: steps, total and mean IDs per step

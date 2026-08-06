@@ -175,7 +175,6 @@ CULT_MULT = {"conservative": 1.5, "optimistic": 1.0}
 
 # Default probability that the wrong magic state (T† instead of T, or vice versa)
 # is injected for a given T gate, requiring a corrective S gate.
-# DEFAULT_P_WRONG = 0.5
 DEFAULT_P_WRONG = 0.0
 
 
@@ -225,7 +224,6 @@ def parse_qasm(text: str) -> Tuple[int, List[Tuple[str, List[int]]]]:
     n_qubits = 0
     gates: List[Tuple[str, List[int]]] = []
 
-    # Strip comments
     text = re.sub(r"//[^\n]*", "", text)
 
     for line in text.splitlines():
@@ -233,14 +231,11 @@ def parse_qasm(text: str) -> Tuple[int, List[Tuple[str, List[int]]]]:
         if not line:
             continue
 
-        # OPENQASM version declaration
         if line.startswith("OPENQASM"):
             continue
-        # include
         if line.startswith("include"):
             continue
 
-        # qubit register declaration: qreg name[size];
         m = re.match(r"qreg\s+(\w+)\s*\[(\d+)\]", line)
         if m:
             reg_name, size = m.group(1), int(m.group(2))
@@ -249,7 +244,6 @@ def parse_qasm(text: str) -> Tuple[int, List[Tuple[str, List[int]]]]:
             n_qubits += size
             continue
 
-        # creg / classical register — ignore
         if line.startswith("creg"):
             continue
 
@@ -265,7 +259,6 @@ def parse_qasm(text: str) -> Tuple[int, List[Tuple[str, List[int]]]]:
                 gates.append(("MEAS", [q]))
             continue
 
-        # reset q[i]
         m = re.match(r"reset\s+(\w+\[\d+\])", line)
         if m:
             q = _resolve_qubit(m.group(1), qubit_map)
@@ -273,7 +266,6 @@ def parse_qasm(text: str) -> Tuple[int, List[Tuple[str, List[int]]]]:
                 gates.append(("RESET", [q]))
             continue
 
-        # barrier — ignore
         if line.startswith("barrier"):
             continue
 
@@ -321,7 +313,7 @@ def _resolve_qubit(token: str, qubit_map: Dict[str, int]) -> Optional[int]:
     token = token.strip()
     if token in qubit_map:
         return qubit_map[token]
-    # Try without brackets for whole-register references (rare in Clifford+T)
+    # unresolved reference (e.g. a whole-register token) is silently dropped
     return None
 
 
@@ -371,7 +363,6 @@ class GridLayout:
         min_dist[0] = 0.0
         total = 0.0
         for _ in range(len(qubits)):
-            # Pick vertex with minimum distance not yet in tree
             u = min((i for i in range(len(qubits)) if not in_tree[i]), key=lambda i: min_dist[i])
             in_tree[u] = True
             total += min_dist[u]
@@ -454,7 +445,7 @@ def gate_ancilla_volume(
         # S_COST ancilla volume and, assuming it takes one logical cycle on the
         # critical path, contributes p_wrong to the expected measurement depth.
         vol_t += p_wrong * S_COST[model]
-        depth_t = 1.0 + p_wrong  # expected depth: 1 (T) + p_wrong (S correction)
+        depth_t = 1.0 + p_wrong
         return vol_t, depth_t
 
     if gate in ("CNOT", "CZ"):
@@ -514,9 +505,7 @@ def measurement_depth_bound(
     for gate, qubits in gates:
         if not qubits:
             continue
-        # The (expected) measurement depth contribution of this gate
         gate_md = t_depth_contrib if gate in ("T", "Tdg") else 0.0
-        # The depth at which this gate starts = max depth of all its qubits
         start_depth = max(depth[q] for q in qubits)
         end_depth = start_depth + gate_md
         for q in qubits:
@@ -730,7 +719,6 @@ def main():
 
     n_qubits, gates = parse_qasm(text)
 
-    # Select layout.
     if args.layout == "puremagic":
         n_tot = puremagic_ntot(n_qubits, ancilla_rows=1)
         n_tot_source = f"PureMagic layout ({n_qubits} data qubits, ancilla_rows=1)"
@@ -738,7 +726,6 @@ def main():
         n_tot = busrouting_ntot(n_qubits, ancilla_rows=1)
         n_tot_source = f"Bus-routing layout ({n_qubits} data qubits, ancilla_rows=1)"
 
-    # Run both models.
     rc = flasq(
         n_qubits=n_qubits,
         gates=gates,

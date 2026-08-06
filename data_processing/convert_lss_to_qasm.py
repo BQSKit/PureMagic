@@ -25,20 +25,11 @@ Op = tuple[str, str, str]
 
 
 def convert_operation(line: str) -> Optional[Op]:
-    """
-    Convert a single line from input format to output format.
-
-    Args:
-        line (str): Input line in format "Operation sign: PAULI_STRING"
-
-    Returns:
-        str: Converted line in compact format, or None if line is invalid
-    """
+    """Parse a line like "Rotate -1: XXXX" into (sign, pauli_string, gate_type), or None if blank."""
     line = line.strip()
     if not line:
         return None
 
-    # Parse the input line using regex
     # Matches: "Rotate -1:", "Rotate 1:", "Measure +:", "Measure -:"
     pattern: str = r"^(Rotate|Measure)\s+([+-]?\d*):?\s+([IXYZ]+)$"
     match: Optional[re.Match[str]] = re.match(pattern, line)
@@ -51,7 +42,6 @@ def convert_operation(line: str) -> Optional[Op]:
     pauli_string: str
     operation, sign_part, pauli_string = match.groups()
 
-    # Determine the sign
     sign: str
     if operation == "Rotate":
         if sign_part in ["-1", "-2"]:
@@ -70,10 +60,8 @@ def convert_operation(line: str) -> Optional[Op]:
     else:
         raise RuntimeError(f"Unknown operation '{operation}' in line: {line}")
 
-    # Convert Pauli string: replace 'I' with '_'
     converted_pauli: str = pauli_string.replace("I", "_")
 
-    # Determine the angle bracket
     gate_type: str
     if operation == "Rotate":
         if sign_part in ["1", "-1"]:
@@ -212,7 +200,6 @@ def get_converted_lines(input_path: Path) -> tuple[list[int], list[Op]]:
     lines: list[Op] = []
     line_nums: list[int] = []
     converted_count: int = 0
-    # Read and convert the file
     try:
         with open(input_path, "r", encoding="utf-8") as f:
             for i, line in enumerate(f, 1):
@@ -231,7 +218,6 @@ def convert_file(input_file: str, output_file: Optional[str] = None) -> None:
     input_path: Path = Path(input_file)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
-    # Determine output file path
     output_path: Path
     if output_file is None:
         output_path = input_path.with_suffix(input_path.suffix + ".converted")

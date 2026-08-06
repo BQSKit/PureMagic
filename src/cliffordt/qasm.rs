@@ -5,17 +5,14 @@
 //! Deliberately narrower than a full QASM parser -- matches the line-based
 //! parsing style already used by `transpile.rs`'s own `parse_qasm` (split
 //! on `[`/`]` for qubit indices, lowercase-prefix match for gate names),
-//! extended to handle parameterized gates, which that parser never needed
-//! since its input is always already-compiled Clifford+T.
+//! extended to handle parameterized gates.
 //!
 //! Also expands user-defined `gate NAME(params) qargs { body }` macros
-//! (`GateDef`/`BodyOp`/`expand_gate_call`) inline at every call site --
-//! common in machine-generated circuits (e.g. qiskit's older qasm2 export
-//! of a bound `RYYGate` emits one uniquely-named gate definition per
-//! distinct angle) -- plus built-in identities for the qelib1.inc
-//! extensions (`rx`/`ry`/`sx`/`sxdg`/`cry`/`crz`/`rzz`) actually seen in
-//! real inputs, since `include "qelib1.inc"` itself is never read (just
-//! skipped) rather than resolved from an external file.
+//! (`GateDef`/`BodyOp`/`expand_gate_call`) inline at every call site, plus
+//! built-in identities for the qelib1.inc extensions (`rx`/`ry`/`sx`/
+//! `sxdg`/`cry`/`crz`/`rzz`) actually seen in real inputs, since
+//! `include "qelib1.inc"` itself is never read (just skipped) rather than
+//! resolved from an external file.
 //!
 //! Deliberately fails loudly (a hard `io::Error`, naming the exact line and
 //! reason) on anything it can't parse, rather than silently skipping it --
@@ -104,8 +101,8 @@ pub fn load_qasm(path: &str) -> io::Result<Circuit> {
             continue;
         }
 
-        let (name, params, qubits) = parse_gate_line(stripped)
-            .map_err(|e| parse_error(line_no, &line, &e))?;
+        let (name, params, qubits) =
+            parse_gate_line(stripped).map_err(|e| parse_error(line_no, &line, &e))?;
         expand_gate_call(&mut circuit, &defs, &name, &params, &qubits)
             .map_err(|e| parse_error(line_no, &line, &e))?;
     }
@@ -162,10 +159,9 @@ fn parse_gate_line(line: &str) -> Result<(String, Vec<f64>, Vec<usize>), String>
         let mut params = Vec::new();
         for raw in line[open + 1..close].split(',') {
             let raw = raw.trim();
-            params.push(
-                parse_angle_expr(raw)
-                    .ok_or_else(|| format!("could not parse angle expression '{raw}' for gate '{name}'"))?,
-            );
+            params.push(parse_angle_expr(raw).ok_or_else(|| {
+                format!("could not parse angle expression '{raw}' for gate '{name}'")
+            })?);
         }
         (name, params, &line[close + 1..])
     } else {
@@ -195,7 +191,11 @@ fn parse_angle_expr(s: &str) -> Option<f64> {
         return Some(v);
     }
     let lower = s.to_lowercase();
-    let (sign, lower) = if let Some(stripped) = lower.strip_prefix('-') { (-1.0, stripped) } else { (1.0, lower.as_str()) };
+    let (sign, lower) = if let Some(stripped) = lower.strip_prefix('-') {
+        (-1.0, stripped)
+    } else {
+        (1.0, lower.as_str())
+    };
 
     // Peel off at most one trailing "/denom" first -- e.g. "7*pi/2" becomes
     // main="7*pi", denom=2.0 -- so the multiply-form checks below don't also
@@ -231,8 +231,11 @@ fn parse_gate_header(line: &str) -> Result<(String, Vec<String>, Vec<String>), S
     let (name, params, qubits_part) = if let Some(open) = rest.find('(') {
         let close = rest.find(')').ok_or_else(|| "unmatched '(' in gate definition".to_string())?;
         let name = rest[..open].trim().to_lowercase();
-        let params: Vec<String> =
-            rest[open + 1..close].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let params: Vec<String> = rest[open + 1..close]
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         (name, params, rest[close + 1..].trim())
     } else {
         let split = rest
@@ -241,7 +244,8 @@ fn parse_gate_header(line: &str) -> Result<(String, Vec<String>, Vec<String>), S
         (rest[..split].trim().to_lowercase(), Vec::new(), rest[split..].trim())
     };
 
-    let qubits: Vec<String> = qubits_part.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let qubits: Vec<String> =
+        qubits_part.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     if qubits.is_empty() {
         return Err(format!("gate definition '{name}' declares no qubit arguments"));
     }
@@ -260,9 +264,11 @@ fn parse_body_op(line: &str) -> Result<BodyOp, String> {
     }
 
     let (name, param_exprs, rest_after_paren) = if let Some(open) = line.find('(') {
-        let close = line.find(')').ok_or_else(|| "unmatched '(' in gate body statement".to_string())?;
+        let close =
+            line.find(')').ok_or_else(|| "unmatched '(' in gate body statement".to_string())?;
         let name = line[..open].trim().to_lowercase();
-        let param_exprs: Vec<String> = line[open + 1..close].split(',').map(|s| s.trim().to_string()).collect();
+        let param_exprs: Vec<String> =
+            line[open + 1..close].split(',').map(|s| s.trim().to_string()).collect();
         (name, param_exprs, line[close + 1..].trim())
     } else {
         let split = line
@@ -271,7 +277,11 @@ fn parse_body_op(line: &str) -> Result<BodyOp, String> {
         (line[..split].trim().to_lowercase(), Vec::new(), line[split..].trim())
     };
 
-    let qubit_formals: Vec<String> = rest_after_paren.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let qubit_formals: Vec<String> = rest_after_paren
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     if qubit_formals.is_empty() {
         return Err(format!("no qubit operand found in gate body statement for '{name}'"));
     }
@@ -288,15 +298,18 @@ fn parse_body_op(line: &str) -> Result<BodyOp, String> {
 fn eval_param_expr(expr: &str, bindings: &[(String, f64)]) -> Option<f64> {
     let trimmed = expr.trim();
     for (name, value) in bindings {
-        let (sign, rest) = if let Some(r) = trimmed.strip_prefix('-') { (-1.0, r.trim()) } else { (1.0, trimmed) };
+        let (sign, rest) =
+            if let Some(r) = trimmed.strip_prefix('-') { (-1.0, r.trim()) } else { (1.0, trimmed) };
         if rest == name {
             return Some(sign * value);
         }
-        if let Some(denom_str) = rest.strip_prefix(name.as_str()).and_then(|r| r.strip_prefix('/')) {
+        if let Some(denom_str) = rest.strip_prefix(name.as_str()).and_then(|r| r.strip_prefix('/'))
+        {
             let denom: f64 = denom_str.trim().parse().ok()?;
             return Some(sign * value / denom);
         }
-        if let Some(numer_str) = rest.strip_prefix(name.as_str()).and_then(|r| r.strip_prefix('*')) {
+        if let Some(numer_str) = rest.strip_prefix(name.as_str()).and_then(|r| r.strip_prefix('*'))
+        {
             let numer: f64 = numer_str.trim().parse().ok()?;
             return Some(sign * value * numer);
         }
@@ -311,7 +324,9 @@ fn eval_param_expr(expr: &str, bindings: &[(String, f64)]) -> Option<f64> {
 /// Map a body statement's formal qubit names to actual circuit indices via
 /// the enclosing definition's own formal qubit list and a specific call's
 /// actual qubits (matched by position).
-fn resolve_body_qubits(def: &GateDef, body_qubit_formals: &[String], actual_qubits: &[usize]) -> Result<Vec<usize>, String> {
+fn resolve_body_qubits(
+    def: &GateDef, body_qubit_formals: &[String], actual_qubits: &[usize],
+) -> Result<Vec<usize>, String> {
     body_qubit_formals
         .iter()
         .map(|formal| {
@@ -329,24 +344,34 @@ fn resolve_body_qubits(def: &GateDef, body_qubit_formals: &[String], actual_qubi
 /// (recursively, so a custom gate's body may itself call another custom
 /// gate), otherwise falls through to `push_gate`'s built-in vocabulary. A
 /// file that defines its own version of a name this module also knows as a
-/// built-in (e.g. `qugan_n111.qasm`'s own `gate cry(lambda) a,b {...}`)
-/// takes precedence, since only names actually declared via `gate` end up
-/// in `defs` in the first place.
-fn expand_gate_call(circuit: &mut Circuit, defs: &HashMap<String, GateDef>, name: &str, params: &[f64], qubits: &[usize]) -> Result<(), String> {
+/// built-in takes precedence, since only names actually declared via
+/// `gate` end up in `defs` in the first place.
+fn expand_gate_call(
+    circuit: &mut Circuit, defs: &HashMap<String, GateDef>, name: &str, params: &[f64],
+    qubits: &[usize],
+) -> Result<(), String> {
     let Some(def) = defs.get(name) else {
         return push_gate(circuit, name, params, qubits);
     };
     if def.qubit_formals.len() != qubits.len() {
-        return Err(format!("gate '{name}' expects {} qubit argument(s), got {}", def.qubit_formals.len(), qubits.len()));
+        return Err(format!(
+            "gate '{name}' expects {} qubit argument(s), got {}",
+            def.qubit_formals.len(),
+            qubits.len()
+        ));
     }
-    let bindings: Vec<(String, f64)> = def.param_formals.iter().cloned().zip(params.iter().copied()).collect();
+    let bindings: Vec<(String, f64)> =
+        def.param_formals.iter().cloned().zip(params.iter().copied()).collect();
     for body_op in &def.body {
         let resolved_params: Vec<f64> = body_op
             .param_exprs
             .iter()
             .map(|expr| {
-                eval_param_expr(expr, &bindings)
-                    .ok_or_else(|| format!("could not resolve parameter expression '{expr}' in body of gate '{name}'"))
+                eval_param_expr(expr, &bindings).ok_or_else(|| {
+                    format!(
+                        "could not resolve parameter expression '{expr}' in body of gate '{name}'"
+                    )
+                })
             })
             .collect::<Result<_, _>>()?;
         let resolved_qubits = resolve_body_qubits(def, &body_op.qubit_formals, qubits)?;
@@ -359,7 +384,9 @@ fn expand_gate_call(circuit: &mut Circuit, defs: &HashMap<String, GateDef>, name
 /// unrecognized name, or too few parameters/qubits for a recognized one, is
 /// a hard error -- silently dropping it would leave a different, wrong
 /// circuit that still looks like it loaded successfully.
-fn push_gate(circuit: &mut Circuit, name: &str, params: &[f64], qubits: &[usize]) -> Result<(), String> {
+fn push_gate(
+    circuit: &mut Circuit, name: &str, params: &[f64], qubits: &[usize],
+) -> Result<(), String> {
     match name {
         "h" => circuit.push(Gate::H, vec![qubits[0]]),
         "x" => circuit.push(Gate::X, vec![qubits[0]]),
@@ -384,13 +411,17 @@ fn push_gate(circuit: &mut Circuit, name: &str, params: &[f64], qubits: &[usize]
             if params.len() < 2 {
                 return Err(format!("u2 needs 2 parameters, got {}", params.len()));
             }
-            circuit.push(Gate::U3(std::f64::consts::FRAC_PI_2, params[0], params[1]), vec![qubits[0]]);
+            circuit
+                .push(Gate::U3(std::f64::consts::FRAC_PI_2, params[0], params[1]), vec![qubits[0]]);
         }
         // Rx(theta) = U3(theta, -pi/2, pi/2); Ry(theta) = U3(theta, 0, 0) --
         // standard qiskit identities, exact (not approximated).
         "rx" => {
             let theta = *params.first().ok_or("rx needs 1 parameter")?;
-            circuit.push(Gate::U3(theta, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2), vec![qubits[0]]);
+            circuit.push(
+                Gate::U3(theta, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+                vec![qubits[0]],
+            );
         }
         "ry" => {
             let theta = *params.first().ok_or("ry needs 1 parameter")?;
@@ -400,13 +431,21 @@ fn push_gate(circuit: &mut Circuit, name: &str, params: &[f64], qubits: &[usize]
         // pipeline's phase-invariant distance never cares about.
         "sx" => {
             circuit.push(
-                Gate::U3(std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+                Gate::U3(
+                    std::f64::consts::FRAC_PI_2,
+                    -std::f64::consts::FRAC_PI_2,
+                    std::f64::consts::FRAC_PI_2,
+                ),
                 vec![qubits[0]],
             );
         }
         "sxdg" => {
             circuit.push(
-                Gate::U3(-std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+                Gate::U3(
+                    -std::f64::consts::FRAC_PI_2,
+                    -std::f64::consts::FRAC_PI_2,
+                    std::f64::consts::FRAC_PI_2,
+                ),
                 vec![qubits[0]],
             );
         }
@@ -518,7 +557,7 @@ fn push_toffoli(circuit: &mut Circuit, a: usize, b: usize, c: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cliffordt::matrix::{distance, identity, C64};
+    use crate::cliffordt::matrix::{C64, distance, identity};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -556,11 +595,9 @@ mod tests {
         assert_eq!(c.ops.len(), 17);
     }
 
-    /// Regression test: qiskit's `qasm2.dump` emits `N*pi/M` for a rational
-    /// multiple of pi whose numerator isn't 1 (e.g. `7*pi/2`), which crashed
-    /// the loader on real QV benchmark circuits -- none of the parser's three
-    /// original branches (`pi/N`, `pi*N`, `N*pi`) matched a combined
-    /// multiply-then-divide expression.
+    /// qiskit's `qasm2.dump` emits `N*pi/M` for a rational multiple of pi
+    /// whose numerator isn't 1 (e.g. `7*pi/2`) -- a combined
+    /// multiply-then-divide form none of the parser's other branches match.
     #[test]
     fn angle_expr_handles_numerator_and_denominator_together() {
         let pi = std::f64::consts::PI;
@@ -587,7 +624,12 @@ mod tests {
         crate::cliffordt::matrix::Unitary::from_row_slice(
             2,
             2,
-            &[C64::new(h.cos(), 0.0), C64::new(0.0, -h.sin()), C64::new(0.0, -h.sin()), C64::new(h.cos(), 0.0)],
+            &[
+                C64::new(h.cos(), 0.0),
+                C64::new(0.0, -h.sin()),
+                C64::new(0.0, -h.sin()),
+                C64::new(h.cos(), 0.0),
+            ],
         )
     }
 
@@ -596,7 +638,12 @@ mod tests {
         crate::cliffordt::matrix::Unitary::from_row_slice(
             2,
             2,
-            &[C64::new(h.cos(), 0.0), C64::new(-h.sin(), 0.0), C64::new(h.sin(), 0.0), C64::new(h.cos(), 0.0)],
+            &[
+                C64::new(h.cos(), 0.0),
+                C64::new(-h.sin(), 0.0),
+                C64::new(h.sin(), 0.0),
+                C64::new(h.cos(), 0.0),
+            ],
         )
     }
 
@@ -605,7 +652,12 @@ mod tests {
         crate::cliffordt::matrix::Unitary::from_row_slice(
             2,
             2,
-            &[C64::new(h.cos(), -h.sin()), C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(h.cos(), h.sin())],
+            &[
+                C64::new(h.cos(), -h.sin()),
+                C64::new(0.0, 0.0),
+                C64::new(0.0, 0.0),
+                C64::new(h.cos(), h.sin()),
+            ],
         )
     }
 
@@ -639,17 +691,20 @@ mod tests {
     fn parses_pi_relative_angles() {
         let f = write_qasm(&["qreg q[1];", "rz(pi/4) q[0];"]);
         let c = load_qasm(f.path().to_str().unwrap()).unwrap();
-        assert!(matches!(c.ops[0].gate, Gate::Rz(a) if (a - std::f64::consts::FRAC_PI_4).abs() < 1e-12));
+        assert!(
+            matches!(c.ops[0].gate, Gate::Rz(a) if (a - std::f64::consts::FRAC_PI_4).abs() < 1e-12)
+        );
     }
 
     #[test]
     fn parses_pi_first_multiplication_form() {
         // qiskit's own qasm2.dump emits `pi*0.35...`, pi first -- distinct
-        // from the `0.35*pi` form above. This exact form once made every
-        // rx/ry/rz/u3 gate in a real input file silently disappear.
+        // from the `0.35*pi` form above.
         let f = write_qasm(&["qreg q[1];", "rz(pi*0.25) q[0];"]);
         let c = load_qasm(f.path().to_str().unwrap()).unwrap();
-        assert!(matches!(c.ops[0].gate, Gate::Rz(a) if (a - std::f64::consts::FRAC_PI_4).abs() < 1e-12));
+        assert!(
+            matches!(c.ops[0].gate, Gate::Rz(a) if (a - std::f64::consts::FRAC_PI_4).abs() < 1e-12)
+        );
     }
 
     #[test]
@@ -718,7 +773,10 @@ mod tests {
     fn unparseable_angle_is_a_hard_error_not_a_silent_skip() {
         let f = write_qasm(&["qreg q[1];", "rz(not_a_number) q[0];"]);
         let result = load_qasm(f.path().to_str().unwrap());
-        assert!(result.is_err(), "an unparseable angle must fail loudly, not silently produce an empty param list");
+        assert!(
+            result.is_err(),
+            "an unparseable angle must fail loudly, not silently produce an empty param list"
+        );
     }
 
     #[test]
@@ -769,7 +827,15 @@ mod tests {
 
     #[test]
     fn custom_gate_definition_expands_at_call_site() {
-        let f = write_qasm(&["qreg q[2];", "gate bell q0,q1", "{", " h q0;", " cx q0,q1;", "}", "bell q[0],q[1];"]);
+        let f = write_qasm(&[
+            "qreg q[2];",
+            "gate bell q0,q1",
+            "{",
+            " h q0;",
+            " cx q0,q1;",
+            "}",
+            "bell q[0],q[1];",
+        ]);
         let c = load_qasm(f.path().to_str().unwrap()).unwrap();
         assert_eq!(c.ops.len(), 2);
         assert!(matches!(c.ops[0].gate, Gate::H));
@@ -804,9 +870,20 @@ mod tests {
 
     #[test]
     fn user_defined_gate_shadows_a_builtin_name() {
-        let f = write_qasm(&["qreg q[2];", "gate cry(lambda) a,b", "{", " cx a,b;", "}", "cry(0.5) q[0],q[1];"]);
+        let f = write_qasm(&[
+            "qreg q[2];",
+            "gate cry(lambda) a,b",
+            "{",
+            " cx a,b;",
+            "}",
+            "cry(0.5) q[0],q[1];",
+        ]);
         let c = load_qasm(f.path().to_str().unwrap()).unwrap();
-        assert_eq!(c.ops.len(), 1, "the file's own gate definition should override the built-in cry");
+        assert_eq!(
+            c.ops.len(),
+            1,
+            "the file's own gate definition should override the built-in cry"
+        );
         assert!(matches!(c.ops[0].gate, Gate::Cx));
     }
 
@@ -834,7 +911,10 @@ mod tests {
         assert_eq!(c.ops.len(), 7);
         for op in &c.ops {
             for q in &op.qubits {
-                assert!(*q == 3 || *q == 4, "body qubits must resolve to the call's actual qubits, not 0/1");
+                assert!(
+                    *q == 3 || *q == 4,
+                    "body qubits must resolve to the call's actual qubits, not 0/1"
+                );
             }
         }
     }

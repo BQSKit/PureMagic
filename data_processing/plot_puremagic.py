@@ -451,7 +451,6 @@ def parse_wisq_dir(directory: str, magic_cost: int = 1) -> list:
             n_steps = len(data["steps"])
             total, magic = _dascot_square_sparse_counts(n_data)
             area = (total - magic) + magic * magic_cost
-            # Derive a canonical circuit name from the filename
             stem = fname[: -len(".json")]
             # Strip trailing "-wisq" or "_wisq" suffix if present
             stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
@@ -491,18 +490,15 @@ def parse_flasq_file(filepath):
     with open(filepath) as f:
         for line in f:
             s = line.strip()
-            # Header: "FLASQ Lower Bound for <path>"
             m = re.match(r"^FLASQ Lower Bound for\s+(.+)$", s)
             if m:
                 current_circuit = m.group(1).strip()
                 current_n_qubits = None
                 continue
-            # n_qubits row: "Circuit qubits (n_qubits)  :  <n>"
             m = re.match(r"Circuit qubits \(n_qubits\)\s*:\s*(\d+)", s)
             if m and current_circuit is not None:
                 current_n_qubits = int(m.group(1))
                 continue
-            # Volume row: "FLASQ spacetime volume (S, blocks)  :  <cons>  <opt>"
             m = re.match(
                 r"FLASQ spacetime volume \(S, blocks\)\s*:\s*([0-9.eE+\-]+)\s+([0-9.eE+\-]+)",
                 s,
@@ -714,7 +710,6 @@ def main():
     if not args.files:
         args.files = []
 
-    # Load the allowed circuits set from the -c file
     try:
         with open(args.circuits_file) as _cf:
             _allowed_circuits = {
@@ -889,7 +884,6 @@ def main():
                     continue
                 merged["_ratio"] = merged[f"{y_field}_1"] / merged[f"{y_field}_2"]
                 if y_key in _Y_INVERT:
-                    # For loss keys: plot 1 - ratio
                     ys_values = (1.0 - merged["_ratio"]).tolist()
                 elif args.percent_improvement:
                     # ys_values = ((1.0 - merged["_ratio"]) * 100.0).tolist()
@@ -1032,7 +1026,6 @@ def main():
                 if mask.sum() >= 2:
                     lx_all = np.where(mask, np.log(np.where(xa > 0, xa, 1.0)), np.nan)
                     ly_all = np.where(mask, np.log(np.where(ya > 0, ya, 1.0)), np.nan)
-                    # Initial fit
                     a, b = np.polyfit(lx_all[mask], ly_all[mask], 1)
                     inliers = mask.copy()
                     for _ in range(10):
@@ -1298,7 +1291,6 @@ def main():
                 )
             )
 
-    # Print data table
     table_frames, col_names = [], []
     for yk_list, (series_list, any_ratio, ratio_labels) in zip(multi_y_keys, all_series):
         # Use a combined label for the axis when multiple keys share it
@@ -1620,9 +1612,8 @@ def main():
 
             if has_f_series:
                 # -----------------------------------------------------------------
-                # Ratio mode: for each -f series produce TWO ratio series:
-                #   one vs WISQ with 1 qubit/magic, one vs WISQ with 121 qubits/magic
-                # Clear the axes and redraw.
+                # Ratio mode: for each -f series, compute the per-circuit ratio
+                # against the WISQ volume (per --wisq-magic-q). Clear and redraw.
                 # -----------------------------------------------------------------
                 ax.cla()
                 if ax2 is not None:
@@ -1660,7 +1651,6 @@ def main():
                     ]
                     all_circuits[:] = ratio_circuits  # update in-place for deferred setup
 
-                    # Print WISQ ratio table
                     series_labels = [
                         lbl or f"series{i}" for i, (lbl, _) in enumerate(ratio_series_data)
                     ]
@@ -2000,7 +1990,6 @@ def main():
                 file=sys.stderr,
             )
 
-    # Y-axis limits
     if args.xlim:
         ax.set_xlim(*map(float, args.xlim.split(",", 1)))
     if args.ylim:

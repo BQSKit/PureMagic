@@ -1,8 +1,7 @@
 //! Multi-qubit windowed partitioning, used by Stage 2 (block_size 2) and
 //! Stage 3 (block_size 4+).
 //!
-//! A faithful port of bqskit's `QuickPartitioner`
-//! (`bqskit/bqskit/passes/partitioning/quick.py`): a single pass over
+//! A faithful port of bqskit's `QuickPartitioner`: a single pass over
 //! operations in topological ("cycle") order, growing "bins" of qubits up
 //! to `block_size`, but with two mechanisms a naive greedy pass lacks:
 //!
@@ -25,8 +24,8 @@
 //! overflow, no partial closing, no merging) preserved circuit correctness
 //! but produced far smaller/more fragmented windows than bqskit's real
 //! algorithm -- confirmed to starve Stage 3 (TRbO) of the multi-Rz windows
-//! it needs (`0/52 blocks improved` on a real circuit, vs. Python's
-//! reported ~24000->~18000 T-count drop). This module fixes that.
+//! it needs (`0/52 blocks improved` on a real circuit). This module fixes
+//! that.
 //!
 //! bqskit's `BarrierBin` (a dedicated case for barrier/measurement/reset
 //! gates) has no equivalent here: this pipeline's `Circuit` model has no
@@ -93,7 +92,8 @@ impl Bin {
         if qubits.iter().any(|q| self.blocked.contains(q) && !self.active.contains(q)) {
             return false;
         }
-        let overlapping_active = qubits.iter().all(|q| !self.qubits.contains(q) || self.active.contains(q));
+        let overlapping_active =
+            qubits.iter().all(|q| !self.qubits.contains(q) || self.active.contains(q));
         if !overlapping_active {
             return false;
         }
@@ -107,7 +107,10 @@ impl Bin {
 /// Deactivate `qubits` in `bin` (recording their closing cycle), clearing
 /// the global `active_bin_of` slot for any qubit this bin loses. Returns
 /// true if the bin has no active qubits left afterward.
-fn close_bin_qubits(bin: &mut Bin, bin_idx: usize, qubits: &[usize], cycle: usize, active_bin_of: &mut [Option<usize>]) -> bool {
+fn close_bin_qubits(
+    bin: &mut Bin, bin_idx: usize, qubits: &[usize], cycle: usize,
+    active_bin_of: &mut [Option<usize>],
+) -> bool {
     for &q in qubits {
         if bin.active.remove(&q) {
             bin.ends.insert(q, Some(cycle.saturating_sub(1)));
@@ -122,7 +125,7 @@ fn close_bin_qubits(bin: &mut Bin, bin_idx: usize, qubits: &[usize], cycle: usiz
 /// A bin that has been fully placed into the output (or tombstoned by a
 /// later retroactive merge into a subsequent block).
 struct PlacedBlock {
-    qubits: Vec<usize>, // sorted
+    qubits: Vec<usize>,  // sorted
     ops: Vec<Operation>, // still globally-qubit-indexed
 }
 
@@ -167,15 +170,21 @@ pub fn partition(circuit: &Circuit, block_size: usize) -> Circuit {
     for (i, op) in circuit.ops.iter().enumerate() {
         let cycle = cycles[i];
 
-        let mut overlapping: Vec<usize> = op.qubits.iter().filter_map(|&q| active_bin_of[q]).collect();
+        let mut overlapping: Vec<usize> =
+            op.qubits.iter().filter_map(|&q| active_bin_of[q]).collect();
         overlapping.sort_unstable();
         overlapping.dedup();
 
-        let admissible: Vec<usize> =
-            overlapping.iter().copied().filter(|&idx| bins[idx].can_accommodate(&op.qubits, block_size)).collect();
+        let admissible: Vec<usize> = overlapping
+            .iter()
+            .copied()
+            .filter(|&idx| bins[idx].can_accommodate(&op.qubits, block_size))
+            .collect();
 
         for &idx in &overlapping {
-            if !admissible.contains(&idx) && close_bin_qubits(&mut bins[idx], idx, &op.qubits, cycle, &mut active_bin_of) {
+            if !admissible.contains(&idx)
+                && close_bin_qubits(&mut bins[idx], idx, &op.qubits, cycle, &mut active_bin_of)
+            {
                 pending.push(idx);
             }
         }
@@ -193,7 +202,9 @@ pub fn partition(circuit: &Circuit, block_size: usize) -> Circuit {
         };
 
         for &idx in &admissible {
-            if idx != selected && close_bin_qubits(&mut bins[idx], idx, &op.qubits, cycle, &mut active_bin_of) {
+            if idx != selected
+                && close_bin_qubits(&mut bins[idx], idx, &op.qubits, cycle, &mut active_bin_of)
+            {
                 pending.push(idx);
             }
         }
@@ -243,12 +254,16 @@ pub fn partition(circuit: &Circuit, block_size: usize) -> Circuit {
         }
     }
     flush_pending(&mut pending, &mut bins, &mut dividing_line, &mut placed, &mut rear_of);
-    debug_assert!(pending.is_empty(), "partition: pending bins failed to fully drain -- this is a bug in the port");
+    debug_assert!(
+        pending.is_empty(),
+        "partition: pending bins failed to fully drain -- this is a bug in the port"
+    );
 
     let mut out = Circuit::new(n);
     for block in placed.into_iter().flatten() {
         let PlacedBlock { qubits, ops } = block;
-        let local: HashMap<usize, usize> = qubits.iter().enumerate().map(|(i, &q)| (q, i)).collect();
+        let local: HashMap<usize, usize> =
+            qubits.iter().enumerate().map(|(i, &q)| (q, i)).collect();
         let mut inner = Circuit::new(qubits.len());
         for op in ops {
             let local_qubits: Vec<usize> = op.qubits.iter().map(|q| local[q]).collect();
@@ -264,15 +279,13 @@ pub fn partition(circuit: &Circuit, block_size: usize) -> Circuit {
 /// current rear frontier first when the two blocks' qubit sets are in a
 /// subset/superset relation (mirrors `process_pending_bins`).
 fn flush_pending(
-    pending: &mut Vec<usize>,
-    bins: &mut [Bin],
-    dividing_line: &mut [usize],
-    placed: &mut Vec<Option<PlacedBlock>>,
-    rear_of: &mut HashMap<usize, usize>,
+    pending: &mut Vec<usize>, bins: &mut [Bin], dividing_line: &mut [usize],
+    placed: &mut Vec<Option<PlacedBlock>>, rear_of: &mut HashMap<usize, usize>,
 ) {
     loop {
-        let ready_pos =
-            pending.iter().position(|&idx| bins[idx].starts.iter().all(|(&q, &start)| dividing_line[q] == start));
+        let ready_pos = pending
+            .iter()
+            .position(|&idx| bins[idx].starts.iter().all(|(&q, &start)| dividing_line[q] == start));
         let Some(pos) = ready_pos else { break };
         let idx = pending.remove(pos);
 
@@ -281,7 +294,8 @@ fn flush_pending(
         let mut qset: Vec<usize> = std::mem::take(&mut bins[idx].qubits);
 
         loop {
-            let mut candidates: Vec<usize> = qset.iter().filter_map(|q| rear_of.get(q).copied()).collect();
+            let mut candidates: Vec<usize> =
+                qset.iter().filter_map(|q| rear_of.get(q).copied()).collect();
             candidates.sort_unstable();
             candidates.dedup();
 
@@ -401,12 +415,9 @@ mod tests {
         assert!(distance(&c.get_unitary(), &unfolded.get_unitary()) < 1e-10);
     }
 
-    /// Adapted from bqskit's own `QuickPartitioner` test suite
-    /// (`test_corner_case_1`/`_2` in `tests/passes/partitioning/test_quick.py`):
-    /// several 1- and 2-qubit gates crossing qubit ownership in a tangled
+    /// Several 1- and 2-qubit gates crossing qubit ownership in a tangled
     /// pattern, checked only for the two invariants that must hold
-    /// regardless of which exact grouping the algorithm picks (bqskit's
-    /// own tests check the same two things).
+    /// regardless of which exact grouping the algorithm picks.
     #[test]
     fn tangled_ownership_preserves_unitary_and_size_limit() {
         let mut c = Circuit::new(6);

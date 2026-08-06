@@ -1,7 +1,5 @@
 //! Live progress reporting for the long-running per-block stages (Stage 2's
-//! windowed resynthesis, Stage 3's TRbO, Stage 4's final synthesis), modeled
-//! on `data_processing/compile_cliffordt.py`'s `_progress_line`/
-//! `_with_progress`/`_with_block_progress`:
+//! windowed resynthesis, Stage 3's TRbO, Stage 4's final synthesis):
 //!
 //! - Written straight to `/dev/tty`, not through stdout, so a `\r`-overwritten
 //!   line is visible on the terminal watching the process but invisible to
@@ -59,11 +57,16 @@ pub struct ProgressTracker {
 }
 
 impl ProgressTracker {
-    /// `total == 0` makes every method a no-op, mirroring `_with_progress`'s
-    /// own early return when there's nothing to report against -- a stage
-    /// that touches no blocks at all shouldn't print a 0%...100% line.
+    /// `total == 0` makes every method a no-op -- a stage that touches no
+    /// blocks at all shouldn't print a 0%...100% line.
     pub fn new(label: &str, total: usize) -> Self {
-        ProgressTracker { label: label.to_string(), total, count: AtomicUsize::new(0), start: Instant::now(), last_report_millis: AtomicU64::new(0) }
+        ProgressTracker {
+            label: label.to_string(),
+            total,
+            count: AtomicUsize::new(0),
+            start: Instant::now(),
+            last_report_millis: AtomicU64::new(0),
+        }
     }
 
     /// Record `n` newly-completed units of work (one block, or however many
@@ -78,7 +81,10 @@ impl ProgressTracker {
         let now_millis = self.start.elapsed().as_millis() as u64;
         let last = self.last_report_millis.load(Ordering::Relaxed);
         if now_millis.saturating_sub(last) >= PROGRESS_INTERVAL.as_millis() as u64
-            && self.last_report_millis.compare_exchange(last, now_millis, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+            && self
+                .last_report_millis
+                .compare_exchange(last, now_millis, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
         {
             progress_line(&self.label, (count * 100 / self.total) as u64, false);
         }

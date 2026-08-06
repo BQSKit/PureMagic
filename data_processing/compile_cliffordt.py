@@ -342,15 +342,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
 
-# rsgridsynth's occasional panic (see CliffordTSynthesizer._synthesize_rz) is
-# caught and falls back to pygridsynth, but something in the pyo3/rsgridsynth
-# panic-to-exception path still prints its own message plus a full backtrace
-# to stderr before the catch runs -- confirmed NOT to be the standard Rust
-# panic hook honoring RUST_BACKTRACE (tested with it explicitly set to "0" at
-# the OS level: the backtrace still printed), so this does not suppress it.
-# Kept anyway, defensively: harmless, and setdefault won't override a value
-# the user has deliberately set for their own debugging, in case some other
-# panic in the dependency chain does honor it.
+# Does not actually suppress rsgridsynth's panic backtrace (confirmed: it
+# bypasses RUST_BACKTRACE) -- kept in case some other dependency honors it,
+# and setdefault won't override a value the user set deliberately.
 os.environ.setdefault("RUST_BACKTRACE", "0")
 
 import numpy as np
@@ -376,10 +370,9 @@ from bqskit import Circuit
 from bqskit.compiler import Compiler
 from bqskit.compiler.basepass import BasePass
 from bqskit.compiler.passdata import PassData
-# bqskit-ft is a separate distribution installed alongside the editable-cloned
-# bqskit/ (see its __init__.py for how bqskit.ft resolves at runtime via
-# pkgutil.extend_path -- a dynamic sys.path merge pyright cannot evaluate
-# statically, hence the ignores below).
+# bqskit.ft resolves at runtime via pkgutil.extend_path (see bqskit-ft's
+# __init__.py) -- a dynamic sys.path merge pyright cannot evaluate statically,
+# hence the ignores below.
 from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates  # pyright: ignore[reportMissingImports]
 from bqskit.ft.cliffordt.defaultworkflow import (  # pyright: ignore[reportMissingImports]
     clifford_replace,
@@ -389,9 +382,8 @@ from bqskit.ft.ftpasses.gridsynth import GridSynthPass  # pyright: ignore[report
 from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass  # pyright: ignore[reportMissingImports]
 from bqskit.ft.rules.isolate_rz import IsolateRZGatePass  # pyright: ignore[reportMissingImports]
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
-# Aliased: qiskit's gate classes of the same bare names are already imported
-# above (HGate, SGate, SdgGate, TGate, TdgGate, XGate, YGate, ZGate) -- an
-# unaliased import here would silently shadow them for the rest of the file.
+# Aliased to avoid silently shadowing qiskit's own same-named gate classes
+# imported above.
 from bqskit.ir.gates import HGate as BqskitHGate
 from bqskit.ir.gates import SGate as BqskitSGate
 from bqskit.ir.gates import SdgGate as BqskitSdgGate
@@ -409,7 +401,7 @@ from bqskit.passes.util.log import LogErrorPass
 from bqskit.passes.util.random import SetRandomSeedPass
 from bqskit.passes.util.unfold import UnfoldPass
 
-try:  # qiskit >= 2.5: Ross-Selinger in Rust, the qiskit backend's own rotation synthesis
+try:  # qiskit >= 2.5 ships Ross-Selinger in Rust
     from qiskit.synthesis import gridsynth_rz
 except ImportError:
     gridsynth_rz = None
@@ -433,44 +425,30 @@ try:  # optional: only needed for --bqskit-trbo (see requirements.txt)
 except ImportError:
     trbo = None
 
-# sx/sxdg (sqrt(X) and its inverse) are included because the bqskit backend
-# emits them natively -- bqskit's own Clifford+T gate set treats sx as a
-# Clifford generator in its own right, and the downstream Rust `transpile`
-# binary understands both directly (src/transpile.rs's Gate1Q::SX/SXdg) -- not
-# because either is reachable from the qiskit backend, which never emits them.
+# sx/sxdg included because the bqskit backend emits them natively (its own
+# Clifford+T gate set treats sx as a generator) and src/transpile.rs's
+# Gate1Q::SX/SXdg understands them -- the qiskit backend never emits either.
 CLIFFORD_T_BASIS = ("h", "s", "sdg", "sx", "sxdg", "x", "y", "z", "t", "tdg", "cx")
 PI_4 = math.pi / 4
 
-# qiskit's transpile() default is None, which resolves to level 2 -- but level 2
-# restructures which single-qubit gates sit adjacent to which cx gates relative
-# to level 1, in a way that produces more, smaller single-qubit runs for the
-# qiskit backend to re-synthesise.  Measured on an 18-qubit/600-gate slice of a
-# Hubbard benchmark at EPSILON_DEFAULT: level 1 merges runs down to 18
-# non-Clifford rotations (1476 T); qiskit's own default merges them into 39
-# (5703 T).  Same cx count either way, so this is purely about how well the
-# runs merge for this script's purposes, not circuit quality by qiskit's own
-# metrics.  Pinned rather than exposed as a CLI option, since a worse choice
-# was never useful here.  Shared by all three backends' preopt step
+# qiskit's transpile() default (level 2) produces more, smaller single-qubit
+# runs than level 1 for this script's resynthesis purposes -- pinned rather
+# than left at qiskit's default. Shared by all three backends' preopt step
 # (unroll_to_u_cx).
 UNROLL_OPTIMIZATION_LEVEL = 1
 
-# Partition size for --bqskit-trbo's QuickPartitioner stage -- matches
-# trbo.workflows' own default() partition_size. Not exposed as a CLI option in
-# v1: revisit only if real usage shows a need to trade TRbO's own runtime
-# (dominated by per-block multistart numerical optimisation, roughly linear in
-# block count) against how much joint gauge freedom a larger block exposes.
+# Matches trbo.workflows' own default() partition_size. Not exposed as a CLI
+# option: revisit only if usage shows a need to trade TRbO's runtime (roughly
+# linear in block count) against how much gauge freedom a larger block exposes.
 TRBO_PARTITION_SIZE = 4
 
 # --epsilon's default, shared by all three backends -- see the module
-# docstring's "Rotation synthesis" section for the exact-fidelity
-# measurements behind this number: real infidelity plateaus by around this
-# value for every backend, so tightening further costs T gates for no
-# measurable gain.
+# docstring's "Rotation synthesis" section for the measurements behind this
+# number.
 EPSILON_DEFAULT = 1e-8
 
-# Minimum time between resynthesis progress updates (see _with_progress).
-# Not exposed as a CLI option: this is a UI refresh rate, not a behavioral
-# knob -- there is no reason a user would want a different value.
+# Minimum time between resynthesis progress updates (see _with_progress) --
+# a UI refresh rate, not a behavioral knob, so not exposed as a CLI option.
 PROGRESS_INTERVAL_SECONDS = 1.0
 
 # Single-qubit Clifford generators used to build the shortest-word table.
@@ -506,8 +484,7 @@ CYCLOSYNTH_GATE_NAMES = {
     "H": "h", "S": "s", "s": "sdg", "T": "t", "t": "tdg", "X": "x", "Y": "y", "Z": "z",
 }
 
-# bqskit-gate-object equivalent of CYCLOSYNTH_GATE_NAMES's qiskit gate names,
-# for building a bqskit Circuit directly from a cyclosynth word (see
+# Used to build a bqskit Circuit directly from a cyclosynth word (see
 # CyclosynthBlockSynthesisPass).
 BQSKIT_GATE_FOR_NAME = {
     "h": BqskitHGate(),
@@ -528,23 +505,17 @@ GRIDSYNTH_DPS = 128
 # against it is only meaningful down to about this much floating-point noise.
 EXACTNESS_FLOOR = 1e-12
 
-# cyclosynth's Clifford+T search can become pathologically slow, or fail to
-# terminate, for targets whose distance to the nearest Clifford element is
-# much smaller than epsilon but still requires genuine (non-exact) synthesis
-# -- see cyclosynth-bug-report.md. Measured at EPSILON_DEFAULT (1e-8): solves
-# (slowly, ~8s) at ~5e-6 distance, doesn't return in 15s+ at ~2e-6 and below
-# -- a continuum, not a sharp cutoff. This margin (1e4 * epsilon = 1e-4 at
-# EPSILON_DEFAULT) sits well clear of the observed danger zone with
-# comfortable safety margin. Not exposed via --cli: it's a safety heuristic,
-# not something a user should need to tune, and setting it too small could
-# reintroduce the hang.
+# cyclosynth's search can hang for targets whose distance to the nearest
+# Clifford is much smaller than epsilon but still needs genuine synthesis
+# (see cyclosynth-bug-report.md). This margin sits well clear of the measured
+# danger zone. Not exposed via CLI: setting it too small could reintroduce
+# the hang.
 CYCLOSYNTH_NEAR_CLIFFORD_MARGIN = 1e4
 
-# The one specific rsgridsynth panic message CliffordTSynthesizer._synthesize_rz
-# knows is safe to swallow (falls back to pygridsynth, already measured and
-# accounted for in error_bound) -- see _capture_stderr_fd's use there. Matched
-# against str(the caught exception), not the raw captured stderr text: pyo3
-# already surfaces the panic payload as the exception's message.
+# The one rsgridsynth panic message known safe to swallow (falls back to
+# pygridsynth) -- see _capture_stderr_fd's use in _synthesize_rz. Matched
+# against str(exception), not raw stderr: pyo3 surfaces the panic payload as
+# the exception's message.
 KNOWN_GRIDSYNTH_PANIC = "Invalid coefficients for inverse sqrt2 multiplication"
 
 # Non-gate operations that are allowed to survive into the output.
@@ -552,19 +523,16 @@ PASSTHROUGH_OPS = frozenset({"measure", "barrier", "reset", "delay"})
 
 # Thresholds for the --verify fidelity cascade (dense unitary -> single random
 # statevector -> automatic random-window sampling). Not exposed as CLI flags,
-# so the cascade always has somewhere to fall back to instead of dead-ending
-# at "no numeric check".
+# so the cascade always has somewhere to fall back to instead of dead-ending.
 DENSE_VERIFY_MAX_QUBITS = 10
 DENSE_VERIFY_MAX_GATES = 20_000
 STATEVECTOR_VERIFY_MAX_QUBITS = 24
 STATEVECTOR_VERIFY_MAX_OPS = 5e9
 
-# Random-window sampling: the fallback for circuits too large for either check
-# above (or containing classical control flow, which both skip). Derived from
-# the direct-check constants above rather than invented fresh, so the total
-# cost of windowed sampling stays bounded by roughly the same budget as a
-# single direct statevector check would have used, regardless of how large the
-# real circuit is -- this is what makes it always tractable.
+# Random-window sampling: fallback for circuits too large for either check
+# above (or with classical control flow). Derived from the direct-check
+# constants above so its total cost stays bounded by roughly the same budget
+# as a single direct statevector check, regardless of circuit size.
 WINDOW_VERIFY_COUNT = 5
 WINDOW_VERIFY_MAX_QUBITS = STATEVECTOR_VERIFY_MAX_QUBITS
 WINDOW_VERIFY_MAX_OPS = STATEVECTOR_VERIFY_MAX_OPS / WINDOW_VERIFY_COUNT
@@ -789,10 +757,9 @@ class CliffordTSynthesizer:
         tol: Optional[float] = None,
     ) -> None:
         self.epsilon = epsilon
-        # How much error an "exact" rewrite is allowed to introduce.  Defaulting
-        # it to epsilon keeps the exact paths from being looser than the
-        # approximate one: a rotation only comes out free if it really is within
-        # the requested accuracy of a Clifford.
+        # Defaults to epsilon so the exact paths aren't looser than the
+        # approximate one: a rotation only comes out free if it really is
+        # within the requested accuracy of a Clifford.
         self.tol = max(epsilon, EXACTNESS_FLOOR) if tol is None else tol
         self._decomposer = OneQubitEulerDecomposer(basis="ZXZ")
         self._clifford_words = build_clifford_words()
@@ -1029,14 +996,11 @@ class CliffordTSynthesizer:
             with _capture_stderr_fd() as capture:
                 circuit = gridsynth_rz(angle, self.epsilon)
         except BaseException as error:
-            # rsgridsynth panics on some angles (KNOWN_GRIDSYNTH_PANIC): a
-            # meaningful fraction at coarse epsilon in earlier testing --
-            # rare but not confined to coarse epsilon, as first believed: it has
-            # since been observed at the default epsilon too, on a large enough
-            # circuit (qv_N036_12345.qasm). Which angles fail
-            # depends on process state, not just the angle, so retrying is not
-            # a fix. A pyo3 panic is a BaseException, so it would otherwise
-            # escape the per-file error handling in main().
+            # rsgridsynth panics on some angles (KNOWN_GRIDSYNTH_PANIC) --
+            # unpredictably: which angles fail depends on process state, not
+            # just the angle, so retrying is not a fix. Caught as BaseException
+            # because a pyo3 panic escapes as one, bypassing the per-file
+            # Exception handling in main().
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 raise
             if gridsynth_gates is None:
@@ -1045,14 +1009,11 @@ class CliffordTSynthesizer:
                     f"{self.epsilon:g} ({type(error).__name__}: {error}). Use a "
                     "smaller --epsilon or install pygridsynth as a fallback."
                 ) from error
-            # Something in the pyo3/rsgridsynth panic path prints its own
-            # message plus a full backtrace directly to fd 2, bypassing
-            # sys.stderr and ignoring RUST_BACKTRACE -- _capture_stderr_fd
-            # caught it so it can be judged rather than shown unconditionally.
-            # The one specific, already-measured-safe panic is swallowed
-            # entirely (already accounted for in error_bound, nothing the
-            # user needs to see); anything else is forwarded verbatim plus a
-            # note, since it hasn't been verified safe to hide.
+            # pyo3/rsgridsynth prints its own message and backtrace directly
+            # to fd 2, bypassing sys.stderr -- _capture_stderr_fd caught it so
+            # it can be judged instead of shown unconditionally. The
+            # known-safe panic is swallowed entirely; anything else is
+            # forwarded verbatim, since it hasn't been verified safe to hide.
             if KNOWN_GRIDSYNTH_PANIC not in str(error):
                 if capture is not None:
                     capture.seek(0)
@@ -1070,10 +1031,8 @@ class CliffordTSynthesizer:
                 )
             return self._pygridsynth_word(angle)
         else:
-            # Success: forward any stderr output rsgridsynth wrote without
-            # panicking. Unexpected (nothing has ever been observed here),
-            # but nothing should be silently lost -- the whole point of
-            # capturing rather than discarding.
+            # Forward any stderr rsgridsynth wrote without panicking --
+            # unexpected but never silently discarded.
             if capture is not None:
                 capture.seek(0)
                 raw = capture.read()
@@ -1147,16 +1106,11 @@ class CyclosynthSynthesizer:
                 "cyclosynth/README.md)."
             )
         if threads is not None:
-            # Must happen before cyclosynth's first search call: rayon builds
-            # its global thread pool lazily on first use and reads this env
-            # var at that point, not at import time -- setting it here (even
-            # though cyclosynth was already imported at module load) still
-            # works, confirmed empirically. Only the first value set in a
-            # given process actually takes effect (rayon's pool, once built,
-            # is fixed for the process's lifetime); this script only ever
-            # constructs one CyclosynthSynthesizer per run, so that's moot
-            # here, but a second instance with a different `threads` value
-            # in the same process would silently keep the first one's count.
+            # rayon builds its thread pool lazily on first search call and
+            # reads this env var then, not at import time -- so setting it
+            # here still works. Only the first value set in a process takes
+            # effect; a second CyclosynthSynthesizer with a different
+            # `threads` in the same process would silently keep the first.
             os.environ["RAYON_NUM_THREADS"] = str(threads)
         self.epsilon = epsilon
         self.tol = max(epsilon, EXACTNESS_FLOOR) if tol is None else tol
@@ -1164,12 +1118,10 @@ class CyclosynthSynthesizer:
         self._clifford_words = build_clifford_words()
         self._synth = cyclosynth.Synthesizer(epsilon=epsilon, sqrt_t=False)
         self._cache: dict[tuple, tuple[str, ...]] = {}
-        # Fallback synthesizer for blocks too close to a Clifford element for
-        # cyclosynth's search to handle safely (see _resynthesize and
-        # CYCLOSYNTH_NEAR_CLIFFORD_MARGIN). Its own counters are never read --
-        # _synthesize_uncounted doesn't populate them -- only its (circuit,
-        # kind, error) return and its gridsynth cache (for repeat near-Clifford
-        # angles) are used.
+        # Fallback for blocks too close to a Clifford for cyclosynth's search
+        # to handle safely (see _resynthesize and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
+        # Only its (circuit, kind, error) return and gridsynth cache are used --
+        # its own counters are never read.
         self._fallback = CliffordTSynthesizer(epsilon=epsilon, tol=self.tol)
         self.reset_counters()
 
@@ -1246,10 +1198,8 @@ class CyclosynthSynthesizer:
             if result is None or result.gates is None:
                 circuit, _, error = self._fallback._synthesize_uncounted(matrix)
                 return circuit, "gridsynth_fallback", error
-            # cyclosynth's gate string is in matrix order (leftmost = leftmost
-            # matrix factor, confirmed empirically against word_matrix/
-            # spectral_error), so it is applied in reverse -- same convention
-            # as pygridsynth's own output, handled the same way above.
+            # cyclosynth's gate string is in matrix order, so it is applied in
+            # reverse -- same convention as pygridsynth's output above.
             word = tuple(
                 CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates)
             )
@@ -1358,16 +1308,14 @@ class CyclosynthBlockSynthesisPass(BasePass):
         self._decomposer = OneQubitEulerDecomposer(basis="ZYZ")
         self._clifford_words = build_clifford_words()
         self._cache: dict[tuple, tuple[str, ...]] = {}
-        # Built lazily (see _synthesizer/__getstate__ below), not here: bqskit's
-        # ForEachBlockPass ships each sub-pass instance to a worker process via
-        # pickle, and cyclosynth.Synthesizer is a PyO3/Rust object that cannot
-        # be pickled ("cannot pickle 'builtins.Synthesizer' object").
+        # Built lazily (see _synthesizer/__getstate__): ForEachBlockPass ships
+        # this pass to a worker process via pickle, and cyclosynth.Synthesizer
+        # (a PyO3 object) cannot be pickled.
         self._synth = None
 
     def __getstate__(self) -> dict:
-        # Drop the unpicklable cyclosynth.Synthesizer before this pass is
-        # shipped to a bqskit worker process; _synthesizer() rebuilds it
-        # lazily, once per process, on first actual use there.
+        # Drop the unpicklable cyclosynth.Synthesizer before shipping to a
+        # worker process; _synthesizer() rebuilds it lazily there.
         state = self.__dict__.copy()
         state["_synth"] = None
         return state
@@ -1403,10 +1351,9 @@ class CyclosynthBlockSynthesisPass(BasePass):
                 return
 
         # Tier 2: near-Clifford-but-not-exact -- route away from cyclosynth,
-        # whose search can hang on these targets. Leave the block untouched;
-        # build_final_synthesis_passes' top-level mop-up stage (IsolateRZGatePass
-        # + GridSynthPass) catches it afterward -- see this class's docstring
-        # for why that mop-up isn't done inline, here, via a nested Workflow.
+        # whose search can hang on these targets. Left untouched;
+        # build_final_synthesis_passes' mop-up stage catches it afterward (see
+        # this class's docstring for why that isn't done inline here).
         if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
             return
 
@@ -1419,8 +1366,7 @@ class CyclosynthBlockSynthesisPass(BasePass):
                 # Leave untouched, same as the near-Clifford case above.
                 return
             # Same matrix-order-vs-circuit-order reversal as
-            # CyclosynthSynthesizer._resynthesize (confirmed there against
-            # word_matrix/spectral_error).
+            # CyclosynthSynthesizer._resynthesize.
             word = tuple(CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates))
             self._cache[key] = word
 
@@ -1789,13 +1735,9 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
         count = min(count + (len(cache) - before), total)
         now = time.monotonic()
         if now - last_report >= PROGRESS_INTERVAL_SECONDS:
-            # Percentage only, not "N/M": M's meaning (distinct new cache
-            # misses -- see estimate_synthesis_calls) differs enough between
-            # backends that showing the raw counts invited comparing them
-            # directly across backends, which isn't meaningful. Trailing
-            # spaces clear any leftover characters from a longer previous
-            # update; the string only grows as the percentage gains digits,
-            # so this is defensive padding, not required alignment.
+            # Percentage only, not "N/M": M's meaning differs enough between
+            # backends that raw counts would invite an inapt cross-backend
+            # comparison.
             _progress_line(log, label, count * 100 // total)
             last_report = now
         return result
@@ -1900,10 +1842,8 @@ def compile_via_resynthesis(
         _with_progress(synth.synthesize, total, log, label, synth._expensive_cache()),
     )
     if total > 0:
-        # Printed unconditionally, not by _with_progress detecting its own
-        # last call: `total` is only an estimate of cache growth (see its
-        # docstring), so the tracked count reaching it exactly isn't
-        # guaranteed -- this is what actually completes the line.
+        # Printed unconditionally: `total` is only an estimate of cache
+        # growth, so the tracked count reaching it exactly isn't guaranteed.
         _progress_line(log, label, 100, final=True)
     if not optimize:
         return out
@@ -1928,10 +1868,9 @@ def compile_via_resynthesis(
         if gate_cost(out) >= cost:
             break
     if any_cleanup_progress:
-        # Printed unconditionally for the same reason the main pass's 100% is
-        # (see above): the loop can break before max_rounds is reached, in
-        # which case _with_block_progress's blended percentage plateaus
-        # below 100% on its own.
+        # Printed unconditionally, same reason as the main pass's 100% above:
+        # the loop can break before max_rounds, leaving the blended
+        # percentage plateaued below 100% on its own.
         _progress_line(log, cleanup_label, 100, final=True)
     return out
 
@@ -2179,24 +2118,12 @@ def build_bqskit_workflow(
     from running the cycle twice rather than once. Running it a third time
     finds nothing further (checked on the same benchmark).
     """
-    # ScanningGateRemovalPass and TRbOPass both judge success via bqskit's
-    # HilbertSchmidtCost/ResidualsGenerator, not an operator-norm distance --
-    # and that cost is NOT epsilon-scale in the deviation it actually
-    # tolerates. Measured directly (Rz(theta) vs identity, both 1- and
-    # 2-qubit blocks): HS-cost == operator_norm_distance**2 / 2, to float
-    # precision, for any small perturbation -- a textbook fidelity-style
-    # quadratic cost, not the linear one every other epsilon in this
-    # pipeline (RoundToDiscreteZPass's raw angular residual, GridSynthPass's
-    # algorithmic_error, CyclosynthBlockSynthesisPass's epsilon) assumes.
-    # Passing synthesis_epsilon straight through as success_threshold, as
-    # both passes did before this fix, lets HS-cost run all the way up to
-    # synthesis_epsilon -- i.e. an actual operator-norm deviation up to
-    # sqrt(2 * synthesis_epsilon), orders of magnitude looser than intended
-    # at synthesis_epsilon=1e-8 (~1.4e-4, not 1e-8). Squaring (and halving)
-    # the threshold here inverts that relationship so the real achieved
-    # operator-norm distance per approximate cancellation is back to
-    # genuinely synthesis_epsilon-scale, matching every other pass in this
-    # workflow.
+    # ScanningGateRemovalPass/TRbOPass judge success via HilbertSchmidtCost,
+    # not an operator-norm distance: HS-cost == operator_norm_distance**2 / 2,
+    # a quadratic relationship unlike every other epsilon in this pipeline.
+    # Passing synthesis_epsilon straight through as success_threshold lets the
+    # real operator-norm deviation run up to sqrt(2*synthesis_epsilon) --
+    # squaring (and halving) it here brings that back to synthesis_epsilon-scale.
     hs_cost_threshold = synthesis_epsilon**2 / 2
 
     passes: list[BasePass] = [SetRandomSeedPass(seed)] if seed is not None else []
@@ -2222,12 +2149,9 @@ def build_bqskit_workflow(
             ForEachBlockPass(
                 [
                     # TRbOPass rejects any gate outside Clifford+T+Rz, including
-                    # IdentityGate -- which RoundToDiscreteZPass/clifford_replace
-                    # can leave behind (see compile_bqskit's own identical cleanup
-                    # for the same gate, done later for a different reason: bqskit
-                    # serialises it as a custom gate the transpile binary chokes
-                    # on). Strip it per-block first rather than once for the whole
-                    # circuit, since QuickPartitioner already needs to run first.
+                    # IdentityGate, which RoundToDiscreteZPass/clifford_replace can
+                    # leave behind. Stripped per-block since QuickPartitioner has
+                    # already run.
                     trbo.utils.RemoveGatePass(IdentityGate(1)),
                     trbo.utils.AppendGatePass(trbo.clift.GlobalPhaseGate()),
                     # TRbOPass judges success the same HS-cost way -- see
@@ -2292,35 +2216,24 @@ def compile_bqskit(
             cyclosynth_flag=cyclosynth_flag,
         )
 
-        # Oversubscription guard for --bqskit-cyclosynth: bqskit's own
+        # Oversubscription guard for --bqskit-cyclosynth: bqskit's
         # worker-process parallelism x rayon's per-process all-cores default
-        # (each worker builds its own rayon pool on first use) multiply out
-        # badly. Default to single-threaded per pool unless the user opted
-        # into more via --cyclosynth-threads -- same env var
-        # CyclosynthSynthesizer's own --backend cyclosynth path reads, and the
-        # same "set before first use, in the parent process, so child workers
-        # inherit it at spawn time" mechanism it already depends on.
+        # multiply out badly. Defaults to single-threaded per pool unless
+        # --cyclosynth-threads opts into more; set here (parent process,
+        # before first use) so child workers inherit it at spawn time.
         old_rayon_threads = os.environ.get("RAYON_NUM_THREADS")
         if cyclosynth_flag:
             os.environ["RAYON_NUM_THREADS"] = (
                 str(cyclosynth_threads) if cyclosynth_threads is not None else "1"
             )
 
-        # TRbO's own MatrixDistanceCost.get_grad (trbo/tcount.py) computes
-        # (1 - frac**degree)**(1/degree - 1), a genuine 0**negative
-        # singularity whenever a candidate's fidelity to the target rounds to
-        # exactly 1.0 in floating point -- a symptom of the optimiser having
-        # already converged, not an error. That produces an inf (line 56:
-        # "divide by zero encountered in power"), which the very next line's
-        # p1 * p2 * p3 (line 59: "invalid value encountered in multiply") can
-        # turn into inf * 0 = nan whenever some parameter's own gradient
-        # contribution (p3) happens to vanish for that entry -- same root
-        # cause, one line downstream. numpy warns rather than raises for
-        # either by default, and both surface from inside bqskit's own worker
-        # processes, where a plain warnings.filterwarnings() call here has no
-        # effect (confirmed empirically: those workers do not inherit this
-        # process's warnings filters). Only PYTHONWARNINGS, read by each
-        # worker at its own interpreter startup, reliably reaches them.
+        # TRbO's own MatrixDistanceCost.get_grad (trbo/tcount.py) hits a
+        # 0**negative singularity when a candidate's fidelity rounds to
+        # exactly 1.0 -- a symptom of convergence, not an error -- producing
+        # numpy RuntimeWarnings from inside bqskit's worker processes. A plain
+        # warnings.filterwarnings() call here has no effect there (workers
+        # don't inherit this process's filters); only PYTHONWARNINGS, read at
+        # each worker's own interpreter startup, reliably suppresses them.
         old_pythonwarnings = os.environ.get("PYTHONWARNINGS")
         if trbo_flag:
             suppress_trbo_warning = ",".join(
@@ -2350,15 +2263,13 @@ def compile_bqskit(
                 else:
                     os.environ["RAYON_NUM_THREADS"] = old_rayon_threads
 
-        # Flatten any CircuitGate wrappers bqskit may have left around
-        # sub-circuits (e.g. U3Gate wrapped in a CircuitGate).  Without this,
-        # the transpile binary crashes because it has no rule for CircuitGate.
+        # Flatten any CircuitGate wrappers left around sub-circuits (e.g.
+        # U3Gate) -- without this, the transpile binary crashes on CircuitGate.
         bq_circuit.unfold_all()
 
-        # Remove IdentityGate operations: they are semantic no-ops but bqskit
-        # serialises them as a custom "identity1" gate using U(0,0,0).  When the
-        # QASM is reloaded, that custom gate definition is parsed back as a
-        # CircuitGate(U3Gate), which causes the transpile binary to crash.
+        # Remove IdentityGate: bqskit serialises it as a custom "identity1"
+        # gate that, once reloaded, parses back as CircuitGate(U3Gate) and
+        # crashes the transpile binary.
         identity = IdentityGate(1)
         if identity in bq_circuit.gate_set:
             bq_circuit.remove_all(identity)
@@ -2893,9 +2804,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 after = circuit_stats(compiled)
                 print_report(log, before, after, extra)
 
-                # Basis check + error bound: always, no flag needed -- both are
-                # cheap (no simulation), and a broken basis is worth failing the
-                # run over regardless of whether numeric verification was asked for.
+                # Basis check + error bound always run, no flag needed: cheap,
+                # and worth failing the run over regardless of --verify.
                 non_basis = non_basis_ops(compiled)
                 scope = f" over {n_rewrites} rewrites" if n_rewrites is not None else ""
                 log(f"  error bound{scope}: {error_bound:.2e}")

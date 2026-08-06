@@ -46,7 +46,6 @@ def convert_operation(line):
 
     operation, sign_part, pauli_string = match.groups()
 
-    # Determine the sign
     if operation == "Rotate":
         if sign_part in ["-1", "-2"]:
             sign = "-"
@@ -64,7 +63,6 @@ def convert_operation(line):
     else:
         raise RuntimeError(f"Warning: Unknown operation '{operation}' in line: {line}")
 
-    # Convert Pauli string: replace 'I' with '_'
     converted_pauli = pauli_string.replace("I", "_")
 
     # Determine the angle bracket
@@ -95,7 +93,6 @@ def convert_file(input_file, output_file=None):
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
 
-    # Determine output file path
     if output_file is None:
         output_path = input_path.with_suffix(input_path.suffix + ".converted")
     else:
@@ -105,7 +102,6 @@ def convert_file(input_file, output_file=None):
     total_lines = 0
     converted_count = 0
 
-    # Read and convert the file
     try:
         with open(input_path, "r", encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
@@ -121,7 +117,6 @@ def convert_file(input_file, output_file=None):
     except Exception as e:
         raise RuntimeError(f"Error reading input file: {e}")
 
-    # Write the converted file
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             for line in converted_lines:
@@ -174,7 +169,6 @@ Output format:
 
     try:
         if args.dry_run:
-            # Dry run mode: print to stdout
             input_path = Path(args.input_file)
             if not input_path.exists():
                 raise FileNotFoundError(f"Input file not found: {args.input_file}")
@@ -185,7 +179,6 @@ Output format:
                     if converted_line is not None:
                         print(converted_line)
         else:
-            # Normal mode: write to file
             convert_file(args.input_file, args.output)
 
     except (FileNotFoundError, RuntimeError) as e:

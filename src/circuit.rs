@@ -1,12 +1,12 @@
 use crate::fn_timer;
 use crate::pauliproduct::{GateType, Operator, PauliProduct};
-use std::collections::HashMap;
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use rand::Rng;
 #[cfg(test)]
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 #[cfg(debug_assertions)]
 use std::io::{BufWriter, Write};
@@ -18,11 +18,8 @@ use std::{
 };
 
 /// A quantum circuit as a DAG of Pauli products with dependency tracking.
-///
-/// Products are ordered by their circuit-file position; dependencies are derived
-/// from qubit overlap (the last product to touch a qubit becomes the parent of
-/// the next one on that qubit). Layers are lazily computed via topological sort
-/// and cached after the first call to avoid repeated recomputation.
+/// Dependencies come from qubit overlap: the last product to touch a qubit becomes
+/// the parent of the next one on that qubit. Layers are computed lazily and cached.
 pub(crate) struct Circuit {
     pub(crate) pps: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
@@ -40,9 +37,8 @@ impl Circuit {
         }
     }
 
-    /// Loads Pauli products from file, skipping X and Z gates.
-    /// X and Z are Pauli corrections that are tracked classically in the
-    /// Pauli frame and do not require physical operations on the layout.
+    /// Loads Pauli products from file. X and Z gates are skipped: they are Pauli-frame
+    /// corrections tracked classically, not physical operations on the layout.
     pub(crate) fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
@@ -375,23 +371,14 @@ impl Circuit {
         Ok(())
     }
 
-    /// Calculates the number of layers in an expanded circuit where:
-    /// - [`GateType::CX`]: expanded to 2 identical products in sequence
-    /// - [`GateType::S`] / [`GateType::SX`]: expanded to 3 identical products in sequence
-    /// - [`GateType::T`]: kept as-is; when `no_t_failures` is `false`, with 50% probability
-    ///   an [`GateType::S`] product on the **same qubits** as the T is inserted immediately
-    ///   after it (modelling the Clifford correction needed after a T-gate failure)
-    /// - All other gates (M): kept as-is (1 copy)
-    ///
-    /// Dependencies are recomputed from scratch on the expanded list via qubit-overlap
-    /// (mirroring [`Circuit::gen_deps`]); the original `self.pps` and `self.layers` cache
-    /// are never modified.
+    /// Estimates layers in an expanded circuit: CX → 2 copies, S/SX → 3 copies, T kept
+    /// as-is (with 50% chance of an appended same-qubit S modelling a T-gate-failure
+    /// correction, unless `no_t_failures`), other gates kept as 1 copy. Dependencies are
+    /// recomputed from scratch on the expanded list; `self.pps`/`self.layers` are untouched.
     pub(crate) fn estimate_num_layers(&self, rng: &mut StdRng, no_t_failures: bool) -> usize {
-        // Per-qubit S^k correction power (0=none, 1=S, 2=Z, 3=S†).
-        // Incremented on each T gate failure; cleared when a Clifford is encountered.
+        // Per-qubit S^k correction power (0=none, 1=S, 2=Z, 3=S†); increments on T failure, resets on Clifford.
         let mut correction_power: HashMap<u16, u8> = HashMap::new();
 
-        // Build the expanded product list.
         let mut expanded: Vec<PauliProduct> = Vec::with_capacity(self.pps.len() * 4);
         for pp in &self.pps {
             if pp.gate_type.is_cx() {
@@ -413,7 +400,6 @@ impl Circuit {
                     }
                     correction_power.insert(op.qubit, 0);
                 }
-                // CX → 2 sequential copies
                 for _ in 0..2 {
                     let mut copy = pp.clone();
                     copy.id = expanded.len() as i32;
@@ -440,7 +426,6 @@ impl Circuit {
                     }
                     correction_power.insert(op.qubit, 0);
                 }
-                // S / SX → 3 sequential copies
                 for _ in 0..3 {
                     let mut copy = pp.clone();
                     copy.id = expanded.len() as i32;
@@ -457,8 +442,13 @@ impl Circuit {
                 for op in &mut t_copy.operators {
                     let power = *correction_power.get(&op.qubit).unwrap_or(&0);
                     if power % 2 == 1 {
-                        op.basis =
-                            if op.basis == 'X' { 'Y' } else if op.basis == 'Y' { 'X' } else { op.basis };
+                        op.basis = if op.basis == 'X' {
+                            'Y'
+                        } else if op.basis == 'Y' {
+                            'X'
+                        } else {
+                            op.basis
+                        };
                     }
                 }
                 expanded.push(t_copy.clone());
@@ -996,9 +986,7 @@ mod tests {
 
     #[test]
     fn n_cycles_parallel_cx_and_t() {
-        // CX on qubits 0,1 expands to 2 sequential copies.
-        // T on qubit 2 is independent; may get an S appended (also on qubit 2).
-        // Result is 2 (T alone) or 3 (T + S appended, S is in its own layer after T).
+        // CX (qubits 0,1) takes 2 layers; T (qubit 2) may get an appended S, giving 2 or 3.
         let f = make_circuit_file(&["+XZ_<CX>", "+__X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
@@ -1008,8 +996,7 @@ mod tests {
 
     #[test]
     fn n_cycles_parallel_s_and_cx() {
-        // S on qubit 0 expands to 3 sequential copies; CX on qubits 2,3 to 2.
-        // No T gates, so no randomness. Result is exactly 3.
+        // S (3 layers, qubit 0) and CX (2 layers, qubits 2,3) run in parallel; no T gates, so exactly 3.
         let f = make_circuit_file(&["+X___<S>", "+__XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
@@ -1065,10 +1052,8 @@ mod tests {
 
     #[test]
     fn n_cycles_t_gate_s_insertion_varies_across_seeds() {
-        // With the lazy correction model, S corrections are emitted only when a Clifford
-        // gate is encountered.  Use a chain of T gates followed by an S gate so that the
-        // accumulated correction is flushed before the S, producing different layer counts
-        // depending on how many T gates failed (odd failures → extra 3-layer correction).
+        // S corrections flush only when a Clifford gate is hit; a T-chain followed by an S
+        // lets the number of failed T gates (odd → extra 3-layer correction) vary the total.
         let mut lines: Vec<&str> = vec!["+X_<T>"; 19];
         lines.push("+X_<S>");
         let f = make_circuit_file(&lines);

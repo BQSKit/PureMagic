@@ -111,7 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
     let n_products = circuit.n_products();
-    let n_sx_cliffords = circuit.pps.iter().filter(|pp| pp.gate_type.is_s() || pp.gate_type.is_sx()).count();
+    let n_sx_cliffords =
+        circuit.pps.iter().filter(|pp| pp.gate_type.is_s() || pp.gate_type.is_sx()).count();
     let _n_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
@@ -168,7 +169,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
-    //let min_layers = if args.no_t_failures { n_layers } else { (n_layers * 3) / 2 };
     let mut rng = StdRng::seed_from_u64(args.rseed as u64);
     // this estimates layers including additional clifford cycles and T correction cycles
     let min_layers = sched.input.circuit.estimate_num_layers(&mut rng, args.no_t_failures);

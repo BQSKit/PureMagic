@@ -20,10 +20,6 @@ mod utils;
 use tableau::{Gate1Q, Gate2Q, PauliString, Tableau};
 use utils::Timer;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CLI
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Transpile a Clifford+T circuit to Pauli basis measurements")]
 struct Args {
@@ -38,10 +34,6 @@ struct Args {
     #[arg(short = 'm', long = "max_width", default_value = "-1")]
     max_width: i32,
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// QASM gate representation
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 enum QasmGate {
@@ -69,10 +61,6 @@ impl QasmGate {
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Transpiler output types
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Sign {
@@ -185,10 +173,6 @@ impl fmt::Display for TransItem {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QASM parser
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Parse a `.cliffordt.qasm` file into a gate list and qubit count.
 /// Unrecognised lines (headers, custom gate defs, creg, etc.) are silently skipped.
 fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
@@ -247,9 +231,9 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
     Ok((n_qubits, gates))
 }
 
-/// Reorder gates into bqskit's cycle-based order: pack each gate into the
-/// earliest cycle where all its qubits are free, then sort within each cycle
-/// by minimum qubit index.  This is a semantics-preserving reordering of
+/// Reorder gates into cycle-based order: pack each gate into the earliest
+/// cycle where all its qubits are free, then sort within each cycle by
+/// minimum qubit index.  This is a semantics-preserving reordering of
 /// independent (commuting) gates.
 fn reorder_by_cycles(gates: Vec<QasmGate>, n_qubits: usize) -> Vec<QasmGate> {
     if n_qubits == 0 {
@@ -356,25 +340,8 @@ fn try_parse_1q(line: &str) -> Option<QasmGate> {
     Some(gate)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Single-qubit Clifford optimizer
-// ─────────────────────────────────────────────────────────────────────────────
-//
 // Each of the 24 single-qubit Cliffords is uniquely identified by the pair
-// (X-image, Z-image) of its conjugation action on the Pauli group, where each
-// image is one of the 6 signed non-identity Paulis {±X, ±Y, ±Z}.
-//
-// We encode a signed Pauli as a u8:
-//   bits [1:0] = Pauli type: 0=X, 1=Y, 2=Z
-//   bit  [2]   = sign: 0=+, 1=−
-//
-// A sequence of single-qubit gates is compressed by composing their actions
-// into a single (x_img, z_img) state, then looking up the minimal gate
-// sequence that produces that state from a precomputed table of all 24
-// elements of the single-qubit Clifford group.
-//
-// Minimal sequences use only {S, Sdg, SX, SXdg, X, Z}.  Of these, X and Z
-// are not emitted in the .trans format and are silently dropped.
+// (X-image, Z-image) of its conjugation action on the Pauli group.
 
 /// Encode a signed single-qubit Pauli as a u8.
 /// Pauli type: 0=X, 1=Y, 2=Z.  Sign bit 2: 0=+, 1=−.
@@ -387,18 +354,8 @@ fn pauli_code(pauli: u8, neg: bool) -> u8 {
 /// the updated state.  Each image is a [`pauli_code`]-encoded signed Pauli
 /// representing where the gate sends X (resp. Z) under conjugation.
 fn apply_1q_to_state(gate: Gate1Q, x_img: u8, z_img: u8) -> (u8, u8) {
-    // Conjugation rules (P → G·P·G†) for each gate on the three Paulis:
-    //   H:    X→Z,   Y→-Y,  Z→X
-    //   S:    X→Y,   Y→-X,  Z→Z
-    //   Sdg:  X→-Y,  Y→X,   Z→Z
-    //   SX:   X→X,   Y→-Z,  Z→-Y
-    //   SXdg: X→X,   Y→Z,   Z→Y
-    //   X:    X→X,   Y→-Y,  Z→-Z
-    //   Y:    X→-X,  Y→Y,   Z→-Z
-    //   Z:    X→-X,  Y→-Y,  Z→Z
-    //
-    // For a composed state (x_img, z_img), prepending gate G updates each
-    // image independently: new_x_img = G(x_img), new_z_img = G(z_img).
+    // Conjugation rules (P → G·P·G†); composing states applies each gate to
+    // x_img and z_img independently.
     fn apply_gate_to_pauli(gate: Gate1Q, p: u8) -> u8 {
         let pauli = p & 0x3;
         let neg = (p >> 2) & 1 != 0;
@@ -472,12 +429,8 @@ fn simulate_gate_sequence(gates: &[Gate1Q]) -> (u8, u8) {
 }
 
 /// Build a lookup table mapping each of the 24 single-qubit Clifford states
-/// `(x_img, z_img)` to a minimal gate sequence that produces it.
-///
-/// The 24 sequences cover all elements of the single-qubit Clifford group,
-/// using only gates from {I, S, Sdg, SX, SXdg, X, Z} (at most 4 gates each).
-/// The table is constructed by simulating each sequence and recording the
-/// resulting state; no two sequences produce the same state.
+/// `(x_img, z_img)` to a minimal gate sequence (at most 4 gates, from
+/// {I, S, Sdg, SX, SXdg, X, Z}) that produces it; no two sequences collide.
 fn build_clifford_table() -> std::collections::HashMap<(u8, u8), Vec<Gate1Q>> {
     use Gate1Q::*;
     let sequences: &[&[Gate1Q]] = &[
@@ -540,15 +493,9 @@ fn optimize_single_qubit_sequence(gates: &[Gate1Q]) -> Vec<Gate1Q> {
 /// Reduce a sequence of Clifford gates to a minimal equivalent sequence and
 /// return the result as [`TransClifford`] items ready for the .trans output.
 ///
-/// Single-qubit gates on each qubit are accumulated independently and
-/// compressed into a minimal sequence using the 24-element Clifford group
-/// lookup.  When a 2-qubit gate is encountered, the pending single-qubit
-/// sequences on its two qubits are flushed and optimized first; the 2-qubit
-/// gate is then emitted unchanged.  Any remaining single-qubit sequences are
-/// flushed at the end.
-///
-/// Only CX, S, Sdg, SX, and SXdg are emitted; X and Z are Pauli corrections
-/// that do not need to be scheduled and are omitted from the output.
+/// Single-qubit gates per qubit are compressed via the 24-element lookup;
+/// a 2-qubit gate flushes and optimizes the pending sequences on its two
+/// qubits first. X and Z are Pauli corrections omitted from the output.
 fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransClifford> {
     let mut per_qubit: Vec<Vec<Gate1Q>> = vec![Vec::new(); n_qubits];
     let mut result: Vec<TransClifford> = Vec::new();
@@ -593,10 +540,6 @@ fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransC
 
     result
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Transpiler
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransItem> {
     let effective_max_weight = if max_weight <= 0 { n_qubits + 1 } else { max_weight as usize };
@@ -709,10 +652,6 @@ fn make_z_pauli(n: usize, q: usize, negative: bool) -> PauliString {
     ps
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Output writer
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usize)> {
     let file = File::create(output_path)?;
     let mut writer = BufWriter::new(file);
@@ -737,10 +676,6 @@ fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usi
     Ok((n_ts, n_cliffords))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Statistics helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn count_stats(items: &[TransItem]) -> (usize, usize, usize, f64) {
     let n_cliffords = items.iter().filter(|i| matches!(i, TransItem::Clifford(_))).count();
     let pps: Vec<&TransPauli> = items
@@ -763,10 +698,6 @@ fn count_stats(items: &[TransItem]) -> (usize, usize, usize, f64) {
     };
     (n_cliffords, n_pps, items.len(), avg_weight)
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -867,10 +798,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,8 +811,6 @@ mod tests {
         }
         f
     }
-
-    // ── QASM parser ───────────────────────────────────────────────────────────
 
     #[test]
     fn parse_qasm_basic() {
@@ -916,8 +841,6 @@ mod tests {
         assert!(matches!(gates[1], QasmGate::Tdg { qubit: 0 }));
     }
 
-    // ── make_z_pauli ──────────────────────────────────────────────────────────
-
     #[test]
     fn make_z_pauli_positive() {
         let p = make_z_pauli(3, 1, false);
@@ -934,8 +857,6 @@ mod tests {
         assert!(p.sign);
     }
 
-    // ── TransPauli display ────────────────────────────────────────────────────
-
     #[test]
     fn trans_pauli_display_t_gate() {
         let ps = PauliString::from_str("+ZII");
@@ -949,8 +870,6 @@ mod tests {
         let tp = TransPauli::from_pauli_string(&ps, "M");
         assert_eq!(format!("{}", tp), "-_Z_<M>");
     }
-
-    // ── TransClifford display ─────────────────────────────────────────────────
 
     #[test]
     fn trans_clifford_cx_display() {
@@ -977,8 +896,6 @@ mod tests {
         let gate = QasmGate::Clifford1Q { gate: Gate1Q::Z, qubit: 0 };
         assert!(TransClifford::from_qasm_gate(&gate, 2).is_none());
     }
-
-    // ── Transpiler ────────────────────────────────────────────────────────────
 
     #[test]
     fn transpile_single_t_gate_no_cliffords() {
@@ -1040,8 +957,6 @@ mod tests {
         assert_eq!(cliffords_unlimited.len(), 0);
     }
 
-    // ── count_stats ───────────────────────────────────────────────────────────
-
     #[test]
     fn count_stats_basic() {
         let items = vec![
@@ -1064,8 +979,6 @@ mod tests {
         assert!((avg_weight - 1.5).abs() < 1e-9);
     }
 
-    // ── count_stats — all Cliffords ───────────────────────────────────────────
-
     #[test]
     fn count_stats_all_cliffords() {
         let items = vec![
@@ -1078,8 +991,6 @@ mod tests {
         assert_eq!(tot, 2);
     }
 
-    // ── count_stats — empty ───────────────────────────────────────────────────
-
     #[test]
     fn count_stats_empty() {
         let items: Vec<TransItem> = vec![];
@@ -1089,8 +1000,6 @@ mod tests {
         assert_eq!(tot, 0);
         assert_eq!(avg_weight, 0.0);
     }
-
-    // ── make_z_pauli — weight ─────────────────────────────────────────────────
 
     #[test]
     fn make_z_pauli_has_weight_one() {
@@ -1106,8 +1015,6 @@ mod tests {
         assert_eq!(ps.pauli_at(2), 'I');
     }
 
-    // ── parse_qasm — sdg and tdg gates ───────────────────────────────────────
-
     #[test]
     fn parse_qasm_sdg_and_tdg_gates() {
         let f = write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "sdg q[0];", "tdg q[1];"]);
@@ -1115,8 +1022,6 @@ mod tests {
         assert_eq!(n_qubits, 2);
         assert_eq!(gates.len(), 2);
     }
-
-    // ── transpile — SX gate ───────────────────────────────────────────────────
 
     #[test]
     fn transpile_sx_gate_produces_clifford() {
@@ -1128,12 +1033,9 @@ mod tests {
             write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "cx q[0],q[1];", "sx q[0];", "t q[1];"]);
         let (n_qubits, gates) = parse_qasm(f.path().to_str().unwrap()).unwrap();
         let items = transpile(n_qubits, &gates, 1);
-        // SX is a Clifford; should produce at least one Clifford item
         let has_clifford = items.iter().any(|i| matches!(i, TransItem::Clifford(_)));
         assert!(has_clifford, "SX gate should produce a Clifford TransItem");
     }
-
-    // ── transpile — measurement appended for all qubits ──────────────────────
 
     #[test]
     fn transpile_two_qubit_circuit_appends_two_measurements() {
@@ -1147,8 +1049,6 @@ mod tests {
         assert_eq!(measurement_count, 2, "should append one measurement per qubit");
     }
 
-    // ── TransPauli display — negative sign ────────────────────────────────────
-
     #[test]
     fn trans_pauli_display_negative_sign() {
         let ps = make_z_pauli(2, 0, true); // negative
@@ -1156,8 +1056,6 @@ mod tests {
         let s = format!("{}", tp);
         assert!(s.starts_with('-'), "negative pauli should start with '-': {}", s);
     }
-
-    // ── TransClifford — CX display ────────────────────────────────────────────
 
     #[test]
     fn trans_clifford_cx_has_two_qubit_paulis() {

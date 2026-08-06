@@ -120,12 +120,10 @@ def parse_puremagic_output(filepath):
                 cur_qubits = int(m.group(1))
                 continue
 
-            # Enter cultivation time block
             if cult_block_re.search(s):
                 in_cult_block = True
                 continue
 
-            # Cultivation average (inside the block)
             if in_cult_block:
                 m = cult_avg_re.match(s)
                 if m:
@@ -165,7 +163,6 @@ def parse_puremagic_output(filepath):
                 cur_circuit = m.group(1)
                 continue
 
-            # End-of-run marker
             if flush_re.match(s):
                 _flush()
 
@@ -210,7 +207,6 @@ def pretty_name(name, num_qubits=None):
     else:
         size = None
 
-    # Truncate at first underscore or space
     prefix = re.split(r"[_ ]", name)[0]
 
     if prefix.lower() in _UPPERCASE_NAMES:
@@ -398,7 +394,6 @@ def main():
         (_load(f1), label1, _load(f2), label2) for (f1, label1), (f2, label2) in groups
     ]
 
-    # Read circuit names
     with open(args.benchmarks, "r") as f:
         circuit_names = [line.strip() for line in f if line.strip()]
 
@@ -462,7 +457,6 @@ def main():
     # cols: 1 (Circuit) + 3*num_groups (eff triples) + 2*show_cultivation (cult pair)
     col_spec = "|l|" + "r|r|r|" * num_groups + ("r|r|" if show_cultivation else "")
 
-    # Sub-header labels
     sub_headers = ["Circuit"]
     for _, label1, _, label2 in loaded_groups:
         sub_headers += [label1, label2, "\% Impr."]

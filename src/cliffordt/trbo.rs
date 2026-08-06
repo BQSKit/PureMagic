@@ -5,17 +5,18 @@
 //! `success_threshold` -- for an assignment where as many angles as
 //! possible land exactly on a discrete grid (T-representable points
 //! first, then Clifford-only "remainder" points), rather than rounding
-//! each angle independently (that's Stage 3). Mirrors the actual
-//! `trbo`/`tcount`/`clift` Python package read earlier this session: a
-//! smooth "smallest-N-deviation" relaxation of "how many angles are
-//! exactly rounded," found via multi-start nonlinear least squares and a
-//! binary search over N, then a deterministic snap-to-grid.
+//! each angle independently (that's Stage 1). Uses a smooth
+//! "smallest-N-deviation" relaxation of "how many angles are exactly
+//! rounded," found via multi-start nonlinear least squares and a binary
+//! search over N, then a deterministic snap-to-grid.
 
 use nalgebra::{DMatrix, DVector};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
-use crate::cliffordt::instantiate::{fidelity_residuals, fidelity_residuals_and_jacobian, instantiate_multistart, lm_fit_multistart};
-use crate::cliffordt::matrix::{distance, Unitary};
+use crate::cliffordt::instantiate::{
+    fidelity_residuals, fidelity_residuals_and_jacobian, instantiate_multistart, lm_fit_multistart,
+};
+use crate::cliffordt::matrix::{Unitary, distance};
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
 pub struct TrboConfig {
@@ -27,12 +28,9 @@ pub struct TrboConfig {
 
 impl Default for TrboConfig {
     fn default() -> Self {
-        // Matches the actual upstream `trbo` package's own default
-        // (`TReductionByOptimiationPass.__init__`'s `multistarts: int = 64`,
-        // used unmodified by `compile_cliffordt.py`'s call site) -- our
-        // hand-rolled finite-difference LM solver is weaker per-attempt
-        // than trbo's Ceres-backed one, so matching its restart count
-        // matters more here, not less.
+        // multistarts=64: this hand-rolled finite-difference LM solver is
+        // weaker per-attempt than a proper trust-region solver, so a
+        // higher restart count matters more here, not less.
         TrboConfig { success_threshold: 1e-8, multistarts: 64, max_iters: 150, seed: 0 }
     }
 }
@@ -53,8 +51,7 @@ impl Discretization {
 }
 
 /// Exact gate sequence for a value that's already been decided to be
-/// rounded to the nearest multiple of `disc`'s period -- mirrors
-/// `trbo`'s `clift.circuit_for_rounded_val`.
+/// rounded to the nearest multiple of `disc`'s period.
 fn rounded_gate(val: f64, disc: Discretization) -> Vec<Gate> {
     let val = val.rem_euclid(TAU);
     match disc {
@@ -98,9 +95,9 @@ fn deviation_single(p: f64, period: f64) -> f64 {
     (shifted - period / 2.0).abs() / 2.0
 }
 
-/// Deviation of each angle from the nearest multiple of `period` -- mirrors
-/// `tcount.get_deviation_arr` (without a blacklist: every parameter passed
-/// in here is already known to be a genuine free Rz angle).
+/// Deviation of each angle from the nearest multiple of `period` -- every
+/// parameter passed in here is already known to be a genuine free Rz
+/// angle, so there's no need to filter any out first.
 fn deviation(params: &[f64], period: f64) -> Vec<f64> {
     params.iter().map(|&p| deviation_single(p, period)).collect()
 }
@@ -116,9 +113,10 @@ fn deviation_derivative(p: f64, period: f64) -> f64 {
 
 /// Fidelity residuals (global-phase-invariant, see `fidelity_residuals`)
 /// concatenated with a `dim`-scaled residual per one of the `n_round`
-/// smallest angle-deviations (mirrors `SumResidualsGenerator` of
-/// `MatrixDistanceCost` + `RoundSmallestNResiduals`).
-fn combined_residuals(circuit_template: &Circuit, target: &Unitary, params: &[f64], period: f64, n_round: usize) -> DVector<f64> {
+/// smallest angle-deviations.
+fn combined_residuals(
+    circuit_template: &Circuit, target: &Unitary, params: &[f64], period: f64, n_round: usize,
+) -> DVector<f64> {
     let fid = fidelity_residuals(circuit_template, target, params);
     if n_round == 0 {
         return fid;
@@ -146,11 +144,7 @@ fn combined_residuals(circuit_template: &Circuit, target: &Unitary, params: &[f6
 /// residual/Jacobian pair is (re-)evaluated at the new point -- exactly how
 /// a numerical Jacobian would behave here too, just cheaper).
 fn combined_residuals_and_jacobian(
-    circuit_template: &Circuit,
-    target: &Unitary,
-    params: &[f64],
-    period: f64,
-    n_round: usize,
+    circuit_template: &Circuit, target: &Unitary, params: &[f64], period: f64, n_round: usize,
 ) -> (DVector<f64>, DMatrix<f64>) {
     let (fid, fid_jac) = fidelity_residuals_and_jacobian(circuit_template, target, params);
     if n_round == 0 {
@@ -158,7 +152,8 @@ fn combined_residuals_and_jacobian(
     }
     let dim = (1usize << circuit_template.n_qubits) as f64;
     let n = params.len();
-    let mut idx_dev: Vec<(usize, f64)> = params.iter().enumerate().map(|(i, &p)| (i, deviation_single(p, period))).collect();
+    let mut idx_dev: Vec<(usize, f64)> =
+        params.iter().enumerate().map(|(i, &p)| (i, deviation_single(p, period))).collect();
     idx_dev.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
     let m = fid.len();
@@ -179,23 +174,17 @@ fn combined_residuals_and_jacobian(
 /// Before launching the expensive multistart search, tries `known_good`
 /// (typically the previous binary-search probe's accepted params) and the
 /// template's own unmodified params via a single, optimization-free
-/// residual evaluation each -- mirrors `trbo`'s own `validated_optimization`
-/// ("Try known good sets of parameters before introducing randomness"),
-/// which is often enough on its own (`n_round=0` always qualifies; angles
-/// already exactly on the grid from an earlier stage need no refitting).
+/// residual evaluation each -- often enough on its own (`n_round=0` always
+/// qualifies; angles already exactly on the grid from an earlier stage
+/// need no refitting).
 /// `combined_residuals`'s Euclidean norm is the Frobenius norm of the
 /// (phase-aligned) fidelity part, which upper-bounds `matrix::distance`'s
 /// spectral norm -- so this check is a safe (never a false positive)
 /// stand-in for the `distance(...) < success_threshold` test the caller
 /// ultimately relies on.
 fn fit_with_rounding_bias(
-    circuit_template: &Circuit,
-    target: &Unitary,
-    n_round: usize,
-    disc: Discretization,
-    config: &TrboConfig,
-    seed: u64,
-    known_good: &[Vec<f64>],
+    circuit_template: &Circuit, target: &Unitary, n_round: usize, disc: Discretization,
+    config: &TrboConfig, seed: u64, known_good: &[Vec<f64>],
 ) -> Vec<f64> {
     let n_rz = circuit_template.num_params();
     let period = disc.period();
@@ -231,7 +220,9 @@ fn fit_with_rounding_bias(
 /// while keeping the block within `config.success_threshold` of `target`;
 /// then perform the actual rounding. Mirrors
 /// `TReductionByOptimiationPass.optimize_for_discretization`.
-fn optimize_for_discretization(circuit: &Circuit, target: &Unitary, disc: Discretization, config: &TrboConfig) -> Circuit {
+fn optimize_for_discretization(
+    circuit: &Circuit, target: &Unitary, disc: Discretization, config: &TrboConfig,
+) -> Circuit {
     let n_rz = circuit.num_params();
     if n_rz == 0 {
         return circuit.clone();
@@ -296,8 +287,14 @@ fn optimize_for_discretization(circuit: &Circuit, target: &Unitary, disc: Discre
     // Verify, with a fidelity-only fallback re-fit of whatever Rz angles
     // remain if the snap pushed things slightly out of tolerance.
     if distance(target, &out.get_unitary()) > config.success_threshold && out.num_params() > 0 {
-        let refit =
-            instantiate_multistart(&out, target, config.multistarts, config.max_iters, config.seed, config.success_threshold);
+        let refit = instantiate_multistart(
+            &out,
+            target,
+            config.multistarts,
+            config.max_iters,
+            config.seed,
+            config.success_threshold,
+        );
         if refit.distance < distance(target, &out.get_unitary()) {
             out.set_params(&refit.params);
         }
@@ -307,11 +304,12 @@ fn optimize_for_discretization(circuit: &Circuit, target: &Unitary, disc: Discre
 }
 
 /// `true` if `b` is a "better" (fewer expensive resources) circuit than
-/// `a` -- mirrors `trbo.clift.better_min_t_count_circuit`, restricted to
-/// this pipeline's own gate vocabulary (no non-Clifford+T+Rz gates ever
-/// appear here, so that tier of the Python comparator is always tied).
+/// `a`, restricted to this pipeline's own gate vocabulary (no
+/// non-Clifford+T+Rz gates ever appear here, so that comparison tier is
+/// always tied).
 fn better_circuit(a: &Circuit, b: &Circuit) -> bool {
-    let count = |c: &Circuit, pred: fn(&Gate) -> bool| c.ops.iter().filter(|op| pred(&op.gate)).count();
+    let count =
+        |c: &Circuit, pred: fn(&Gate) -> bool| c.ops.iter().filter(|op| pred(&op.gate)).count();
     let rz = |g: &Gate| g.is_rz();
     let t = |g: &Gate| matches!(g, Gate::T | Gate::Tdg);
     let multi_clifford = |g: &Gate| g.is_clifford() && g.num_qubits() > 1;
@@ -342,7 +340,8 @@ pub fn trbo_optimize(circuit: &Circuit, config: &TrboConfig) -> Circuit {
     }
 
     if best.num_params() > 0 {
-        let after_cliff = optimize_for_discretization(&best, &target, Discretization::Cliff, config);
+        let after_cliff =
+            optimize_for_discretization(&best, &target, Discretization::Cliff, config);
         if better_circuit(&best, &after_cliff) {
             best = after_cliff;
         }
@@ -369,7 +368,8 @@ mod tests {
         circuit.push(Gate::Rz(y0), vec![0]);
         let original_unitary = circuit.get_unitary();
 
-        let config = TrboConfig { success_threshold: 1e-8, multistarts: 12, max_iters: 200, seed: 3 };
+        let config =
+            TrboConfig { success_threshold: 1e-8, multistarts: 12, max_iters: 200, seed: 3 };
         let result = trbo_optimize(&circuit, &config);
 
         assert!(distance(&original_unitary, &result.get_unitary()) < 1e-6);
@@ -388,7 +388,10 @@ mod tests {
         let config = TrboConfig::default();
         let result = trbo_optimize(&circuit, &config);
         assert!(distance(&original_unitary, &result.get_unitary()) < 1e-6);
-        assert!(!better_circuit(&result, &circuit), "a pure-Clifford+T circuit should not get worse");
+        assert!(
+            !better_circuit(&result, &circuit),
+            "a pure-Clifford+T circuit should not get worse"
+        );
     }
 
     #[test]

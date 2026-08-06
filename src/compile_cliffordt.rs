@@ -1,11 +1,8 @@
 //! Compile an arbitrary circuit down to Clifford+T.
 //!
-//! Pure-Rust reimplementation of `data_processing/compile_cliffordt.py`'s
-//! bqskit backend's six-stage pipeline (see
-//! `/home/vscode/.claude/plans/starry-mixing-lecun.md` for the design).
-//! Terminal output deliberately mirrors that script's shape (git banner,
-//! backend params, per-circuit before/after stats, timing breakdown) so
-//! the two are easy to compare side by side.
+//! Runs a six-stage compilation pipeline. Terminal output includes a git
+//! banner, backend params, per-circuit before/after stats, and a timing
+//! breakdown.
 
 mod cliffordt;
 
@@ -16,10 +13,10 @@ use std::time::Instant;
 use clap::Parser;
 
 use cliffordt::matrix::distance;
-use cliffordt::pipeline::{compile, total_gate_count, total_rz_count, PipelineConfig};
+use cliffordt::pipeline::{PipelineConfig, compile, total_gate_count, total_rz_count};
 use cliffordt::qasm::load_qasm;
 use cliffordt::qasm_write::write_qasm;
-use cliffordt::stats::{compute_stats, non_basis_ops, Stats};
+use cliffordt::stats::{Stats, compute_stats, non_basis_ops};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Compile a circuit to Clifford+T")]
@@ -49,14 +46,10 @@ struct Args {
     cyclosynth: bool,
 
     /// Let Stage 2 drop a block that's within epsilon *infidelity* of a
-    /// simpler circuit, not just within epsilon operator-norm distance --
-    /// matches bqskit's own ScanningGateRemovalPass mechanism, tolerating
-    /// angular deviations up to roughly sqrt(epsilon) per approximate
-    /// cancellation instead of epsilon directly. Every such approximation
-    /// is measured exactly and folded into the reported upper error bound
-    /// (which will then legitimately be larger than without this flag),
-    /// so the guarantee stays rigorous, but real per-cancellation error
-    /// can be far larger than epsilon itself -- off by default.
+    /// simpler circuit, not just within epsilon operator-norm distance.
+    /// Each approximation is measured exactly and folded into the reported
+    /// upper error bound, but real per-cancellation error can be far
+    /// larger than epsilon itself -- off by default.
     #[arg(long)]
     approx_cancel: bool,
 
@@ -69,15 +62,15 @@ struct Args {
 fn output_path(input: &str, output: &Option<String>, multiple_inputs: bool) -> String {
     let stem = std::path::Path::new(input).file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     match output {
-        Some(o) if multiple_inputs => format!("{}/{}.cliffordt.qasm", o.trim_end_matches('/'), stem),
+        Some(o) if multiple_inputs => {
+            format!("{}/{}.cliffordt.qasm", o.trim_end_matches('/'), stem)
+        }
         Some(o) => o.clone(),
         None => {
-            // `Path::parent()` returns `Some("")` -- not `None` -- for a
-            // bare filename with no directory component (e.g. "foo.qasm"
-            // run from its own directory), so the `None` fallback alone
-            // doesn't catch that case; an empty parent must also map to
-            // "." or the joined path gets a leading '/' and resolves to
-            // filesystem root instead of the current directory.
+            // `Path::parent()` returns `Some("")` -- not `None` -- for a bare
+            // filename with no directory component, so an empty parent must
+            // also map to "." or the joined path resolves to filesystem root
+            // instead of the current directory.
             let parent = match std::path::Path::new(input).parent().and_then(|p| p.to_str()) {
                 Some(p) if !p.is_empty() => p,
                 _ => ".",
@@ -131,27 +124,11 @@ fn report_line(before: &Stats, after: &Stats) -> String {
 }
 
 fn main() {
-    // Claim rayon's global thread pool with 16 MiB worker stacks before
-    // anything else -- our own pipeline's own rayon usage (Stages 1-5) or
-    // cyclosynth's own `ensure_rayon_stack` -- can win that race first.
-    // Rayon's global pool is a process-wide singleton built lazily on first
-    // use; whichever caller's `build_global` runs first wins, silently (a
-    // losing caller's request just becomes a no-op, per rayon's own docs).
-    // cyclosynth's recursive "optimal mode" search needs stacks this large
-    // (its own `synthesis::mod.rs::ensure_rayon_stack` says so directly:
-    // its parallel search nests per-prefix scratch frames deep enough to
-    // overflow rayon's default 2 MiB stacks) -- but since this pipeline's
-    // own Stage 1-3 rayon usage runs first and would otherwise win that
-    // race with the *default* stack size, cyclosynth's own request was
-    // silently losing every time, leaving it to run on undersized stacks.
-    // That's the real cause of a stack-overflow crash fixed differently
-    // (by serializing Stage 4 instead) in an earlier commit -- this claims
-    // the pool correctly instead of just reducing contention around the
-    // underlying problem. Stage 4 is *also* still serialized when cyclosynth
-    // is enabled (see `Circuit::for_each_block_with_sequential`), but that's
-    // now purely a throughput fix (avoiding oversubscription-driven
-    // slowdown, not a crash) -- this pool setup is what actually addresses
-    // the correctness/safety risk, independent of that.
+    // Claim rayon's global thread pool (a lazily-built, process-wide
+    // singleton) with 16 MiB stacks before any other rayon user -- our own
+    // pipeline stages or cyclosynth's deep recursive search -- can win that
+    // race with the default 2 MiB stacks and silently leave cyclosynth
+    // running on undersized stacks, causing a stack overflow.
     let _ = rayon::ThreadPoolBuilder::new().stack_size(16 * 1024 * 1024).build_global();
 
     let args = Args::parse();
@@ -186,7 +163,8 @@ fn main() {
         let load_time = load_start.elapsed();
 
         let before = compute_stats(&circuit);
-        let original_unitary = if args.verify && circuit.n_qubits <= 10 { Some(circuit.get_unitary()) } else { None };
+        let original_unitary =
+            if args.verify && circuit.n_qubits <= 10 { Some(circuit.get_unitary()) } else { None };
 
         let config = PipelineConfig {
             epsilon: args.epsilon,
@@ -203,12 +181,16 @@ fn main() {
             let gates = total_gate_count(report.circuit);
             let rz = total_rz_count(report.circuit);
             match &report.detail {
-                // Some stages (blocking, exact-Clifford) have a
-                // contribution a generic gate/Rz delta can't show, or
-                // actively misrepresents -- see pipeline.rs's StageReport
-                // doc comment for why.
+                // Some stages (blocking, exact-Clifford) have effects a
+                // generic gate/Rz delta can't show or misrepresents -- see
+                // pipeline.rs's StageReport doc comment.
                 Some(detail) => {
-                    println!("  [{}] {:.2}s -- {}", report.name, report.elapsed.as_secs_f64(), detail);
+                    println!(
+                        "  [{}] {:.2}s -- {}",
+                        report.name,
+                        report.elapsed.as_secs_f64(),
+                        detail
+                    );
                 }
                 None => {
                     println!(
@@ -233,15 +215,18 @@ fn main() {
         println!("{}", report_line(&before, &after));
         println!("  upper error bound: {:.2e}", error_bound);
 
-        // Basis check: always, no flag needed -- cheap (no simulation), and
-        // a broken basis (a stray Rz/U3/Block that never reached Stage 4)
-        // is worth surfacing regardless of whether --verify was requested.
+        // Always run (no flag) -- cheap, and a broken basis (a stray
+        // Rz/U3/Block) is worth surfacing regardless of --verify.
         let non_basis = non_basis_ops(&compiled);
         if non_basis.is_empty() {
             println!("  basis check passed (h, s, sdg, x, y, z, t, tdg, cx, cz, swap)");
         } else {
-            let detail: Vec<String> = non_basis.iter().map(|(name, n)| format!("{name}: {n}")).collect();
-            eprintln!("WARNING {input}: FAILED basis check, output is not Clifford+T: {}", detail.join(", "));
+            let detail: Vec<String> =
+                non_basis.iter().map(|(name, n)| format!("{name}: {n}")).collect();
+            eprintln!(
+                "WARNING {input}: FAILED basis check, output is not Clifford+T: {}",
+                detail.join(", ")
+            );
         }
 
         let mut verify_time = std::time::Duration::ZERO;
@@ -251,19 +236,20 @@ fn main() {
                 Some(original) => {
                     let d = distance(original, &compiled.get_unitary());
                     println!("  verified distance from original: {:.2e}", d);
-                    // error_bound already accounts for how many blocks were
-                    // synthesized (each consuming its own epsilon budget),
-                    // unlike a flat multiple of epsilon -- comparing against
-                    // that certificate, not the single-gate epsilon, avoids
-                    // false-positive warnings on circuits with many leftover
-                    // rotations, where legitimately accumulated error can
-                    // exceed 10x a single gate's epsilon.
+                    // error_bound already sums each synthesized block's own
+                    // epsilon budget, so comparing against it (not a flat
+                    // epsilon) avoids false-positive warnings on circuits
+                    // with many leftover rotations.
                     if d > error_bound * 10.0 {
-                        eprintln!("WARNING {input}: distance from original exceeds 10x the computed upper error bound");
+                        eprintln!(
+                            "WARNING {input}: distance from original exceeds 10x the computed upper error bound"
+                        );
                     }
                 }
                 None => {
-                    println!("  --verify requested but circuit has >10 qubits; skipped (dense unitary would be too large)");
+                    println!(
+                        "  --verify requested but circuit has >10 qubits; skipped (dense unitary would be too large)"
+                    );
                 }
             }
             verify_time = verify_start.elapsed();

@@ -8,7 +8,7 @@
 
 use rayon::prelude::*;
 
-use crate::cliffordt::matrix::{identity, Unitary, C64};
+use crate::cliffordt::matrix::{C64, Unitary, identity};
 
 fn re(x: f64) -> C64 {
     C64::new(x, 0.0)
@@ -48,7 +48,16 @@ impl Gate {
     pub fn is_clifford(&self) -> bool {
         matches!(
             self,
-            Gate::Id | Gate::H | Gate::S | Gate::Sdg | Gate::X | Gate::Y | Gate::Z | Gate::Cx | Gate::Cz | Gate::Swap
+            Gate::Id
+                | Gate::H
+                | Gate::S
+                | Gate::Sdg
+                | Gate::X
+                | Gate::Y
+                | Gate::Z
+                | Gate::Cx
+                | Gate::Cz
+                | Gate::Swap
         )
     }
 
@@ -65,11 +74,7 @@ impl Gate {
     }
 
     pub fn param(&self) -> Option<f64> {
-        if let Gate::Rz(t) = self {
-            Some(*t)
-        } else {
-            None
-        }
+        if let Gate::Rz(t) = self { Some(*t) } else { None }
     }
 
     pub fn set_param(&mut self, v: f64) {
@@ -88,9 +93,13 @@ impl Gate {
             Gate::S => Unitary::from_row_slice(2, 2, &[o, z, z, C64::new(0.0, 1.0)]),
             Gate::Sdg => Unitary::from_row_slice(2, 2, &[o, z, z, C64::new(0.0, -1.0)]),
             Gate::T => Unitary::from_row_slice(2, 2, &[o, z, z, cis(std::f64::consts::FRAC_PI_4)]),
-            Gate::Tdg => Unitary::from_row_slice(2, 2, &[o, z, z, cis(-std::f64::consts::FRAC_PI_4)]),
+            Gate::Tdg => {
+                Unitary::from_row_slice(2, 2, &[o, z, z, cis(-std::f64::consts::FRAC_PI_4)])
+            }
             Gate::X => Unitary::from_row_slice(2, 2, &[z, o, o, z]),
-            Gate::Y => Unitary::from_row_slice(2, 2, &[z, C64::new(0.0, -1.0), C64::new(0.0, 1.0), z]),
+            Gate::Y => {
+                Unitary::from_row_slice(2, 2, &[z, C64::new(0.0, -1.0), C64::new(0.0, 1.0), z])
+            }
             Gate::Z => Unitary::from_row_slice(2, 2, &[o, z, z, -o]),
             Gate::Rz(theta) => {
                 let h = theta / 2.0;
@@ -100,7 +109,11 @@ impl Gate {
                 let rz_phi = Gate::Rz(*phi).matrix();
                 let rz_lam = Gate::Rz(*lam).matrix();
                 let h = theta / 2.0;
-                let ry = Unitary::from_row_slice(2, 2, &[re(h.cos()), re(-h.sin()), re(h.sin()), re(h.cos())]);
+                let ry = Unitary::from_row_slice(
+                    2,
+                    2,
+                    &[re(h.cos()), re(-h.sin()), re(h.sin()), re(h.cos())],
+                );
                 rz_phi * ry * rz_lam
             }
             Gate::Cx => cx_matrix(),
@@ -237,7 +250,12 @@ impl Circuit {
         prefixes.push(identity(dim));
         for op in &self.ops {
             let mut u = prefixes.last().unwrap().clone();
-            crate::cliffordt::matrix::apply_gate_inplace(&mut u, &op.gate.matrix(), &op.qubits, self.n_qubits);
+            crate::cliffordt::matrix::apply_gate_inplace(
+                &mut u,
+                &op.gate.matrix(),
+                &op.qubits,
+                self.n_qubits,
+            );
             prefixes.push(u);
         }
         let built = prefixes.last().unwrap().clone();
@@ -251,7 +269,11 @@ impl Circuit {
         let n = self.ops.len();
         let mut suffixes: Vec<Unitary> = vec![identity(dim); n + 1];
         for k in (0..n).rev() {
-            let embedded = crate::cliffordt::matrix::embed(&self.ops[k].gate.matrix(), &self.ops[k].qubits, self.n_qubits);
+            let embedded = crate::cliffordt::matrix::embed(
+                &self.ops[k].gate.matrix(),
+                &self.ops[k].qubits,
+                self.n_qubits,
+            );
             suffixes[k] = &suffixes[k + 1] * &embedded;
         }
 
@@ -260,7 +282,8 @@ impl Circuit {
             if let Gate::Rz(theta) = op.gate {
                 // d/dtheta Rz(theta) = -i/2 * Z * Rz(theta).
                 let d_local = Gate::Z.matrix() * Gate::Rz(theta).matrix() * C64::new(0.0, -0.5);
-                let d_embedded = crate::cliffordt::matrix::embed(&d_local, &op.qubits, self.n_qubits);
+                let d_embedded =
+                    crate::cliffordt::matrix::embed(&d_local, &op.qubits, self.n_qubits);
                 derivs.push(&suffixes[k + 1] * &d_embedded * &prefixes[k]);
             }
         }
@@ -280,7 +303,8 @@ impl Circuit {
             if let Gate::Block(inner) = &op.gate {
                 let unfolded_inner = inner.unfold();
                 for inner_op in &unfolded_inner.ops {
-                    let remapped: Vec<usize> = inner_op.qubits.iter().map(|&q| op.qubits[q]).collect();
+                    let remapped: Vec<usize> =
+                        inner_op.qubits.iter().map(|&q| op.qubits[q]).collect();
                     out.ops.push(Operation { gate: inner_op.gate.clone(), qubits: remapped });
                 }
             } else {
@@ -302,14 +326,22 @@ impl Circuit {
     /// process pool per block, not just within one block's own solver
     /// calls -- `f` must be `Sync` (no captured mutable state) for the
     /// same reason.
-    pub fn for_each_block_with<T: Send>(&self, f: impl Fn(&Circuit) -> (Circuit, T) + Sync) -> (Circuit, Vec<T>) {
+    pub fn for_each_block_with<T: Send>(
+        &self, f: impl Fn(&Circuit) -> (Circuit, T) + Sync,
+    ) -> (Circuit, Vec<T>) {
         let results: Vec<(Operation, Option<T>)> = self
             .ops
             .par_iter()
             .map(|op| {
                 if let Gate::Block(inner) = &op.gate {
                     let (new_inner, extra) = f(inner);
-                    (Operation { gate: Gate::Block(Box::new(new_inner)), qubits: op.qubits.clone() }, Some(extra))
+                    (
+                        Operation {
+                            gate: Gate::Block(Box::new(new_inner)),
+                            qubits: op.qubits.clone(),
+                        },
+                        Some(extra),
+                    )
                 } else {
                     (op.clone(), None)
                 }
@@ -341,13 +373,18 @@ impl Circuit {
     /// sequential at this level lets each call have the whole pool to
     /// itself: Stage 4 dropped from 111.6s to 42.2s on the same circuit,
     /// with the slowest individual call dropping from 111.5s to 3.0s.
-    pub fn for_each_block_with_sequential<T>(&self, f: impl Fn(&Circuit) -> (Circuit, T)) -> (Circuit, Vec<T>) {
+    pub fn for_each_block_with_sequential<T>(
+        &self, f: impl Fn(&Circuit) -> (Circuit, T),
+    ) -> (Circuit, Vec<T>) {
         let mut ops = Vec::with_capacity(self.ops.len());
         let mut extras = Vec::new();
         for op in &self.ops {
             if let Gate::Block(inner) = &op.gate {
                 let (new_inner, extra) = f(inner);
-                ops.push(Operation { gate: Gate::Block(Box::new(new_inner)), qubits: op.qubits.clone() });
+                ops.push(Operation {
+                    gate: Gate::Block(Box::new(new_inner)),
+                    qubits: op.qubits.clone(),
+                });
                 extras.push(extra);
             } else {
                 ops.push(op.clone());
@@ -444,7 +481,10 @@ mod tests {
             c_minus.set_params(&p_minus);
             let numeric = (c_plus.get_unitary() - c_minus.get_unitary()) / C64::new(2.0 * H, 0.0);
             let diff_norm = (d_analytic - &numeric).norm();
-            assert!(diff_norm < 1e-6, "param {k}: analytic vs numeric derivative differ by {diff_norm}");
+            assert!(
+                diff_norm < 1e-6,
+                "param {k}: analytic vs numeric derivative differ by {diff_norm}"
+            );
         }
     }
 

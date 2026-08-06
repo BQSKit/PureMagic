@@ -1,15 +1,13 @@
 //! Stage 1: exact single-qubit Clifford recognition, plus the continuous
 //! near-Clifford distance metric used by Stage 4's near-Clifford guard.
 //!
-//! Mirrors `build_clifford_words`/`canonical_key`/`word_error`/
-//! `nearest_clifford_distance` from `data_processing/compile_cliffordt.py`.
 //! Builds the 24-element table by BFS from the identity using H and S as
-//! generators, exactly as the Python reference does; matched via the
-//! global-phase-aligned spectral distance already validated in `matrix.rs`.
+//! generators, matched via the global-phase-aligned spectral distance
+//! already validated in `matrix.rs`.
 
 use std::collections::HashMap;
 
-use crate::cliffordt::matrix::{distance, identity, Unitary};
+use crate::cliffordt::matrix::{Unitary, distance, identity};
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
 type Key = [(i64, i64); 4];
@@ -88,11 +86,7 @@ impl CliffordTable {
     pub fn exact_match(&self, m: &Unitary, tol: f64) -> Option<Vec<Gate>> {
         let key = canonical_key(m);
         let (word, candidate) = self.entries.get(&key)?;
-        if distance(m, candidate) <= tol {
-            Some(word.clone())
-        } else {
-            None
-        }
+        if distance(m, candidate) <= tol { Some(word.clone()) } else { None }
     }
 
     /// Global-phase-aligned spectral distance from `m` to the nearest of
@@ -146,7 +140,7 @@ pub fn decompose_to_rz_canonical(target: &Unitary) -> Circuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cliffordt::matrix::{distance, C64};
+    use crate::cliffordt::matrix::{C64, distance};
 
     #[test]
     fn sh_conjugation_of_z_rotation_is_y_rotation() {
@@ -167,7 +161,11 @@ mod tests {
         let target = original.get_unitary();
 
         let decomposed = decompose_to_rz_canonical(&target);
-        assert_eq!(decomposed.num_params(), 3, "all three Euler angles should be adjustable Rz gates");
+        assert_eq!(
+            decomposed.num_params(),
+            3,
+            "all three Euler angles should be adjustable Rz gates"
+        );
         assert!(distance(&target, &decomposed.get_unitary()) < 1e-10);
     }
 
@@ -216,8 +214,8 @@ mod tests {
 
     #[test]
     fn composed_two_t_gates_exactly_matches_s() {
-        // T*T == S (established earlier this session): the composed
-        // rotation should be found as an exact Clifford hit.
+        // T*T == S: the composed rotation should be found as an exact
+        // Clifford hit.
         let table = CliffordTable::build();
         let mut c = Circuit::new(1);
         c.push(Gate::T, vec![0]);

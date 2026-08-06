@@ -16,12 +16,10 @@
 //! both only happens once per point, not once per trait method call.
 //!
 //! `instantiate_from`/`instantiate_multistart` specialize it to "fit a
-//! circuit template's Rz angles (plus a free global phase, mirroring
-//! TRbO's own `GlobalPhaseGate` trick) to a target unitary" -- used by
-//! Stage 2's `ScanningGateRemovalPass` re-fit. Stage 3 (TRbO) builds its
-//! own combined closure (fidelity + rounding-cost terms) on top of the
-//! same generic core -- see the plan doc's Context section for why these
-//! two turned out to need the same primitive.
+//! circuit template's Rz angles (plus a free global phase) to a target
+//! unitary" -- used by Stage 2's re-fit. Stage 3 (TRbO) builds its own
+//! combined closure (fidelity + rounding-cost terms) on top of the same
+//! generic core.
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{DMatrix, DVector, Dyn, Owned};
@@ -29,7 +27,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::cliffordt::matrix::{Unitary, C64};
+use crate::cliffordt::matrix::{C64, Unitary};
 use crate::cliffordt::qgate_circuit::Circuit;
 
 /// Adapts a combined `&[f64] -> (DVector<f64>, DMatrix<f64>)`
@@ -97,17 +95,11 @@ pub struct FitResult {
 /// Single Levenberg-Marquardt run of `residual_fn` from `x0`, via the
 /// `levenberg-marquardt` crate. Skips the solve entirely once `stop_early`
 /// is already set (some other start in the same `lm_fit_multistart` batch
-/// already reached `success_threshold`) -- mirrors the actual `trbo`
-/// package's own early-cancellation (`MultiStartMinimization`'s
-/// `queue.cancel()`), which itself only stops *dispatching new* solves
-/// rather than interrupting one already in flight, so not launching a solve
-/// we no longer need is the faithful equivalent here too.
+/// already reached `success_threshold`) -- only prevents launching a new
+/// solve; one already in flight keeps running to completion.
 pub fn lm_fit(
-    combined_fn: impl Fn(&[f64]) -> (DVector<f64>, DMatrix<f64>) + Sync,
-    x0: &[f64],
-    max_iters: usize,
-    success_threshold: f64,
-    stop_early: &AtomicBool,
+    combined_fn: impl Fn(&[f64]) -> (DVector<f64>, DMatrix<f64>) + Sync, x0: &[f64],
+    max_iters: usize, success_threshold: f64, stop_early: &AtomicBool,
 ) -> FitResult {
     let n = x0.len();
     if n == 0 {
@@ -167,17 +159,14 @@ impl Xorshift64 {
 /// start to its own convergence (e.g. when the caller genuinely wants the
 /// best achievable fit, not just "good enough").
 pub fn lm_fit_multistart(
-    combined_fn: impl Fn(&[f64]) -> (DVector<f64>, DMatrix<f64>) + Sync,
-    n_params: usize,
-    extra_starts: &[Vec<f64>],
-    n_random_starts: usize,
-    max_iters: usize,
-    seed: u64,
+    combined_fn: impl Fn(&[f64]) -> (DVector<f64>, DMatrix<f64>) + Sync, n_params: usize,
+    extra_starts: &[Vec<f64>], n_random_starts: usize, max_iters: usize, seed: u64,
     success_threshold: f64,
 ) -> FitResult {
     let mut starts: Vec<Vec<f64>> = extra_starts.to_vec();
     for i in 0..n_random_starts {
-        let mut rng = Xorshift64(seed.wrapping_add(i as u64).wrapping_mul(2685821657736338717).max(1));
+        let mut rng =
+            Xorshift64(seed.wrapping_add(i as u64).wrapping_mul(2685821657736338717).max(1));
         starts.push((0..n_params).map(|_| rng.next_f64()).collect());
     }
 
@@ -196,15 +185,13 @@ pub fn lm_fit_multistart(
 /// `params`, against `target`. The aligning phase is computed
 /// analytically (`matrix::global_phase_between`, the same optimal-phase
 /// formula the final `distance()` verification metric uses) rather than
-/// fit as an extra free parameter -- mirrors trbo's own
-/// `HilbertSchmidtResidualsGenerator` ("global-phase-aware... cost is zero
-/// if target and circuit unitary differ only by a global phase"). Adding
-/// a fitted phase parameter instead (this function's original approach)
-/// forces the optimizer to also resolve an extra periodic dimension that
-/// has a closed-form answer at every evaluation -- a strictly harder
-/// landscape for no benefit, confirmed as a real gap against the actual
-/// upstream `trbo` package's approach.
-pub fn fidelity_residuals(circuit_template: &Circuit, target: &Unitary, params: &[f64]) -> DVector<f64> {
+/// fit as an extra free parameter: adding a fitted phase parameter instead
+/// would force the optimizer to also resolve an extra periodic dimension
+/// that has a closed-form answer at every evaluation -- a strictly harder
+/// landscape for no benefit.
+pub fn fidelity_residuals(
+    circuit_template: &Circuit, target: &Unitary, params: &[f64],
+) -> DVector<f64> {
     let mut c = circuit_template.clone();
     c.set_params(params);
     let built = c.get_unitary();
@@ -247,9 +234,7 @@ pub fn fidelity_residuals(circuit_template: &Circuit, target: &Unitary, params: 
 /// value stays finite and well-defined, only its derivative through this
 /// one term is approximated as flat at that exact point.
 pub fn fidelity_residuals_and_jacobian(
-    circuit_template: &Circuit,
-    target: &Unitary,
-    params: &[f64],
+    circuit_template: &Circuit, target: &Unitary, params: &[f64],
 ) -> (DVector<f64>, DMatrix<f64>) {
     const SINGULAR_EPS: f64 = 1e-12;
     let mut c = circuit_template.clone();
@@ -301,11 +286,7 @@ pub fn fidelity_residuals_and_jacobian(
 /// random starts plus the template's current parameters and an all-zero
 /// start (often already close).
 pub fn instantiate_multistart(
-    circuit_template: &Circuit,
-    target: &Unitary,
-    n_starts: usize,
-    max_iters: usize,
-    seed: u64,
+    circuit_template: &Circuit, target: &Unitary, n_starts: usize, max_iters: usize, seed: u64,
     success_threshold: f64,
 ) -> FitResultDistance {
     let n_rz = circuit_template.num_params();

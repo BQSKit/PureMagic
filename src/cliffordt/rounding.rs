@@ -1,8 +1,5 @@
-//! Stage 3: angle rounding onto the discrete π/4 grid.
-//!
-//! Direct port of `RoundToDiscreteZPass`
-//! (`bqskit-ft/bqskit/ft/ftpasses/rounding.py`): trivial, self-contained
-//! arithmetic with no external dependencies in the original either.
+//! Stage 1: angle rounding onto the discrete π/4 grid, mirroring bqskit-ft's
+//! `RoundToDiscreteZPass`.
 
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 

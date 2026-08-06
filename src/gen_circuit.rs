@@ -15,13 +15,12 @@ use circuit::Circuit;
 use pauliproduct::{GateType, Operator, PauliProduct};
 
 impl Circuit {
-    /// Generates a random T-gate circuit with spatial locality.
-    /// Each product is generated with Pauli operators spreading from a center qubit.
-    /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
-    /// `rng` is a caller-supplied seeded RNG so that results are reproducible.
+    /// Generates a random T-gate circuit: each product's Pauli operators spread from a
+    /// center qubit with probability decaying by `decay_factor` per step.
+    /// `rng` is caller-seeded so results are reproducible.
     pub(crate) fn generate_random(
-        &mut self, n_products: usize, n_qubits: usize, spread_probability: f64,
-        decay_factor: f64, rng: &mut StdRng,
+        &mut self, n_products: usize, n_qubits: usize, spread_probability: f64, decay_factor: f64,
+        rng: &mut StdRng,
     ) {
         self.pps.extend((0..n_products).map(|product_id| {
             PauliProduct::gen_rnd_t(
@@ -41,8 +40,7 @@ impl Circuit {
         self.gen_deps();
     }
 
-    /// Writes all products to a circuit file in standard format.
-    /// `rng` is used to assign a random sign (`+`/`-`) to each product line.
+    /// Writes all products to a circuit file; `rng` assigns a random sign (`+`/`-`) to each line.
     pub(crate) fn save_circuit_to_file(
         &self, circuit_fname: String, rng: &mut StdRng,
     ) -> io::Result<()> {
@@ -58,9 +56,8 @@ impl Circuit {
 }
 
 impl PauliProduct {
-    /// Generates a random T-gate product with spatial locality.
     /// Starts at a random qubit and spreads to nbs with decaying probability.
-    /// `rng` is a caller-supplied seeded RNG so that results are reproducible.
+    /// `rng` is caller-seeded so results are reproducible.
     pub(crate) fn gen_rnd_t(
         product_id: i32, n_qubits: usize, spread_probability: f64, decay_factor: f64,
         rng: &mut StdRng,
@@ -116,7 +113,6 @@ impl PauliProduct {
     }
 }
 
-/// Command-line arguments for random circuit generation.
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Generate random T-gate circuits for PureMagic", long_about = None)]
 struct Args {

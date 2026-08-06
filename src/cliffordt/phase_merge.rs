@@ -1,8 +1,6 @@
 //! Exactly merges/cancels redundant diagonal (`rz`-family) rotations via
 //! their phase-polynomial "parity" -- the t-par technique of Amy, Maslov,
-//! and Mosca -- ported from `merge_phase_polynomial` in
-//! `data_processing/compile_cliffordt.py` (its own doc comment has the full
-//! derivation).
+//! and Mosca.
 //!
 //! Two diagonal single-qubit gates (`Z`/`S`/`Sdg`/`T`/`Tdg`/`Rz`) anywhere
 //! in a `{Cx, diagonal}` region of the circuit commute and add exactly
@@ -11,43 +9,38 @@
 //! that parity or what runs in between, since `Cx` and every diagonal gate
 //! commute freely with each other. This matters a lot for CX-ladder-
 //! decomposed controlled-phase gates (`cx; rz(-a); cx; rz(a)`), exactly how
-//! QFT-family circuits' controlled-phase gates look after decomposition:
-//! the Python reference measured this dropping the number of rotations
-//! that actually need gridsynth on a 32-qubit QFT from 1350 to 522.
+//! QFT-family circuits' controlled-phase gates look after decomposition.
 //!
 //! Tracks each qubit's parity as a `BTreeSet<usize>` (a set of "symbols"),
-//! not a fixed-width bitmask -- the Python reference uses an arbitrary-
-//! precision int specifically because a non-diagonal gate mints a fresh
-//! symbol never reused elsewhere, and a large circuit with many such gates
-//! can need more symbols than any fixed width comfortably holds.
-//! XOR-of-bitmask is exactly symmetric-difference-of-sets, and
-//! `BTreeSet<usize>` already implements `Hash + Eq` (ordered, so hashing is
-//! deterministic), so it works directly as a `HashMap` key.
+//! not a fixed-width bitmask -- a non-diagonal gate mints a fresh symbol
+//! never reused elsewhere, and a large circuit with many such gates can
+//! need more symbols than any fixed width comfortably holds. XOR-of-bitmask
+//! is exactly symmetric-difference-of-sets, and `BTreeSet<usize>` already
+//! implements `Hash + Eq` (ordered, so hashing is deterministic), so it
+//! works directly as a `HashMap` key.
 //!
 //! Any gate not in the recognized `{Cx, diagonal}` set (`H`/`X`/`Y`/`U3`/
 //! `Cz`/`Swap`/anything else) is treated conservatively: it resets every
 //! qubit it touches to a fresh, never-reused parity symbol, so it can only
-//! cause a missed merge, never an incorrect one -- deliberately matching
-//! the Python reference's own conservative treatment (which never
-//! special-cases `Cz`, for instance, even though it is itself diagonal).
+//! cause a missed merge, never an incorrect one (even `Cz`, which is
+//! itself diagonal, is not special-cased).
 
 use std::collections::{BTreeSet, HashMap};
 
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
 /// Exact-match tolerance for dropping a merged rotation that cancelled to
-/// (numerically) zero -- matches the value used elsewhere in this pipeline
-/// (`synthesize.rs::EXACTNESS_FLOOR`) and in the Python reference.
+/// (numerically) zero -- matches the value used elsewhere in this
+/// pipeline (`synthesize.rs::EXACTNESS_FLOOR`).
 const EXACTNESS_FLOOR: f64 = 1e-12;
 
 type Parity = BTreeSet<usize>;
 
 /// The angle one occurrence of a diagonal single-qubit gate contributes,
 /// or `None` if `gate` isn't part of the recognized diagonal family.
-/// Deliberately excludes `Id` (matching the Python reference leaving `id`
-/// out of its own `DIAGONAL_1Q_ANGLE` table) -- conservative, since
-/// treating it as diagonal-with-zero-angle would be correct too, but this
-/// stays a faithful port rather than an independent improvement.
+/// Deliberately excludes `Id` -- conservative, since treating it as
+/// diagonal-with-zero-angle would be correct too, but excluding it costs
+/// nothing since an `Id` gate carries no phase either way.
 fn diagonal_angle(gate: &Gate) -> Option<f64> {
     match gate {
         Gate::Z => Some(std::f64::consts::PI),
@@ -78,7 +71,8 @@ pub fn merge_phase_polynomial(circuit: &Circuit) -> Circuit {
         match &op.gate {
             Gate::Cx => {
                 let (control, target) = (op.qubits[0], op.qubits[1]);
-                parity[target] = parity[target].symmetric_difference(&parity[control]).copied().collect();
+                parity[target] =
+                    parity[target].symmetric_difference(&parity[control]).copied().collect();
                 group_key.push(None);
             }
             gate if diagonal_angle(gate).is_some() => {
@@ -117,9 +111,8 @@ pub fn merge_phase_polynomial(circuit: &Circuit) -> Circuit {
 
 /// How many `Rz` occurrences in `circuit` are NOT within `tol` of a
 /// multiple of pi/4 -- a cheap, gridsynth-free proxy for "genuinely costly"
-/// rotations, mirroring the Python reference's `count_real_rotations`.
-/// `Z`/`S`/`Sdg`/`T`/`Tdg` never need checking (already exact pi/4
-/// multiples by construction); `U3` occurrences are untouched by
+/// rotations. `Z`/`S`/`Sdg`/`T`/`Tdg` never need checking (already exact
+/// pi/4 multiples by construction); `U3` occurrences are untouched by
 /// `merge_phase_polynomial` either way, so they don't need to factor into
 /// a comparison between a merged and unmerged candidate.
 pub fn count_real_rotations(circuit: &Circuit, tol: f64) -> usize {
@@ -201,7 +194,10 @@ mod tests {
         let original = build(vec![rz(0.3, 0), (Gate::Cz, vec![0, 1]), rz(0.4, 0)], 2);
         let merged = merge_phase_polynomial(&original);
         let rz_count = merged.ops.iter().filter(|op| op.gate.is_rz()).count();
-        assert_eq!(rz_count, 2, "Cz is treated as an unrecognized reset, like the Python reference");
+        assert_eq!(
+            rz_count, 2,
+            "Cz is treated as an unrecognized reset, like the Python reference"
+        );
         assert!(distance(&original.get_unitary(), &merged.get_unitary()) < 1e-12);
     }
 
@@ -218,7 +214,10 @@ mod tests {
     fn opposite_angles_on_the_same_parity_cancel_to_no_gate_at_all() {
         let original = build(vec![rz(0.55, 0), rz(-0.55, 0)], 1);
         let merged = merge_phase_polynomial(&original);
-        assert!(merged.ops.is_empty(), "a cancelled rotation should be dropped, not emitted as Rz(0)");
+        assert!(
+            merged.ops.is_empty(),
+            "a cancelled rotation should be dropped, not emitted as Rz(0)"
+        );
         assert!(distance(&original.get_unitary(), &merged.get_unitary()) < 1e-12);
     }
 
@@ -244,7 +243,10 @@ mod tests {
         let tol = 1e-8;
         let before = count_real_rotations(&original, tol);
         let after = count_real_rotations(&merged, tol);
-        assert!(after < before, "expected fewer real rotations after merging (before={before}, after={after})");
+        assert!(
+            after < before,
+            "expected fewer real rotations after merging (before={before}, after={after})"
+        );
         assert!(distance(&original.get_unitary(), &merged.get_unitary()) < 1e-12);
     }
 }

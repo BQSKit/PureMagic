@@ -12,7 +12,7 @@ def dascot_square_sparse_qubit_count(n: int) -> dict:
     Returns the total logical qubit count for the DASCOT Square Sparse
     architecture for a circuit with `n` logical data qubits.
     """
-    s = math.ceil(math.sqrt(n))  # ceil(sqrt(N))
+    s = math.ceil(math.sqrt(n))
     inner_side = 2 * s + 1
     inner_total = inner_side * inner_side
     data_slots = s * s

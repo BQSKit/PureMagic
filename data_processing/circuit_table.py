@@ -64,25 +64,20 @@ def parse_qasm(filepath):
         for line in f:
             stripped = line.strip()
 
-            # Skip empty lines
             if not stripped:
                 continue
 
-            # Skip comment lines
             if stripped.startswith("//"):
                 continue
 
-            # Remove inline comments
             code_part = stripped.split("//")[0].strip()
             if not code_part:
                 continue
 
-            # Check for qreg to extract qubit count
             m = qreg_pattern.match(code_part)
             if m:
                 num_qubits = int(m.group(1))
 
-            # Check if this is a header/declaration line
             is_header = any(p.match(code_part) for p in header_patterns)
             if not is_header:
                 circuit_length += 1
@@ -307,7 +302,6 @@ def pretty_name(name, num_qubits):
     else:
         size = None
 
-    # Truncate at first underscore or space
     prefix = re.split(r"[_ ]", name)[0]
 
     if prefix.lower() in _UPPERCASE_NAMES:
@@ -369,7 +363,6 @@ def main():
     benchmarks_file = args.benchmarks
     qasm_dir = args.qasmdir
 
-    # Optionally load transpiler output
     transpiled_data = {}
     if args.transpiled:
         transpiled_data = parse_transpiler_output_file(args.transpiled)
@@ -384,7 +377,6 @@ def main():
             label = "W?"
         puremagic_entries.append((label, parse_puremagic_file(filepath)))
 
-    # Read circuit names
     with open(benchmarks_file, "r") as f:
         circuit_names = [line.strip() for line in f if line.strip()]
 
@@ -430,14 +422,7 @@ def main():
 
     col_spec = "|l|" + "r|" * (num_cols - 1)
 
-    # ---- header row 1 ----
-    # Fixed columns: Circuit, Unitary Gates
-    # Transpiled columns: Compiled Gates, Transpiled T Gates, Transpiled Cliffords
-    # PureMagic columns: grouped under \multicolumn{N}{c|}{Transpiled Depth} if >1
-    #                    or a single header if only 1
-
-    # We need to compute column widths for alignment.
-    # Collect all data cells first.
+    # Collect formatted data cells before computing column widths for alignment.
     formatted_rows = []
     for (
         name,
@@ -535,10 +520,8 @@ def main():
     lines.append(r"\end{table}")
     latex_table = "\n".join(lines)
 
-    # Print to stdout
     print(latex_table)
 
-    # Optionally render to PDF
     if args.pdf:
         try:
             generate_pdf(latex_table, args.pdf)

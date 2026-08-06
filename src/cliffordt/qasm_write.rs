@@ -39,8 +39,8 @@ pub fn write_qasm(circuit: &Circuit, out: &mut impl Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cliffordt::qasm::load_qasm;
     use crate::cliffordt::matrix::distance;
+    use crate::cliffordt::qasm::load_qasm;
     use tempfile::NamedTempFile;
 
     #[test]
