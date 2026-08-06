@@ -55,9 +55,26 @@ impl Default for SynthConfig {
 const EXACTNESS_FLOOR: f64 = 1e-12;
 /// A block within this many multiples of epsilon of a Clifford point is
 /// treated as "too close to call" for cyclosynth's lattice search (which
-/// can behave unpredictably right at a near-singular point) and routed to
-/// the independent-axis fallback instead.
-const NEAR_CLIFFORD_MARGIN: f64 = 10.0;
+/// can behave unpredictably right at a near-singular point -- see
+/// `notes/cyclosynth-bug-report.md`: a per-prefix L²-LLL blowup, not the
+/// SE search itself) and routed to the independent-axis fallback instead.
+///
+/// Tuned against `qft_n63.qasm --cyclosynth` (2026-08-06): a margin sweep
+/// found a sharp cliff between 300 and 150 (Stage 6 time roughly triples,
+/// 31s -> 100s, for a T-count that's actually slightly *worse* at 150 --
+/// noise in exactly which borderline gates cross the threshold, not a real
+/// trend reversal) and only marginal further T-count gains below that (100
+/// gets within 0.16% of 300's T-count at 5x the time). 300 sits right at
+/// that knee -- within 0.02% of the best T-count seen anywhere in the
+/// sweep, at close to the fastest observed time. For reference, this is
+/// 30x more aggressive than the old default (10) and ~33x less aggressive
+/// than the Python reference pipeline's own tuned value (1e4), which
+/// leaves more T-count on the table (106763 vs 105806) for not much of a
+/// time saving over 300. Not re-validated against other circuit shapes --
+/// QFT's near-Clifford rotation profile is fairly extreme and specific, so
+/// a circuit with a different near-Clifford angle distribution could have
+/// its own cliff elsewhere.
+const NEAR_CLIFFORD_MARGIN: f64 = 300.0;
 
 /// Extract ZYZ Euler angles `(theta, phi, lam)` such that
 /// `target ~ Rz(phi) * Ry(theta) * Rz(lam)` (up to global phase) --
