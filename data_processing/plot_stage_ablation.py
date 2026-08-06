@@ -94,6 +94,18 @@ def parse_t_counts(path: Path) -> dict[str, int]:
     return counts
 
 
+def parse_qubits(path: Path) -> dict[str, int]:
+    text = path.read_text()
+    blocks = re.split(r"^=== ", text, flags=re.M)[1:]
+    qubits = {}
+    for block in blocks:
+        name = block.split("\n", 1)[0].strip().removesuffix(".qasm")
+        m = SUMMARY_RE.search(block)
+        if m:
+            qubits[name] = int(m.group(1))
+    return qubits
+
+
 def draw_stack(ax, x, segments):
     """Draw the stacked/waterfall bars on one axis; returns the per-family
     (bottom, height) pairs for each segment, for shared text placement."""
@@ -130,6 +142,7 @@ def main():
 
     runs = {key: parse_t_counts(path) for key, path in RUNS.items()}
     qiskit_t = parse_t_counts(QISKIT_OUT)
+    qubits = parse_qubits(QISKIT_OUT)
 
     labels = []
     rows = []  # for the printed summary table
@@ -141,7 +154,7 @@ def main():
         s2 = runs["no_resynth"][circuit] / baseline * 100
         s1 = runs["no_opt"][circuit] / baseline * 100
         heights = [s4, s3 - s4, s2 - s3, s1 - s2]
-        labels.append(family)
+        labels.append(f"{family}\n({qubits[circuit]}q)")
         rows.append((family, circuit, s4, s3, s2, s1))
         for i, h in enumerate(heights):
             segments[i].append(h)
