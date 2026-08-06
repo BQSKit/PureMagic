@@ -27,7 +27,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::cliffordt::group_single_qubit::group_single_qubit_gates;
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
+use crate::cliffordt::synthesize::zyz_angles;
 
 /// Exact-match tolerance for dropping a merged rotation that cancelled to
 /// (numerically) zero -- matches the value used elsewhere in this
@@ -109,24 +111,33 @@ pub fn merge_phase_polynomial(circuit: &Circuit) -> Circuit {
     out
 }
 
-/// How many `Rz` occurrences in `circuit` are NOT within `tol` of a
-/// multiple of pi/4 -- a cheap, gridsynth-free proxy for "genuinely costly"
-/// rotations. `Z`/`S`/`Sdg`/`T`/`Tdg` never need checking (already exact
-/// pi/4 multiples by construction); `U3` occurrences are untouched by
-/// `merge_phase_polynomial` either way, so they don't need to factor into
-/// a comparison between a merged and unmerged candidate.
-pub fn count_real_rotations(circuit: &Circuit, tol: f64) -> usize {
-    circuit
+/// How many ZYZ Euler axes across `circuit`'s Stage-1 blocks are NOT within
+/// `tol` of a multiple of pi/4 -- i.e. how many will actually need a
+/// gridsynth/cyclosynth call in Stage 4, unlike a raw count of non-pi/4 `Rz`
+/// *occurrences* (this function's predecessor): an occurrence sitting at a
+/// block boundary can still land in an otherwise-all-Clifford block and cost
+/// nothing, and merging a boundary Clifford rotation into a real one
+/// elsewhere can turn a free axis into a costly one without changing the
+/// occurrence count at all -- exactly the failure mode that made the old
+/// metric pick "merged" on qv_N036_12345 even though merging made it worse.
+/// Blocking every candidate before counting (rather than comparing raw
+/// `Rz`s) is what catches that.
+pub fn count_costly_euler_axes(circuit: &Circuit, tol: f64) -> usize {
+    let is_costly = |angle: f64| {
+        let k = angle / std::f64::consts::FRAC_PI_4;
+        (k - k.round()).abs() >= tol
+    };
+    group_single_qubit_gates(circuit)
         .ops
         .iter()
-        .filter(|op| match op.gate {
-            Gate::Rz(theta) => {
-                let k = theta / std::f64::consts::FRAC_PI_4;
-                (k - k.round()).abs() >= tol
+        .map(|op| match &op.gate {
+            Gate::Block(inner) => {
+                let (theta, phi, lam) = zyz_angles(&inner.get_unitary());
+                [theta, phi, lam].into_iter().filter(|&a| is_costly(a)).count()
             }
-            _ => false,
+            _ => 0,
         })
-        .count()
+        .sum()
 }
 
 #[cfg(test)]
@@ -222,13 +233,21 @@ mod tests {
     }
 
     #[test]
-    fn count_real_rotations_ignores_pi_4_multiples() {
+    fn count_costly_euler_axes_ignores_pi_4_multiples() {
+        // Both Rz's land in the same (only) block, one qubit, no Cx --
+        // composes to a single diagonal rotation with one costly axis.
         let c = build(vec![rz(std::f64::consts::FRAC_PI_4, 0), rz(0.4, 0)], 1);
-        assert_eq!(count_real_rotations(&c, 1e-9), 1);
+        assert_eq!(count_costly_euler_axes(&c, 1e-9), 1);
     }
 
     #[test]
-    fn qft_shaped_circuit_reduces_real_rotation_count_after_merge() {
+    fn count_costly_euler_axes_is_zero_for_an_all_clifford_block() {
+        let c = build(vec![rz(std::f64::consts::FRAC_PI_2, 0), rz(std::f64::consts::PI, 0)], 1);
+        assert_eq!(count_costly_euler_axes(&c, 1e-9), 0);
+    }
+
+    #[test]
+    fn qft_shaped_circuit_reduces_costly_axis_count_after_merge() {
         // Mirrors qft_n63.qasm's structure: several CX-ladder-decomposed
         // controlled-phase gates all targeting qubit 0, each one's ladder
         // touching the qubit that already accumulated phase from earlier
@@ -241,11 +260,11 @@ mod tests {
         let merged = merge_phase_polynomial(&original);
 
         let tol = 1e-8;
-        let before = count_real_rotations(&original, tol);
-        let after = count_real_rotations(&merged, tol);
+        let before = count_costly_euler_axes(&original, tol);
+        let after = count_costly_euler_axes(&merged, tol);
         assert!(
             after < before,
-            "expected fewer real rotations after merging (before={before}, after={after})"
+            "expected fewer costly Euler axes after merging (before={before}, after={after})"
         );
         assert!(distance(&original.get_unitary(), &merged.get_unitary()) < 1e-12);
     }

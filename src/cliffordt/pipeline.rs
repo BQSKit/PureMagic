@@ -15,7 +15,7 @@ use crate::cliffordt::clifford::CliffordTable;
 use crate::cliffordt::group_single_qubit::group_single_qubit_gates;
 use crate::cliffordt::matrix::distance;
 use crate::cliffordt::partition::partition;
-use crate::cliffordt::phase_merge::{count_real_rotations, merge_phase_polynomial};
+use crate::cliffordt::phase_merge::{count_costly_euler_axes, merge_phase_polynomial};
 use crate::cliffordt::progress::ProgressTracker;
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
@@ -211,26 +211,28 @@ pub fn compile(
     // ever groups gates into blocks: fusing a genuinely mergeable Rz
     // together with a neighboring non-diagonal gate first would bake it
     // into one opaque matrix this pass could no longer address. Not always
-    // a net win (see phase_merge.rs's docs), so pick whichever candidate
-    // needs fewer real (non-Clifford) rotations.
+    // a net win (see phase_merge.rs's docs): merging can turn a block-edge
+    // Clifford rotation into a costly one elsewhere without changing how
+    // many Rz's look "real" pre-blocking, so the two candidates are compared
+    // by costly Euler axis count *after* blocking, not raw rotation count.
     let preopt = if config.skip_phase_merge {
         circuit.clone()
     } else {
         let t = Instant::now();
         let merged = merge_phase_polynomial(circuit);
-        let merged_real = count_real_rotations(&merged, config.epsilon);
-        let unmerged_real = count_real_rotations(circuit, config.epsilon);
-        let (preopt, chosen_real, other_real, used_merge) = if merged_real <= unmerged_real {
-            (merged, merged_real, unmerged_real, true)
+        let merged_cost = count_costly_euler_axes(&merged, config.epsilon);
+        let unmerged_cost = count_costly_euler_axes(circuit, config.epsilon);
+        let (preopt, chosen_cost, other_cost, used_merge) = if merged_cost <= unmerged_cost {
+            (merged, merged_cost, unmerged_cost, true)
         } else {
-            (circuit.clone(), unmerged_real, merged_real, false)
+            (circuit.clone(), unmerged_cost, merged_cost, false)
         };
         on_stage(StageReport {
             name: "stage 0: phase-polynomial merge".to_string(),
             elapsed: t.elapsed(),
             circuit: &preopt,
             detail: Some(format!(
-                "{} candidate chosen: {chosen_real} real rotation(s) needing synthesis (vs {other_real} for the alternative)",
+                "{} candidate chosen: {chosen_cost} costly Euler axis(es) needing synthesis (vs {other_cost} for the alternative)",
                 if used_merge { "merged" } else { "unmerged" }
             )),
         });
