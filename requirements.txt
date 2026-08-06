@@ -18,7 +18,16 @@ pandas
 # entry is what resolves it -- see the containerEnv comment in
 # .devcontainer/devcontainer.json before changing either line.
 -e ./bqskit
-bqskit-ft
+# Editable install from the local bqskit-ft/ clone, not stock PyPI bqskit-ft:
+# the PyPI-published bqskit-ft==0.2.0 has a materially different GridSynthPass
+# API (a `precision: int` gate-count-style parameter) from this clone's
+# (`algorithmic_error: float`, an actual epsilon bound), which is what
+# data_processing/compile_cliffordt.py's build_final_synthesis_passes calls
+# with. A plain `bqskit-ft` line here installs cleanly and imports fine, so
+# there's no install-time signal that anything is wrong -- it only surfaces
+# as `TypeError: GridSynthPass.__init__() got an unexpected keyword argument
+# 'algorithmic_error'` the first time the bqskit backend actually runs.
+-e ./bqskit-ft
 qiskit>=2.5
 # Optional: fallback rotation synthesiser for data_processing/qiskit_compile_cliffordt.py,
 # used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
