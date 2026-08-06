@@ -6,17 +6,19 @@ Reads five `compile_cliffordt` (rust) run logs from
 data/all_compiled_pipe-testing/, covering increasing pipeline functionality:
 
     no_opt          --skip-gauge-collapse --skip-windowed-resynthesis --skip-phase-merge
-    cyclosynth_only --skip-gauge-collapse --skip-windowed-resynthesis --cyclosynth
     no_resynth      --skip-windowed-resynthesis
     basic           (all stages, gridsynth final synthesis)
     cyclosynth      (all stages, cyclosynth final synthesis)
+    cyclosynth_only --skip-gauge-collapse --skip-windowed-resynthesis --cyclosynth
 
-cyclosynth_only isolates cyclosynth's own contribution: same skipped stages as
-no_opt, just gridsynth swapped for cyclosynth in Stage 4 -- so comparing those
-two bars directly shows what cyclosynth alone is worth, before gauge collapse
-or windowed resynthesis get a chance to help. (Its log predates
---skip-phase-merge, so Stage 0 still ran there, unlike no_opt -- a small,
-mostly negligible mismatch except on qft/ising, see below.)
+cyclosynth_only isn't a further step in that progression -- it isolates
+cyclosynth's own contribution, with the same stages skipped as no_opt, just
+gridsynth swapped for cyclosynth in Stage 4. Comparing those two bars
+directly shows what cyclosynth alone is worth, before gauge collapse or
+windowed resynthesis get a chance to help, which is why it's drawn last in
+each cluster and off the blue progression, in its own color. (Its log
+predates --skip-phase-merge, so Stage 0 still ran there, unlike no_opt -- a
+small, mostly negligible mismatch except on qft/ising, see below.)
 
 For each family's largest circuit, T counts are normalized to that circuit's
 qiskit-backend T count (data/all_compiled_qiskit/out), matching the indexing
@@ -53,13 +55,13 @@ RUNS = {
     "basic": PIPE_DIR / "out-basic",
     "cyclosynth": PIPE_DIR / "out-cyclosynth",
 }
-CONFIG_ORDER = ["no_opt", "cyclosynth_only", "no_resynth", "basic", "cyclosynth"]
+CONFIG_ORDER = ["no_opt", "no_resynth", "basic", "cyclosynth", "cyclosynth_only"]
 CONFIG_LABELS = {
     "no_opt": "no optimization",
-    "cyclosynth_only": "cyclosynth alone",
     "no_resynth": "+ phase merge & gauge collapse",
     "basic": "+ windowed resynthesis",
     "cyclosynth": "+ cyclosynth final synthesis",
+    "cyclosynth_only": "cyclosynth alone (not part of the progression)",
 }
 QISKIT_OUT = REPO_ROOT / "data/all_compiled_qiskit/out"
 
@@ -82,14 +84,16 @@ FAMILIES = {
 
 SUMMARY_RE = re.compile(r"(\d+) qubits, \d+ gates -> \d+ gates \(T=(\d+),")
 
-# Sequential ramp (palette.md "Blue" scale), lightest (least optimized) to
-# darkest (most optimized), in CONFIG_ORDER.
+# Sequential ramp (palette.md "Blue" scale) for the four progression steps,
+# lightest (least optimized) to darkest (most optimized). cyclosynth_only
+# isn't a step in that progression, so it gets its own categorical color --
+# the same amber plot_gate_counts.py already uses for cyclosynth's identity.
 CONFIG_COLORS = {
     "no_opt": "#c9daf8",
-    "cyclosynth_only": "#9dbdee",
     "no_resynth": "#7aa8e8",
     "basic": "#2a78d6",
     "cyclosynth": "#0d3472",
+    "cyclosynth_only": "#eda100",
 }
 SURFACE = "#fcfcfb"
 INK = "#1a1a19"
