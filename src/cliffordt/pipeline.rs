@@ -150,16 +150,23 @@ fn gauge_collapse(
     });
     let mut current = checked.unfold();
 
+    // A block whose rotation was hidden inside an opaque `U3` gate (not
+    // counted by `total_rz_count` at all) turns into up to 3 freshly visible
+    // `Rz`s once exposed -- so `rz_before` can legitimately undercount how
+    // much continuous rotation this circuit already had, and this midpoint
+    // can be *larger* than `rz_before` even though nothing new was created.
+    // Reporting it separately from the final (post-rounding) count keeps
+    // that exposure jump from being read as regression, and keeps rounding's
+    // own contribution visible instead of buried in one net number.
+    let rz_exposed = total_rz_count(&current);
+
     current = round_to_discrete_z(&current, epsilon);
 
-    // Single impact metric for the whole combined stage: net Rz reduction.
-    // Blocking alone never changes the Rz count (it only regroups gates
-    // into blocks), so this cleanly attributes the entire delta to what
-    // exact-Clifford matching consumed for free plus what rounding snapped
-    // onto the cheap grid -- a more honest one-number summary than either
-    // sub-step's own count would be in isolation.
     let rz_after = total_rz_count(&current);
-    let detail = format!("Rz: {rz_before} -> {rz_after} ({:+})", rz_after as i64 - rz_before as i64);
+    let detail = format!(
+        "Rz: {rz_before} -> {rz_exposed} (Clifford match/expose) -> {rz_after} (rounded), net {:+}",
+        rz_after as i64 - rz_before as i64
+    );
     on_stage(StageReport {
         name: format!("stage 1: gauge collapse ({cycle})"),
         elapsed: t.elapsed(),
