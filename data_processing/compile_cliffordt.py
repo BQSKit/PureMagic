@@ -2173,6 +2173,26 @@ def build_bqskit_workflow(
     (+1.4%) with it run only once. Running it a third time finds nothing
     further (checked on the same benchmark).
     """
+    # ScanningGateRemovalPass and TRbOPass both judge success via bqskit's
+    # HilbertSchmidtCost/ResidualsGenerator, not an operator-norm distance --
+    # and that cost is NOT epsilon-scale in the deviation it actually
+    # tolerates. Measured directly (Rz(theta) vs identity, both 1- and
+    # 2-qubit blocks): HS-cost == operator_norm_distance**2 / 2, to float
+    # precision, for any small perturbation -- a textbook fidelity-style
+    # quadratic cost, not the linear one every other epsilon in this
+    # pipeline (RoundToDiscreteZPass's raw angular residual, GridSynthPass's
+    # algorithmic_error, CyclosynthBlockSynthesisPass's epsilon) assumes.
+    # Passing synthesis_epsilon straight through as success_threshold, as
+    # both passes did before this fix, lets HS-cost run all the way up to
+    # synthesis_epsilon -- i.e. an actual operator-norm deviation up to
+    # sqrt(2 * synthesis_epsilon), orders of magnitude looser than intended
+    # at synthesis_epsilon=1e-8 (~1.4e-4, not 1e-8). Squaring (and halving)
+    # the threshold here inverts that relationship so the real achieved
+    # operator-norm distance per approximate cancellation is back to
+    # genuinely synthesis_epsilon-scale, matching every other pass in this
+    # workflow.
+    hs_cost_threshold = synthesis_epsilon**2 / 2
+
     passes: list[BasePass] = [SetRandomSeedPass(seed)] if seed is not None else []
     passes += [
         GroupSingleQuditGatePass(),
@@ -2180,7 +2200,7 @@ def build_bqskit_workflow(
         UnfoldPass(),
         RoundToDiscreteZPass(synthesis_epsilon),
         QuickPartitioner(2),
-        ForEachBlockPass([ScanningGateRemovalPass()]),
+        ForEachBlockPass([ScanningGateRemovalPass(success_threshold=hs_cost_threshold)]),
         UnfoldPass(),
     ]
     passes += _gauge_collapse_passes(synthesis_epsilon)
@@ -2204,7 +2224,9 @@ def build_bqskit_workflow(
                     # circuit, since QuickPartitioner already needs to run first.
                     trbo.utils.RemoveGatePass(IdentityGate(1)),
                     trbo.utils.AppendGatePass(trbo.clift.GlobalPhaseGate()),
-                    trbo.trbo.TRbOPass(success_threshold=synthesis_epsilon),
+                    # TRbOPass judges success the same HS-cost way -- see
+                    # hs_cost_threshold above.
+                    trbo.trbo.TRbOPass(success_threshold=hs_cost_threshold),
                     trbo.utils.RemoveGatePass(trbo.clift.GlobalPhaseGate()),
                 ]
             ),
