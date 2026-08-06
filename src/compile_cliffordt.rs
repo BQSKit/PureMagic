@@ -67,6 +67,11 @@ struct Args {
     /// contribution to the result.
     #[arg(long)]
     skip_windowed_resynthesis: bool,
+
+    /// Skip Stage 0 (phase-polynomial merge), to isolate its contribution
+    /// to the result.
+    #[arg(long)]
+    skip_phase_merge: bool,
 }
 
 fn output_path(input: &str, output: &Option<String>, multiple_inputs: bool) -> String {
@@ -152,14 +157,15 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={})",
+        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={})",
         args.epsilon,
         args.seed,
         args.trbo,
         args.cyclosynth,
         args.approx_cancel,
         args.skip_gauge_collapse,
-        args.skip_windowed_resynthesis
+        args.skip_windowed_resynthesis,
+        args.skip_phase_merge
     );
 
     let mut failures = 0usize;
@@ -190,6 +196,7 @@ fn main() {
             approx_cancel: args.approx_cancel,
             skip_gauge_collapse: args.skip_gauge_collapse,
             skip_windowed_resynthesis: args.skip_windowed_resynthesis,
+            skip_phase_merge: args.skip_phase_merge,
         };
 
         let compile_start = Instant::now();

@@ -94,6 +94,9 @@ pub struct PipelineConfig {
     /// Skip Stage 2 (windowed multi-qubit resynthesis), for isolating its
     /// contribution to the final result.
     pub skip_windowed_resynthesis: bool,
+    /// Skip Stage 0 (phase-polynomial merge), for isolating its
+    /// contribution to the final result.
+    pub skip_phase_merge: bool,
 }
 
 impl Default for PipelineConfig {
@@ -106,6 +109,7 @@ impl Default for PipelineConfig {
             approx_cancel: false,
             skip_gauge_collapse: false,
             skip_windowed_resynthesis: false,
+            skip_phase_merge: false,
         }
     }
 }
@@ -209,24 +213,29 @@ pub fn compile(
     // into one opaque matrix this pass could no longer address. Not always
     // a net win (see phase_merge.rs's docs), so pick whichever candidate
     // needs fewer real (non-Clifford) rotations.
-    let t = Instant::now();
-    let merged = merge_phase_polynomial(circuit);
-    let merged_real = count_real_rotations(&merged, config.epsilon);
-    let unmerged_real = count_real_rotations(circuit, config.epsilon);
-    let (preopt, chosen_real, other_real, used_merge) = if merged_real <= unmerged_real {
-        (merged, merged_real, unmerged_real, true)
+    let preopt = if config.skip_phase_merge {
+        circuit.clone()
     } else {
-        (circuit.clone(), unmerged_real, merged_real, false)
+        let t = Instant::now();
+        let merged = merge_phase_polynomial(circuit);
+        let merged_real = count_real_rotations(&merged, config.epsilon);
+        let unmerged_real = count_real_rotations(circuit, config.epsilon);
+        let (preopt, chosen_real, other_real, used_merge) = if merged_real <= unmerged_real {
+            (merged, merged_real, unmerged_real, true)
+        } else {
+            (circuit.clone(), unmerged_real, merged_real, false)
+        };
+        on_stage(StageReport {
+            name: "stage 0: phase-polynomial merge".to_string(),
+            elapsed: t.elapsed(),
+            circuit: &preopt,
+            detail: Some(format!(
+                "{} candidate chosen: {chosen_real} real rotation(s) needing synthesis (vs {other_real} for the alternative)",
+                if used_merge { "merged" } else { "unmerged" }
+            )),
+        });
+        preopt
     };
-    on_stage(StageReport {
-        name: "stage 0: phase-polynomial merge".to_string(),
-        elapsed: t.elapsed(),
-        circuit: &preopt,
-        detail: Some(format!(
-            "{} candidate chosen: {chosen_real} real rotation(s) needing synthesis (vs {other_real} for the alternative)",
-            if used_merge { "merged" } else { "unmerged" }
-        )),
-    });
 
     // Stage 1: gauge collapse (blocking + exact-Clifford + rounding).
     let mut current = if config.skip_gauge_collapse {
@@ -575,6 +584,26 @@ mod tests {
         assert!(
             !stage_names.iter().any(|name| name.contains("windowed resynthesis")),
             "windowed resynthesis should not run: {stage_names:?}"
+        );
+        assert!(error_bound < 1e-5);
+        assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
+    }
+
+    #[test]
+    fn skip_phase_merge_omits_stage_0_but_still_compiles_correctly() {
+        let mut c = Circuit::new(1);
+        c.push(Gate::Rz(0.2), vec![0]);
+        c.push(Gate::Rz(0.3), vec![0]);
+        let original = c.get_unitary();
+
+        let config =
+            PipelineConfig { epsilon: 1e-6, skip_phase_merge: true, ..PipelineConfig::default() };
+        let mut stage_names = Vec::new();
+        let (compiled, error_bound) = compile(&c, &config, |report| stage_names.push(report.name));
+
+        assert!(
+            !stage_names.iter().any(|name| name.contains("phase-polynomial merge")),
+            "phase-polynomial merge should not run: {stage_names:?}"
         );
         assert!(error_bound < 1e-5);
         assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
