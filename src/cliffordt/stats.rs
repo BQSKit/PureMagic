@@ -80,7 +80,7 @@ pub fn block_stats(circuit: &Circuit) -> (usize, usize) {
 
 /// Gate kinds that shouldn't survive to a finished Clifford+T circuit --
 /// anything counted here means an earlier stage left work undone (a stray
-/// `Rz`/`U3` that never reached Stage 6, or a `Block` that was never
+/// `Rz`/`U3` that never reached Stage 4, or a `Block` that was never
 /// unfolded), not a legitimate part of the result. Mirrors
 /// `non_basis_ops` in `compile_cliffordt.py`, recursing into any leftover
 /// `Block` defensively (the pipeline always unfolds before returning, so

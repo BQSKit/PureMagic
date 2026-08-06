@@ -1,4 +1,4 @@
-//! Stage 5: TRbO-style joint gauge-freedom optimization.
+//! Stage 3: TRbO-style joint gauge-freedom optimization.
 //!
 //! For a (typically multi-qubit) block, jointly search over its several
 //! free `Rz` angles -- holding the block's overall unitary fixed within

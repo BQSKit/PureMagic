@@ -1,4 +1,4 @@
-//! Stage 4's per-block search: `ScanningGateRemovalPass`.
+//! Stage 2's per-block search: `ScanningGateRemovalPass`.
 //!
 //! Scans a block's gates from one side, tentatively removing each one and
 //! renumerically re-fitting the remaining continuous parameters (via
@@ -12,7 +12,7 @@
 //! -- e.g. two adjacent identical parameter-free `Cx` gates, which cancel
 //! to the identity together but neither removal alone gets anywhere close
 //! -- is invisible to it (confirmed on `qft_n63.qasm`, where 595 of 1953
-//! Stage 4 blocks were exactly `Cx(a,b); Cx(a,b)`, entirely dead weight
+//! Stage 2 blocks were exactly `Cx(a,b); Cx(a,b)`, entirely dead weight
 //! left over once `phase_merge.rs` cancelled the diagonal gate that used
 //! to sit between them, none of which this pass removed). `whole_block_
 //! is_redundant` checks that specific case directly before the per-op loop
@@ -69,7 +69,7 @@ fn accept(target: &Unitary, built: &Unitary, config: &ScanConfig) -> (bool, f64)
 /// Returns the rewritten block and the actual operator-norm error it now
 /// carries relative to `circuit`'s own original unitary (0.0 if nothing
 /// was changed) -- the caller is expected to add this into the pipeline's
-/// running error-bound total, the same way Stage 6 already does for final
+/// running error-bound total, the same way Stage 4 already does for final
 /// synthesis.
 pub fn scanning_gate_removal(circuit: &Circuit, config: &ScanConfig) -> (Circuit, f64) {
     let target: Unitary = circuit.get_unitary();

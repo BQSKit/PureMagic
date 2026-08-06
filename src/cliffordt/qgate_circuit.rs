@@ -339,7 +339,7 @@ impl Circuit {
     /// stack-overflow risk this same oversubscription caused (a properly-
     /// sized global pool stops the crash, but not this slowdown). Going
     /// sequential at this level lets each call have the whole pool to
-    /// itself: Stage 6 dropped from 111.6s to 42.2s on the same circuit,
+    /// itself: Stage 4 dropped from 111.6s to 42.2s on the same circuit,
     /// with the slowest individual call dropping from 111.5s to 3.0s.
     pub fn for_each_block_with_sequential<T>(&self, f: impl Fn(&Circuit) -> (Circuit, T)) -> (Circuit, Vec<T>) {
         let mut ops = Vec::with_capacity(self.ops.len());

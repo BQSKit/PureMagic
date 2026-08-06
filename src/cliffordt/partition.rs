@@ -1,5 +1,5 @@
-//! Multi-qubit windowed partitioning, used by Stage 4 (block_size 2) and
-//! Stage 5 (block_size 4+).
+//! Multi-qubit windowed partitioning, used by Stage 2 (block_size 2) and
+//! Stage 3 (block_size 4+).
 //!
 //! A faithful port of bqskit's `QuickPartitioner`
 //! (`bqskit/bqskit/passes/partitioning/quick.py`): a single pass over
@@ -24,7 +24,7 @@
 //! An earlier, simpler version of this module (single-pass, close-on-
 //! overflow, no partial closing, no merging) preserved circuit correctness
 //! but produced far smaller/more fragmented windows than bqskit's real
-//! algorithm -- confirmed to starve Stage 5 (TRbO) of the multi-Rz windows
+//! algorithm -- confirmed to starve Stage 3 (TRbO) of the multi-Rz windows
 //! it needs (`0/52 blocks improved` on a real circuit, vs. Python's
 //! reported ~24000->~18000 T-count drop). This module fixes that.
 //!

@@ -18,7 +18,7 @@
 //! `instantiate_from`/`instantiate_multistart` specialize it to "fit a
 //! circuit template's Rz angles (plus a free global phase, mirroring
 //! TRbO's own `GlobalPhaseGate` trick) to a target unitary" -- used by
-//! Stage 4's `ScanningGateRemovalPass` re-fit. Stage 5 (TRbO) builds its
+//! Stage 2's `ScanningGateRemovalPass` re-fit. Stage 3 (TRbO) builds its
 //! own combined closure (fidelity + rounding-cost terms) on top of the
 //! same generic core -- see the plan doc's Context section for why these
 //! two turned out to need the same primitive.

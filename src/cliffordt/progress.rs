@@ -1,5 +1,5 @@
-//! Live progress reporting for the long-running per-block stages (Stage 4's
-//! windowed resynthesis, Stage 5's TRbO, Stage 6's final synthesis), modeled
+//! Live progress reporting for the long-running per-block stages (Stage 2's
+//! windowed resynthesis, Stage 3's TRbO, Stage 4's final synthesis), modeled
 //! on `data_processing/compile_cliffordt.py`'s `_progress_line`/
 //! `_with_progress`/`_with_block_progress`:
 //!

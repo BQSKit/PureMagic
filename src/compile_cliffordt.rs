@@ -39,16 +39,16 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
-    /// Enable TRbO-style joint gauge-freedom optimization (Stage 5).
+    /// Enable TRbO-style joint gauge-freedom optimization (Stage 3).
     #[arg(long)]
     trbo: bool,
 
-    /// Enable cyclosynth's joint synthesis for Stage 6, instead of
+    /// Enable cyclosynth's joint synthesis for Stage 4, instead of
     /// independent per-axis gridsynth.
     #[arg(long)]
     cyclosynth: bool,
 
-    /// Let Stage 4 drop a block that's within epsilon *infidelity* of a
+    /// Let Stage 2 drop a block that's within epsilon *infidelity* of a
     /// simpler circuit, not just within epsilon operator-norm distance --
     /// matches bqskit's own ScanningGateRemovalPass mechanism, tolerating
     /// angular deviations up to roughly sqrt(epsilon) per approximate
@@ -141,13 +141,13 @@ fn main() {
     // (its own `synthesis::mod.rs::ensure_rayon_stack` says so directly:
     // its parallel search nests per-prefix scratch frames deep enough to
     // overflow rayon's default 2 MiB stacks) -- but since this pipeline's
-    // own Stage 1-5 rayon usage runs first and would otherwise win that
+    // own Stage 1-3 rayon usage runs first and would otherwise win that
     // race with the *default* stack size, cyclosynth's own request was
     // silently losing every time, leaving it to run on undersized stacks.
     // That's the real cause of a stack-overflow crash fixed differently
-    // (by serializing Stage 6 instead) in an earlier commit -- this claims
+    // (by serializing Stage 4 instead) in an earlier commit -- this claims
     // the pool correctly instead of just reducing contention around the
-    // underlying problem. Stage 6 is *also* still serialized when cyclosynth
+    // underlying problem. Stage 4 is *also* still serialized when cyclosynth
     // is enabled (see `Circuit::for_each_block_with_sequential`), but that's
     // now purely a throughput fix (avoiding oversubscription-driven
     // slowdown, not a crash) -- this pool setup is what actually addresses
@@ -234,7 +234,7 @@ fn main() {
         println!("  upper error bound: {:.2e}", error_bound);
 
         // Basis check: always, no flag needed -- cheap (no simulation), and
-        // a broken basis (a stray Rz/U3/Block that never reached Stage 6)
+        // a broken basis (a stray Rz/U3/Block that never reached Stage 4)
         // is worth surfacing regardless of whether --verify was requested.
         let non_basis = non_basis_ops(&compiled);
         if non_basis.is_empty() {

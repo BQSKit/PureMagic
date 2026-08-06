@@ -1,4 +1,4 @@
-//! Stage 6: final synthesis of whatever continuous rotation survives all
+//! Stage 4: final synthesis of whatever continuous rotation survives all
 //! earlier stages, via the three-tier dispatch described throughout this
 //! session -- exact Clifford hit (free) -> near-Clifford numerical-
 //! stability guard -> cyclosynth's joint ZYZ lattice search -> rsgridsynth
@@ -29,9 +29,9 @@ use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 /// in one block). Serializing every call through this lock restores
 /// reproducibility for a given seed. Gridsynth's own search dominates each
 /// block's cost anyway (up to 3 calls per block, ZYZ decomposition and
-/// bookkeeping around it is cheap by comparison), so this reverts Stage 6
+/// bookkeeping around it is cheap by comparison), so this reverts Stage 4
 /// specifically to close to its pre-parallelization sequential time --
-/// small relative to total runtime, and Stage 4/5 (which never call
+/// small relative to total runtime, and Stage 2/3 (which never call
 /// gridsynth) are unaffected.
 static GRIDSYNTH_LOCK: Mutex<()> = Mutex::new(());
 
@@ -60,7 +60,7 @@ const EXACTNESS_FLOOR: f64 = 1e-12;
 /// SE search itself) and routed to the independent-axis fallback instead.
 ///
 /// Tuned against `qft_n63.qasm --cyclosynth` (2026-08-06): a margin sweep
-/// found a sharp cliff between 300 and 150 (Stage 6 time roughly triples,
+/// found a sharp cliff between 300 and 150 (Stage 4 time roughly triples,
 /// 31s -> 100s, for a T-count that's actually slightly *worse* at 150 --
 /// noise in exactly which borderline gates cross the threshold, not a real
 /// trend reversal) and only marginal further T-count gains below that (100
@@ -235,7 +235,7 @@ fn synthesize_non_clifford(target: &Unitary, clifford_table: &CliffordTable, con
 /// its (unrounded) phase, then round every entry to 7 decimals -- coarse
 /// enough to absorb floating-point noise accumulated by this pipeline's
 /// own earlier stages composing many matrix products before a block ever
-/// reaches Stage 6, but far finer than any epsilon this pipeline
+/// reaches Stage 4, but far finer than any epsilon this pipeline
 /// synthesizes to (1e-8 by default is already coarser), so two matrices
 /// landing on the same key are guaranteed indistinguishable at the
 /// accuracy actually being targeted.

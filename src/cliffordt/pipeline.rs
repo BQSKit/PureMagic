@@ -1,13 +1,13 @@
 //! Orchestrates all stages into one `compile` entry point, in the same
 //! relative order as `build_bqskit_workflow`/`unroll_to_u_cx` in
 //! `data_processing/compile_cliffordt.py`: exact phase-polynomial merge ->
-//! blocking -> exact-Clifford -> rounding (the "gauge collapse" cycle) ->
-//! windowed multi-qubit resynthesis -> gauge collapse again -> TRbO (if
-//! enabled) -> gauge collapse a *second* time -> final synthesis. Running
-//! the gauge-collapse cycle both before and after TRbO is deliberate, not
-//! redundant -- this session's earlier work on the actual Python pipeline
-//! found removing the second run regressed T-count by ~1.4%, since
-//! re-checking for exact Clifford hits after TRbO's angle adjustments
+//! gauge collapse (blocking + exact-Clifford + rounding, run and reported as
+//! one combined stage) -> windowed multi-qubit resynthesis -> gauge collapse
+//! again -> TRbO (if enabled) -> gauge collapse a *third* time -> final
+//! synthesis. Running the gauge-collapse cycle both before and after TRbO is
+//! deliberate, not redundant -- this session's earlier work on the actual
+//! Python pipeline found removing the second run regressed T-count by ~1.4%,
+//! since re-checking for exact Clifford hits after TRbO's angle adjustments
 //! exposes coincidences the first pass alone doesn't.
 
 use std::time::{Duration, Instant};
@@ -40,10 +40,10 @@ pub fn total_gate_count(circuit: &Circuit) -> usize {
 }
 
 /// Total `Rz` gate count, recursing into `Block` sub-circuits -- the
-/// natural "how much work is still left to do" measure for stages 1-5,
+/// natural "how much work is still left to do" measure for stages 1-3,
 /// since every one of them exists to either remove an `Rz` entirely
 /// (exact-Clifford hit, or a gate-removal simplification) or round it onto
-/// the discrete grid; only stage 6 ever needs to actually pay a T-count
+/// the discrete grid; only stage 4 ever needs to actually pay a T-count
 /// price for whichever ones survive.
 pub fn total_rz_count(circuit: &Circuit) -> usize {
     circuit
@@ -82,7 +82,7 @@ pub struct PipelineConfig {
     pub seed: u64,
     pub trbo: bool,
     pub cyclosynth: bool,
-    /// Let Stage 4 drop a block that's within `epsilon` *infidelity* of a
+    /// Let Stage 2 drop a block that's within `epsilon` *infidelity* of a
     /// simpler circuit, not just within `epsilon` operator-norm distance --
     /// see `stage4_scan_removal.rs::ScanConfig::approx_cancel` for the full
     /// rationale. Off by default: the resulting error is always measured
@@ -97,13 +97,13 @@ impl Default for PipelineConfig {
     }
 }
 
-/// Stage 1 (blocking) + Stage 2 (exact Clifford, leaving non-matches
-/// untouched) + unfold + Stage 3 (angle rounding), each timed and reported
-/// separately. `cycle` labels which of the three times through this cycle
-/// it is ("initial", "post stage 4", "post TRbO") since it runs more than
-/// once (see module docs). A block that doesn't match exactly is left as
-/// its original gates, not forced through anything lossy -- this stage
-/// never introduces approximation error.
+/// Blocking + exact Clifford recognition (leaving non-matches untouched) +
+/// unfold + angle rounding, run and reported as one combined stage. `cycle`
+/// labels which of the three times through this cycle it is ("initial",
+/// "post stage 2", "post TRbO") since it runs more than once (see module
+/// docs). A block that doesn't match exactly is left as its original gates,
+/// not forced through anything lossy -- this stage never introduces
+/// approximation error.
 fn gauge_collapse(
     circuit: &Circuit,
     epsilon: f64,
@@ -112,46 +112,25 @@ fn gauge_collapse(
     on_stage: &mut impl FnMut(StageReport),
 ) -> Circuit {
     let t = Instant::now();
-    let mut current = group_single_qubit_gates(circuit);
-    let (num_blocks, grouped_gates) = block_stats(&current);
-    let avg_block = if num_blocks > 0 { grouped_gates as f64 / num_blocks as f64 } else { 0.0 };
-    let detail =
-        format!("{grouped_gates} single-qubit gates grouped into {num_blocks} blocks (avg {avg_block:.1} gates/block)");
-    on_stage(StageReport {
-        name: format!("stage 1: blocking ({cycle})"),
-        elapsed: t.elapsed(),
-        circuit: &current,
-        detail: Some(detail),
-    });
+    let rz_before = total_rz_count(circuit);
 
-    // Stage 2: each block whose composed unitary exactly matches one of
-    // the 24 single-qubit Cliffords is rewritten as that element's
-    // shortest available word (see `CliffordTable::build`) -- but only
-    // when that word is no longer than what's already there. A match never
-    // makes a block worse: if the shortest word happens to be longer than
-    // the block's current gate count (rare now that the table's generating
-    // set includes every native Clifford gate, not just H/S, but still
+    let grouped = group_single_qubit_gates(circuit);
+
+    // Each block whose composed unitary exactly matches one of the 24
+    // single-qubit Cliffords is rewritten as that element's shortest
+    // available word (see `CliffordTable::build`) -- but only when that
+    // word is no longer than what's already there. A match never makes a
+    // block worse: if the shortest word happens to be longer than the
+    // block's current gate count (rare now that the table's generating set
+    // includes every native Clifford gate, not just H/S, but still
     // possible), the original gates are left alone. Mirrors
     // `collapse_clifford_blocks`'s `len(shortest) > len(block): keep
     // original` guard in the Python reference.
-    let t = Instant::now();
-    enum Stage2Outcome {
-        Matched { size_before: usize, size_after: usize, rz_consumed: usize },
-        Exposed,
-        Unchanged,
-    }
-    let (checked, outcomes) = current.for_each_block_with(|inner| {
+    let (checked, _) = grouped.for_each_block_with(|inner| {
         let target = inner.get_unitary();
         match table.exact_match(&target, 1e-10) {
-            Some(word) if word.len() <= inner.ops.len() => {
-                let outcome = Stage2Outcome::Matched {
-                    size_before: inner.ops.len(),
-                    size_after: word.len(),
-                    rz_consumed: inner.ops.iter().filter(|op| op.gate.is_rz()).count(),
-                };
-                (crate::cliffordt::clifford::circuit_from_word(&word), outcome)
-            }
-            Some(_) => (inner.clone(), Stage2Outcome::Unchanged),
+            Some(word) if word.len() <= inner.ops.len() => (crate::cliffordt::clifford::circuit_from_word(&word), ()),
+            Some(_) => (inner.clone(), ()),
             None => {
                 // Not an exact Clifford. A `U3` gate here would otherwise
                 // be permanently invisible to every later stage (only
@@ -162,63 +141,30 @@ fn gauge_collapse(
                 // gates, so leave it untouched (decomposing it further
                 // would only add gates for no benefit).
                 if inner.ops.iter().any(|op| matches!(op.gate, Gate::U3(..))) {
-                    (crate::cliffordt::clifford::decompose_to_rz_canonical(&target), Stage2Outcome::Exposed)
+                    (crate::cliffordt::clifford::decompose_to_rz_canonical(&target), ())
                 } else {
-                    (inner.clone(), Stage2Outcome::Unchanged)
+                    (inner.clone(), ())
                 }
             }
         }
     });
-    current = checked.unfold();
+    let mut current = checked.unfold();
 
-    let mut blocks_matched = 0usize;
-    let mut size_before = 0usize;
-    let mut size_after = 0usize;
-    let mut rz_consumed = 0usize;
-    let mut blocks_exposed = 0usize;
-    for outcome in &outcomes {
-        match outcome {
-            Stage2Outcome::Matched { size_before: b, size_after: a, rz_consumed: rz } => {
-                blocks_matched += 1;
-                size_before += b;
-                size_after += a;
-                rz_consumed += rz;
-            }
-            Stage2Outcome::Exposed => blocks_exposed += 1,
-            Stage2Outcome::Unchanged => {}
-        }
-    }
-    let detail = format!(
-        "{blocks_matched}/{num_blocks} blocks matched an exact Clifford{}, {rz_consumed} Rz gates consumed for free{}",
-        if blocks_matched > 0 {
-            format!(
-                " (avg size {:.1} -> {:.1} gates)",
-                size_before as f64 / blocks_matched as f64,
-                size_after as f64 / blocks_matched as f64
-            )
-        } else {
-            String::new()
-        },
-        if blocks_exposed > 0 {
-            format!(", {blocks_exposed} blocks with a hidden U3 rotation exposed as adjustable Rz angles")
-        } else {
-            String::new()
-        }
-    );
+    current = round_to_discrete_z(&current, epsilon);
+
+    // Single impact metric for the whole combined stage: net Rz reduction.
+    // Blocking alone never changes the Rz count (it only regroups gates
+    // into blocks), so this cleanly attributes the entire delta to what
+    // exact-Clifford matching consumed for free plus what rounding snapped
+    // onto the cheap grid -- a more honest one-number summary than either
+    // sub-step's own count would be in isolation.
+    let rz_after = total_rz_count(&current);
+    let detail = format!("Rz: {rz_before} -> {rz_after} ({:+})", rz_after as i64 - rz_before as i64);
     on_stage(StageReport {
-        name: format!("stage 2: exact Clifford ({cycle})"),
+        name: format!("stage 1: gauge collapse ({cycle})"),
         elapsed: t.elapsed(),
         circuit: &current,
         detail: Some(detail),
-    });
-
-    let t = Instant::now();
-    current = round_to_discrete_z(&current, epsilon);
-    on_stage(StageReport {
-        name: format!("stage 3: rounding ({cycle})"),
-        elapsed: t.elapsed(),
-        circuit: &current,
-        detail: None,
     });
 
     current
@@ -271,14 +217,14 @@ pub fn compile(
         )),
     });
 
-    // Gauge collapse (Stages 1-3).
+    // Stage 1: gauge collapse (blocking + exact-Clifford + rounding).
     let mut current = gauge_collapse(&preopt, config.epsilon, &table, "initial", &mut on_stage);
 
-    // Stage 4: windowed multi-qubit resynthesis.
+    // Stage 2: windowed multi-qubit resynthesis.
     let t = Instant::now();
     let partitioned = partition(&current, 2);
     let scan_config = ScanConfig { success_threshold: config.epsilon, approx_cancel: config.approx_cancel, ..ScanConfig::default() };
-    // No cache to weight by here (unlike Stage 6) -- every block does
+    // No cache to weight by here (unlike Stage 4) -- every block does
     // similarly-cheap exact work, so plain per-block counting is the right
     // progress denominator, the same reasoning `_with_block_progress` uses
     // for the Python reference's cleanup rounds.
@@ -290,21 +236,21 @@ pub fn compile(
         result
     });
     progress.finish();
-    let stage4_error: f64 = scan_errors.iter().sum();
+    let stage2_error: f64 = scan_errors.iter().sum();
     current = scanned.unfold();
     on_stage(StageReport {
-        name: "stage 4: windowed resynthesis".to_string(),
+        name: "stage 2: windowed resynthesis".to_string(),
         elapsed: t.elapsed(),
         circuit: &current,
         detail: None,
     });
 
     // Gauge collapse again before TRbO.
-    current = gauge_collapse(&current, config.epsilon, &table, "post stage 4", &mut on_stage);
+    current = gauge_collapse(&current, config.epsilon, &table, "post stage 2", &mut on_stage);
 
-    // Stage 5: TRbO gauge-freedom optimization (optional). Its payoff is
+    // Stage 3: TRbO gauge-freedom optimization (optional). Its payoff is
     // per-block Rz reduction via gauge freedom across a wider window than
-    // Stage 4 -- not visible in a whole-circuit gate/Rz delta when only
+    // Stage 2 -- not visible in a whole-circuit gate/Rz delta when only
     // some blocks have exploitable freedom, since the ones that don't stay
     // untouched (trbo_optimize never makes a block worse) and dilute it.
     if config.trbo {
@@ -312,7 +258,7 @@ pub fn compile(
         let partitioned = partition(&current, 4);
         let trbo_config = TrboConfig { success_threshold: config.epsilon, seed: config.seed, ..TrboConfig::default() };
         // Every block runs its own NLS optimization from scratch (no cache
-        // to weight by), so -- like Stage 4 -- plain per-block counting is
+        // to weight by), so -- like Stage 2 -- plain per-block counting is
         // the right progress denominator.
         let (num_blocks, _) = block_stats(&partitioned);
         let progress = ProgressTracker::new("TRbO", num_blocks);
@@ -334,17 +280,17 @@ pub fn compile(
             rz_after as i64 - rz_before as i64
         );
         on_stage(StageReport {
-            name: "stage 5: TRbO".to_string(),
+            name: "stage 3: TRbO".to_string(),
             elapsed: t.elapsed(),
             circuit: &current,
             detail: Some(detail),
         });
 
-        // Gauge collapse a second time -- not redundant, see module docs.
+        // Gauge collapse a third time -- not redundant, see module docs.
         current = gauge_collapse(&current, config.epsilon, &table, "post TRbO", &mut on_stage);
     }
 
-    // Stage 6: final synthesis of whatever continuous rotation remains.
+    // Stage 4: final synthesis of whatever continuous rotation remains.
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
     let synth_config = SynthConfig { epsilon: config.epsilon, seed: config.seed, use_cyclosynth: config.cyclosynth };
@@ -378,7 +324,7 @@ pub fn compile(
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
-    // cyclosynth parallelizes its own search internally, so run Stage 6
+    // cyclosynth parallelizes its own search internally, so run Stage 4
     // sequentially at this level when it's enabled rather than nesting it
     // inside this crate's own per-block rayon parallelism -- see
     // `for_each_block_with_sequential`'s doc comment for the throughput
@@ -391,15 +337,15 @@ pub fn compile(
         grouped.for_each_block_with(synth_one)
     };
     progress.finish();
-    // Stage 4's own approximate-cancellation error (see stage4_error above)
+    // Stage 2's own approximate-cancellation error (see stage2_error above)
     // is folded in here too -- previously untracked entirely (even at the
     // strict, non-approx_cancel tier), so the reported bound now properly
-    // reflects every stage that can spend accuracy, not just Stage 6.
-    let total_error: f64 = stage4_error + errors.iter().sum::<f64>();
+    // reflects every stage that can spend accuracy, not just Stage 4.
+    let total_error: f64 = stage2_error + errors.iter().sum::<f64>();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);
     on_stage(StageReport {
-        name: "stage 6: final synthesis".to_string(),
+        name: "stage 4: final synthesis".to_string(),
         elapsed: t.elapsed(),
         circuit: &final_circuit,
         detail: None,

@@ -493,7 +493,7 @@ fn push_gate(circuit: &mut Circuit, name: &str, params: &[f64], qubits: &[usize]
 
 /// Standard 7-T Toffoli (CCX) decomposition into this pipeline's own
 /// vocabulary (H, Cx, T, Tdg) -- exact, no approximation, so this is a
-/// front-end gate identity rather than something Stage 6 needs to
+/// front-end gate identity rather than something Stage 4 needs to
 /// synthesize. `a`/`b` are the two controls, `c` is the target (Nielsen &
 /// Chuang Fig. 4.9 -- the same circuit qiskit's own `CCXGate.definition`
 /// emits).

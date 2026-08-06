@@ -1,5 +1,5 @@
-//! Stage 2: exact single-qubit Clifford recognition, plus the continuous
-//! near-Clifford distance metric used by Stage 6's near-Clifford guard.
+//! Stage 1: exact single-qubit Clifford recognition, plus the continuous
+//! near-Clifford distance metric used by Stage 4's near-Clifford guard.
 //!
 //! Mirrors `build_clifford_words`/`canonical_key`/`word_error`/
 //! `nearest_clifford_distance` from `data_processing/compile_cliffordt.py`.
@@ -124,12 +124,12 @@ pub fn circuit_from_word(word: &[Gate]) -> Circuit {
 /// match, a `U3` gate's own parameters are otherwise permanently invisible
 /// to every later stage (`Circuit::num_params`/`params`/`set_params` only
 /// recognize `Rz`), so a genuine rotation loaded as `rx`/`ry`/`u3` would
-/// otherwise never become an adjustable parameter at all -- Stage 3's
-/// rounding, Stage 4's `ScanningGateRemovalPass`, and Stage 5's TRbO would
-/// all silently treat it as fixed background structure. This is what
-/// actually exposes it, matching what bqskit's `ZXZXZDecomposition`
-/// achieves by running unconditionally on every block (not just ones that
-/// already happen to be phrased in terms of `Rz`).
+/// otherwise never become an adjustable parameter at all -- this same
+/// stage's own rounding step, Stage 2's `ScanningGateRemovalPass`, and
+/// Stage 3's TRbO would all silently treat it as fixed background
+/// structure. This is what actually exposes it, matching what bqskit's
+/// `ZXZXZDecomposition` achieves by running unconditionally on every block
+/// (not just ones that already happen to be phrased in terms of `Rz`).
 pub fn decompose_to_rz_canonical(target: &Unitary) -> Circuit {
     let (theta, phi, lam) = crate::cliffordt::synthesize::zyz_angles(target);
     let mut c = Circuit::new(1);
