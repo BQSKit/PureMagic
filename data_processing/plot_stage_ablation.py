@@ -43,8 +43,11 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PIPE_DIR = REPO_ROOT / "data/all_compiled_pipe-testing"
@@ -64,7 +67,7 @@ CONFIG_LABELS = {
     "cyclosynth": "+ cyclosynth final synthesis",
     "cyclosynth_only": "cyclosynth alone",
 }
-QISKIT_OUT = REPO_ROOT / "data/all_compiled_qiskit/out"
+QISKIT_OUT = PIPE_DIR / "out-qiskit"
 
 # The largest circuit in each family, picked by qubit count. dnn_n51 and
 # qft_n160 are each structurally distinct from their lower-numbered,
@@ -78,7 +81,7 @@ FAMILIES = {
     "qaoa": "qaoa_barabasi_albert_N149_3reps",
     "qft": "qft_n160",
     "qugan": "qugan_n111",
-    "qv": "qv_N036_12345",
+    "qv": "qv_N100_12345",
     "heisenberg": "square_heisenberg_N225",
     "ising": "ising_n98",
 }
@@ -126,13 +129,17 @@ def parse_qubits(path: Path) -> dict[str, int]:
 
 
 def draw_groups(ax, values, ylim):
-    """values[config] is a list of per-family percentages. Draws one cluster
-    of bars per family and labels bars whose top lands within ylim."""
+    """values[config] is a list of per-family percentages, `None` where that
+    (family, config) hasn't been run yet. Draws one cluster of bars per
+    family -- missing entries just leave a gap in the cluster -- and labels
+    bars whose top lands within ylim."""
     n_families = len(next(iter(values.values())))
     for ci, config in enumerate(CONFIG_ORDER):
         offset = (ci - (len(CONFIG_ORDER) - 1) / 2) * BAR_WIDTH
-        xs = [fi + offset for fi in range(n_families)]
-        heights = values[config]
+        pairs = [(fi + offset, h) for fi, h in enumerate(values[config]) if h is not None]
+        if not pairs:
+            continue
+        xs, heights = zip(*pairs)
         bars = ax.bar(
             xs,
             heights,
@@ -167,23 +174,49 @@ def main():
 
     labels = []
     rows = []  # for the printed summary table
-    values = {config: [] for config in CONFIG_ORDER}
+    values: dict[str, list[float | None]] = {config: [] for config in CONFIG_ORDER}
+    skipped = []
     for family, circuit in FAMILIES.items():
-        baseline = qiskit_t[circuit]
-        pcts = {config: runs[config][circuit] / baseline * 100 for config in CONFIG_ORDER}
+        baseline = qiskit_t.get(circuit)
+        if baseline is None:
+            skipped.append((family, circuit))
+            continue
+        pcts = {}
+        for config in CONFIG_ORDER:
+            t = runs[config].get(circuit)
+            pcts[config] = (t / baseline * 100) if t is not None else None
         labels.append(f"{family}\n({qubits[circuit]}q)")
         rows.append((family, circuit, pcts))
         for config in CONFIG_ORDER:
             values[config].append(pcts[config])
 
+    if skipped:
+        print(
+            "Skipping (no qiskit baseline yet): "
+            + ", ".join(f"{f} ({c})" for f, c in skipped)
+        )
+
+    def fmt_pct(v: float | None) -> str:
+        return f"{v:10.1f}%" if v is not None else f"{'n/a':>10s} "
+
     print(f"{'family':11s} {'circuit':32s} " + " ".join(f"{c:>11s}" for c in CONFIG_ORDER))
     for family, circuit, pcts in rows:
-        print(f"{family:11s} {circuit:32s} " + " ".join(f"{pcts[c]:10.1f}%" for c in CONFIG_ORDER))
+        print(f"{family:11s} {circuit:32s} " + " ".join(fmt_pct(pcts[c]) for c in CONFIG_ORDER))
+    missing = [
+        (family, config)
+        for family, _, pcts in rows
+        for config in CONFIG_ORDER
+        if pcts[config] is None
+    ]
+    if missing:
+        print("Missing (not yet run): " + ", ".join(f"{f}/{c}" for f, c in missing))
 
     n_families = len(labels)
     bottom_max = 115
     top_min = 115
-    top_max = max(max(values[c]) for c in CONFIG_ORDER) * 1.08
+    all_vals = [v for c in CONFIG_ORDER for v in values[c] if v is not None]
+    above_bottom = [v for v in all_vals if v > bottom_max]
+    top_max = max(above_bottom) * 1.08 if above_bottom else bottom_max * 1.2
 
     fig, (ax_top, ax_bottom) = plt.subplots(
         2, 1, figsize=(17, 8), sharex=True, gridspec_kw={"height_ratios": [1, 3], "hspace": 0.08}
@@ -195,7 +228,7 @@ def main():
     ax_bottom.set_ylim(0, bottom_max)
     ax_top.set_ylim(top_min, top_max)
 
-    baseline_line_kwargs = dict(color=INK, linewidth=0.8, linestyle="--", alpha=0.6)
+    baseline_line_kwargs: dict[str, Any] = dict(color=INK, linewidth=0.8, linestyle="--", alpha=0.6)
     ax_bottom.axhline(100, **baseline_line_kwargs)
     if top_min <= 100 <= top_max:
         ax_top.axhline(100, **baseline_line_kwargs)
@@ -220,7 +253,11 @@ def main():
     ax_bottom.set_xticklabels(labels, fontsize=10)
     ax_bottom.set_xlim(-0.6, n_families - 0.4)
     fig.text(
-        0.5, 0.015, "  ".join(f"{f}={c}" for f, c in FAMILIES.items()), ha="center", fontsize=6.5
+        0.5,
+        0.015,
+        "  ".join(f"{family}={circuit}" for family, circuit, _ in rows),
+        ha="center",
+        fontsize=6.5,
     )
     fig.text(
         0.02, 0.5, "T gates (% of qiskit backend)", va="center", rotation="vertical", fontsize=10
@@ -230,8 +267,8 @@ def main():
         "(one bar per configuration, increasing functionality left to right)"
     )
 
-    legend_handles = [plt.Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER] + [
-        plt.Line2D([0], [0], **baseline_line_kwargs)
+    legend_handles = [Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER] + [
+        Line2D([0], [0], **baseline_line_kwargs)
     ]
     ax_top.legend(
         legend_handles,

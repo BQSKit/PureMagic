@@ -24,6 +24,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PIPE_DIR = REPO_ROOT / "data/all_compiled_pipe-testing"
@@ -43,7 +45,7 @@ CONFIG_LABELS = {
     "cyclosynth": "+ cyclosynth final synthesis",
     "cyclosynth_only": "cyclosynth alone",
 }
-QISKIT_OUT = REPO_ROOT / "data/all_compiled_qiskit/out"
+QISKIT_OUT = PIPE_DIR / "out-qiskit"
 
 # Same family/circuit picks as plot_stage_ablation.py -- see its comment for
 # why dnn_n51/qft_n160 are each the largest same-prefixed circuit but not a
@@ -55,7 +57,7 @@ FAMILIES = {
     "qaoa": "qaoa_barabasi_albert_N149_3reps",
     "qft": "qft_n160",
     "qugan": "qugan_n111",
-    "qv": "qv_N036_12345",
+    "qv": "qv_N100_12345",
     "heisenberg": "square_heisenberg_N225",
     "ising": "ising_n98",
 }
@@ -100,10 +102,14 @@ def parse_qubits(path: Path) -> dict[str, int]:
 
 
 def draw_groups(ax, values, n_families):
+    """values[config] is a list of per-family percentages, `None` where that
+    (family, config) hasn't been run yet -- skipped, leaving a gap."""
     for ci, config in enumerate(CONFIG_ORDER):
         offset = (ci - (len(CONFIG_ORDER) - 1) / 2) * BAR_WIDTH
-        xs = [fi + offset for fi in range(n_families)]
-        heights = values[config]
+        pairs = [(fi + offset, h) for fi, h in enumerate(values[config]) if h is not None]
+        if not pairs:
+            continue
+        xs, heights = zip(*pairs)
         ax.bar(
             xs, heights, width=BAR_WIDTH * 0.92, color=CONFIG_COLORS[config],
             edgecolor=SURFACE, linewidth=0.5,
@@ -127,14 +133,30 @@ def main():
 
     labels = []
     rows = []
-    values = {config: [] for config in CONFIG_ORDER}
+    values: dict[str, list[float | None]] = {config: [] for config in CONFIG_ORDER}
+    skipped = []
     for family, circuit in FAMILIES.items():
-        baseline = qiskit_time[circuit]
-        pcts = {config: runs[config][circuit] / baseline * 100 for config in CONFIG_ORDER}
+        baseline = qiskit_time.get(circuit)
+        if baseline is None:
+            skipped.append((family, circuit))
+            continue
+        pcts = {}
+        for config in CONFIG_ORDER:
+            t = runs[config].get(circuit)
+            pcts[config] = (t / baseline * 100) if t is not None else None
         labels.append(f"{family}\n({qubits[circuit]}q)")
         rows.append((family, circuit, baseline, pcts))
         for config in CONFIG_ORDER:
             values[config].append(pcts[config])
+
+    if skipped:
+        print(
+            "Skipping (no qiskit baseline yet): "
+            + ", ".join(f"{f} ({c})" for f, c in skipped)
+        )
+
+    def fmt_pct(v: float | None) -> str:
+        return f"{v:15.0f}%" if v is not None else f"{'n/a':>15s} "
 
     print(
         f"{'family':11s} {'circuit':32s} {'qiskit_s':>9s} "
@@ -143,8 +165,16 @@ def main():
     for family, circuit, baseline, pcts in rows:
         print(
             f"{family:11s} {circuit:32s} {baseline:9.2f} "
-            + " ".join(f"{pcts[c]:15.0f}%" for c in CONFIG_ORDER)
+            + " ".join(fmt_pct(pcts[c]) for c in CONFIG_ORDER)
         )
+    missing = [
+        (family, config)
+        for family, _, _, pcts in rows
+        for config in CONFIG_ORDER
+        if pcts[config] is None
+    ]
+    if missing:
+        print("Missing (not yet run): " + ", ".join(f"{f}/{c}" for f, c in missing))
 
     n_families = len(labels)
     fig, ax = plt.subplots(figsize=(17, 8))
@@ -155,7 +185,8 @@ def main():
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}"))
     ax.yaxis.set_minor_formatter(mticker.NullFormatter())
     ax.grid(axis="y", which="major", color=INK, alpha=0.15, linewidth=0.6)
-    top = max(max(values[c]) for c in CONFIG_ORDER)
+    all_vals = [v for c in CONFIG_ORDER for v in values[c] if v is not None]
+    top = max(all_vals) if all_vals else 100.0
     ax.set_ylim(top=top * 4)  # headroom so the legend box doesn't sit over any bar
 
     ax.axhline(100, color=INK, linewidth=0.8, linestyle="--", alpha=0.6)
@@ -169,12 +200,16 @@ def main():
     )
 
     fig.text(
-        0.5, 0.015, "  ".join(f"{f}={c}" for f, c in FAMILIES.items()), ha="center", fontsize=6.5
+        0.5,
+        0.015,
+        "  ".join(f"{family}={circuit}" for family, circuit, _, _ in rows),
+        ha="center",
+        fontsize=6.5,
     )
 
     legend_handles = [
-        plt.Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER
-    ] + [plt.Line2D([0], [0], color=INK, linewidth=0.8, linestyle="--", alpha=0.6)]
+        Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER
+    ] + [Line2D([0], [0], color=INK, linewidth=0.8, linestyle="--", alpha=0.6)]
     ax.legend(
         legend_handles,
         [CONFIG_LABELS[c] for c in CONFIG_ORDER] + ["qiskit baseline (100%)"],
