@@ -11,9 +11,11 @@
 
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
+
 use crate::cliffordt::clifford::CliffordTable;
 use crate::cliffordt::group_single_qubit::group_single_qubit_gates;
-use crate::cliffordt::matrix::distance;
+use crate::cliffordt::matrix::{Unitary, distance};
 use crate::cliffordt::partition::partition;
 use crate::cliffordt::phase_merge::{count_costly_euler_axes, merge_phase_polynomial};
 use crate::cliffordt::progress::ProgressTracker;
@@ -21,7 +23,7 @@ use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
 use crate::cliffordt::stage4_scan_removal::{ScanConfig, scanning_gate_removal};
 use crate::cliffordt::stats::block_stats;
-use crate::cliffordt::synthesize::{SynthCache, SynthConfig, synthesize_block_cached};
+use crate::cliffordt::synthesize::{SynthCache, SynthConfig, prepopulate_targets, synthesize_block_cached};
 use crate::cliffordt::trbo::{TrboConfig, trbo_optimize};
 
 /// Total gate count, recursing into `Block` sub-circuits (the circuit is
@@ -345,27 +347,34 @@ pub fn compile(
     // circuits that caching the expensive non-Clifford synthesis path
     // across blocks is a large, real win, not a micro-optimization.
     let synth_cache = SynthCache::new();
-    // Weight by actual cache growth, not call count: most repeated
-    // rotations are instant cache hits, so counting every call equally
-    // would race through them and then stall on the rare, genuinely
-    // expensive misses. `total` is the number of non-Clifford blocks, an
-    // upper bound on how many new cache entries can appear (repeats
-    // collapse to fewer); the Clifford short-circuit below never touches
-    // the cache, so it's excluded from both the total and the count.
-    let total_synth = grouped
+    // One entry per non-Clifford block's target unitary, in program order --
+    // computed in parallel (cheap per block) but collected into an
+    // order-preserving Vec (`par_iter().collect()` into a Vec always
+    // preserves original index order, as `for_each_block_with` itself
+    // already relies on), so the *order* `prepopulate_targets` dedups
+    // against below reflects the circuit's own block order, not Stage 4's
+    // scheduling.
+    let non_clifford_targets: Vec<Unitary> = grouped
         .ops
-        .iter()
-        .filter(|op| matches!(&op.gate, Gate::Block(inner) if !inner.is_all_clifford()))
-        .count();
-    let progress = ProgressTracker::new("final synthesis", total_synth);
+        .par_iter()
+        .filter_map(|op| match &op.gate {
+            Gate::Block(inner) if !inner.is_all_clifford() => Some(inner.get_unitary()),
+            _ => None,
+        })
+        .collect();
+    let progress = ProgressTracker::new("final synthesis", non_clifford_targets.len());
+    // Deterministically pick and synthesize one representative target per
+    // canonical_key *before* Stage 4's per-block parallel dispatch below --
+    // see `prepopulate_targets`'s doc comment for why this replaces a race.
+    prepopulate_targets(&non_clifford_targets, &table, &synth_config, &synth_cache, || {
+        progress.add(1)
+    });
     let synth_one = |inner: &Circuit| {
         if inner.is_all_clifford() {
             return (inner.clone(), 0.0);
         }
         let target = inner.get_unitary();
-        let before = synth_cache.len();
         let result = synthesize_block_cached(&target, &table, &synth_config, &synth_cache);
-        progress.add(synth_cache.len() - before);
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
