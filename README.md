@@ -24,7 +24,7 @@ afterwards, or those files check out as small pointer stubs instead of real QASM
 content. Building and testing do not otherwise require it — `tests/fixtures/` is plain
 git content, not LFS.
 
-This produces four binaries:
+This produces five binaries:
 
 | Binary | Path | Description |
 |--------|------|-------------|
@@ -32,6 +32,12 @@ This produces four binaries:
 | `transpile` | `target/release/transpile` | Clifford+T QASM → `.trans` transpiler |
 | `circuit_stats` | `target/release/circuit_stats` | Estimate circuit statistics and layer/volume bounds without full scheduling |
 | `gen_circuit` | `target/release/gen_circuit` | Generate random T-gate circuits for benchmarking |
+| `compile_cliffordt` | `target/release/compile_cliffordt` | Clifford+T compiler (Step 1 below) |
+
+Building `compile_cliffordt` links against the `cyclosynth` git submodule unconditionally (it's a
+regular Cargo path dependency, used whenever `--cyclosynth` is passed), so `cargo build --release`
+needs `git submodule update --init --recursive` to have been run first even if you never pass that
+flag.
 
 ## Usage
 
@@ -53,6 +59,7 @@ Run with `-h` to see all options.
 | `-u, --use-magic-routing` | off | Use magic qubits for routing in addition to bus qubits |
 | `-S, --sides-only` | off | Use only side edges of data patches (not top/bottom) |
 | `-F, --no-t-failures` | off | Disable T gate failures (every T gate succeeds on first attempt) |
+| `-C, --record-cultivation-dist` | off | Record normalized cultivation-time distribution to `<name>.cultivation_dist` |
 | `-a, --ancilla-rows <N>` | `1` | Number of ancilla rows between data patches (magic routing only) |
 | `-l, --log-scheduler <LEVEL>` | `none` | Scheduler trace log level: `none`, `info`, or `debug` |
 | `-I, --show-product-ids` | off | Show product IDs instead of Pauli terms in circuit plots |
@@ -96,58 +103,36 @@ Each line encodes a Pauli product with a sign (`+`/`-`), per-qubit operators (`_
 
 Files in this format are produced by the `transpile` binary. The full pipeline from a raw QASM circuit to a scheduled output is:
 
-### Step 1 — Compile to Clifford+T (Python, optional)
+### Step 1 — Compile to Clifford+T (Rust, optional)
 
-If your circuit is not already in the Clifford+T gate set, compile it first using
-[`data_processing/compile_cliffordt.py`](data_processing/compile_cliffordt.py):
-
-```bash
-# Install Python dependencies once
-pip install -r requirements.txt
-
-python data_processing/compile_cliffordt.py circuit.qasm
-```
-
-Outside the dev container, also set `PYTHONPATH` to this repo's `bqskit/` directory before
-running the script (every backend imports `bqskit` unconditionally, not just `--backend bqskit`):
+If your circuit is not already in the Clifford+T gate set, compile it first using the
+`compile_cliffordt` binary:
 
 ```bash
-export PYTHONPATH="$(pwd)/bqskit"
+./target/release/compile_cliffordt circuit.qasm
 ```
 
-Without it, `from bqskit import Circuit` fails with `ImportError: cannot import name 'Circuit'
-from 'bqskit' (unknown location)`: `bqskit-ft`'s own install lands in `site-packages/bqskit/ft/`,
-which -- without this repo's own `bqskit/` on `sys.path` ahead of it -- Python resolves as a bare
-namespace package instead of the editable clone that actually defines `Circuit`. The dev container
-sets this automatically (see `.devcontainer/devcontainer.json`'s `containerEnv`); outside it, it's
-on you.
+This produces `circuit.cliffordt.qasm`. Its pipeline: exact phase-polynomial merge, a
+gauge-collapse cycle (blocking + exact-Clifford recognition + angle rounding), windowed
+multi-qubit resynthesis, gauge collapse again, then final per-block synthesis (gridsynth by
+default, or cyclosynth's joint ZYZ lattice search with `--cyclosynth`).
 
-This produces `circuit.cliffordt.qasm`. Three backends are available via `--backend`:
+Notable flags (`--help` for the full list): `--epsilon` (default `1e-8`) and `--seed`;
+`--approx-cancel` (opt-in infidelity-based cancellation -- the resulting error is always measured
+exactly and folded into the reported error bound, but can be larger per cancellation than
+`--epsilon` itself); `--verify` (exact unitary fidelity check against the original circuit,
+circuits of ≤10 qubits only); and `--skip-gauge-collapse`/`--skip-windowed-resynthesis`/
+`--skip-phase-merge` to isolate each stage's contribution, e.g. for ablation studies. Accepts
+multiple input files at once, writing `<name>.cliffordt.qasm` next to each input by default (`-o`
+to override, or to name an output directory when compiling more than one file).
 
-| Backend | Description |
-|---|---|
-| `qiskit` (default) | Resynthesises each maximal single-qubit run via a ZXZ decomposition, gridsynthing each Rz rotation with qiskit's own Rust Ross-Selinger implementation (falling back to [`pygridsynth`](https://github.com/inmzhang/pygridsynth) for the rare angle it panics on). Fastest option, with low T gate counts compared to default `bqskit`. |
-| `bqskit` | Compiles via [BQSKit](https://bqskit.readthedocs.io/) with a custom workflow built around its `ScanningGateRemovalPass`, which gives this backend an edge over the other two specifically on QFT-family circuits. Rejects circuits with classical control flow (BQSKit's own `Circuit` has no concept of it) -- `qiskit` and `cyclosynth` are the only options for those. Has one optional, off-by-default extra stage (see below). |
-| `cyclosynth` | Shares the `qiskit` backend's resynthesis pipeline, but re-synthesises each single-qubit block by handing its full ZYZ Euler-angle triple to [cyclosynth](https://github.com/mtweiden/cyclosynth) in one call, rather than gridsynth-ing up to three rotations independently. Usually fewer T gates than either of the other two, at real but not prohibitive compile-time cost. Needs the `cyclosynth` git submodule built locally (`git submodule update --init` then see `cyclosynth/README.md`) -- not required for the other two backends. |
+Its QASM loader is deliberately narrow (this pipeline's own Clifford+`rz`/`u3` vocabulary, plus the
+OpenQASM 3 subset needed for MQT Bench exports) and fails loudly on anything it doesn't recognize,
+rather than silently dropping a gate. Output works as input to Step 2. A basis check and error
+bound are always reported.
 
-The `bqskit` backend's extra stage composes with its base workflow rather than being an alternative
-to pick between:
-
-- `--bqskit-cyclosynth` replaces `bqskit`'s own per-Rz gridsynth final-synthesis stage with
-  cyclosynth's joint per-block search (see the `cyclosynth` backend above), falling back to
-  gridsynth for the handful of blocks cyclosynth's search can't safely handle. Needs the same
-  `cyclosynth` submodule as the `cyclosynth` backend. `--backend bqskit --bqskit-cyclosynth`
-  combines both backends' individual strengths (QFT structure and joint-block synthesis) into a
-  single compile, rather than requiring a different backend per circuit family.
-
-Any backend's output works as input to Step 2. A basis check and error bound are always
-reported; run with `--help` to see all options, including `--verify` (fidelity checks against the
-input -- exact, single-statevector, or automatic random-window sampling, whichever the circuit's
-size allows) and `--stats` (per-circuit JSON statistics, including per-stage timings).
-
-**Acknowledgements**: the `cyclosynth` backend and `--bqskit-cyclosynth` stage run
-[mtweiden/cyclosynth](https://github.com/mtweiden/cyclosynth), implementing the lattice-search
-algorithm of [Morisaki et al.](https://arxiv.org/abs/2510.05816).
+**Acknowledgements**: `--cyclosynth` runs [mtweiden/cyclosynth](https://github.com/mtweiden/cyclosynth),
+implementing the lattice-search algorithm of [Morisaki et al.](https://arxiv.org/abs/2510.05816).
 
 ### Step 2 — Transpile to `.trans` format (Rust)
 
@@ -171,6 +156,7 @@ After scheduling, the following files are produced. Throughout the output, **lcy
 | `<name>.circuit.txt` | Circuit layer and dependency information. Debug builds only. |
 | `<name>.sched_trace` | Detailed scheduling trace (requires `--log-scheduler info` or `debug`). |
 | `<name>.schedule` | Final schedule (lcycle → operations). |
+| `<name>.cultivation_dist` | Normalized cultivation-time distribution (requires `--record-cultivation-dist`). |
 | `<name>.topo.png` | Topology visualization (requires `--plot topo`). |
 | `<name>.topo.txt` | Topology grid dump. Debug builds only. |
 | `<name>.circuit/` | Circuit layer plots as PNGs in a subdirectory (requires `--plot circuit`). |
@@ -192,58 +178,3 @@ b  m  m  m  m  m  m  m  m  m  b
 ```
 
 If no topology file is provided, one is auto-generated based on the circuit's qubit count and the `ancilla_rows` option.
-
-## Project Structure
-
-```
-src/
-├── puremagic.rs        # CLI entry point and argument parsing (puremagic binary)
-├── transpile.rs        # CLI entry point for transpiler (transpile binary)
-├── circuit_stats.rs    # CLI entry point for circuit statistics estimator (circuit_stats binary)
-├── gen_circuit.rs      # CLI entry point for random circuit generator (gen_circuit binary)
-├── tableau.rs          # Clifford tableau simulation used by transpile
-├── scheduler.rs        # Core EAF scheduling algorithm
-├── cultivation.rs      # Magic state cultivation pool management
-├── astar.rs            # A* pathfinding (single-qubit T gate routing)
-├── steinertree.rs      # Steiner tree computation (greedy multi-source BFS)
-├── treegraph.rs        # Steiner tree subgraph node representation
-├── circuit.rs          # Circuit DAG: products, layers, dependencies
-├── pauliproduct.rs     # Pauli product operations and gate types
-├── node.rs             # Node type definitions (Magic, Bus, Data)
-├── topograph.rs        # Topology graph: lattice layout and qubit placement
-├── topograph_plotter.rs # SVG/PNG topology and path visualizations
-└── utils.rs            # Timing utilities and logging macros
-
-data_processing/        # Python/shell tooling; not built by cargo
-├── compile_cliffordt.py     # Compile QASM → Clifford+T QASM (--backend qiskit/bqskit/cyclosynth,
-│                                #   plus --bqskit-cyclosynth for the bqskit backend)
-├── mcmc_cultivation.py      # MCMC model of the cultivation time distribution,
-│                                #   fitted to Figure 15 of arXiv:2409.17595
-├── flasq_lower_bound.py     # FLASQ lower bound (Algorithm 1 of Beverland et al.)
-├── dascot_qubit_count.py    # Logical qubit counts for DASCOT square-sparse/compact
-├── analyze_wisq.py          # Summarise WISQ JSON: steps, total and mean IDs per step
-├── generate_rnd_layout.py   # Generate random Pauli product sequences
-├── convert_lss_to_trans.py  # Lattice Surgery Simulator output → .trans
-├── convert_lss_to_qasm.py   # Lattice Surgery Simulator output → QASM
-├── circuit_table.py         # LaTeX table of circuit statistics from QASM files
-├── scheduling_table.py      # LaTeX table comparing two scheduling runs
-├── plot_puremagic.py        # Unified results plotter
-├── plot_cultivation_dist.py # Plot *.cultivation_dist files as distributions
-├── plot_all.sh              # Driver: regenerate the paper figures via plot_puremagic.py
-└── .gitignore               # Ignores the *.png this directory generates
-
-data/                   # Benchmark circuits, selected from Benchpress; see data/README.md
-├── all_compiled/       # Source QASM plus its .cliffordt.qasm, and count-gates.sh
-└── transpiled/         # .trans inputs for puremagic, under max-weight-0/ and max-weight-1/
-
-tests/
-├── integration_test.rs # End-to-end tests over the fixtures below
-└── fixtures/           # tiny.cliffordt.qasm, tiny.trans, small_4q.trans
-```
-
-Build and CI configuration lives in `Cargo.toml`, `Cargo.lock`, `build.rs`,
-`.cargo/config.toml`, `.rustfmt.toml` and `.github/workflows/ci.yml`; Python
-dependencies are in `requirements.txt` and the dev container in
-`.devcontainer/devcontainer.json`. Git metadata is `.gitignore` and
-`.gitattributes`, which declares Git LFS filters for `data/**/*.qasm` and
-`data/**/*.trans`.
