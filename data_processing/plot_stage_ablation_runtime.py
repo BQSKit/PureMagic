@@ -16,6 +16,7 @@ without crushing the fast end flat, so this uses a log-scale y-axis instead.
 
 Usage: ./plot_stage_ablation_runtime.py [-o OUTPUT.png]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,14 +53,16 @@ QISKIT_OUT = PIPE_DIR / "out-qiskit"
 # bigger version of their smaller siblings.
 FAMILIES = {
     "dnn": "dnn_n51",
-    "hubbard": "hubbard_18",
     "knn": "knn_n129",
     "qaoa": "qaoa_barabasi_albert_N149_3reps",
     "qft": "qft_n160",
     "qugan": "qugan_n111",
-    "qv": "qv_N100_12345",
+    "qv": "qv_N064_12345",
     "heisenberg": "square_heisenberg_N225",
     "ising": "ising_n98",
+    "adder": "cdkm_ripple_carry_adder_indep_opt0_200",
+    "fermihubbard": "fermi_hubbard_1d_128q",
+    "grover": "grover_n100_i10",
 }
 
 QUBIT_RE = re.compile(r"(\d+) qubits,")
@@ -111,14 +114,25 @@ def draw_groups(ax, values, n_families):
             continue
         xs, heights = zip(*pairs)
         ax.bar(
-            xs, heights, width=BAR_WIDTH * 0.92, color=CONFIG_COLORS[config],
-            edgecolor=SURFACE, linewidth=0.5,
+            xs,
+            heights,
+            width=BAR_WIDTH * 0.92,
+            color=CONFIG_COLORS[config],
+            edgecolor=SURFACE,
+            linewidth=0.5,
         )
         for xi, h in zip(xs, heights):
             label = f"{h:.0f}" if h >= 10 else f"{h:.1f}"
             ax.annotate(
-                label, (xi, h), xytext=(0, 2), textcoords="offset points",
-                ha="center", va="bottom", fontsize=6.5, color=INK, rotation=90,
+                label,
+                (xi, h),
+                xytext=(0, 2),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=6.5,
+                color=INK,
+                rotation=90,
             )
 
 
@@ -135,7 +149,7 @@ def main():
     rows = []
     values: dict[str, list[float | None]] = {config: [] for config in CONFIG_ORDER}
     skipped = []
-    for family, circuit in FAMILIES.items():
+    for family, circuit in sorted(FAMILIES.items()):
         baseline = qiskit_time.get(circuit)
         if baseline is None:
             skipped.append((family, circuit))
@@ -150,10 +164,7 @@ def main():
             values[config].append(pcts[config])
 
     if skipped:
-        print(
-            "Skipping (no qiskit baseline yet): "
-            + ", ".join(f"{f} ({c})" for f, c in skipped)
-        )
+        print("Skipping (no qiskit baseline yet): " + ", ".join(f"{f} ({c})" for f, c in skipped))
 
     def fmt_pct(v: float | None) -> str:
         return f"{v:15.0f}%" if v is not None else f"{'n/a':>15s} "
@@ -207,13 +218,15 @@ def main():
         fontsize=6.5,
     )
 
-    legend_handles = [
-        Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER
-    ] + [Line2D([0], [0], color=INK, linewidth=0.8, linestyle="--", alpha=0.6)]
+    legend_handles = [Rectangle((0, 0), 1, 1, color=CONFIG_COLORS[c]) for c in CONFIG_ORDER] + [
+        Line2D([0], [0], color=INK, linewidth=0.8, linestyle="--", alpha=0.6)
+    ]
     ax.legend(
         legend_handles,
         [CONFIG_LABELS[c] for c in CONFIG_ORDER] + ["qiskit baseline (100%)"],
-        loc="upper left", fontsize=8, framealpha=0.9,
+        loc="upper left",
+        fontsize=8,
+        framealpha=0.9,
     )
 
     fig.tight_layout(rect=(0, 0.04, 1, 1))

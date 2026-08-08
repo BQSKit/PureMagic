@@ -76,14 +76,16 @@ QISKIT_OUT = PIPE_DIR / "out-qiskit"
 # version" of the smaller ones in that family.
 FAMILIES = {
     "dnn": "dnn_n51",
-    "hubbard": "hubbard_18",
     "knn": "knn_n129",
     "qaoa": "qaoa_barabasi_albert_N149_3reps",
     "qft": "qft_n160",
     "qugan": "qugan_n111",
-    "qv": "qv_N100_12345",
+    "qv": "qv_N064_12345",
     "heisenberg": "square_heisenberg_N225",
     "ising": "ising_n98",
+    "adder": "cdkm_ripple_carry_adder_indep_opt0_200",
+    "fermihubbard": "fermi_hubbard_1d_128q",
+    "grover": "grover_n100_i10",
 }
 
 SUMMARY_RE = re.compile(r"(\d+) qubits, \d+ gates -> \d+ gates \(T=(\d+),")
@@ -176,7 +178,7 @@ def main():
     rows = []  # for the printed summary table
     values: dict[str, list[float | None]] = {config: [] for config in CONFIG_ORDER}
     skipped = []
-    for family, circuit in FAMILIES.items():
+    for family, circuit in sorted(FAMILIES.items()):
         baseline = qiskit_t.get(circuit)
         if baseline is None:
             skipped.append((family, circuit))
@@ -191,10 +193,7 @@ def main():
             values[config].append(pcts[config])
 
     if skipped:
-        print(
-            "Skipping (no qiskit baseline yet): "
-            + ", ".join(f"{f} ({c})" for f, c in skipped)
-        )
+        print("Skipping (no qiskit baseline yet): " + ", ".join(f"{f} ({c})" for f, c in skipped))
 
     def fmt_pct(v: float | None) -> str:
         return f"{v:10.1f}%" if v is not None else f"{'n/a':>10s} "
@@ -273,7 +272,7 @@ def main():
     ax_top.legend(
         legend_handles,
         [CONFIG_LABELS[c] for c in CONFIG_ORDER] + ["qiskit baseline (100%)"],
-        loc="upper left",
+        loc="upper right",
         fontsize=8,
         framealpha=0.9,
     )
