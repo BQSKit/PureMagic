@@ -1,6 +1,12 @@
 //! Minimal OpenQASM 2.0 subset loader for this pipeline's own gate
 //! vocabulary (Clifford generators, `rz`, a general `u`/`u3` for whatever
-//! hasn't been pre-decomposed, and `cx`/`cz`/`swap`).
+//! hasn't been pre-decomposed, and `cx`/`cz`/`swap`), plus the specific
+//! OpenQASM 3 syntax forms (`qubit[N] name;` register declarations, possibly
+//! more than one per file; `bit[N] name;`; assignment-style measurement)
+//! needed to load MQT Bench's OQASM3 exports -- not a general OpenQASM 3
+//! parser, and other OQASM3-only constructs (control flow, subroutines,
+//! gate modifiers, ...) are still unsupported and fail loudly like anything
+//! else this module doesn't recognize.
 //!
 //! Deliberately narrower than a full QASM parser -- matches the line-based
 //! parsing style already used by `transpile.rs`'s own `parse_qasm` (split
@@ -52,6 +58,8 @@ pub fn load_qasm(path: &str) -> io::Result<Circuit> {
     let mut defs: HashMap<String, GateDef> = HashMap::new();
     let mut defining: Option<GateDef> = None;
     let mut defining_name = String::new();
+    let mut register_offsets: HashMap<String, usize> = HashMap::new();
+    let mut total_qubits: usize = 0;
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
@@ -78,10 +86,12 @@ pub fn load_qasm(path: &str) -> io::Result<Circuit> {
             || stripped.starts_with("OPENQASM")
             || stripped.starts_with("include")
             || stripped.starts_with("creg")
+            || stripped.starts_with("bit[")
             || stripped.starts_with('{')
             || stripped.starts_with('}')
             || stripped.starts_with("barrier")
             || stripped.starts_with("measure")
+            || stripped.contains(" = measure")
         {
             continue;
         }
@@ -94,15 +104,24 @@ pub fn load_qasm(path: &str) -> io::Result<Circuit> {
             continue;
         }
 
-        if stripped.starts_with("qreg") {
-            if let Some(n) = bracketed_number(stripped) {
-                circuit = Circuit::new(n);
-            }
+        if stripped.starts_with("qreg") || stripped.starts_with("qubit[") {
+            let (name, n) =
+                parse_register_decl(stripped).map_err(|e| parse_error(line_no, &line, &e))?;
+            register_offsets.insert(name, total_qubits);
+            total_qubits += n;
+            circuit = Circuit::new(total_qubits);
             continue;
         }
 
-        let (name, params, qubits) =
+        let (name, params, qubit_refs) =
             parse_gate_line(stripped).map_err(|e| parse_error(line_no, &line, &e))?;
+        let mut qubits = Vec::with_capacity(qubit_refs.len());
+        for (reg_name, local_idx) in &qubit_refs {
+            let offset = *register_offsets.get(reg_name).ok_or_else(|| {
+                parse_error(line_no, &line, &format!("reference to undeclared register '{reg_name}'"))
+            })?;
+            qubits.push(offset + local_idx);
+        }
         expand_gate_call(&mut circuit, &defs, &name, &params, &qubits)
             .map_err(|e| parse_error(line_no, &line, &e))?;
     }
@@ -121,33 +140,56 @@ fn strip_comment(line: &str) -> &str {
     }
 }
 
-fn bracketed_number(line: &str) -> Option<usize> {
-    let start = line.find('[')? + 1;
-    let end = line.find(']')?;
-    line[start..end].parse().ok()
+/// Parse a register declaration in either OpenQASM 2 (`qreg NAME[N];`) or
+/// OpenQASM 3 (`qubit[N] NAME;`) spelling into (name, size) -- the two
+/// spellings put the name and the bracketed size on opposite sides.
+fn parse_register_decl(line: &str) -> Result<(String, usize), String> {
+    let line = line.trim_end_matches(';').trim();
+    let open = line.find('[').ok_or_else(|| format!("expected '[' in register declaration '{line}'"))?;
+    let close =
+        line.find(']').ok_or_else(|| format!("expected ']' in register declaration '{line}'"))?;
+    let size = line[open + 1..close]
+        .parse::<usize>()
+        .map_err(|_| format!("could not parse register size in '{line}'"))?;
+    let name = if line.starts_with("qreg") {
+        line[..open].trim_start_matches("qreg").trim().to_string()
+    } else {
+        line[close + 1..].trim().to_string()
+    };
+    if name.is_empty() {
+        return Err(format!("register declaration '{line}' has no name"));
+    }
+    Ok((name, size))
 }
 
-/// Every `q[N]` (or `qreg_name[N]`) occurrence's index, in order.
-fn qubit_indices(line: &str) -> Vec<usize> {
+/// Every qubit reference in a gate call's argument list, as (register name,
+/// local index) pairs, in order -- e.g. `"a[0], b[0], cin[0]"` yields
+/// `[("a",0), ("b",0), ("cin",0)]`. Resolving these to global indices needs
+/// the register offset table only `load_qasm` maintains, so that's done by
+/// the caller, not here.
+fn named_qubit_refs(line: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     let mut rest = line;
     while let Some(start) = rest.find('[') {
-        if let Some(end) = rest[start..].find(']') {
-            if let Ok(idx) = rest[start + 1..start + end].parse::<usize>() {
-                out.push(idx);
-            }
-            rest = &rest[start + end + 1..];
-        } else {
-            break;
+        let name_start = rest[..start]
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let name = rest[name_start..start].trim().to_string();
+        let Some(end) = rest[start..].find(']') else { break };
+        if let Ok(idx) = rest[start + 1..start + end].parse::<usize>() {
+            out.push((name, idx));
         }
+        rest = &rest[start + end + 1..];
     }
     out
 }
 
-/// Split `name(p0, p1, ...) q[a], q[b];` into (name, params, qubit indices).
+/// Split `name(p0, p1, ...) q[a], q[b];` into (name, params, qubit refs).
 /// A gate name followed by unparseable parameters is a hard error, not a
-/// silently-empty parameter list.
-fn parse_gate_line(line: &str) -> Result<(String, Vec<f64>, Vec<usize>), String> {
+/// silently-empty parameter list. Qubit references are (register name,
+/// local index) pairs, not resolved global indices -- see `named_qubit_refs`.
+fn parse_gate_line(line: &str) -> Result<(String, Vec<f64>, Vec<(String, usize)>), String> {
     let line = line.trim_end_matches(';').trim();
     if line.is_empty() {
         return Err("empty statement".to_string());
@@ -171,7 +213,7 @@ fn parse_gate_line(line: &str) -> Result<(String, Vec<f64>, Vec<usize>), String>
         (line[..split].trim().to_lowercase(), Vec::new(), &line[split..])
     };
 
-    let qubits = qubit_indices(rest_after_paren);
+    let qubits = named_qubit_refs(rest_after_paren);
     if qubits.is_empty() {
         return Err(format!("no qubit operand found for gate '{name}'"));
     }
@@ -938,5 +980,38 @@ mod tests {
         assert_eq!(c.ops.len(), 2);
         assert_eq!(c.ops[0].qubits, vec![0, 1]);
         assert_eq!(c.ops[1].qubits, vec![1, 0]);
+    }
+
+    /// Mirrors MQT Bench's OpenQASM 3 export shape: multiple named
+    /// `qubit[N]` registers (not one flat `qreg`), a `bit[N]` classical
+    /// declaration, and assignment-style measurement -- none of which
+    /// OpenQASM 2's `qreg`/`creg`/`measure ... ->` spellings use.
+    #[test]
+    fn loads_oqasm3_multi_register_declarations_and_measurement() {
+        let f = write_qasm(&[
+            "OPENQASM 3.0;",
+            "include \"stdgates.inc\";",
+            "qubit[2] a;",
+            "qubit[3] b;",
+            "bit[5] meas;",
+            "h a[0];",
+            "cx a[1],b[0];",
+            "meas[0] = measure a[0];",
+        ]);
+        let c = load_qasm(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(c.n_qubits, 5);
+        assert_eq!(c.ops.len(), 2, "the bit[] decl and assignment-measure must not become ops");
+        assert!(matches!(c.ops[0].gate, Gate::H));
+        assert_eq!(c.ops[0].qubits, vec![0]);
+        assert!(matches!(c.ops[1].gate, Gate::Cx));
+        // a occupies offset 0..2, b starts right after at offset 2.
+        assert_eq!(c.ops[1].qubits, vec![1, 2]);
+    }
+
+    #[test]
+    fn gate_call_referencing_undeclared_register_is_a_hard_error() {
+        let f = write_qasm(&["qubit[2] a;", "h b[0];"]);
+        let result = load_qasm(f.path().to_str().unwrap());
+        assert!(result.is_err(), "a reference to a never-declared register must fail loudly");
     }
 }
