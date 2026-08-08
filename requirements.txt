@@ -29,6 +29,11 @@ pandas
 # 'algorithmic_error'` the first time the bqskit backend actually runs.
 -e ./bqskit-ft
 qiskit>=2.5
+# Needed for load_circuit's OpenQASM 3 fallback in data_processing/compile_cliffordt.py
+# (e.g. MQT Bench's OQASM3 exports) -- qasm3.load() raises MissingOptionalLibraryError
+# without it, which load_circuit's except-clause otherwise just folds into an opaque
+# "could not parse as OpenQASM 2 (...) or OpenQASM 3 (...)" error.
+qiskit-qasm3-import
 # Optional: fallback rotation synthesiser for data_processing/qiskit_compile_cliffordt.py,
 # used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
 # Already pulled in by bqskit-ft.
