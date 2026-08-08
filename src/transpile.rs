@@ -26,12 +26,12 @@ struct Args {
     #[arg(short, long = "input_file")]
     input_file: String,
 
-    /// Defaults to the input stem with a .trans suffix.
+    /// Defaults to the input stem with a .trans<max_width> suffix.
     #[arg(short, long = "output_file", default_value = "")]
     output_file: String,
 
-    /// Maximum Pauli product weight; -1 = no limit.
-    #[arg(short = 'm', long = "max_width", default_value = "-1")]
+    /// Maximum Pauli product weight; 0 = no limit.
+    #[arg(short = 'm', long = "max_width", default_value = "0")]
     max_width: i32,
 }
 
@@ -786,7 +786,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.output_file.clone()
     };
     let output_path = if args.output_file.is_empty() {
-        format!("{}.trans", output_stem)
+        format!("{}.trans{}", output_stem, args.max_width)
     } else {
         args.output_file
     };
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn transpile_single_t_gate_no_cliffords() {
         let gates = vec![QasmGate::T { qubit: 0 }];
-        let items = transpile(2, &gates, -1);
+        let items = transpile(2, &gates, 0);
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -916,7 +916,7 @@ mod tests {
         // H maps Z→X, so T (a Z rotation) becomes an X rotation after conjugation.
         let gates =
             vec![QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 0 }, QasmGate::T { qubit: 0 }];
-        let items = transpile(2, &gates, -1);
+        let items = transpile(2, &gates, 0);
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -928,7 +928,7 @@ mod tests {
     #[test]
     fn transpile_tdg_gives_negative_sign() {
         let gates = vec![QasmGate::Tdg { qubit: 0 }];
-        let items = transpile(1, &gates, -1);
+        let items = transpile(1, &gates, 0);
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn transpile_measurements_appended_for_all_qubits() {
         let gates = vec![QasmGate::T { qubit: 0 }];
-        let items = transpile(2, &gates, -1);
+        let items = transpile(2, &gates, 0);
         let m_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "M")).collect();
         assert_eq!(m_items.len(), 2);
@@ -951,7 +951,7 @@ mod tests {
     fn transpile_max_weight_1_flushes_cliffords() {
         let gates =
             vec![QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 0 }, QasmGate::T { qubit: 0 }];
-        let items_unlimited = transpile(2, &gates, -1);
+        let items_unlimited = transpile(2, &gates, 0);
         let cliffords_unlimited: Vec<_> =
             items_unlimited.iter().filter(|i| matches!(i, TransItem::Clifford(_))).collect();
         assert_eq!(cliffords_unlimited.len(), 0);
