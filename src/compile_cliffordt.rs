@@ -5,10 +5,11 @@
 //! breakdown.
 
 mod cliffordt;
+#[allow(dead_code)]
+mod utils;
 
 use std::fs::File;
 use std::io::BufWriter;
-use std::time::Instant;
 
 use clap::Parser;
 
@@ -17,6 +18,7 @@ use cliffordt::pipeline::{PipelineConfig, compile, total_gate_count, total_rz_co
 use cliffordt::qasm::load_qasm;
 use cliffordt::qasm_write::write_qasm;
 use cliffordt::stats::{Stats, compute_stats, non_basis_ops};
+use utils::Timer;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Compile a circuit to Clifford+T")]
@@ -166,9 +168,9 @@ fn main() {
     let mut failures = 0usize;
     for input in &args.inputs {
         println!("=== {input}");
-        let total_start = Instant::now();
+        let _total_timer = Timer::new("total");
 
-        let load_start = Instant::now();
+        let load_timer = Timer::new("load");
         let circuit = match load_qasm(input) {
             Ok(c) => c,
             Err(e) => {
@@ -177,7 +179,7 @@ fn main() {
                 continue;
             }
         };
-        let load_time = load_start.elapsed();
+        drop(load_timer);
 
         let before = compute_stats(&circuit);
         let original_unitary =
@@ -193,7 +195,7 @@ fn main() {
             skip_phase_merge: args.skip_phase_merge,
         };
 
-        let compile_start = Instant::now();
+        let compile_timer = Timer::new("compile");
         let mut prev_gates = total_gate_count(&circuit);
         let mut prev_rz = total_rz_count(&circuit);
         let (compiled, error_bound) = compile(&circuit, &config, |report| {
@@ -228,7 +230,7 @@ fn main() {
             prev_gates = gates;
             prev_rz = rz;
         });
-        let compile_time = compile_start.elapsed();
+        drop(compile_timer);
 
         let after = compute_stats(&compiled);
         println!("{}", report_line(&before, &after));
@@ -248,9 +250,8 @@ fn main() {
             );
         }
 
-        let mut verify_time = std::time::Duration::ZERO;
         if args.verify {
-            let verify_start = Instant::now();
+            let verify_timer = Timer::new("verify");
             match &original_unitary {
                 Some(original) => {
                     let d = distance(original, &compiled.get_unitary());
@@ -271,11 +272,11 @@ fn main() {
                     );
                 }
             }
-            verify_time = verify_start.elapsed();
+            drop(verify_timer);
         }
 
         let destination = output_path(input, &args.output, args.inputs.len() > 1);
-        let write_start = Instant::now();
+        let write_timer = Timer::new("write");
         let write_result = File::create(&destination).and_then(|f| {
             let mut writer = BufWriter::new(f);
             write_qasm(&compiled, &mut writer)
@@ -285,14 +286,8 @@ fn main() {
             failures += 1;
             continue;
         }
-        let write_time = write_start.elapsed();
-        let total_time = total_start.elapsed();
+        drop(write_timer);
 
-        println!("  load: {:.2}s", load_time.as_secs_f64());
-        println!("  compile: {:.2}s", compile_time.as_secs_f64());
-        println!("  verify: {:.2}s", verify_time.as_secs_f64());
-        println!("  write: {:.2}s", write_time.as_secs_f64());
-        println!("  total: {:.2}s", total_time.as_secs_f64());
         println!("  wrote {destination}");
     }
 
