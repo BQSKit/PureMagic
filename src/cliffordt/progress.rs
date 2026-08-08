@@ -1,5 +1,5 @@
 //! Live progress reporting for the long-running per-block stages (Stage 2's
-//! windowed resynthesis, Stage 3's TRbO, Stage 4's final synthesis):
+//! windowed resynthesis, Stage 3's final synthesis):
 //!
 //! - Written straight to `/dev/tty`, not through stdout, so a `\r`-overwritten
 //!   line is visible on the terminal watching the process but invisible to

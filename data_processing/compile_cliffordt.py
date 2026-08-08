@@ -95,34 +95,6 @@ Pipeline
    ScanningGateRemovalPass's numerical search also catches approximate
    cancellations between rotations that don't share a parity at all.
 
-   --bqskit-trbo: an optional, off-by-default extra stage (needs the
-   optional trbo package -- see requirements.txt) that runs TRbO (see the
-   TRbO paper) right after RoundToDiscreteZPass, before isolating/
-   synthesising whatever Rz gates remain. Where RoundToDiscreteZPass only
-   checks each Rz independently against --epsilon, TRbO numerically
-   re-optimises a partitioned block's Rz angles *jointly*, rounding as many
-   as possible to Clifford/T-exact while letting the rest absorb the
-   compensating error. Measured: no change on qft_N008 and on the pinned
-   hubbard_18_slice600.qasm reference (both have angles that are analytically
-   or physically fixed -- already exactly deduplicated by
-   merge_phase_polynomial where applicable -- so there is no leftover gauge
-   freedom for a joint optimiser to exploit, matching the TRbO paper's own
-   null result on plain QFT); a modest reduction in T gates on
-   qv_N008_12345 (varying somewhat across repeated runs -- see the
-   reproducibility note below), a Haar-random circuit whose ZXZXZDecomposition
-   blocks do have real gauge slack, and which is exactly the circuit class
-   merge_phase_polynomial cannot help (and previously regressed, see
-   unroll_to_u_cx). Off by default because the win is real but
-   circuit-dependent and not free: the numerical optimisation itself took
-   real, noticeable wall-clock time across the partition blocks of an
-   otherwise-modest circuit in measurement, unlike every other pass in this
-   workflow. Also unlike every other part of the bqskit backend, its T-count
-   is not reproducible run to run at a fixed --seed: TRbO's own multi-start
-   search dispatches retries through bqskit's runtime independently of this
-   script's seeding (confirmed directly: repeated --seed 0 runs of
-   qv_N008_12345 gave different T-counts), so a --bqskit-trbo run is not
-   safe to treat as a single reproducible data point the way every other
-   number in this file is.
    rewrite_single_qubit_runs (the qiskit/cyclosynth backends' shared
    pipeline) has no equivalent of its own: it only merges consecutive
    single-qubit gates on one wire between CX boundaries, and never tests
@@ -137,13 +109,8 @@ Pipeline
    stage with CyclosynthBlockSynthesisPass: cyclosynth's joint ZYZ lattice
    search per block instead of gridsynth's per-Rz Ross-Selinger synthesis --
    see the "cyclosynth" paragraph below and CyclosynthBlockSynthesisPass's
-   docstring for the mechanism. Runs after --bqskit-trbo (if also passed):
-   the two attack T-count at different, non-overlapping pipeline stages --
-   TRbO reduces how many Rz rotations need synthesis at all, by rounding some
-   to Clifford/T-exact via joint gauge freedom, while cyclosynth only changes
-   how whatever residual rotations are left get synthesised -- so combining
-   them stacks both wins rather than picking one or the other. Blocks
-   cyclosynth's search can hang or fail on (near-Clifford targets, or a
+   docstring for the mechanism. Blocks cyclosynth's search can hang or fail
+   on (near-Clifford targets, or a
    result-less call -- see the near-Clifford routing note in the
    "cyclosynth" paragraph below, which applies identically here) are left
    untouched by CyclosynthBlockSynthesisPass and caught by a trailing
@@ -418,13 +385,6 @@ try:  # optional: only needed for --backend cyclosynth (see cyclosynth/README.md
 except ImportError:
     cyclosynth = None
 
-try:  # optional: only needed for --bqskit-trbo (see requirements.txt)
-    import trbo.trbo  # pyright: ignore[reportMissingImports]
-    import trbo.utils  # pyright: ignore[reportMissingImports]
-    import trbo.clift  # pyright: ignore[reportMissingImports]
-except ImportError:
-    trbo = None
-
 # sx/sxdg included because the bqskit backend emits them natively (its own
 # Clifford+T gate set treats sx as a generator) and src/transpile.rs's
 # Gate1Q::SX/SXdg understands them -- the qiskit backend never emits either.
@@ -436,11 +396,6 @@ PI_4 = math.pi / 4
 # than left at qiskit's default. Shared by all three backends' preopt step
 # (unroll_to_u_cx).
 UNROLL_OPTIMIZATION_LEVEL = 1
-
-# Matches trbo.workflows' own default() partition_size. Not exposed as a CLI
-# option: revisit only if usage shows a need to trade TRbO's runtime (roughly
-# linear in block count) against how much gauge freedom a larger block exposes.
-TRBO_PARTITION_SIZE = 4
 
 # --epsilon's default, shared by all three backends -- see the module
 # docstring's "Rotation synthesis" section for the measurements behind this
@@ -2034,7 +1989,6 @@ def _gauge_collapse_passes(synthesis_epsilon: float) -> list[BasePass]:
 def build_bqskit_workflow(
     synthesis_epsilon: float,
     seed: Optional[int],
-    trbo_flag: bool = False,
     cyclosynth_flag: bool = False,
 ) -> list[BasePass]:
     """Build this script's own Clifford+T circuit workflow for bqskit -- the
@@ -2077,9 +2031,8 @@ def build_bqskit_workflow(
     not RoundToDiscreteZPass's own rounding (which isn't run inside a
     ForEachBlockPass, so isn't measured by this mechanism, and could in
     principle spend up to synthesis_epsilon per rounded rotation without
-    being counted), TRbO's own optimisation error (bounded per block by
-    success_threshold=synthesis_epsilon, same reason), or anything from
-    bqskit's own earlier multi-qubit block instantiation.
+    being counted), or anything from bqskit's own earlier multi-qubit block
+    instantiation.
 
     bqskit's stock ZXZXZDecomposition has a gauge bug: for a diagonal target,
     the middle rotation is Clifford, so how the total rotation splits between
@@ -2093,24 +2046,15 @@ def build_bqskit_workflow(
     fix ahead of an upstream release; without it (stock bqskit from PyPI),
     diagonal-heavy circuits cost substantially more T gates via this backend.
 
-    trbo_flag (--bqskit-trbo) inserts an extra stage right after the second
-    RoundToDiscreteZPass/UnfoldPass pair, where the circuit is genuinely
-    Clifford+Rz -- see the module docstring's bqskit section for what it does
-    and the measurements behind making it opt-in.
-
     cyclosynth_flag (--bqskit-cyclosynth) swaps which final-synthesis stage
     build_final_synthesis_passes builds below: cyclosynth's joint ZYZ search
-    per single-qubit block instead of bqskit's own per-Rz GridSynthPass. It
-    runs after trbo_flag's stage (if also set), so TRbO gets first crack at
-    rounding Rz angles via gauge freedom and cyclosynth only has to
-    re-synthesise whatever residual block unitary is left -- the two are
-    independent, non-overlapping T-count wins (see CyclosynthBlockSynthesisPass's
-    docstring) rather than alternatives.
+    per single-qubit block instead of bqskit's own per-Rz GridSynthPass (see
+    CyclosynthBlockSynthesisPass's docstring).
 
     The gauge-collapse cycle (_gauge_collapse_passes) runs *twice*: once here,
     right after ScanningGateRemovalPass, and again right before final
-    synthesis (after trbo_flag's stage, if set). This isn't accidental
-    duplication -- re-decomposing and re-rounding an already-once-collapsed
+    synthesis. This isn't accidental duplication -- re-decomposing and
+    re-rounding an already-once-collapsed
     block exposes additional exact-Clifford gauge collapses the first pass's
     decomposition doesn't, since ZXZXZDecomposition's gauge freedom can shift
     once RoundToDiscreteZPass has rounded some rotations. Confirmed by direct
@@ -2118,7 +2062,7 @@ def build_bqskit_workflow(
     from running the cycle twice rather than once. Running it a third time
     finds nothing further (checked on the same benchmark).
     """
-    # ScanningGateRemovalPass/TRbOPass judge success via HilbertSchmidtCost,
+    # ScanningGateRemovalPass judges success via HilbertSchmidtCost,
     # not an operator-norm distance: HS-cost == operator_norm_distance**2 / 2,
     # a quadratic relationship unlike every other epsilon in this pipeline.
     # Passing synthesis_epsilon straight through as success_threshold lets the
@@ -2137,31 +2081,6 @@ def build_bqskit_workflow(
         UnfoldPass(),
     ]
     passes += _gauge_collapse_passes(synthesis_epsilon)
-    if trbo_flag:
-        if trbo is None:
-            raise RuntimeError(
-                "--bqskit-trbo needs the trbo package, which is not "
-                "installed. pip install git+https://github.com/WolfLink/trbo "
-                "(see requirements.txt)."
-            )
-        passes += [
-            QuickPartitioner(TRBO_PARTITION_SIZE),
-            ForEachBlockPass(
-                [
-                    # TRbOPass rejects any gate outside Clifford+T+Rz, including
-                    # IdentityGate, which RoundToDiscreteZPass/clifford_replace can
-                    # leave behind. Stripped per-block since QuickPartitioner has
-                    # already run.
-                    trbo.utils.RemoveGatePass(IdentityGate(1)),
-                    trbo.utils.AppendGatePass(trbo.clift.GlobalPhaseGate()),
-                    # TRbOPass judges success the same HS-cost way -- see
-                    # hs_cost_threshold above.
-                    trbo.trbo.TRbOPass(success_threshold=hs_cost_threshold),
-                    trbo.utils.RemoveGatePass(trbo.clift.GlobalPhaseGate()),
-                ]
-            ),
-            UnfoldPass(),
-        ]
     passes += _gauge_collapse_passes(synthesis_epsilon)
     passes += build_final_synthesis_passes(synthesis_epsilon, cyclosynth_flag)
     passes += [LogErrorPass()]
@@ -2190,7 +2109,6 @@ def compile_bqskit(
     unrolled: QuantumCircuit,
     epsilon: float,
     seed: int,
-    trbo_flag: bool = False,
     cyclosynth_flag: bool = False,
     cyclosynth_threads: Optional[int] = None,
 ) -> tuple[QuantumCircuit, float]:
@@ -2201,8 +2119,8 @@ def compile_bqskit(
     The error bound is bqskit's own ``calculate_error_bound`` mechanism, read
     from the single ``Compiler().compile(..., request_data=True)`` call below
     -- see build_bqskit_workflow's docstring for exactly what it covers.
-    ``trbo_flag`` (--bqskit-trbo) and ``cyclosynth_flag`` (--bqskit-cyclosynth)
-    are passed straight through to build_bqskit_workflow -- see its docstring.
+    ``cyclosynth_flag`` (--bqskit-cyclosynth) is passed straight through to
+    build_bqskit_workflow -- see its docstring.
     """
     with tempfile.TemporaryDirectory() as tmp:
         in_path = Path(tmp) / "in.qasm"
@@ -2212,7 +2130,6 @@ def compile_bqskit(
         passes = build_bqskit_workflow(
             synthesis_epsilon=epsilon,
             seed=seed,
-            trbo_flag=trbo_flag,
             cyclosynth_flag=cyclosynth_flag,
         )
 
@@ -2227,36 +2144,11 @@ def compile_bqskit(
                 str(cyclosynth_threads) if cyclosynth_threads is not None else "1"
             )
 
-        # TRbO's own MatrixDistanceCost.get_grad (trbo/tcount.py) hits a
-        # 0**negative singularity when a candidate's fidelity rounds to
-        # exactly 1.0 -- a symptom of convergence, not an error -- producing
-        # numpy RuntimeWarnings from inside bqskit's worker processes. A plain
-        # warnings.filterwarnings() call here has no effect there (workers
-        # don't inherit this process's filters); only PYTHONWARNINGS, read at
-        # each worker's own interpreter startup, reliably suppresses them.
-        old_pythonwarnings = os.environ.get("PYTHONWARNINGS")
-        if trbo_flag:
-            suppress_trbo_warning = ",".join(
-                [
-                    "ignore:divide by zero encountered in power:RuntimeWarning:trbo.tcount",
-                    "ignore:invalid value encountered in multiply:RuntimeWarning:trbo.tcount",
-                ]
-            )
-            os.environ["PYTHONWARNINGS"] = (
-                f"{old_pythonwarnings},{suppress_trbo_warning}"
-                if old_pythonwarnings
-                else suppress_trbo_warning
-            )
         try:
             with Compiler() as compiler:
                 bq_circuit, data = compiler.compile(bq_circuit, passes, request_data=True)
             error_bound = data.error
         finally:
-            if trbo_flag:
-                if old_pythonwarnings is None:
-                    os.environ.pop("PYTHONWARNINGS", None)
-                else:
-                    os.environ["PYTHONWARNINGS"] = old_pythonwarnings
             if cyclosynth_flag:
                 if old_rayon_threads is None:
                     os.environ.pop("RAYON_NUM_THREADS", None)
@@ -2335,7 +2227,6 @@ def compile_dispatch(
         unrolled,
         epsilon=args.epsilon,
         seed=args.seed,
-        trbo_flag=args.bqskit_trbo,
         cyclosynth_flag=args.bqskit_cyclosynth,
         cyclosynth_threads=args.cyclosynth_threads,
     )
@@ -2615,25 +2506,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "accuracy of a Clifford",
     )
     parser.add_argument(
-        "--bqskit-trbo",
-        action="store_true",
-        help="bqskit backend only: after RoundToDiscreteZPass, run TRbO "
-        "(numerical joint optimization of remaining Rz angles -- see "
-        "https://arxiv.org/abs/2603.25101) before isolating/synthesizing "
-        "what's left. Off by default: it is a real but circuit-dependent "
-        "T-count win (measured 0%% on QFT-family/Hubbard circuits, ~5%% on "
-        "Haar-random circuits like QV) bought with real wall-clock cost "
-        "(tens of seconds per few hundred partition blocks at default "
-        "settings), unlike this script's other bqskit-workflow passes, "
-        "which are unconditional. Requires the optional trbo package (see "
-        "requirements.txt). Unlike every other part of this script's bqskit "
-        "backend, T-counts are not reproducible run to run at a fixed "
-        "--seed: TRbO's own multi-start search dispatches its retries "
-        "through bqskit's runtime independently of this script's seeding, "
-        "so repeated runs of the same input have been observed to differ "
-        "by roughly 1%% in T count.",
-    )
-    parser.add_argument(
         "--bqskit-cyclosynth",
         action="store_true",
         help="bqskit backend only: replace the final "
@@ -2641,11 +2513,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "with cyclosynth's joint ZYZ lattice search (see --backend "
         "cyclosynth), with a trailing IsolateRZGatePass+GridSynthPass mop-up "
         "stage for blocks cyclosynth's search can hang on (near-Clifford "
-        "blocks) or fails to return a result for. Runs after --bqskit-trbo "
-        "(if also passed), so TRbO gets first crack at rounding Rz angles "
-        "via gauge freedom and cyclosynth only re-synthesises whatever "
-        "residual block unitary is left -- the two are independent, "
-        "non-overlapping T-count wins rather than alternatives. Needs the "
+        "blocks) or fails to return a result for. Needs the "
         "optional cyclosynth extension module (see cyclosynth/README.md).",
     )
     parser.add_argument(
@@ -2702,13 +2570,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     # silently ignoring a flag the user thought they were setting.
     backend_only_flags = {
         "qiskit": {
-            "bqskit_trbo": "--bqskit-trbo",
             "bqskit_cyclosynth": "--bqskit-cyclosynth",
             "seed": "--seed",
             "cyclosynth_threads": "--cyclosynth-threads",
         },
         "cyclosynth": {
-            "bqskit_trbo": "--bqskit-trbo",
             "bqskit_cyclosynth": "--bqskit-cyclosynth",
             "seed": "--seed",
         },
@@ -2772,7 +2638,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         log(
             f"backend: bqskit (epsilon={args.epsilon:g}, seed={args.seed}, "
-            f"trbo={args.bqskit_trbo}, cyclosynth={args.bqskit_cyclosynth})"
+            f"cyclosynth={args.bqskit_cyclosynth})"
         )
 
     all_stats = []

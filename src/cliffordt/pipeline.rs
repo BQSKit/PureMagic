@@ -1,13 +1,7 @@
 //! Orchestrates all stages into one `compile` entry point: exact
 //! phase-polynomial merge -> gauge collapse (blocking + exact-Clifford +
 //! rounding, run and reported as one combined stage) -> windowed
-//! multi-qubit resynthesis -> gauge collapse again -> TRbO (if enabled) ->
-//! gauge collapse a *third* time -> final synthesis. Running the
-//! gauge-collapse cycle both before and after TRbO is deliberate, not
-//! redundant: skipping the second run measurably regresses T-count (by
-//! ~1.4% on measured circuits), since re-checking for exact Clifford hits
-//! after TRbO's angle adjustments exposes coincidences the first pass
-//! alone doesn't.
+//! multi-qubit resynthesis -> gauge collapse again -> final synthesis.
 
 use std::time::{Duration, Instant};
 
@@ -24,7 +18,6 @@ use crate::cliffordt::rounding::round_to_discrete_z;
 use crate::cliffordt::stage4_scan_removal::{ScanConfig, scanning_gate_removal};
 use crate::cliffordt::stats::block_stats;
 use crate::cliffordt::synthesize::{SynthCache, SynthConfig, prepopulate_targets, synthesize_block_cached};
-use crate::cliffordt::trbo::{TrboConfig, trbo_optimize};
 
 /// Total gate count, recursing into `Block` sub-circuits (the circuit is
 /// only ever fully flat right after an `unfold`; at other points it may
@@ -41,10 +34,10 @@ pub fn total_gate_count(circuit: &Circuit) -> usize {
 }
 
 /// Total `Rz` gate count, recursing into `Block` sub-circuits -- the
-/// natural "how much work is still left to do" measure for stages 1-3,
+/// natural "how much work is still left to do" measure for stages 1-2,
 /// since every one of them exists to either remove an `Rz` entirely
 /// (exact-Clifford hit, or a gate-removal simplification) or round it onto
-/// the discrete grid; only stage 4 ever needs to actually pay a T-count
+/// the discrete grid; only stage 3 ever needs to actually pay a T-count
 /// price for whichever ones survive.
 pub fn total_rz_count(circuit: &Circuit) -> usize {
     circuit
@@ -81,7 +74,6 @@ pub struct StageReport<'a> {
 pub struct PipelineConfig {
     pub epsilon: f64,
     pub seed: u64,
-    pub trbo: bool,
     pub cyclosynth: bool,
     /// Let Stage 2 drop a block that's within `epsilon` *infidelity* of a
     /// simpler circuit, not just within `epsilon` operator-norm distance --
@@ -90,8 +82,8 @@ pub struct PipelineConfig {
     /// exactly and folded into the returned error bound, but it can be far
     /// larger per approximate cancellation than `epsilon` itself.
     pub approx_cancel: bool,
-    /// Skip every gauge-collapse cycle (all three: initial, post stage 2,
-    /// post TRbO), for isolating its contribution to the final result.
+    /// Skip every gauge-collapse cycle (both: initial and post stage 2),
+    /// for isolating its contribution to the final result.
     pub skip_gauge_collapse: bool,
     /// Skip Stage 2 (windowed multi-qubit resynthesis), for isolating its
     /// contribution to the final result.
@@ -106,7 +98,6 @@ impl Default for PipelineConfig {
         PipelineConfig {
             epsilon: 1e-8,
             seed: 0,
-            trbo: false,
             cyclosynth: false,
             approx_cancel: false,
             skip_gauge_collapse: false,
@@ -118,9 +109,9 @@ impl Default for PipelineConfig {
 
 /// Blocking + exact Clifford recognition (leaving non-matches untouched) +
 /// unfold + angle rounding, run and reported as one combined stage. `cycle`
-/// labels which of the three times through this cycle it is ("initial",
-/// "post stage 2", "post TRbO") since it runs more than once (see module
-/// docs). A block that doesn't match exactly is left as its original gates,
+/// labels which of the two times through this cycle it is ("initial",
+/// "post stage 2") since it runs twice (see module docs). A block that
+/// doesn't match exactly is left as its original gates,
 /// not forced through anything lossy -- this stage never introduces
 /// approximation error.
 fn gauge_collapse(
@@ -259,7 +250,7 @@ pub fn compile(
             approx_cancel: config.approx_cancel,
             ..ScanConfig::default()
         };
-        // No cache to weight by here (unlike Stage 4) -- every block does
+        // No cache to weight by here (unlike Stage 3) -- every block does
         // similarly-cheap exact work, so plain per-block counting is the
         // right progress denominator.
         let (num_blocks, _) = block_stats(&partitioned);
@@ -281,60 +272,13 @@ pub fn compile(
         stage2_error
     };
 
-    // Gauge collapse again before TRbO.
+    // Gauge collapse again, to catch exact-Clifford matches Stage 2's
+    // resynthesis exposed.
     if !config.skip_gauge_collapse {
         current = gauge_collapse(&current, config.epsilon, &table, "post stage 2", &mut on_stage);
     }
 
-    // Stage 3: TRbO gauge-freedom optimization (optional). Its payoff is
-    // per-block Rz reduction via gauge freedom across a wider window than
-    // Stage 2 -- not visible in a whole-circuit gate/Rz delta when only
-    // some blocks have exploitable freedom, since the ones that don't stay
-    // untouched (trbo_optimize never makes a block worse) and dilute it.
-    if config.trbo {
-        let t = Instant::now();
-        let partitioned = partition(&current, 4);
-        let trbo_config = TrboConfig {
-            success_threshold: config.epsilon,
-            seed: config.seed,
-            ..TrboConfig::default()
-        };
-        // Every block runs its own NLS optimization from scratch (no cache
-        // to weight by), so -- like Stage 2 -- plain per-block counting is
-        // the right progress denominator.
-        let (num_blocks, _) = block_stats(&partitioned);
-        let progress = ProgressTracker::new("TRbO", num_blocks);
-        let (optimized, deltas) = partitioned.for_each_block_with(|inner| {
-            let before = inner.num_params();
-            let result = trbo_optimize(inner, &trbo_config);
-            let after = result.num_params();
-            progress.add(1);
-            (result, (before, after))
-        });
-        progress.finish();
-        current = optimized.unfold();
-        let num_blocks = deltas.len();
-        let num_improved = deltas.iter().filter(|(before, after)| after < before).count();
-        let rz_before: usize = deltas.iter().map(|(before, _)| before).sum();
-        let rz_after: usize = deltas.iter().map(|(_, after)| after).sum();
-        let detail = format!(
-            "{num_improved}/{num_blocks} blocks improved, Rz: {rz_before} -> {rz_after} ({:+})",
-            rz_after as i64 - rz_before as i64
-        );
-        on_stage(StageReport {
-            name: "stage 3: TRbO".to_string(),
-            elapsed: t.elapsed(),
-            circuit: &current,
-            detail: Some(detail),
-        });
-
-        // Gauge collapse a third time -- not redundant, see module docs.
-        if !config.skip_gauge_collapse {
-            current = gauge_collapse(&current, config.epsilon, &table, "post TRbO", &mut on_stage);
-        }
-    }
-
-    // Stage 4: final synthesis of whatever continuous rotation remains.
+    // Stage 3: final synthesis of whatever continuous rotation remains.
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
     let synth_config = SynthConfig {
@@ -352,7 +296,7 @@ pub fn compile(
     // order-preserving Vec (`par_iter().collect()` into a Vec always
     // preserves original index order, as `for_each_block_with` itself
     // already relies on), so the *order* `prepopulate_targets` dedups
-    // against below reflects the circuit's own block order, not Stage 4's
+    // against below reflects the circuit's own block order, not Stage 3's
     // scheduling.
     let non_clifford_targets: Vec<Unitary> = grouped
         .ops
@@ -364,7 +308,7 @@ pub fn compile(
         .collect();
     let progress = ProgressTracker::new("final synthesis", non_clifford_targets.len());
     // Deterministically pick and synthesize one representative target per
-    // canonical_key *before* Stage 4's per-block parallel dispatch below --
+    // canonical_key *before* Stage 3's per-block parallel dispatch below --
     // see `prepopulate_targets`'s doc comment for why this replaces a race.
     prepopulate_targets(&non_clifford_targets, &table, &synth_config, &synth_cache, || {
         progress.add(1)
@@ -378,7 +322,7 @@ pub fn compile(
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
-    // cyclosynth parallelizes its own search internally, so run Stage 4
+    // cyclosynth parallelizes its own search internally, so run Stage 3
     // sequentially at this level when it's enabled rather than nesting it
     // inside this crate's own per-block rayon parallelism -- avoids
     // oversubscription slowdown (see `for_each_block_with_sequential`'s doc
@@ -391,12 +335,12 @@ pub fn compile(
     progress.finish();
     // Stage 2's own approximate-cancellation error (see stage2_error above)
     // is folded in here too, so the reported bound reflects every stage
-    // that can spend accuracy, not just Stage 4.
+    // that can spend accuracy, not just Stage 3.
     let total_error: f64 = stage2_error + errors.iter().sum::<f64>();
     let mut final_circuit = synthesized.unfold();
     strip_identity_gates(&mut final_circuit);
     on_stage(StageReport {
-        name: "stage 4: final synthesis".to_string(),
+        name: "stage 3: final synthesis".to_string(),
         elapsed: t.elapsed(),
         circuit: &final_circuit,
         detail: None,
@@ -462,24 +406,6 @@ mod tests {
 
         assert_eq!(t_count(&compiled), 0, "Rz(pi/4)+Rz(pi/4) = S, an exact Clifford");
         assert!(distance(&original, &compiled.get_unitary()) < 1e-6);
-    }
-
-    #[test]
-    fn trbo_enabled_does_not_break_correctness() {
-        let mut c = Circuit::new(2);
-        c.push(Gate::Rz(0.3), vec![0]);
-        c.push(Gate::Cx, vec![0, 1]);
-        c.push(Gate::Rz(-0.3), vec![1]);
-        c.push(Gate::H, vec![0]);
-        c.push(Gate::Rz(0.9), vec![0]);
-        let original = c.get_unitary();
-
-        let config =
-            PipelineConfig { epsilon: 1e-6, seed: 11, trbo: true, ..PipelineConfig::default() };
-        let (compiled, error_bound) = compile(&c, &config, |_| {});
-
-        assert!(error_bound < 1e-5);
-        assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
     }
 
     #[test]

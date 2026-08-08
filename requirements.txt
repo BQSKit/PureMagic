@@ -42,14 +42,6 @@ pygridsynth
 # development (pyright data_processing/compile_cliffordt.py). Not a runtime
 # dependency of the pipeline itself.
 pyright
-# TRbO (data_processing/compile_cliffordt.py --bqskit-trbo): numerical joint
-# Rz-rounding optimization pass for the bqskit backend (see
-# https://arxiv.org/abs/2603.25101). Pure Python, no native build -- unlike
-# cyclosynth this doesn't need a submodule, just pip's git support, since it
-# isn't published to PyPI. Pinned to the commit this repo's own TRbO
-# measurements were taken against -- unpinned, this line floats to whatever's
-# at the tip of trbo's default branch.
-trbo @ git+https://github.com/WolfLink/trbo@d911e3d86375552e31bfe6b609c3ea73e4ec9c62
 # cyclosynth (data_processing/compile_cliffordt.py --backend cyclosynth):
 # a local Rust extension (git submodule at cyclosynth/, not on PyPI), so it
 # can't be a normal line here -- built automatically by this devcontainer's

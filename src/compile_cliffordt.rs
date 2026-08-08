@@ -1,6 +1,6 @@
 //! Compile an arbitrary circuit down to Clifford+T.
 //!
-//! Runs a five-stage compilation pipeline. Terminal output includes a git
+//! Runs a four-stage compilation pipeline. Terminal output includes a git
 //! banner, backend params, per-circuit before/after stats, and a timing
 //! breakdown.
 
@@ -36,11 +36,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
-    /// Enable TRbO-style joint gauge-freedom optimization (Stage 3).
-    #[arg(long)]
-    trbo: bool,
-
-    /// Enable cyclosynth's joint synthesis for Stage 4, instead of
+    /// Enable cyclosynth's joint synthesis for Stage 3, instead of
     /// independent per-axis gridsynth.
     #[arg(long)]
     cyclosynth: bool,
@@ -58,8 +54,8 @@ struct Args {
     #[arg(long)]
     verify: bool,
 
-    /// Skip every gauge-collapse cycle (Stage 1, run initially, post
-    /// stage 2, and post TRbO), to isolate its contribution to the result.
+    /// Skip every gauge-collapse cycle (Stage 1, run initially and post
+    /// stage 2), to isolate its contribution to the result.
     #[arg(long)]
     skip_gauge_collapse: bool,
 
@@ -157,10 +153,9 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, seed={}, trbo={}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={})",
+        "backend: rust (epsilon={:e}, seed={}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={})",
         args.epsilon,
         args.seed,
-        args.trbo,
         args.cyclosynth,
         args.approx_cancel,
         args.skip_gauge_collapse,
@@ -191,7 +186,6 @@ fn main() {
         let config = PipelineConfig {
             epsilon: args.epsilon,
             seed: args.seed,
-            trbo: args.trbo,
             cyclosynth: args.cyclosynth,
             approx_cancel: args.approx_cancel,
             skip_gauge_collapse: args.skip_gauge_collapse,

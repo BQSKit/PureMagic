@@ -23,9 +23,9 @@
 //! An earlier, simpler version of this module (single-pass, close-on-
 //! overflow, no partial closing, no merging) preserved circuit correctness
 //! but produced far smaller/more fragmented windows than bqskit's real
-//! algorithm -- confirmed to starve Stage 3 (TRbO) of the multi-Rz windows
-//! it needs (`0/52 blocks improved` on a real circuit). This module fixes
-//! that.
+//! algorithm -- confirmed to starve a wide-window joint optimizer of the
+//! multi-Rz windows it needs (`0/52 blocks improved` on a real circuit).
+//! This module fixes that.
 //!
 //! bqskit's `BarrierBin` (a dedicated case for barrier/measurement/reset
 //! gates) has no equivalent here: this pipeline's `Circuit` model has no
@@ -445,11 +445,12 @@ mod tests {
     /// Regression test for the bug this port fixes: the old single-pass
     /// greedy partitioner closed a block the instant any op touched a new
     /// qubit near the size limit, and never regrouped afterward -- so a
-    /// qubit repeatedly interleaved with others (exactly TRbO's real
-    /// input shape) ended up fragmented into many 1-2 qubit blocks with
-    /// only 1-2 Rz gates each, leaving TRbO nothing to jointly optimize.
-    /// The real algorithm's retroactive merging should instead recognize
-    /// all of this fits in one 4-qubit window.
+    /// qubit repeatedly interleaved with others (exactly the shape a
+    /// downstream wide-window joint-optimization consumer would need)
+    /// ended up fragmented into many 1-2 qubit blocks with only 1-2 Rz
+    /// gates each, leaving nothing to jointly optimize. The real
+    /// algorithm's retroactive merging should instead recognize all of
+    /// this fits in one 4-qubit window.
     #[test]
     fn repeated_qubit_interleaved_with_others_forms_one_wide_block() {
         let mut c = Circuit::new(4);

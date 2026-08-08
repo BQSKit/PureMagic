@@ -13,4 +13,3 @@ pub mod rounding;
 pub mod stage4_scan_removal;
 pub mod stats;
 pub mod synthesize;
-pub mod trbo;

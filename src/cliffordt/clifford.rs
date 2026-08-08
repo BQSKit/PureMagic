@@ -119,9 +119,9 @@ pub fn circuit_from_word(word: &[Gate]) -> Circuit {
 /// to every later stage (`Circuit::num_params`/`params`/`set_params` only
 /// recognize `Rz`), so a genuine rotation loaded as `rx`/`ry`/`u3` would
 /// otherwise never become an adjustable parameter at all -- this same
-/// stage's own rounding step, Stage 2's `ScanningGateRemovalPass`, and
-/// Stage 3's TRbO would all silently treat it as fixed background
-/// structure. This is what actually exposes it, matching what bqskit's
+/// stage's own rounding step and Stage 2's `ScanningGateRemovalPass` would
+/// both silently treat it as fixed background structure. This is what
+/// actually exposes it, matching what bqskit's
 /// `ZXZXZDecomposition` achieves by running unconditionally on every block
 /// (not just ones that already happen to be phrased in terms of `Rz`).
 pub fn decompose_to_rz_canonical(target: &Unitary) -> Circuit {

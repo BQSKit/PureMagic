@@ -6,8 +6,8 @@
 //! its own test suite -- rather than the hand-rolled "bump lambda by 10x
 //! and retry" solver this module started with. Callers supply one combined
 //! `&[f64] -> (residuals, jacobian)` closure rather than two separate ones:
-//! for `fidelity_residuals`, the paired Jacobian is `fidelity_jacobian`'s
-//! analytic derivative built from `Circuit::unitary_and_rz_derivatives`'s
+//! `fidelity_residuals_and_jacobian` computes both together, its analytic
+//! derivative built from `Circuit::unitary_and_rz_derivatives`'s
 //! prefix/suffix per-gate derivatives. `NlsProblem` below caches that pair
 //! per parameter point (the crate's own trust-region loop always calls
 //! `residuals()` then `jacobian()` once each at the *same* current point
@@ -17,9 +17,9 @@
 //!
 //! `instantiate_from`/`instantiate_multistart` specialize it to "fit a
 //! circuit template's Rz angles (plus a free global phase) to a target
-//! unitary" -- used by Stage 2's re-fit. Stage 3 (TRbO) builds its own
-//! combined closure (fidelity + rounding-cost terms) on top of the same
-//! generic core.
+//! unitary" -- used by Stage 2's re-fit. Other callers can build their own
+//! combined closures (e.g. fidelity plus extra cost terms) on top of the
+//! same generic core.
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{DMatrix, DVector, Dyn, Owned};
@@ -182,40 +182,16 @@ pub fn lm_fit_multistart(
 
 /// Global-phase-invariant residual vector (real, imag interleaved over
 /// every matrix entry) for `circuit_template` with its Rz angles set to
-/// `params`, against `target`. The aligning phase is computed
-/// analytically (`matrix::global_phase_between`, the same optimal-phase
-/// formula the final `distance()` verification metric uses) rather than
-/// fit as an extra free parameter: adding a fitted phase parameter instead
-/// would force the optimizer to also resolve an extra periodic dimension
-/// that has a closed-form answer at every evaluation -- a strictly harder
-/// landscape for no benefit.
-pub fn fidelity_residuals(
-    circuit_template: &Circuit, target: &Unitary, params: &[f64],
-) -> DVector<f64> {
-    let mut c = circuit_template.clone();
-    c.set_params(params);
-    let built = c.get_unitary();
-    let phase = crate::cliffordt::matrix::global_phase_between(target, &built);
-    let rot = C64::new(phase.cos(), phase.sin());
-    let dim = built.nrows();
-    let mut r = DVector::zeros(2 * dim * dim);
-    let mut k = 0;
-    for i in 0..dim {
-        for j in 0..dim {
-            let diff = built[(i, j)] * rot - target[(i, j)];
-            r[k] = diff.re;
-            r[k + 1] = diff.im;
-            k += 2;
-        }
-    }
-    r
-}
-
-/// `fidelity_residuals`'s value *and* its analytic Jacobian, computed
+/// `params`, against `target`, and its analytic Jacobian, computed
 /// together off one shared `Circuit::unitary_and_rz_derivatives` call (one
 /// forward + one backward sweep over the circuit's gates, total) instead
 /// of two independent sweeps -- this is the combined closure `NlsProblem`
-/// caches per parameter point. Differentiates through the phase-alignment
+/// caches per parameter point. The aligning phase is computed analytically
+/// (see below) rather than fit as an extra free parameter: adding a fitted
+/// phase parameter instead would force the optimizer to also resolve an
+/// extra periodic dimension that has a closed-form answer at every
+/// evaluation -- a strictly harder landscape for no benefit. Differentiates
+/// through the phase-alignment
 /// term analytically too: writing `s = tr(built^dagger target)`, the
 /// aligning phase's `rot = exp(i*phase) = s/|s|` (a standard identity for
 /// `phase = arg(s)`), and for a *real* parameter `theta`, `d(rot)/dtheta =
@@ -282,13 +258,16 @@ pub fn fidelity_residuals_and_jacobian(
 }
 
 /// Fit `circuit_template`'s Rz angles to best match `target` (up to global
-/// phase, resolved analytically inside `fidelity_residuals`), from several
-/// random starts plus the template's current parameters and an all-zero
-/// start (often already close).
+/// phase, resolved analytically inside `fidelity_residuals_and_jacobian`),
+/// from several random starts plus the template's current parameters and an
+/// all-zero start (often already close). Returns just the best-fit
+/// parameters -- callers that also want the achieved fit quality can
+/// recompute it directly (e.g. via `matrix::distance` against the target
+/// unitary with those parameters applied).
 pub fn instantiate_multistart(
     circuit_template: &Circuit, target: &Unitary, n_starts: usize, max_iters: usize, seed: u64,
     success_threshold: f64,
-) -> FitResultDistance {
+) -> Vec<f64> {
     let n_rz = circuit_template.num_params();
 
     let extra_starts = vec![vec![0.0; n_rz], circuit_template.params()];
@@ -304,16 +283,7 @@ pub fn instantiate_multistart(
         seed,
         success_threshold,
     );
-    FitResultDistance { params: fit.params, distance: fit.cost_norm }
-}
-
-/// Like `FitResult`, but with the residual norm relabeled as a "distance"
-/// (i.e. an operator-norm-scale error), and with the global phase already
-/// dropped -- the shape callers of the circuit-specific `instantiate_*`
-/// functions want.
-pub struct FitResultDistance {
-    pub params: Vec<f64>,
-    pub distance: f64,
+    fit.params
 }
 
 #[cfg(test)]
@@ -356,8 +326,7 @@ mod tests {
         let target = target_circuit.get_unitary();
 
         let params = vec![0.6, 0.1, -0.4];
-        let (r0, analytic) = fidelity_residuals_and_jacobian(&template, &target, &params);
-        assert_eq!(r0, fidelity_residuals(&template, &target, &params));
+        let (_, analytic) = fidelity_residuals_and_jacobian(&template, &target, &params);
 
         const H: f64 = 1e-6;
         for k in 0..params.len() {
@@ -365,8 +334,8 @@ mod tests {
             p_plus[k] += H;
             let mut p_minus = params.clone();
             p_minus[k] -= H;
-            let r_plus = fidelity_residuals(&template, &target, &p_plus);
-            let r_minus = fidelity_residuals(&template, &target, &p_minus);
+            let (r_plus, _) = fidelity_residuals_and_jacobian(&template, &target, &p_plus);
+            let (r_minus, _) = fidelity_residuals_and_jacobian(&template, &target, &p_minus);
             let numeric_col = (r_plus - r_minus) / (2.0 * H);
             let diff = (analytic.column(k) - numeric_col).norm();
             assert!(diff < 1e-6, "column {k}: analytic vs numeric Jacobian differ by {diff}");
@@ -381,11 +350,10 @@ mod tests {
         target_circuit.push(Gate::Rz(0.9), vec![0]);
         let target = target_circuit.get_unitary();
 
-        let result = instantiate_multistart(&template, &target, 4, 100, 42, 1e-8);
-        assert!(result.distance < 1e-6, "distance too large: {}", result.distance);
+        let params = instantiate_multistart(&template, &target, 4, 100, 42, 1e-8);
 
         let mut fitted = template.clone();
-        fitted.set_params(&result.params);
+        fitted.set_params(&params);
         assert!(crate::cliffordt::matrix::distance(&target, &fitted.get_unitary()) < 1e-6);
     }
 
@@ -402,8 +370,10 @@ mod tests {
         target_circuit.push(Gate::Rz(-1.1), vec![0]);
         let target = target_circuit.get_unitary();
 
-        let result = instantiate_multistart(&template, &target, 8, 200, 7, 1e-8);
-        assert!(result.distance < 1e-6, "distance too large: {}", result.distance);
+        let params = instantiate_multistart(&template, &target, 8, 200, 7, 1e-8);
+        let mut fitted = template.clone();
+        fitted.set_params(&params);
+        assert!(crate::cliffordt::matrix::distance(&target, &fitted.get_unitary()) < 1e-6);
     }
 
     #[test]
@@ -412,7 +382,9 @@ mod tests {
         let mut target_circuit = Circuit::new(1);
         target_circuit.push(Gate::Rz(1.3), vec![0]);
         let target = target_circuit.get_unitary();
-        let result = instantiate_multistart(&template, &target, 4, 50, 1, 1e-8);
-        assert!(result.distance > 0.1);
+        let params = instantiate_multistart(&template, &target, 4, 50, 1, 1e-8);
+        let mut fitted = template.clone();
+        fitted.set_params(&params);
+        assert!(crate::cliffordt::matrix::distance(&target, &fitted.get_unitary()) > 0.1);
     }
 }

@@ -19,7 +19,7 @@ log = "0.4"
 simple-logging = "2.0"
 colored = "2"
 # Optional performance improvements
-rayon = "1.10"     # For parallel processing (TRbO multi-start dispatch)
+rayon = "1.10"     # For parallel processing (per-block stage parallelism)
 #dashmap = "5.4"   # For concurrent maps
 #parking_lot = "0.12" # More efficient mutexes
 # Python bindings

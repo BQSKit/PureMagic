@@ -97,7 +97,7 @@ pub fn scanning_gate_removal(circuit: &Circuit, config: &ScanConfig) -> (Circuit
         let removed = slots[idx].take();
         let candidate = build_circuit(circuit.n_qubits, &slots);
 
-        let fit = instantiate_multistart(
+        let params = instantiate_multistart(
             &candidate,
             &target,
             config.n_starts,
@@ -107,11 +107,11 @@ pub fn scanning_gate_removal(circuit: &Circuit, config: &ScanConfig) -> (Circuit
         );
 
         let mut fitted = candidate.clone();
-        fitted.set_params(&fit.params);
+        fitted.set_params(&params);
         let (ok, d) = accept(&target, &fitted.get_unitary(), config);
 
         if ok {
-            apply_params_to_slots(&mut slots, &fit.params);
+            apply_params_to_slots(&mut slots, &params);
             last_error = d;
         } else {
             slots[idx] = removed;
