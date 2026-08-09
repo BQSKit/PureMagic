@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Compile an arbitrary OpenQASM circuit into the Clifford+T gate set, via qiskit,
-bqskit, or cyclosynth.
+Compile an arbitrary OpenQASM circuit into the Clifford+T gate set, via qiskit
+or bqskit.
 
 Output gate set: h, s, sdg, x, y, z, t, tdg, cx (plus measure/barrier/reset and
 any classical control flow that was present in the input -- the bqskit backend
 rejects circuits with control flow, since bqskit's own `Circuit` has no concept
-of it; the qiskit and cyclosynth backends both handle it, since they share the
-same rewrite_single_qubit_runs pipeline, which recurses into control-flow
-blocks). The bqskit backend also natively emits sx/sxdg (sqrt(X) and its
-inverse): bqskit's own ZXZXZ decomposition and Clifford+T gate set treat sx as
-a Clifford generator in its own right rather than expanding it to h/s, and the
-downstream Rust `transpile` binary understands both natively, so this is not
-rewritten away. The qiskit and cyclosynth backends never produce either.
+of it; the qiskit backend handles it, via rewrite_single_qubit_runs, which
+recurses into control-flow blocks). The bqskit backend also natively emits
+sx/sxdg (sqrt(X) and its inverse): bqskit's own ZXZXZ decomposition and
+Clifford+T gate set treat sx as a Clifford generator in its own right rather
+than expanding it to h/s, and the downstream Rust `transpile` binary
+understands both natively, so this is not rewritten away. The qiskit backend
+never produces either.
 
 Pipeline
 --------
@@ -28,15 +28,14 @@ Pipeline
   transpiled to {u, cx} (so that every multi-qubit gate -- ccx, cswap, cry,
   rzz, ryy, ... -- is broken down into cx plus single-qubit rotations) and
   CliffordTSynthesizer.count_real_rotations, a cheap gridsynth-free proxy for
-  actual T-count, picks whichever needs fewer real rotations. All three
-  backends resynthesise from this same {u, cx} circuit -- necessary for the
+  actual T-count, picks whichever needs fewer real rotations. Both backends
+  resynthesise from this same {u, cx} circuit -- necessary for the
   qiskit backend (which only knows how to re-synthesise single-qubit runs,
   not arbitrary multi-qubit gates) and a real, if smaller, improvement for
   the bqskit backend too (bqskit's own partitioner refragments single-qubit
   runs across block boundaries regardless of input quality, so it cannot
   benefit from the preopt step as much as qiskit's own pipeline does).
-- Resynthesise over Clifford+T (--backend qiskit, the default, bqskit, or
-  cyclosynth):
+- Resynthesise over Clifford+T (--backend qiskit, the default, or bqskit):
 
    qiskit: merge each maximal run of consecutive single-qubit gates on a wire
    into one matrix, then re-synthesise that matrix:
@@ -95,77 +94,39 @@ Pipeline
    ScanningGateRemovalPass's numerical search also catches approximate
    cancellations between rotations that don't share a parity at all.
 
-   rewrite_single_qubit_runs (the qiskit/cyclosynth backends' shared
-   pipeline) has no equivalent of its own: it only merges consecutive
-   single-qubit gates on one wire between CX boundaries, and never tests
-   whether an entire gate can be dropped from a multi-gate block. Also rejects
-   circuits with classical control flow (bqskit's own Circuit has no concept
-   of it) -- the qiskit and cyclosynth backends are the only options for
-   those.
+   rewrite_single_qubit_runs (the qiskit backend's own pipeline) has no
+   equivalent of its own: it only merges consecutive single-qubit gates on
+   one wire between CX boundaries, and never tests whether an entire gate can
+   be dropped from a multi-gate block. Also rejects circuits with classical
+   control flow (bqskit's own Circuit has no concept of it) -- the qiskit
+   backend is the only option for those.
 
-   --bqskit-cyclosynth: another optional, off-by-default stage (needs the
-   optional cyclosynth extension module -- see requirements.txt), replacing
-   the final ZXZXZDecomposition+GridSynthPass single-qubit-block synthesis
-   stage with CyclosynthBlockSynthesisPass: cyclosynth's joint ZYZ lattice
-   search per block instead of gridsynth's per-Rz Ross-Selinger synthesis --
-   see the "cyclosynth" paragraph below and CyclosynthBlockSynthesisPass's
-   docstring for the mechanism. Blocks cyclosynth's search can hang or fail
-   on (near-Clifford targets, or a
-   result-less call -- see the near-Clifford routing note in the
-   "cyclosynth" paragraph below, which applies identically here) are left
-   untouched by CyclosynthBlockSynthesisPass and caught by a trailing
-   IsolateRZGatePass+GridSynthPass mop-up stage instead -- run at the top
-   level of the workflow, not nested inside CyclosynthBlockSynthesisPass
-   itself, since that nesting reproducibly triggered a race in bqskit's own
-   runtime (RuntimeTask.cancel() on a task with no coroutine yet -- see
-   CyclosynthBlockSynthesisPass's docstring).
+The qiskit backend reports percentage progress through both the main
+resynthesis pass and each cleanup round after it (silenced by -q, like all
+other logging) -- compile_via_resynthesis's shared pipeline makes this cheap
+to add once. The main pass is weighted by actual gridsynth calls (cache
+misses), not by block count: CliffordTSynthesizer caches by angle key, so on
+circuits with a lot of repeated rotations (QFT-family circuits, say) the vast
+majority of blocks are instant cache hits, and counting them equally would
+make progress look stuck near the start until the last moment, then jump
+straight to complete -- see estimate_synthesis_calls/_with_progress. Cleanup
+rounds instead weight by plain block count (count_resynthesis_blocks/
+_with_block_progress): shorten_run never calls gridsynth, so there is no
+cache-hit/cache-miss split to correct for there, but on a large enough
+circuit those rounds are not the "expected to be fast" afterthought they once
+looked like -- measured on a large, wide QV circuit, the cleanup rounds
+together took about as long as the main resynthesis pass itself, entirely
+silent before this was added. bqskit reports none: it exposes no public
+per-block progress callback, and the only usable signal (DEBUG-level runtime
+log lines, one per block) would need splitting build_bqskit_workflow's
+currently-atomic compile() call in two -- with the two halves' error bounds
+recombined by hand to avoid changing the already-verified error_bound numbers
+-- and risks adding real overhead of its own inside bqskit's
+runtime-server/worker pipeline. Not worth it for a backend that is "kept for
+comparison, not because it is competitive" (see the bqskit paragraph above).
 
-   cyclosynth: shares the qiskit backend's rewrite_single_qubit_runs pipeline
-   entirely (merge each maximal single-qubit run into one matrix, clean up
-   the same way afterward), differing only in how a non-Clifford block gets
-   synthesised: instead of a ZXZ decomposition into up to three independently
-   gridsynth'd Rz rotations, this backend takes the block's ZYZ Euler angles
-   (qiskit's own U3 convention) and hands all three to cyclosynth's
-   synthesize_u3 in one call, which returns a single, near-T-optimal
-   Clifford+T word for the whole block via a diamond-distance lattice search
-   (see "Rotation synthesis" below) rather than gridsynth's Ross-Selinger
-   algorithm. Produces fewer T gates than the qiskit backend on every
-   benchmark measured so far, at real but not prohibitive compile-time cost
-   (see CyclosynthSynthesizer's docstring for measured figures) -- needs the
-   cyclosynth extension built separately (it is a git submodule, not a PyPI
-   package; see cyclosynth/README.md and this repo's requirements.txt).
-   Blocks whose target lands within CYCLOSYNTH_NEAR_CLIFFORD_MARGIN of a
-   Clifford element are instead routed to the qiskit backend's gridsynth
-   path: cyclosynth's search can hang or fail to terminate on such targets
-   (e.g. a QFT's deep phase gates) -- see cyclosynth-bug-report.md.
-
-The qiskit and cyclosynth backends report percentage progress through both
-the main resynthesis pass and each cleanup round after it (silenced by -q,
-like all other logging) -- compile_via_resynthesis's shared pipeline makes
-this cheap to add once for both. The main pass is weighted by actual
-gridsynth/cyclosynth calls (cache misses), not by block count: both
-synthesizers cache by angle/matrix key, so on circuits with a lot of
-repeated rotations (QFT-family circuits, say) the vast majority of blocks
-are instant cache hits, and counting them equally would make progress look
-stuck near the start until the last moment, then jump straight to complete
--- see estimate_synthesis_calls/_with_progress. Cleanup rounds instead weight
-by plain block count (count_resynthesis_blocks/_with_block_progress):
-shorten_run never calls gridsynth/cyclosynth, so there is no cache-hit/
-cache-miss split to correct for there, but on a large enough circuit those
-rounds are not the "expected to be fast" afterthought they once looked like
--- measured on a large, wide QV circuit, the cleanup rounds together took
-about as long as the main resynthesis pass itself, entirely silent before
-this was added. bqskit reports none: it exposes no public per-block progress callback,
-and the only usable signal (DEBUG-level runtime log lines, one per block)
-would need splitting build_bqskit_workflow's currently-atomic compile() call
-in two -- with the two halves' error bounds recombined by hand to avoid
-changing the already-verified error_bound numbers -- and risks adding real
-overhead of its own inside bqskit's runtime-server/worker pipeline. Not
-worth it for a backend that is "kept for comparison, not because it is
-competitive" (see the bqskit paragraph above).
-
-Rotation synthesis: gridsynth and cyclosynth
----------------------------------------------
+Rotation synthesis: gridsynth
+------------------------------
 The qiskit and bqskit backends both use the Ross-Selinger algorithm
 (gridsynth), near T-optimal, with T-count growing only logarithmically in
 1/epsilon per rotation. The qiskit backend uses qiskit's own Rust
@@ -182,16 +143,7 @@ exactly and cost nothing. Each distinct rotation is synthesised once and
 reused, so cost scales with the number of distinct angles rather than the
 number of gates.
 
-The cyclosynth backend instead uses cyclosynth's own lattice-search algorithm
-(see CyclosynthSynthesizer's docstring), synthesising a whole block's three
-Euler angles in one call rather than three independent Rz rotations -- so its
-epsilon is a diamond-distance bound on the whole block, not a
-per-elementary-rotation bound like gridsynth's. Despite that difference in
-what epsilon formally bounds, comparing both at the same nominal --epsilon in
-practice delivers comparable real accuracy (see below) -- this was verified,
-not assumed.
-
---epsilon defaults to EPSILON_DEFAULT for all three backends. Measured via
+--epsilon defaults to EPSILON_DEFAULT for both backends. Measured via
 exact dense-unitary fidelity (not this script's own coarser --verify checks)
 on a couple of small benchmarks (data/qasmbench/dnn_n8.qasm, data/qasmbench/
 ising_n10.qasm), real infidelity plateaus around the default for every
@@ -199,13 +151,9 @@ backend's resynthesis -- tightening the requested epsilon much further costs
 substantially more T gates for a change in delivered accuracy
 indistinguishable from float64 rounding noise. Looser than the default does
 cost real accuracy, still fine for most purposes but a genuine, if small,
-step down from the default's own plateau. The cyclosynth backend plateaus at
-essentially the same infidelity at the same default epsilon, on the same
-benchmarks (see CyclosynthSynthesizer's docstring) -- confirming the shared
-default is a meaningful apples-to-apples comparison point despite the
-differing epsilon semantics above.
+step down from the default's own plateau.
 
-The error bound this script reports (all three backends -- see "Verification"
+The error bound this script reports (both backends -- see "Verification"
 below) is a real upper bound, not an estimate of actual fidelity loss: it
 sums per-rewrite worst-case errors, which above assumes every rewrite's error
 constructively interferes with every other's. In practice they mostly do
@@ -229,12 +177,7 @@ basis + error bound: always run, no flag needed -- both are cheap (no
     approximation of it, so by subadditivity of the spectral norm that sum is
     a genuine upper bound on the operator-norm distance between the compiled
     and unrolled unitaries -- taking qiskit's own unroll and inverse
-    cancellation as exact.  The cyclosynth backend computes its error bound
-    identically (CyclosynthSynthesizer._resynthesize always re-measures the
-    built word's spectral-norm error via word_error, never trusting
-    cyclosynth's own SynthResult.distance -- a diamond-distance bound, not
-    the same quantity -- for accounting), so the two backends' error bounds
-    are directly comparable.  The bqskit backend gets a narrower analogue
+    cancellation as exact.  The bqskit backend gets a narrower analogue
     from bqskit's own machinery: each ZXZXZDecomposition/final-synthesis
     ForEachBlockPass call runs with calculate_error_bound=True, so bqskit
     measures the exact unitary distance of every single-qubit block before
@@ -289,7 +232,6 @@ Examples
         --epsilon 1e-6 --verify
     ./compile_cliffordt.py ../data/qasmbench/*.qasm -o out_dir --stats stats.json
     ./compile_cliffordt.py circuit.qasm --backend bqskit --seed 1
-    ./compile_cliffordt.py circuit.qasm --backend cyclosynth --verify
 """
 
 from __future__ import annotations
@@ -307,7 +249,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Union
+from typing import Iterable, Iterator, Optional
 
 # Does not actually suppress rsgridsynth's panic backtrace (confirmed: it
 # bypasses RUST_BACKTRACE) -- kept in case some other dependency honors it,
@@ -336,7 +278,6 @@ from qiskit.circuit.library import (
 from bqskit import Circuit
 from bqskit.compiler import Compiler
 from bqskit.compiler.basepass import BasePass
-from bqskit.compiler.passdata import PassData
 
 # bqskit.ft resolves at runtime via pkgutil.extend_path (see bqskit-ft's
 # __init__.py) -- a dynamic sys.path merge pyright cannot evaluate statically,
@@ -354,17 +295,6 @@ from bqskit.ft.ftpasses.rounding import (
 )  # pyright: ignore[reportMissingImports]
 from bqskit.ft.rules.isolate_rz import IsolateRZGatePass  # pyright: ignore[reportMissingImports]
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
-
-# Aliased to avoid silently shadowing qiskit's own same-named gate classes
-# imported above.
-from bqskit.ir.gates import HGate as BqskitHGate
-from bqskit.ir.gates import SGate as BqskitSGate
-from bqskit.ir.gates import SdgGate as BqskitSdgGate
-from bqskit.ir.gates import TGate as BqskitTGate
-from bqskit.ir.gates import TdgGate as BqskitTdgGate
-from bqskit.ir.gates import XGate as BqskitXGate
-from bqskit.ir.gates import YGate as BqskitYGate
-from bqskit.ir.gates import ZGate as BqskitZGate
 from bqskit.passes.control.foreach import ForEachBlockPass
 from bqskit.passes.partitioning.quick import QuickPartitioner
 from bqskit.passes.partitioning.single import GroupSingleQuditGatePass
@@ -385,11 +315,6 @@ try:  # optional fallback for the angles rsgridsynth 0.2.0 panics on
 except ImportError:
     mpmath = None
     gridsynth_gates = None
-
-try:  # optional: only needed for --backend cyclosynth (see cyclosynth/README.md)
-    import cyclosynth
-except ImportError:
-    cyclosynth = None
 
 # sx/sxdg included because the bqskit backend emits them natively (its own
 # Clifford+T gate set treats sx as a generator) and src/transpile.rs's
@@ -440,31 +365,6 @@ CLIFFORD_1Q_NAMES = frozenset(CLIFFORD_GENERATORS) | {"id"}
 # (qiskit's gridsynth_rz returns a circuit with lowercase gate names instead.)
 GRIDSYNTH_NAMES = {"H": "h", "S": "s", "T": "t", "X": "x"}
 
-# cyclosynth's alphabet is {H,S,T,X,Y,Z}; lowercase = dagger (only S/T have one).
-CYCLOSYNTH_GATE_NAMES = {
-    "H": "h",
-    "S": "s",
-    "s": "sdg",
-    "T": "t",
-    "t": "tdg",
-    "X": "x",
-    "Y": "y",
-    "Z": "z",
-}
-
-# Used to build a bqskit Circuit directly from a cyclosynth word (see
-# CyclosynthBlockSynthesisPass).
-BQSKIT_GATE_FOR_NAME = {
-    "h": BqskitHGate(),
-    "s": BqskitSGate(),
-    "sdg": BqskitSdgGate(),
-    "t": BqskitTGate(),
-    "tdg": BqskitTdgGate(),
-    "x": BqskitXGate(),
-    "y": BqskitYGate(),
-    "z": BqskitZGate(),
-}
-
 # Working precision pygridsynth is driven at, matching bqskit's GridSynthPass.
 GRIDSYNTH_DPS = 128
 
@@ -472,13 +372,6 @@ GRIDSYNTH_DPS = 128
 # is accumulated over hundreds of 2x2 multiplications, so comparing a word
 # against it is only meaningful down to about this much floating-point noise.
 EXACTNESS_FLOOR = 1e-12
-
-# cyclosynth's search can hang for targets whose distance to the nearest
-# Clifford is much smaller than epsilon but still needs genuine synthesis
-# (see cyclosynth-bug-report.md). This margin sits well clear of the measured
-# danger zone. Not exposed via CLI: setting it too small could reintroduce
-# the hang.
-CYCLOSYNTH_NEAR_CLIFFORD_MARGIN = 1e4
 
 # The one rsgridsynth panic message known safe to swallow (falls back to
 # pygridsynth) -- see _capture_stderr_fd's use in _synthesize_rz. Matched
@@ -586,41 +479,6 @@ def word_error(target: np.ndarray, word: Iterable[str]) -> tuple[float, float]:
     built = word_matrix(word)
     phase = global_phase_between(target, built)
     return spectral_error(target, built, phase), phase
-
-
-def nearest_clifford_distance(matrix: np.ndarray, clifford_words: dict) -> float:
-    """Spectral-norm distance from `matrix` to the closest single-qubit
-    Clifford element in `clifford_words` -- cheap (a small number of small
-    matrix ops). Used to detect "near-Clifford but not close enough to treat
-    as exact" targets, which cyclosynth's search can hang or fail on (see
-    cyclosynth-bug-report.md and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
-    """
-    return min(word_error(matrix, word)[0] for word in clifford_words.values())
-
-
-def zyz_angles(
-    decomposer: OneQubitEulerDecomposer, matrix: np.ndarray
-) -> tuple[float, float, float]:
-    """(theta, phi, lam) matching cyclosynth's synthesize_u3 = qiskit's
-    U3 = Rz(phi)*Ry(theta)*Rz(lam). OneQubitEulerDecomposer drops trivial
-    instructions (e.g. a lone T decomposes to just one rz), so angles are
-    assigned by name/position, not a fixed index. Shared by CyclosynthSynthesizer
-    (the qiskit-circuit resynthesis path) and CyclosynthBlockSynthesisPass (the
-    bqskit-native one)."""
-    theta = phi = lam = 0.0
-    seen_ry = False
-    for inst in decomposer(matrix).data:
-        name, angle = inst.operation.name, inst.operation.params[0]
-        if name == "ry":
-            theta, seen_ry = angle, True
-        elif name == "rz":
-            if seen_ry:
-                phi = angle
-            else:
-                lam = angle
-        else:  # pragma: no cover - ZYZ only emits ry/rz
-            raise RuntimeError(f"unexpected gate {name} in ZYZ decomposition")
-    return theta, phi, lam
 
 
 def rz_pi_4_word(k: int) -> tuple[str, ...]:
@@ -776,10 +634,9 @@ class CliffordTSynthesizer:
     def _synthesize_uncounted(self, matrix: np.ndarray) -> tuple[QuantumCircuit, str, float]:
         """(circuit, kind, error) for `matrix`, without touching counters or
         error_bound -- kind is "clifford"/"pi_4" (exact path) or "approx"
-        (gridsynth path). Split out of synthesize() so
-        CyclosynthSynthesizer's gridsynth fallback (see its docstring) can
-        reuse this computation while accounting the result into its OWN
-        counters, rather than this instance's.
+        (gridsynth path). Split out of synthesize() so a caller that wants to
+        account the result into its own counters (rather than this
+        instance's) can reuse the computation directly.
         """
         exact = self._exact(matrix)
         if exact is not None:
@@ -1022,332 +879,13 @@ class CliffordTSynthesizer:
         return tuple(GRIDSYNTH_NAMES[symbol] for symbol in reversed(sequence) if symbol != "W")
 
 
-class CyclosynthSynthesizer:
-    """Re-synthesise single-qubit unitaries over {h,s,sdg,x,y,z,t,tdg} via cyclosynth.
-
-    Unlike CliffordTSynthesizer's ZXZ-decompose-then-gridsynth-each-Rz
-    approach, cyclosynth's synthesize_u3 takes a whole block's ZYZ Euler
-    angles (qiskit's own U3 convention: Rz(phi)*Ry(theta)*Rz(lam)) and
-    returns one jointly near-T-optimal word for the entire block in a single
-    call, via a diamond-distance lattice search (see the cyclosynth paper)
-    rather than gridsynth's Ross-Selinger algorithm.
-
-    Measured at EPSILON_DEFAULT and --cyclosynth-threads 1 (for reproducible
-    figures -- see the cost/determinism paragraph below) against the qiskit
-    backend (both real circuits, both fidelity effectively perfect to the
-    precision --verify prints): fewer T gates every time across a range of
-    benchmark circuits, and (via exact dense-unitary fidelity on the ones
-    small enough for it) essentially the same real infidelity (the same
-    float64 noise floor both backends plateau at -- see module docstring's
-    "Rotation synthesis" section), confirming the comparison is
-    apples-to-apples despite the two backends' epsilon meaning slightly
-    different things (diamond distance vs. closer to a spectral-norm bound).
-
-    The cost: real per-call compile time, and results that (unlike qiskit's
-    exact algorithm, or bqskit's --seed) are only reproducible if pinned to a
-    single thread. cyclosynth's own lattice search is parallelised via rayon,
-    with no per-call seed in its public API; whichever thread's candidate
-    happens to finish first can vary run to run, so both the exact word and
-    the overall T-count are only reproducible at --cyclosynth-threads 1 (see
-    that flag's help text). Measured on a batch of random angles at
-    EPSILON_DEFAULT on a many-core machine: pinning to a single thread costs
-    a real, substantial multiple in per-call time relative to rayon's own
-    default thread count, and that gap widens further at tighter epsilon,
-    where a single call can take a long time pinned to one thread.
-    --cyclosynth-threads therefore defaults to
-    rayon's own default (fast, not reproducible) rather than 1 (reproducible,
-    much slower) -- pin it to 1 when comparing exact T-counts run to run
-    matters more than speed.
-    """
-
-    def __init__(
-        self,
-        epsilon: float = EPSILON_DEFAULT,
-        tol: Optional[float] = None,
-        threads: Optional[int] = None,
-    ) -> None:
-        if cyclosynth is None:
-            raise RuntimeError(
-                "the cyclosynth backend needs the cyclosynth extension module, "
-                "which is not installed. From cyclosynth/: pip install maturin, "
-                "then maturin build --release and pip install the wheel it "
-                "produces (needs a Rust toolchain -- see "
-                "cyclosynth/rust-toolchain.toml -- and system gmp/mpfr; see "
-                "cyclosynth/README.md)."
-            )
-        if threads is not None:
-            # rayon builds its thread pool lazily on first search call and
-            # reads this env var then, not at import time -- so setting it
-            # here still works. Only the first value set in a process takes
-            # effect; a second CyclosynthSynthesizer with a different
-            # `threads` in the same process would silently keep the first.
-            os.environ["RAYON_NUM_THREADS"] = str(threads)
-        self.epsilon = epsilon
-        self.tol = max(epsilon, EXACTNESS_FLOOR) if tol is None else tol
-        self._decomposer = OneQubitEulerDecomposer(basis="ZYZ")
-        self._clifford_words = build_clifford_words()
-        self._synth = cyclosynth.Synthesizer(epsilon=epsilon, sqrt_t=False)
-        self._cache: dict[tuple, tuple[str, ...]] = {}
-        # Fallback for blocks too close to a Clifford for cyclosynth's search
-        # to handle safely (see _resynthesize and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
-        # Only its (circuit, kind, error) return and gridsynth cache are used --
-        # its own counters are never read.
-        self._fallback = CliffordTSynthesizer(epsilon=epsilon, tol=self.tol)
-        self.reset_counters()
-
-    def reset_counters(self) -> None:
-        self.n_clifford = 0
-        self.n_exact = 0
-        self.n_approx = 0
-        self.n_merged = 0
-        self.n_gridsynth_fallback = 0
-        self.max_error = 0.0
-        self.error_bound = 0.0
-
-    def _record(self, error: float) -> None:
-        self.max_error = max(self.max_error, error)
-        self.error_bound += error
-
-    def synthesize(self, matrix: np.ndarray, _run=None) -> QuantumCircuit:
-        circuit, kind, error = self._resynthesize(matrix)
-        if kind == "clifford":
-            self.n_clifford += 1
-        elif kind == "exact":
-            self.n_exact += 1
-        elif kind == "gridsynth_fallback":
-            self.n_gridsynth_fallback += 1
-        else:
-            self.n_approx += 1
-        self._record(error)
-        return circuit
-
-    def shorten_run(self, matrix: np.ndarray, run: list[Gate]) -> Optional[QuantumCircuit]:
-        """Re-synthesise an already-compiled run; cyclosynth already returns a
-        jointly-minimal word per block, so (unlike CliffordTSynthesizer, whose
-        gridsynth path leaves diagonal-subblock slack to collect) there is
-        nothing further to collapse within one block -- this only helps when
-        cancel_inverses has newly merged two previously CX-separated runs."""
-        circuit, _, error = self._resynthesize(matrix)
-        if gate_cost(circuit) >= gate_cost(run):
-            return None
-        self.n_merged += 1
-        self._record(error)
-        return circuit
-
-    def _resynthesize(self, matrix: np.ndarray) -> tuple[QuantumCircuit, str, float]:
-        """(circuit, kind, error). Never trusts cyclosynth's own result.distance
-        (a diamond-distance bound) for accounting -- always re-measures the
-        built word's spectral-norm error via word_error, exactly like
-        CliffordTSynthesizer's own paths, so error_bound/max_error stay one
-        homogeneous, backend-comparable metric (see module docstring).
-
-        Blocks whose target is very close to (but not within tol of) a
-        Clifford element are routed to CliffordTSynthesizer's gridsynth path
-        (self._fallback) instead of cyclosynth: cyclosynth's lattice search
-        can become pathologically slow or fail to terminate for such targets
-        (see cyclosynth-bug-report.md and CYCLOSYNTH_NEAR_CLIFFORD_MARGIN).
-        The catch-None branch below is a defense-in-depth backstop for the
-        same failure mode slipping past that check -- it protects against a
-        clean empty result, not an actual hang.
-        """
-        key = canonical_key(matrix)
-        word = self._clifford_words.get(key)
-        if word is not None:
-            error, phase = word_error(matrix, word)
-            if error <= self.tol:
-                return circuit_from_word(word, matrix, phase), "clifford", error
-
-        if (
-            nearest_clifford_distance(matrix, self._clifford_words)
-            < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon
-        ):
-            circuit, _, error = self._fallback._synthesize_uncounted(matrix)
-            return circuit, "gridsynth_fallback", error
-
-        word = self._cache.get(key)
-        if word is None:
-            theta, phi, lam = zyz_angles(self._decomposer, matrix)
-            result = self._synth.synthesize_u3(theta, phi, lam)
-            if result is None or result.gates is None:
-                circuit, _, error = self._fallback._synthesize_uncounted(matrix)
-                return circuit, "gridsynth_fallback", error
-            # cyclosynth's gate string is in matrix order, so it is applied in
-            # reverse -- same convention as pygridsynth's output above.
-            word = tuple(CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates))
-            self._cache[key] = word
-
-        error, phase = word_error(matrix, word)
-        kind = "exact" if error <= EXACTNESS_FLOOR else "approx"
-        return circuit_from_word(word, matrix, phase), kind, error
-
-    def estimate_synthesis_calls(self, circuit: QuantumCircuit) -> int:
-        """How many distinct blocks resynthesizing `circuit` will actually
-        send to cyclosynth's lattice search, i.e. cache misses in
-        _resynthesize -- cheap to compute up front (a Clifford-table/
-        canonical-key check, no search) but gives an accurate denominator
-        for weighting progress by real work rather than block count (see
-        CliffordTSynthesizer.estimate_synthesis_calls).
-
-        Deliberately does not call _resynthesize itself: on a genuine miss
-        that would trigger the real, expensive synthesize_u3 call. Instead
-        it inlines just the Clifford-check and near-Clifford-fallback gating
-        from the start of _resynthesize, which must stay in sync with that
-        method -- blocks routed to the gridsynth fallback never touch
-        self._cache, so they must not be counted as future cyclosynth misses
-        either.
-
-        `self._cache` may already hold entries from an earlier circuit
-        (compile_dispatch's callers can reuse one synth across a batch of
-        files) -- those keys are excluded rather than counted, so `total`
-        reflects only the *new* misses this circuit will cause, not the
-        accumulated cache size.
-        """
-        already_cached = set(self._cache)
-        new_keys: set[tuple] = set()
-
-        def counter(matrix, run):
-            key = canonical_key(matrix)
-            word = self._clifford_words.get(key)
-            if word is not None:
-                error, _ = word_error(matrix, word)
-                if error <= self.tol:
-                    return None
-            if (
-                nearest_clifford_distance(matrix, self._clifford_words)
-                < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon
-            ):
-                return None
-            if key not in already_cached:
-                new_keys.add(key)
-            return None
-
-        rewrite_single_qubit_runs(circuit, counter)
-        return len(new_keys)
-
-    def _expensive_cache(self) -> dict:
-        """The cache whose growth marks a genuine cyclosynth search, as
-        opposed to a cache hit or an exact/Clifford block -- watched by
-        _with_progress to weight progress by real work, not block count."""
-        return self._cache
-
-
 # The synthesizer interface compile_via_resynthesis's pipeline expects
 # (epsilon, tol, the n_*/max_error/error_bound counters, reset_counters(),
-# synthesize(), shorten_run()) -- shared by the qiskit and cyclosynth backends.
-ResynthesisSynthesizer = Union[CliffordTSynthesizer, CyclosynthSynthesizer]
-
-
-class CyclosynthBlockSynthesisPass(BasePass):
-    """Re-synthesise a single-qubit block via cyclosynth's joint ZYZ lattice
-    search -- the bqskit-native counterpart to CyclosynthSynthesizer's
-    _resynthesize, built from bqskit primitives (Circuit.get_unitary/become)
-    instead of qiskit ones, so it can be dropped into a ForEachBlockPass right
-    where ZXZXZDecomposition sits in build_bqskit_workflow. Two-tier logic:
-    exact Clifford-table hit, then cyclosynth's joint synthesis for everything
-    else.
-
-    Blocks this pass declines to handle -- near-Clifford targets cyclosynth's
-    search can hang on (see cyclosynth-bug-report.md and
-    CYCLOSYNTH_NEAR_CLIFFORD_MARGIN), or cases where cyclosynth returns no
-    result -- are left completely untouched (no circuit.become() call) rather
-    than resynthesised inline via a nested GridSynthPass fallback. An earlier
-    version ran that fallback as its own Workflow/ForEachBlockPass from inside
-    this pass's run() -- i.e. a second, nested level of bqskit's runtime task
-    dispatch, on top of the ForEachBlockPass already dispatching this pass
-    itself -- which reproducibly triggered a pre-existing race in bqskit's
-    own runtime (RuntimeTask.cancel() raising "Task was cancelled with None
-    coroutine.", from worker.py's recv_incoming thread calling _handle_cancel
-    concurrently with _add_task's non-atomic "register task, then start it"
-    sequence on the main worker thread), seen on dnn_n16.qasm's many
-    real-cyclosynth-synthesis blocks. Untouched blocks instead fall through to
-    build_final_synthesis_passes' own mop-up stage (IsolateRZGatePass +
-    GridSynthPass), which runs at the same top level as every other pass in
-    this file's workflows -- never nested inside another dispatched task, so
-    it can't hit this race.
-
-    Global phase is never tracked here, matching ZXZXZDecomposition's own
-    unconditional phase drop -- bqskit's error-bound accounting
-    (UnitaryMatrix.get_distance_from) and this file's own fidelity checks are
-    all phase-invariant, so there is nothing to reconcile.
-    """
-
-    def __init__(self, synthesis_epsilon: float = EPSILON_DEFAULT) -> None:
-        if cyclosynth is None:
-            raise RuntimeError(
-                "--bqskit-cyclosynth needs the cyclosynth extension module, "
-                "which is not installed. See cyclosynth/README.md."
-            )
-        self.epsilon = synthesis_epsilon
-        self.tol = max(synthesis_epsilon, EXACTNESS_FLOOR)
-        self._decomposer = OneQubitEulerDecomposer(basis="ZYZ")
-        self._clifford_words = build_clifford_words()
-        self._cache: dict[tuple, tuple[str, ...]] = {}
-        # Built lazily (see _synthesizer/__getstate__): ForEachBlockPass ships
-        # this pass to a worker process via pickle, and cyclosynth.Synthesizer
-        # (a PyO3 object) cannot be pickled.
-        self._synth = None
-
-    def __getstate__(self) -> dict:
-        # Drop the unpicklable cyclosynth.Synthesizer before shipping to a
-        # worker process; _synthesizer() rebuilds it lazily there.
-        state = self.__dict__.copy()
-        state["_synth"] = None
-        return state
-
-    def _synthesizer(self):
-        if self._synth is None:
-            assert cyclosynth is not None  # guaranteed by __init__'s guard
-            self._synth = cyclosynth.Synthesizer(epsilon=self.epsilon, sqrt_t=False)
-        return self._synth
-
-    def _word_circuit(self, word: tuple[str, ...]) -> Circuit:
-        new_circuit = Circuit(1)
-        for name in word:
-            new_circuit.append_gate(BQSKIT_GATE_FOR_NAME[name], [0])
-        return new_circuit
-
-    async def run(self, circuit: Circuit, data: PassData) -> None:
-        if circuit.num_qudits != 1 or circuit.radixes[0] != 2:
-            raise ValueError(
-                "CyclosynthBlockSynthesisPass only works on single-qubit "
-                f"blocks. Got {circuit.num_qudits} qudits, radixes {circuit.radixes}."
-            )
-
-        matrix = np.asarray(circuit.get_unitary())
-        key = canonical_key(matrix)
-
-        # Tier 1: exact Clifford-table hit.
-        word = self._clifford_words.get(key)
-        if word is not None:
-            error, _ = word_error(matrix, word)
-            if error <= self.tol:
-                circuit.become(self._word_circuit(word))
-                return
-
-        # Tier 2: near-Clifford-but-not-exact -- route away from cyclosynth,
-        # whose search can hang on these targets. Left untouched;
-        # build_final_synthesis_passes' mop-up stage catches it afterward (see
-        # this class's docstring for why that isn't done inline here).
-        if (
-            nearest_clifford_distance(matrix, self._clifford_words)
-            < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon
-        ):
-            return
-
-        # Tier 3: cyclosynth's joint ZYZ synthesis.
-        word = self._cache.get(key)
-        if word is None:
-            theta, phi, lam = zyz_angles(self._decomposer, matrix)
-            result = self._synthesizer().synthesize_u3(theta, phi, lam)
-            if result is None or result.gates is None:
-                # Leave untouched, same as the near-Clifford case above.
-                return
-            # Same matrix-order-vs-circuit-order reversal as
-            # CyclosynthSynthesizer._resynthesize.
-            word = tuple(CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates))
-            self._cache[key] = word
-
-        circuit.become(self._word_circuit(word))
+# synthesize(), shorten_run()) -- currently just CliffordTSynthesizer, kept as
+# its own name since compile_via_resynthesis/compile_dispatch/main all
+# document their `synth` parameter against this interface rather than the
+# concrete class.
+ResynthesisSynthesizer = CliffordTSynthesizer
 
 
 def load_circuit(path: Path) -> QuantumCircuit:
@@ -1698,26 +1236,23 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
     interval) shows no progress line until the unconditional completion
     line; a slow one visibly ticks upward for as long as it actually runs.
 
-    `cache` is the synthesizer's cache dict (CliffordTSynthesizer/
-    CyclosynthSynthesizer's `_expensive_cache()`); `count` advances by
-    however many entries a call actually *adds* to it (not just whether it
-    grew), i.e. genuine gridsynth/cyclosynth searches, not merged runs. A
-    single CliffordTSynthesizer block can need gridsynth for more than one
-    of its Euler angles (Rz and Rx) in one call, growing the cache by more
-    than one entry at once -- counting only "grew: yes/no" as a single unit
-    systematically undercounts (confirmed via data/qasmbench/dnn_n8.qasm:
-    the old scheme stalled well short of complete). Both synthesizers cache
-    by angle/matrix key, so on circuits with a lot of repeated rotations
-    (QFT-family circuits, say) the vast majority of calls are instant cache
-    hits -- with plain block counting, progress used to race through the
-    first stretch (the actual searches) then jump straight to complete on
-    the cache hits, rather than tracking real elapsed time.  `total` (from
-    estimate_synthesis_calls) is only an ESTIMATE of how many new cache
-    entries will appear -- e.g. CyclosynthSynthesizer's catch-None gridsynth
-    fallback can also legitimately not grow `cache` at all for a block the
-    estimate counted as a future cyclosynth call -- so `count` reaching
-    `total` exactly is not guaranteed; it is clamped at `total` (never shown
-    past complete) but completion is never inferred from reaching it.
+    `cache` is the synthesizer's cache dict (CliffordTSynthesizer's
+    `_expensive_cache()`); `count` advances by however many entries a call
+    actually *adds* to it (not just whether it grew), i.e. genuine gridsynth
+    searches, not merged runs. A single CliffordTSynthesizer block can need
+    gridsynth for more than one of its Euler angles (Rz and Rx) in one call,
+    growing the cache by more than one entry at once -- counting only "grew:
+    yes/no" as a single unit systematically undercounts (confirmed via
+    data/qasmbench/dnn_n8.qasm: the old scheme stalled well short of
+    complete). CliffordTSynthesizer caches by angle key, so on circuits with
+    a lot of repeated rotations (QFT-family circuits, say) the vast majority
+    of calls are instant cache hits -- with plain block counting, progress
+    used to race through the first stretch (the actual searches) then jump
+    straight to complete on the cache hits, rather than tracking real elapsed
+    time. `total` (from estimate_synthesis_calls) is only an ESTIMATE of how
+    many new cache entries will appear, so `count` reaching `total` exactly
+    is not guaranteed; it is clamped at `total` (never shown past complete)
+    but completion is never inferred from reaching it.
     """
     if total == 0:
         return resynthesize
@@ -1744,7 +1279,7 @@ def _with_progress(resynthesize, total: int, log, label: str, cache: dict):
 def count_resynthesis_blocks(circuit: QuantumCircuit) -> int:
     """How many times rewrite_single_qubit_runs will call its callback on
     `circuit`, without doing anything else -- only matrix merges, no
-    gridsynth/cyclosynth/shorten_run calls, so this is cheap even for large
+    gridsynth/shorten_run calls, so this is cheap even for large
     circuits. Used as the denominator for _with_block_progress, unlike
     estimate_synthesis_calls (which counts cache misses specifically for the
     main resynthesis pass) -- shorten_run has no such cache-hit/cache-miss
@@ -1769,7 +1304,7 @@ def _with_block_progress(callback, total: int, log, label: str, round_num: int, 
     _with_progress's cache-growth weighting.
 
     Built for shorten_run (compile_via_resynthesis's cleanup rounds): unlike
-    synthesize(), shorten_run never calls gridsynth/cyclosynth -- every call
+    synthesize(), shorten_run never calls gridsynth -- every call
     does similarly cheap "exact" work (a Clifford-table lookup plus a block
     collapse over the run's own gates), roughly proportional to the run's
     length, not split into rare-expensive-search vs. common-instant-cache-hit
@@ -1816,13 +1351,12 @@ def compile_via_resynthesis(
 ) -> QuantumCircuit:
     """Re-synthesise an already-{u,cx}-unrolled circuit over Clifford+T, then clean up.
 
-    Shared by the qiskit and cyclosynth backends -- both re-synthesise single-
-    qubit runs via the same rewrite_single_qubit_runs/cancel_inverses/
-    shorten_run cleanup loop, differing only in what `synth` does with a
-    matrix (see CliffordTSynthesizer vs CyclosynthSynthesizer). `log` reports
+    Used by the qiskit backend: re-synthesises single-qubit runs via
+    rewrite_single_qubit_runs/cancel_inverses/shorten_run cleanup loop,
+    dispatching each matrix to `synth` (a CliffordTSynthesizer). `log` reports
     percentage progress through both the main resynthesis pass and each
     cleanup round below: shorten_run's own per-call cost is cheap (no
-    gridsynth/cyclosynth search, just exact rewrites -- see
+    gridsynth search, just exact rewrites -- see
     _with_block_progress), but on a large enough circuit the sheer number of
     calls across up to max_rounds full passes dominates total compile time
     just as much as the main pass does (measured on a large, wide QV
@@ -1953,49 +1487,14 @@ def non_basis_ops(circuit: QuantumCircuit) -> dict[str, int]:
 
 def build_final_synthesis_passes(
     synthesis_epsilon: float,
-    cyclosynth_flag: bool,
 ) -> list[BasePass]:
-    """The final single-qubit-block -> Clifford+T stage of build_bqskit_workflow.
-    Every ForEachBlockPass here runs with calculate_error_bound=True, so its
-    contribution is always captured in the error bound build_bqskit_workflow's
-    single compile() call returns -- see that function's docstring.
-
-    cyclosynth_flag=False (default): bqskit's own IsolateRZGatePass +
-    GridSynthPass, one call per isolated Rz gate.
-
-    cyclosynth_flag=True: CyclosynthBlockSynthesisPass instead, one joint
-    ZYZ-lattice-search call per single-qubit block (see its docstring), plus a
-    trailing IsolateRZGatePass+GridSynthPass mop-up stage for whatever blocks
-    CyclosynthBlockSynthesisPass declined to handle (near-Clifford targets, or
-    cyclosynth returning no result) and therefore left untouched -- this is
-    the --bqskit-cyclosynth path. The mop-up runs at this function's own top
-    level, the same as every other pass built here, rather than being invoked
-    from inside CyclosynthBlockSynthesisPass itself: nesting a second
-    ForEachBlockPass inside a pass that is itself already dispatched by one
-    reproducibly triggered a race in bqskit's own runtime (see
-    CyclosynthBlockSynthesisPass's docstring).
+    """The final single-qubit-block -> Clifford+T stage of build_bqskit_workflow:
+    bqskit's own IsolateRZGatePass + GridSynthPass, one call per isolated Rz
+    gate. Every ForEachBlockPass here runs with calculate_error_bound=True, so
+    its contribution is always captured in the error bound
+    build_bqskit_workflow's single compile() call returns -- see that
+    function's docstring.
     """
-    if cyclosynth_flag:
-        if cyclosynth is None:
-            raise RuntimeError(
-                "--bqskit-cyclosynth needs the cyclosynth extension module, "
-                "which is not installed. See cyclosynth/README.md."
-            )
-        return [
-            GroupSingleQuditGatePass(),
-            ForEachBlockPass(
-                [CyclosynthBlockSynthesisPass(synthesis_epsilon)],
-                collection_filter=single_qudit_filter,
-                calculate_error_bound=True,
-            ),
-            UnfoldPass(),
-            IsolateRZGatePass(),
-            ForEachBlockPass(
-                [GridSynthPass(algorithmic_error=synthesis_epsilon)],
-                calculate_error_bound=True,
-            ),
-            UnfoldPass(),
-        ]
     return [
         IsolateRZGatePass(),
         ForEachBlockPass(
@@ -2028,7 +1527,6 @@ def _gauge_collapse_passes(synthesis_epsilon: float) -> list[BasePass]:
 def build_bqskit_workflow(
     synthesis_epsilon: float,
     seed: Optional[int],
-    cyclosynth_flag: bool = False,
 ) -> list[BasePass]:
     """Build this script's own Clifford+T circuit workflow for bqskit -- the
     complete pipeline, run in one Compiler().compile(circuit, passes,
@@ -2065,8 +1563,7 @@ def build_bqskit_workflow(
     qiskit backend's error_bound: it covers ZXZXZDecomposition (contributes
     essentially nothing, since the gauge-collapse rewrite is exact by
     construction) and the final synthesis stage build_final_synthesis_passes
-    builds (GridSynthPass, or CyclosynthBlockSynthesisPass when
-    cyclosynth_flag is set -- the real source of error here either way), but
+    builds (GridSynthPass -- the real source of error here), but
     not RoundToDiscreteZPass's own rounding (which isn't run inside a
     ForEachBlockPass, so isn't measured by this mechanism, and could in
     principle spend up to synthesis_epsilon per rounded rotation without
@@ -2084,11 +1581,6 @@ def build_bqskit_workflow(
     ZXZXZDecomposition is active. ``pip install -e ./bqskit`` activates the
     fix ahead of an upstream release; without it (stock bqskit from PyPI),
     diagonal-heavy circuits cost substantially more T gates via this backend.
-
-    cyclosynth_flag (--bqskit-cyclosynth) swaps which final-synthesis stage
-    build_final_synthesis_passes builds below: cyclosynth's joint ZYZ search
-    per single-qubit block instead of bqskit's own per-Rz GridSynthPass (see
-    CyclosynthBlockSynthesisPass's docstring).
 
     The gauge-collapse cycle (_gauge_collapse_passes) runs *twice*: once here,
     right after ScanningGateRemovalPass, and again right before final
@@ -2121,7 +1613,7 @@ def build_bqskit_workflow(
     ]
     passes += _gauge_collapse_passes(synthesis_epsilon)
     passes += _gauge_collapse_passes(synthesis_epsilon)
-    passes += build_final_synthesis_passes(synthesis_epsilon, cyclosynth_flag)
+    passes += build_final_synthesis_passes(synthesis_epsilon)
     passes += [LogErrorPass()]
     return passes
 
@@ -2148,8 +1640,6 @@ def compile_bqskit(
     unrolled: QuantumCircuit,
     epsilon: float,
     seed: int,
-    cyclosynth_flag: bool = False,
-    cyclosynth_threads: Optional[int] = None,
 ) -> tuple[QuantumCircuit, float]:
     """Compile an already-{u,cx}-unrolled circuit via bqskit, returning a qiskit
     QuantumCircuit (round-tripped through qiskit's own loader, so it can share
@@ -2158,41 +1648,17 @@ def compile_bqskit(
     The error bound is bqskit's own ``calculate_error_bound`` mechanism, read
     from the single ``Compiler().compile(..., request_data=True)`` call below
     -- see build_bqskit_workflow's docstring for exactly what it covers.
-    ``cyclosynth_flag`` (--bqskit-cyclosynth) is passed straight through to
-    build_bqskit_workflow -- see its docstring.
     """
     with tempfile.TemporaryDirectory() as tmp:
         in_path = Path(tmp) / "in.qasm"
         qasm2.dump(unrolled, in_path)
         bq_circuit = Circuit.from_file(str(in_path))
 
-        passes = build_bqskit_workflow(
-            synthesis_epsilon=epsilon,
-            seed=seed,
-            cyclosynth_flag=cyclosynth_flag,
-        )
+        passes = build_bqskit_workflow(synthesis_epsilon=epsilon, seed=seed)
 
-        # Oversubscription guard for --bqskit-cyclosynth: bqskit's
-        # worker-process parallelism x rayon's per-process all-cores default
-        # multiply out badly. Defaults to single-threaded per pool unless
-        # --cyclosynth-threads opts into more; set here (parent process,
-        # before first use) so child workers inherit it at spawn time.
-        old_rayon_threads = os.environ.get("RAYON_NUM_THREADS")
-        if cyclosynth_flag:
-            os.environ["RAYON_NUM_THREADS"] = (
-                str(cyclosynth_threads) if cyclosynth_threads is not None else "1"
-            )
-
-        try:
-            with Compiler() as compiler:
-                bq_circuit, data = compiler.compile(bq_circuit, passes, request_data=True)
-            error_bound = data.error
-        finally:
-            if cyclosynth_flag:
-                if old_rayon_threads is None:
-                    os.environ.pop("RAYON_NUM_THREADS", None)
-                else:
-                    os.environ["RAYON_NUM_THREADS"] = old_rayon_threads
+        with Compiler() as compiler:
+            bq_circuit, data = compiler.compile(bq_circuit, passes, request_data=True)
+        error_bound = data.error
 
         # Flatten any CircuitGate wrappers left around sub-circuits (e.g.
         # U3Gate) -- without this, the transpile binary crashes on CircuitGate.
@@ -2234,39 +1700,21 @@ def compile_dispatch(
     and its resynthesis cache, across a batch of input files. Random-window
     sampling (windowed_fidelity) instead passes no synth, since a window is
     small enough that losing cache reuse across windows doesn't matter. `log`
-    reports resynthesis progress for the qiskit/cyclosynth backends (see
+    reports resynthesis progress for the qiskit backend (see
     compile_via_resynthesis); windowed_fidelity doesn't pass one, since a
     window is small enough that per-window progress would just be noise.
     """
-    if args.backend in ("qiskit", "cyclosynth"):
+    if args.backend == "qiskit":
         if synth is None:
-            synth = (
-                CliffordTSynthesizer(epsilon=args.epsilon, tol=args.tol)
-                if args.backend == "qiskit"
-                else CyclosynthSynthesizer(
-                    epsilon=args.epsilon, tol=args.tol, threads=args.cyclosynth_threads
-                )
-            )
+            synth = CliffordTSynthesizer(epsilon=args.epsilon, tol=args.tol)
         compiled = compile_via_resynthesis(unrolled, synth, optimize=not args.no_optimize, log=log)
-        # CliffordTSynthesizer has no gridsynth-fallback concept of its own
-        # (gridsynth *is* its synthesis) -- getattr rather than a shared
-        # counter so this stays 0/absent for that backend without needing a
-        # dead always-zero attribute on it.
-        n_fallback = getattr(synth, "n_gridsynth_fallback", 0)
-        fallback_note = f", {n_fallback} gridsynth-fallback" if n_fallback else ""
         extra = [
             f"1q runs: {synth.n_clifford} Clifford, {synth.n_exact} exact,"
-            f" {synth.n_approx} approximated, {synth.n_merged} shortened{fallback_note}"
+            f" {synth.n_approx} approximated, {synth.n_merged} shortened"
             f" (worst rewrite {synth.max_error:.2e}, total {synth.error_bound:.2e})"
         ]
         return compiled, extra, synth.error_bound, synth.n_approx + synth.n_merged
-    compiled, error_bound = compile_bqskit(
-        unrolled,
-        epsilon=args.epsilon,
-        seed=args.seed,
-        cyclosynth_flag=args.bqskit_cyclosynth,
-        cyclosynth_threads=args.cyclosynth_threads,
-    )
+    compiled, error_bound = compile_bqskit(unrolled, epsilon=args.epsilon, seed=args.seed)
     return compiled, [], error_bound, None
 
 
@@ -2475,13 +1923,12 @@ def output_path(source: Path, target: Optional[Path], many: bool) -> Path:
 
 
 def print_report(log, before: dict, after: dict, extra: list[str]) -> None:
-    """Print a report line identical in shape for all three backends.
+    """Print a report line identical in shape for both backends.
 
     `extra` carries the "1q runs: N Clifford, ..." diagnostic (from
-    CliffordTSynthesizer's or CyclosynthSynthesizer's counters); it reflects
-    bookkeeping internal to compile_via_resynthesis's own pipeline that
-    bqskit's compiler passes don't expose, so it is empty for the bqskit
-    backend.
+    CliffordTSynthesizer's counters); it reflects bookkeeping internal to
+    compile_via_resynthesis's own pipeline that bqskit's compiler passes
+    don't expose, so it is empty for the bqskit backend.
     """
     log(
         f"  {before['qubits']} qubits, {before['gates']} gates -> {after['gates']} gates "
@@ -2503,8 +1950,8 @@ def timed(label: str, timings: dict) -> Iterator[None]:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compile a QASM circuit to the Clifford+T gate set, via qiskit, "
-        "bqskit, or cyclosynth.",
+        description="Compile a QASM circuit to the Clifford+T gate set, via qiskit "
+        "or bqskit.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("inputs", nargs="+", type=Path, help="input .qasm file(s)")
@@ -2517,50 +1964,36 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--backend",
-        choices=("qiskit", "bqskit", "cyclosynth"),
+        choices=("qiskit", "bqskit"),
         default="qiskit",
         help="compilation backend: qiskit (fewer T gates at a given --epsilon "
         "on every benchmark measured so far) or bqskit (kept for comparison "
         "and as an independent implementation; rejects circuits with "
-        "classical control flow) or cyclosynth (near-T-optimal per single-qubit "
-        "block via a diamond-distance lattice search, at some compile-time "
-        "cost; needs cyclosynth/ built separately, see cyclosynth/README.md)",
+        "classical control flow)",
     )
     parser.add_argument(
         "-e",
         "--epsilon",
         type=float,
         default=EPSILON_DEFAULT,
-        help="gridsynth/cyclosynth target error per rotation, shared by all "
-        "three backends -- see module docstring's \"Rotation synthesis: "
-        'gridsynth" section for the measurements behind this number',
+        help="gridsynth target error per rotation, shared by both backends -- "
+        "see module docstring's \"Rotation synthesis: gridsynth\" section "
+        "for the measurements behind this number",
     )
     parser.add_argument(
         "--no-optimize",
         action="store_true",
-        help="qiskit and cyclosynth backends only: skip the post-synthesis "
-        "clean-up (inverse cancellation and exact re-synthesis of collapsible "
-        "runs)",
+        help="qiskit backend only: skip the post-synthesis clean-up (inverse "
+        "cancellation and exact re-synthesis of collapsible runs)",
     )
     parser.add_argument(
         "--tol",
         type=float,
-        help="qiskit and cyclosynth backends only: how much error an exact "
+        help="qiskit backend only: how much error an exact "
         "rewrite may introduce: the tolerance for treating an angle as a "
         "multiple of pi/4 or a unitary as a Clifford. Defaults to --epsilon, "
         "so that no rotation comes out free unless it is within the requested "
         "accuracy of a Clifford",
-    )
-    parser.add_argument(
-        "--bqskit-cyclosynth",
-        action="store_true",
-        help="bqskit backend only: replace the final "
-        "ZXZXZDecomposition+GridSynthPass single-qubit-block synthesis stage "
-        "with cyclosynth's joint ZYZ lattice search (see --backend "
-        "cyclosynth), with a trailing IsolateRZGatePass+GridSynthPass mop-up "
-        "stage for blocks cyclosynth's search can hang on (near-Clifford "
-        "blocks) or fails to return a result for. Needs the "
-        "optional cyclosynth extension module (see cyclosynth/README.md).",
     )
     parser.add_argument(
         "--seed",
@@ -2573,22 +2006,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "counts unreproducible and unsafe to compare. Pass a different integer "
         "to sample another compilation; there is no unseeded mode, since an "
         "unrecorded seed is never preferable to a recorded one.",
-    )
-    parser.add_argument(
-        "--cyclosynth-threads",
-        type=int,
-        default=None,
-        help="cyclosynth backend, or bqskit backend with --bqskit-cyclosynth: "
-        "threads for cyclosynth's own lattice search (sets "
-        "RAYON_NUM_THREADS). Defaults to rayon's own default (all cores) for "
-        "the cyclosynth backend, but to 1 for --bqskit-cyclosynth (see its "
-        "help text for why); cyclosynth has no per-call seed, so its results "
-        "(both the exact word and the overall T-count) are only "
-        "reproducible run to run at --cyclosynth-threads 1, which was "
-        "measured at this repo's EPSILON_DEFAULT to cost about 15x the "
-        "compile time of the multi-threaded default (see "
-        "CyclosynthSynthesizer's docstring) -- pin it to 1 when comparing "
-        "exact T-counts matters more than speed.",
     )
     parser.add_argument(
         "--verify",
@@ -2612,16 +2029,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
     # Warn (not error) if a backend-inappropriate flag was explicitly set to a
-    # non-default value, so all three backends can share one parser without
+    # non-default value, so both backends can share one parser without
     # silently ignoring a flag the user thought they were setting.
     backend_only_flags = {
         "qiskit": {
-            "bqskit_cyclosynth": "--bqskit-cyclosynth",
-            "seed": "--seed",
-            "cyclosynth_threads": "--cyclosynth-threads",
-        },
-        "cyclosynth": {
-            "bqskit_cyclosynth": "--bqskit-cyclosynth",
             "seed": "--seed",
         },
         "bqskit": {
@@ -2681,17 +2092,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.backend == "qiskit":
         synth = CliffordTSynthesizer(epsilon=args.epsilon, tol=args.tol)
         log(f"backend: qiskit (epsilon={args.epsilon:g})")
-    elif args.backend == "cyclosynth":
-        synth = CyclosynthSynthesizer(
-            epsilon=args.epsilon, tol=args.tol, threads=args.cyclosynth_threads
-        )
-        threads_desc = args.cyclosynth_threads if args.cyclosynth_threads else "rayon default"
-        log(f"backend: cyclosynth (epsilon={args.epsilon:g}, threads={threads_desc})")
     else:
-        log(
-            f"backend: bqskit (epsilon={args.epsilon:g}, seed={args.seed}, "
-            f"cyclosynth={args.bqskit_cyclosynth})"
-        )
+        log(f"backend: bqskit (epsilon={args.epsilon:g}, seed={args.seed})")
 
     all_stats = []
     failures = 0
