@@ -89,13 +89,6 @@ impl CliffordTable {
         if distance(m, candidate) <= tol { Some(word.clone()) } else { None }
     }
 
-    /// Global-phase-aligned spectral distance from `m` to the nearest of
-    /// the 24 Cliffords -- cheap (24 small matrix ops). Used to flag
-    /// "near-Clifford but not exact" targets before handing them to a
-    /// numerically sensitive joint synthesizer.
-    pub fn nearest_distance(&self, m: &Unitary) -> f64 {
-        self.entries.values().map(|(_, cand)| distance(m, cand)).fold(f64::INFINITY, f64::min)
-    }
 }
 
 /// Build a single-qubit circuit realizing `word` in program order.
@@ -201,15 +194,6 @@ mod tests {
         let table = CliffordTable::build();
         let t = Gate::T.matrix();
         assert!(table.exact_match(&t, 1e-8).is_none());
-    }
-
-    #[test]
-    fn t_gate_nearest_clifford_distance_is_nonzero_but_bounded() {
-        let table = CliffordTable::build();
-        let t = Gate::T.matrix();
-        let d = table.nearest_distance(&t);
-        assert!(d > 0.1, "T should not be too close to any Clifford, got {d}");
-        assert!(d < 2.0, "distance should be a bounded operator-norm value, got {d}");
     }
 
     #[test]

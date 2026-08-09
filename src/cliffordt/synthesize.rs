@@ -46,15 +46,6 @@ impl Default for SynthConfig {
 /// "exact" hit should cost genuinely zero approximation error, not merely
 /// stay within the overall budget.
 const EXACTNESS_FLOOR: f64 = 1e-12;
-/// A block within this many multiples of epsilon of a Clifford point is
-/// treated as "too close to call" for cyclosynth's lattice search (which
-/// can behave unpredictably right at a near-singular point -- a per-prefix
-/// L²-LLL blowup, not the SE search itself) and routed to the
-/// independent-axis fallback instead. Empirically tuned as a time/T-count
-/// tradeoff on QFT-shaped circuits; not re-validated against other
-/// near-Clifford angle distributions.
-const NEAR_CLIFFORD_MARGIN: f64 = 300.0;
-
 /// Extract ZYZ Euler angles `(theta, phi, lam)` such that
 /// `target ~ Rz(phi) * Ry(theta) * Rz(lam)` (up to global phase) --
 /// the "qiskit/bqskit" U3 convention cyclosynth's `synthesize_u3` expects.
@@ -206,22 +197,38 @@ fn try_cyclosynth(target: &Unitary, config: &SynthConfig) -> Option<Circuit> {
     Some(circuit)
 }
 
-/// The expensive part of the full three-tier dispatch for one single-qubit
-/// block's target unitary: near-Clifford guard -> cyclosynth -> gridsynth
-/// fallback. `synthesize_block_cached` is the actual entry point (it adds
-/// the exact-Clifford check ahead of this and caches this part -- the
+/// The expensive part of the full two-tier dispatch for one single-qubit
+/// block's target unitary: cyclosynth -> gridsynth fallback.
+/// `synthesize_block_cached` is the actual entry point (it adds the
+/// exact-Clifford check ahead of this and caches this part -- the
 /// exact-Clifford check is already cheap, a lookup against 24 entries, so
 /// there's no benefit caching it too, only the actual numerical search).
+///
+/// Used to also bypass cyclosynth entirely for targets within a tuned
+/// multiple of epsilon of a Clifford point (a `NEAR_CLIFFORD_MARGIN`
+/// guard), working around a cyclosynth bug where its lattice search could
+/// hang or return `None` near (not on) a Clifford element -- see
+/// `notes/cyclosynth-bug-report.md`. Confirmed fixed upstream for diagonal
+/// (`Rz`/`u1`) targets (cyclosynth's own `try_near_shallow`/"near-shallow-
+/// point handling", pulled in by the submodule bump to the ring-
+/// unification merge): the bug report's own repro,
+/// `synthesize_u1(3.74507e-07)` at `epsilon=1e-8` (previously hung or
+/// returned `None`), now returns in ~6ms. The guard is gone.
+///
+/// Not yet confirmed fixed for a non-diagonal near-Clifford `SU(2)` target
+/// (this pipeline's actual workload shape, not just pure `Rz`): the same
+/// kind of target still fails to return within minutes at `epsilon <=
+/// ~1e-10` (well below this pipeline's `EPSILON_DEFAULT = 1e-8`, so not
+/// currently reachable at default settings, but real at a tighter
+/// `--epsilon`). Since that failure is a hang, not a `None`, no fallback
+/// here can catch it -- only a wall-clock timeout around `try_cyclosynth`
+/// itself could.
 fn synthesize_non_clifford(
-    target: &Unitary, clifford_table: &CliffordTable, config: &SynthConfig, cache: &SynthCache,
+    target: &Unitary, _clifford_table: &CliffordTable, config: &SynthConfig, cache: &SynthCache,
 ) -> Circuit {
     if config.use_cyclosynth {
-        let near_clifford =
-            clifford_table.nearest_distance(target) < NEAR_CLIFFORD_MARGIN * config.epsilon;
-        if !near_clifford {
-            if let Some(circuit) = try_cyclosynth(target, config) {
-                return circuit;
-            }
+        if let Some(circuit) = try_cyclosynth(target, config) {
+            return circuit;
         }
     }
 
