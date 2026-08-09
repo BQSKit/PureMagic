@@ -1,5 +1,7 @@
-//! Multi-qubit windowed partitioning, used by Stage 2 (block_size 2) and
-//! Stage 3 (block_size 4+).
+//! Multi-qubit windowed partitioning, used by Stage 2 (block_size 2). Also
+//! supports wider windows (block_size 4+), previously used by the now-
+//! removed TRbO stage (see git history) -- exercised only by this module's
+//! own tests today.
 //!
 //! A faithful port of bqskit's `QuickPartitioner`: a single pass over
 //! operations in topological ("cycle") order, growing "bins" of qubits up
