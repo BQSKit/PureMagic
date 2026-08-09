@@ -76,6 +76,11 @@ _Y_FIELD = {
 # (1 - ratio) in ratio mode.
 _Y_INVERT = {"scheduling_efficiency_loss", "volume_loss"}
 
+# X-axis keys that are swept experimental controls rather than run outputs, so both
+# files in a ratio (-f file1,file2) comparison share the same values per circuit and
+# can be used as an additional exact-match merge key alongside "circuit".
+_EXACT_MATCH_X_AXES = {"weight", "cultivation", "data_qubits"}
+
 
 # ---------------------------------------------------------------------------
 # Series dataclass
@@ -339,9 +344,21 @@ def prettify_circuit_name(name):
         (r"knn", "KNN"),
         (r"ghz(?:_state)?", "GHZ"),
         (r"vqe_uccsd", "VQE"),
+        (r"cdkm_ripple_carry_adder_indep_opt0_200", "ADD(200)"),
+        (r"fermi_hubbard_1d_128q", "HUBBARD(128)"),
+        (r"grover_n100_i10", "GROVER(100)"),
     ]
     for pattern, replacement in _PREFIX_MAP:
         name = re.sub(rf"(?i)^{pattern}(?=_|$)", replacement, name)
+
+    if name == "cdkm_ripple_carry_adder_indep_opt0_200":
+        name = "ADD(200)"
+
+    if name == "grover_n100_i10":
+        name = "GROVER(100)"
+
+    if name == "fermi_hubbard_1d_128q":
+        name = "HUBBARD(128)"
 
     # heisenberg -> heis
     name = re.sub(r"(?i)heisenberg", "heis", name)
@@ -873,7 +890,15 @@ def main():
                     df2 is not None
                 )  # guaranteed: is_ratio=True and _load_df returned non-None (else continued)
                 d2 = df2.dropna(subset=[x_field, y_field])
-                merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
+                # Only fold x_field into the merge key for axes that are swept experimental
+                # controls (weight, cultivation/lambda, data_qubits), where both files share
+                # the same x values per circuit. Axes like parallelism/ancilla_qubits/ppl are
+                # outputs of the run itself and differ between the two files being compared,
+                # so an exact-match merge on them would drop every row; match on circuit alone
+                # and take the x value from file1.
+                merge_keys = (
+                    ["circuit", x_field] if x_key in _EXACT_MATCH_X_AXES else ["circuit"]
+                )
                 merged = d1.merge(d2[merge_keys + [y_field]], on=merge_keys, suffixes=("_1", "_2"))
                 merged = merged[merged[f"{y_field}_2"] != 0.0]
                 if merged.empty:
