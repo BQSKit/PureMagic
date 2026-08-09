@@ -337,18 +337,24 @@ from bqskit import Circuit
 from bqskit.compiler import Compiler
 from bqskit.compiler.basepass import BasePass
 from bqskit.compiler.passdata import PassData
+
 # bqskit.ft resolves at runtime via pkgutil.extend_path (see bqskit-ft's
 # __init__.py) -- a dynamic sys.path merge pyright cannot evaluate statically,
 # hence the ignores below.
-from bqskit.ft.cliffordt.cliffordtgates import clifford_t_gates  # pyright: ignore[reportMissingImports]
+from bqskit.ft.cliffordt.cliffordtgates import (
+    clifford_t_gates,
+)  # pyright: ignore[reportMissingImports]
 from bqskit.ft.cliffordt.defaultworkflow import (  # pyright: ignore[reportMissingImports]
     clifford_replace,
     single_qudit_filter,
 )
 from bqskit.ft.ftpasses.gridsynth import GridSynthPass  # pyright: ignore[reportMissingImports]
-from bqskit.ft.ftpasses.rounding import RoundToDiscreteZPass  # pyright: ignore[reportMissingImports]
+from bqskit.ft.ftpasses.rounding import (
+    RoundToDiscreteZPass,
+)  # pyright: ignore[reportMissingImports]
 from bqskit.ft.rules.isolate_rz import IsolateRZGatePass  # pyright: ignore[reportMissingImports]
 from bqskit.ir.gates import BarrierPlaceholder, IdentityGate, MeasurementPlaceholder
+
 # Aliased to avoid silently shadowing qiskit's own same-named gate classes
 # imported above.
 from bqskit.ir.gates import HGate as BqskitHGate
@@ -436,7 +442,14 @@ GRIDSYNTH_NAMES = {"H": "h", "S": "s", "T": "t", "X": "x"}
 
 # cyclosynth's alphabet is {H,S,T,X,Y,Z}; lowercase = dagger (only S/T have one).
 CYCLOSYNTH_GATE_NAMES = {
-    "H": "h", "S": "s", "s": "sdg", "T": "t", "t": "tdg", "X": "x", "Y": "y", "Z": "z",
+    "H": "h",
+    "S": "s",
+    "s": "sdg",
+    "T": "t",
+    "t": "tdg",
+    "X": "x",
+    "Y": "y",
+    "Z": "z",
 }
 
 # Used to build a bqskit Circuit directly from a cyclosynth word (see
@@ -585,7 +598,9 @@ def nearest_clifford_distance(matrix: np.ndarray, clifford_words: dict) -> float
     return min(word_error(matrix, word)[0] for word in clifford_words.values())
 
 
-def zyz_angles(decomposer: OneQubitEulerDecomposer, matrix: np.ndarray) -> tuple[float, float, float]:
+def zyz_angles(
+    decomposer: OneQubitEulerDecomposer, matrix: np.ndarray
+) -> tuple[float, float, float]:
     """(theta, phi, lam) matching cyclosynth's synthesize_u3 = qiskit's
     U3 = Rz(phi)*Ry(theta)*Rz(lam). OneQubitEulerDecomposer drops trivial
     instructions (e.g. a lone T decomposes to just one rz), so angles are
@@ -1142,7 +1157,10 @@ class CyclosynthSynthesizer:
             if error <= self.tol:
                 return circuit_from_word(word, matrix, phase), "clifford", error
 
-        if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
+        if (
+            nearest_clifford_distance(matrix, self._clifford_words)
+            < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon
+        ):
             circuit, _, error = self._fallback._synthesize_uncounted(matrix)
             return circuit, "gridsynth_fallback", error
 
@@ -1155,9 +1173,7 @@ class CyclosynthSynthesizer:
                 return circuit, "gridsynth_fallback", error
             # cyclosynth's gate string is in matrix order, so it is applied in
             # reverse -- same convention as pygridsynth's output above.
-            word = tuple(
-                CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates)
-            )
+            word = tuple(CYCLOSYNTH_GATE_NAMES[ch] for ch in reversed(result.gates))
             self._cache[key] = word
 
         error, phase = word_error(matrix, word)
@@ -1196,7 +1212,10 @@ class CyclosynthSynthesizer:
                 error, _ = word_error(matrix, word)
                 if error <= self.tol:
                     return None
-            if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
+            if (
+                nearest_clifford_distance(matrix, self._clifford_words)
+                < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon
+            ):
                 return None
             if key not in already_cached:
                 new_keys.add(key)
@@ -1309,7 +1328,10 @@ class CyclosynthBlockSynthesisPass(BasePass):
         # whose search can hang on these targets. Left untouched;
         # build_final_synthesis_passes' mop-up stage catches it afterward (see
         # this class's docstring for why that isn't done inline here).
-        if nearest_clifford_distance(matrix, self._clifford_words) < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon:
+        if (
+            nearest_clifford_distance(matrix, self._clifford_words)
+            < CYCLOSYNTH_NEAR_CLIFFORD_MARGIN * self.epsilon
+        ):
             return
 
         # Tier 3: cyclosynth's joint ZYZ synthesis.
@@ -1448,7 +1470,22 @@ def operation_counts_cost(circuit: QuantumCircuit) -> tuple[int, int]:
     return t_count, sum(n for name, n in counts.items() if name != "barrier")
 
 
-PHASE_MERGE_BASIS = ["cx", "rz", "ry", "rx", "h", "x", "y", "z", "s", "sdg", "t", "tdg", "sx", "sxdg"]
+PHASE_MERGE_BASIS = [
+    "cx",
+    "rz",
+    "ry",
+    "rx",
+    "h",
+    "x",
+    "y",
+    "z",
+    "s",
+    "sdg",
+    "t",
+    "tdg",
+    "sx",
+    "sxdg",
+]
 
 # angle contributed by one occurrence of each diagonal single-qubit gate --
 # used by merge_phase_polynomial to fold every occurrence into one rz per
@@ -1585,9 +1622,13 @@ def unroll_to_u_cx(circuit: QuantumCircuit, epsilon: float = EPSILON_DEFAULT) ->
     candidate's actual gate content.
     """
     merged_unrolled = transpile(
-        merge_phase_polynomial(circuit), basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL
+        merge_phase_polynomial(circuit),
+        basis_gates=["u", "cx"],
+        optimization_level=UNROLL_OPTIMIZATION_LEVEL,
     )
-    unmerged_unrolled = transpile(circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL)
+    unmerged_unrolled = transpile(
+        circuit, basis_gates=["u", "cx"], optimization_level=UNROLL_OPTIMIZATION_LEVEL
+    )
     probe = CliffordTSynthesizer(epsilon=epsilon)
     if probe.count_real_rotations(merged_unrolled) <= probe.count_real_rotations(unmerged_unrolled):
         return merged_unrolled
@@ -1721,9 +1762,7 @@ def count_resynthesis_blocks(circuit: QuantumCircuit) -> int:
     return count
 
 
-def _with_block_progress(
-    callback, total: int, log, label: str, round_num: int, max_rounds: int
-):
+def _with_block_progress(callback, total: int, log, label: str, round_num: int, max_rounds: int):
     """Wrap a rewrite_single_qubit_runs callback to report percentage
     progress via _progress_line, the same time-throttle scheme as
     _with_progress -- but counting every call as one unit of work, unlike
@@ -2208,9 +2247,7 @@ def compile_dispatch(
                     epsilon=args.epsilon, tol=args.tol, threads=args.cyclosynth_threads
                 )
             )
-        compiled = compile_via_resynthesis(
-            unrolled, synth, optimize=not args.no_optimize, log=log
-        )
+        compiled = compile_via_resynthesis(unrolled, synth, optimize=not args.no_optimize, log=log)
         # CliffordTSynthesizer has no gridsynth-fallback concept of its own
         # (gridsynth *is* its synthesis) -- getattr rather than a shared
         # counter so this stays 0/absent for that backend without needing a
@@ -2260,10 +2297,15 @@ def _random_window(
         inst = source.data[i]
         if inst.operation.name == "barrier":
             continue
-        if inst.clbits or isinstance(inst.operation, ControlFlowOp) or inst.operation.name in (
-            "measure",
-            "reset",
-            "delay",
+        if (
+            inst.clbits
+            or isinstance(inst.operation, ControlFlowOp)
+            or inst.operation.name
+            in (
+                "measure",
+                "reset",
+                "delay",
+            )
         ):
             break
         new_qubits = [q for q in inst.qubits if q not in touched]
@@ -2378,7 +2420,11 @@ def verify_fidelity(
     qubits = compiled.num_qubits
     gates = operation_counts_cost(compiled)[1] + operation_counts_cost(source)[1]
     try:
-        if not control_flow and qubits <= DENSE_VERIFY_MAX_QUBITS and gates <= DENSE_VERIFY_MAX_GATES:
+        if (
+            not control_flow
+            and qubits <= DENSE_VERIFY_MAX_QUBITS
+            and gates <= DENSE_VERIFY_MAX_GATES
+        ):
             entry["fidelity"] = unitary_fidelity(source, compiled)
             entry["fidelity_method"] = "dense"
             notes.append(f"unitary fidelity vs input: {entry['fidelity']:.12f}")
@@ -2487,7 +2533,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=EPSILON_DEFAULT,
         help="gridsynth/cyclosynth target error per rotation, shared by all "
         "three backends -- see module docstring's \"Rotation synthesis: "
-        "gridsynth\" section for the measurements behind this number",
+        'gridsynth" section for the measurements behind this number',
     )
     parser.add_argument(
         "--no-optimize",
@@ -2605,11 +2651,17 @@ def _git_branch_and_commit() -> tuple[str, str]:
     try:
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=repo_dir, capture_output=True, text=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=repo_dir, capture_output=True, text=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         return branch, commit[:8]
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
@@ -2715,7 +2767,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             "runs_exact": synth.n_exact if synth else None,
             "runs_approximated": synth.n_approx if synth else None,
             "runs_shortened": synth.n_merged if synth else None,
-            "runs_gridsynth_fallback": getattr(synth, "n_gridsynth_fallback", None) if synth else None,
+            "runs_gridsynth_fallback": (
+                getattr(synth, "n_gridsynth_fallback", None) if synth else None
+            ),
             "tol": synth.tol if synth else None,
             "max_rewrite_error": synth.max_error if synth else None,
             "error_bound": error_bound,
