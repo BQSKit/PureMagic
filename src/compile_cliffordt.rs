@@ -13,6 +13,8 @@ use std::io::BufWriter;
 
 use clap::Parser;
 
+use cyclosynth::synthesis::diag;
+
 use cliffordt::matrix::distance;
 use cliffordt::pipeline::{PipelineConfig, compile, total_gate_count, total_rz_count};
 use cliffordt::qasm::load_qasm;
@@ -187,6 +189,7 @@ fn main() {
             skip_clifford_simplify: args.skip_clifford_simplify,
         };
 
+        diag::coarse_profile_reset();
         let compile_timer = Timer::new("compile");
         let mut prev_gates = total_gate_count(&circuit);
         let mut prev_rz = total_rz_count(&circuit);
@@ -223,6 +226,7 @@ fn main() {
             prev_rz = rz;
         });
         drop(compile_timer);
+        println!("  [cyclosynth profile] {}", diag::coarse_profile_line());
 
         let after = compute_stats(&compiled);
         println!("{}", report_line(&before, &after));
