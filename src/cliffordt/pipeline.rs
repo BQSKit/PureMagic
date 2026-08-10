@@ -78,7 +78,12 @@ pub struct StageReport<'a> {
 
 pub struct PipelineConfig {
     pub epsilon: f64,
-    pub cyclosynth: bool,
+    /// Skip cyclosynth's joint synthesis for Stage 3, using its independent
+    /// per-axis Rz synthesis instead. Cyclosynth's joint search is the
+    /// default (this defaults to `false`, i.e. not skipped) since it
+    /// consistently produces equal-or-lower T-counts than the independent
+    /// per-axis route.
+    pub skip_cyclosynth: bool,
     /// Skip every gauge-collapse cycle (both: initial and post stage 2),
     /// for isolating its contribution to the final result.
     pub skip_gauge_collapse: bool,
@@ -97,7 +102,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         PipelineConfig {
             epsilon: 1e-8,
-            cyclosynth: false,
+            skip_cyclosynth: false,
             skip_gauge_collapse: false,
             skip_windowed_resynthesis: false,
             skip_phase_merge: false,
@@ -276,7 +281,8 @@ pub fn compile(
     // Stage 3: final synthesis of whatever continuous rotation remains.
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
-    let synth_config = SynthConfig { epsilon: config.epsilon, use_cyclosynth: config.cyclosynth };
+    let synth_config =
+        SynthConfig { epsilon: config.epsilon, use_cyclosynth: !config.skip_cyclosynth };
     // Shared across all blocks (including in parallel -- see SynthCache's
     // own doc comment): repeated rotation angles are common enough in real
     // circuits that caching the expensive non-Clifford synthesis path
@@ -313,9 +319,9 @@ pub fn compile(
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
-    // Stage 4 is entirely cyclosynth now (joint search with `--cyclosynth`,
-    // its independent per-axis Rz synthesis otherwise), and cyclosynth
-    // parallelizes its own search internally -- so Stage 3 always runs
+    // Stage 4 is entirely cyclosynth now (joint search by default, its
+    // independent per-axis Rz synthesis with `--skip-cyclosynth`), and
+    // cyclosynth parallelizes its own search internally -- so Stage 3 always runs
     // sequentially at this level rather than nesting it inside this crate's
     // own per-block rayon parallelism, which would oversubscribe the
     // thread pool (see `for_each_block_with_sequential`'s doc comment for
@@ -420,7 +426,7 @@ mod tests {
         let original = c.get_unitary();
 
         let config =
-            PipelineConfig { epsilon: 1e-6, cyclosynth: true, ..PipelineConfig::default() };
+            PipelineConfig { epsilon: 1e-6, skip_cyclosynth: false, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);
@@ -453,7 +459,7 @@ mod tests {
 
         let config = PipelineConfig {
             epsilon: 1e-6,
-            cyclosynth: true,
+            skip_cyclosynth: false,
             skip_clifford_simplify: true,
             ..PipelineConfig::default()
         };

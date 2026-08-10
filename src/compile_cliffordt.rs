@@ -37,10 +37,10 @@ struct Args {
     #[arg(short, long, default_value_t = 1e-8)]
     epsilon: f64,
 
-    /// Enable cyclosynth's joint synthesis for Stage 3, instead of its
-    /// independent per-axis Rz synthesis.
+    /// Skip cyclosynth's joint synthesis for Stage 3 (the default), falling
+    /// back to its independent per-axis Rz synthesis instead.
     #[arg(long)]
-    cyclosynth: bool,
+    skip_cyclosynth: bool,
 
     /// Recompute exact unitary fidelity against the original circuit
     /// after compiling (only practical for small qubit counts).
@@ -151,9 +151,9 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, cyclosynth={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={}, skip_clifford_simplify={})",
+        "backend: rust (epsilon={:e}, skip_cyclosynth={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={}, skip_clifford_simplify={})",
         args.epsilon,
-        args.cyclosynth,
+        args.skip_cyclosynth,
         args.skip_gauge_collapse,
         args.skip_windowed_resynthesis,
         args.skip_phase_merge,
@@ -182,7 +182,7 @@ fn main() {
 
         let config = PipelineConfig {
             epsilon: args.epsilon,
-            cyclosynth: args.cyclosynth,
+            skip_cyclosynth: args.skip_cyclosynth,
             skip_gauge_collapse: args.skip_gauge_collapse,
             skip_windowed_resynthesis: args.skip_windowed_resynthesis,
             skip_phase_merge: args.skip_phase_merge,
