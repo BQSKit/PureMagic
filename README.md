@@ -120,9 +120,7 @@ its independent per-axis Rz synthesis by default, or its joint ZYZ lattice searc
 gates synthesis leaves around each T gate (exact, no fidelity cost).
 
 Notable flags (`--help` for the full list): `--epsilon` (default `1e-8`);
-`--approx-cancel` (opt-in infidelity-based cancellation -- the resulting error is always measured
-exactly and folded into the reported error bound, but can be larger per cancellation than
-`--epsilon` itself); `--verify` (exact unitary fidelity check against the original circuit,
+`--verify` (exact unitary fidelity check against the original circuit,
 circuits of ≤10 qubits only); and `--skip-gauge-collapse`/`--skip-windowed-resynthesis`/
 `--skip-phase-merge`/`--skip-clifford-simplify` to isolate each stage's contribution, e.g. for
 ablation studies. Accepts multiple input files at once, writing `<name>.cliffordt.qasm` next to

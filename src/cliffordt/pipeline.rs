@@ -20,7 +20,9 @@ use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 use crate::cliffordt::rounding::round_to_discrete_z;
 use crate::cliffordt::stage4_scan_removal::{ScanConfig, scanning_gate_removal};
 use crate::cliffordt::stats::block_stats;
-use crate::cliffordt::synthesize::{SynthCache, SynthConfig, prepopulate_targets, synthesize_block_cached};
+use crate::cliffordt::synthesize::{
+    SynthCache, SynthConfig, prepopulate_targets, synthesize_block_cached,
+};
 
 /// Total gate count, recursing into `Block` sub-circuits (the circuit is
 /// only ever fully flat right after an `unfold`; at other points it may
@@ -77,13 +79,6 @@ pub struct StageReport<'a> {
 pub struct PipelineConfig {
     pub epsilon: f64,
     pub cyclosynth: bool,
-    /// Let Stage 2 drop a block that's within `epsilon` *infidelity* of a
-    /// simpler circuit, not just within `epsilon` operator-norm distance --
-    /// see `stage4_scan_removal.rs::ScanConfig::approx_cancel` for the full
-    /// rationale. Off by default: the resulting error is always measured
-    /// exactly and folded into the returned error bound, but it can be far
-    /// larger per approximate cancellation than `epsilon` itself.
-    pub approx_cancel: bool,
     /// Skip every gauge-collapse cycle (both: initial and post stage 2),
     /// for isolating its contribution to the final result.
     pub skip_gauge_collapse: bool,
@@ -103,7 +98,6 @@ impl Default for PipelineConfig {
         PipelineConfig {
             epsilon: 1e-8,
             cyclosynth: false,
-            approx_cancel: false,
             skip_gauge_collapse: false,
             skip_windowed_resynthesis: false,
             skip_phase_merge: false,
@@ -250,11 +244,7 @@ pub fn compile(
     } else {
         let t = Instant::now();
         let partitioned = partition(&current, 2);
-        let scan_config = ScanConfig {
-            success_threshold: config.epsilon,
-            approx_cancel: config.approx_cancel,
-            ..ScanConfig::default()
-        };
+        let scan_config = ScanConfig { success_threshold: config.epsilon, ..ScanConfig::default() };
         // No cache to weight by here (unlike Stage 3) -- every block does
         // similarly-cheap exact work, so plain per-block counting is the
         // right progress denominator.
@@ -429,7 +419,8 @@ mod tests {
         c.push(Gate::H, vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig { epsilon: 1e-6, cyclosynth: true, ..PipelineConfig::default() };
+        let config =
+            PipelineConfig { epsilon: 1e-6, cyclosynth: true, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);
@@ -475,41 +466,6 @@ mod tests {
         // Exact, tolerance-gated rewrite -- must not spend any extra
         // accuracy budget beyond ordinary floating-point noise.
         assert!(distance(&original, &simplified.get_unitary()) < (error_bound * 10.0).max(1e-9));
-    }
-
-    /// End-to-end check that `approx_cancel` is "properly accounted", not
-    /// just a number that changed: a circuit shaped like the motivating
-    /// qft_n63.qasm case (a lone Cx;Rz;Cx block whose angle sits just
-    /// outside plain operator-norm epsilon of a Clifford point, but well
-    /// within epsilon infidelity) should report a visibly larger error
-    /// bound with the flag on -- and the *actual* distance from the
-    /// original circuit must never exceed that reported bound, on or off.
-    #[test]
-    fn approx_cancel_properly_accounts_for_a_near_clifford_block() {
-        let theta = 2.0 * std::f64::consts::PI - 2e-4;
-        let mut c = Circuit::new(2);
-        c.push(Gate::Cx, vec![1, 0]);
-        c.push(Gate::Rz(theta), vec![0]);
-        c.push(Gate::Cx, vec![1, 0]);
-        let original = c.get_unitary();
-
-        let strict_config = PipelineConfig { epsilon: 1e-8, ..PipelineConfig::default() };
-        let (strict_compiled, strict_bound) = compile(&c, &strict_config, |_| {});
-
-        let approx_config =
-            PipelineConfig { epsilon: 1e-8, approx_cancel: true, ..PipelineConfig::default() };
-        let (approx_compiled, approx_bound) = compile(&c, &approx_config, |_| {});
-
-        assert!(
-            approx_bound > strict_bound * 100.0,
-            "approx_cancel should visibly spend far more of the error budget here (strict={strict_bound}, approx={approx_bound})"
-        );
-
-        // The critical rigor check, matching the same 10x compounding
-        // slack main.rs's own --verify warning already uses: the reported
-        // bound must never be violated by the true distance, on or off.
-        assert!(distance(&original, &strict_compiled.get_unitary()) <= strict_bound * 10.0 + 1e-9);
-        assert!(distance(&original, &approx_compiled.get_unitary()) <= approx_bound * 10.0 + 1e-9);
     }
 
     #[test]

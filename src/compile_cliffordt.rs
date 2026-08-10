@@ -40,14 +40,6 @@ struct Args {
     #[arg(long)]
     cyclosynth: bool,
 
-    /// Let Stage 2 drop a block that's within epsilon *infidelity* of a
-    /// simpler circuit, not just within epsilon operator-norm distance.
-    /// Each approximation is measured exactly and folded into the reported
-    /// upper error bound, but real per-cancellation error can be far
-    /// larger than epsilon itself -- off by default.
-    #[arg(long)]
-    approx_cancel: bool,
-
     /// Recompute exact unitary fidelity against the original circuit
     /// after compiling (only practical for small qubit counts).
     #[arg(long)]
@@ -157,10 +149,9 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={}, skip_clifford_simplify={})",
+        "backend: rust (epsilon={:e}, cyclosynth={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={}, skip_clifford_simplify={})",
         args.epsilon,
         args.cyclosynth,
-        args.approx_cancel,
         args.skip_gauge_collapse,
         args.skip_windowed_resynthesis,
         args.skip_phase_merge,
@@ -190,7 +181,6 @@ fn main() {
         let config = PipelineConfig {
             epsilon: args.epsilon,
             cyclosynth: args.cyclosynth,
-            approx_cancel: args.approx_cancel,
             skip_gauge_collapse: args.skip_gauge_collapse,
             skip_windowed_resynthesis: args.skip_windowed_resynthesis,
             skip_phase_merge: args.skip_phase_merge,
