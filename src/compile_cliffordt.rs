@@ -190,6 +190,7 @@ fn main() {
         };
 
         diag::coarse_profile_reset();
+        diag::reset_se_top_branch_histogram();
         let compile_timer = Timer::new("compile");
         let mut prev_gates = total_gate_count(&circuit);
         let mut prev_rz = total_rz_count(&circuit);
@@ -227,6 +228,9 @@ fn main() {
         });
         drop(compile_timer);
         println!("  [cyclosynth profile] {}", diag::coarse_profile_line());
+        if diag::trace_enabled() {
+            diag::dump_se_top_branch_histogram();
+        }
 
         let after = compute_stats(&compiled);
         println!("{}", report_line(&before, &after));
