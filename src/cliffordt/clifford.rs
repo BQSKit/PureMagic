@@ -88,7 +88,6 @@ impl CliffordTable {
         let (word, candidate) = self.entries.get(&key)?;
         if distance(m, candidate) <= tol { Some(word.clone()) } else { None }
     }
-
 }
 
 /// Build a single-qubit circuit realizing `word` in program order.

@@ -126,7 +126,9 @@ fn ry_word_via_rz(theta: f64, epsilon: f64, cache: &SynthCache) -> Vec<Gate> {
 /// Uses the *full* `config.epsilon` per axis, not a conservatively-split
 /// epsilon/3: a per-axis split measurably inflated T-count for no
 /// corresponding fidelity benefit.
-pub fn independent_axis_unitary(target: &Unitary, config: &SynthConfig, cache: &SynthCache) -> Circuit {
+pub fn independent_axis_unitary(
+    target: &Unitary, config: &SynthConfig, cache: &SynthCache,
+) -> Circuit {
     let (theta, phi, lam) = zyz_angles(target);
 
     let mut circuit = Circuit::new(1);

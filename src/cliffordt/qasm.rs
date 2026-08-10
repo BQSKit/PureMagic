@@ -118,7 +118,11 @@ pub fn load_qasm(path: &str) -> io::Result<Circuit> {
         let mut qubits = Vec::with_capacity(qubit_refs.len());
         for (reg_name, local_idx) in &qubit_refs {
             let offset = *register_offsets.get(reg_name).ok_or_else(|| {
-                parse_error(line_no, &line, &format!("reference to undeclared register '{reg_name}'"))
+                parse_error(
+                    line_no,
+                    &line,
+                    &format!("reference to undeclared register '{reg_name}'"),
+                )
             })?;
             qubits.push(offset + local_idx);
         }
@@ -145,7 +149,8 @@ fn strip_comment(line: &str) -> &str {
 /// spellings put the name and the bracketed size on opposite sides.
 fn parse_register_decl(line: &str) -> Result<(String, usize), String> {
     let line = line.trim_end_matches(';').trim();
-    let open = line.find('[').ok_or_else(|| format!("expected '[' in register declaration '{line}'"))?;
+    let open =
+        line.find('[').ok_or_else(|| format!("expected '[' in register declaration '{line}'"))?;
     let close =
         line.find(']').ok_or_else(|| format!("expected ']' in register declaration '{line}'"))?;
     let size = line[open + 1..close]

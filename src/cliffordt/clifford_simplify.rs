@@ -17,7 +17,9 @@ use crate::cliffordt::qgate_circuit::{Circuit, Gate, Operation};
 /// Replace `buffer`'s gates (all on `qubit`) with their canonical shortest
 /// word if one exists and is *strictly* shorter than what's already there,
 /// then clear it. A no-op on an empty buffer.
-fn flush(buffer: &mut Vec<Gate>, qubit: usize, table: &CliffordTable, tol: f64, out: &mut Vec<Operation>) {
+fn flush(
+    buffer: &mut Vec<Gate>, qubit: usize, table: &CliffordTable, tol: f64, out: &mut Vec<Operation>,
+) {
     if buffer.is_empty() {
         return;
     }
@@ -134,8 +136,12 @@ mod tests {
             ],
         );
         let simplified = simplify_clifford_runs(&c, &table, 1e-10);
-        let t_gates: Vec<&Gate> =
-            simplified.ops.iter().map(|op| &op.gate).filter(|g| matches!(g, Gate::T | Gate::Tdg)).collect();
+        let t_gates: Vec<&Gate> = simplified
+            .ops
+            .iter()
+            .map(|op| &op.gate)
+            .filter(|g| matches!(g, Gate::T | Gate::Tdg))
+            .collect();
         assert_eq!(t_gates, vec![&Gate::T, &Gate::Tdg]);
     }
 
@@ -176,7 +182,10 @@ mod tests {
             },
             {
                 let mut c = Circuit::new(1);
-                push_all(&mut c, &[(Gate::X, &[0]), (Gate::Y, &[0]), (Gate::Z, &[0]), (Gate::T, &[0])]);
+                push_all(
+                    &mut c,
+                    &[(Gate::X, &[0]), (Gate::Y, &[0]), (Gate::Z, &[0]), (Gate::T, &[0])],
+                );
                 c
             },
         ];
