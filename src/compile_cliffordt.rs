@@ -35,11 +35,8 @@ struct Args {
     #[arg(short, long, default_value_t = 1e-8)]
     epsilon: f64,
 
-    #[arg(long, default_value_t = 0)]
-    seed: u64,
-
-    /// Enable cyclosynth's joint synthesis for Stage 3, instead of
-    /// independent per-axis gridsynth.
+    /// Enable cyclosynth's joint synthesis for Stage 3, instead of its
+    /// independent per-axis Rz synthesis.
     #[arg(long)]
     cyclosynth: bool,
 
@@ -155,9 +152,8 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, seed={}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={})",
+        "backend: rust (epsilon={:e}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={})",
         args.epsilon,
-        args.seed,
         args.cyclosynth,
         args.approx_cancel,
         args.skip_gauge_collapse,
@@ -187,7 +183,6 @@ fn main() {
 
         let config = PipelineConfig {
             epsilon: args.epsilon,
-            seed: args.seed,
             cyclosynth: args.cyclosynth,
             approx_cancel: args.approx_cancel,
             skip_gauge_collapse: args.skip_gauge_collapse,

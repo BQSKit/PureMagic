@@ -73,7 +73,6 @@ pub struct StageReport<'a> {
 
 pub struct PipelineConfig {
     pub epsilon: f64,
-    pub seed: u64,
     pub cyclosynth: bool,
     /// Let Stage 2 drop a block that's within `epsilon` *infidelity* of a
     /// simpler circuit, not just within `epsilon` operator-norm distance --
@@ -97,7 +96,6 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         PipelineConfig {
             epsilon: 1e-8,
-            seed: 0,
             cyclosynth: false,
             approx_cancel: false,
             skip_gauge_collapse: false,
@@ -281,11 +279,7 @@ pub fn compile(
     // Stage 3: final synthesis of whatever continuous rotation remains.
     let t = Instant::now();
     let grouped = group_single_qubit_gates(&current);
-    let synth_config = SynthConfig {
-        epsilon: config.epsilon,
-        seed: config.seed,
-        use_cyclosynth: config.cyclosynth,
-    };
+    let synth_config = SynthConfig { epsilon: config.epsilon, use_cyclosynth: config.cyclosynth };
     // Shared across all blocks (including in parallel -- see SynthCache's
     // own doc comment): repeated rotation angles are common enough in real
     // circuits that caching the expensive non-Clifford synthesis path
@@ -322,16 +316,14 @@ pub fn compile(
         let error = distance(&target, &result.get_unitary());
         (result, error)
     };
-    // cyclosynth parallelizes its own search internally, so run Stage 3
-    // sequentially at this level when it's enabled rather than nesting it
-    // inside this crate's own per-block rayon parallelism -- avoids
-    // oversubscription slowdown (see `for_each_block_with_sequential`'s doc
-    // comment for measured throughput).
-    let (synthesized, errors) = if synth_config.use_cyclosynth {
-        grouped.for_each_block_with_sequential(synth_one)
-    } else {
-        grouped.for_each_block_with(synth_one)
-    };
+    // Stage 4 is entirely cyclosynth now (joint search with `--cyclosynth`,
+    // its independent per-axis Rz synthesis otherwise), and cyclosynth
+    // parallelizes its own search internally -- so Stage 3 always runs
+    // sequentially at this level rather than nesting it inside this crate's
+    // own per-block rayon parallelism, which would oversubscribe the
+    // thread pool (see `for_each_block_with_sequential`'s doc comment for
+    // measured throughput).
+    let (synthesized, errors) = grouped.for_each_block_with_sequential(synth_one);
     progress.finish();
     // Stage 2's own approximate-cancellation error (see stage2_error above)
     // is folded in here too, so the reported bound reflects every stage
@@ -415,12 +407,7 @@ mod tests {
         c.push(Gate::H, vec![0]);
         let original = c.get_unitary();
 
-        let config = PipelineConfig {
-            epsilon: 1e-6,
-            seed: 3,
-            cyclosynth: true,
-            ..PipelineConfig::default()
-        };
+        let config = PipelineConfig { epsilon: 1e-6, cyclosynth: true, ..PipelineConfig::default() };
         let (compiled, error_bound) = compile(&c, &config, |_| {});
 
         assert!(error_bound < 1e-5);

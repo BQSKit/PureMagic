@@ -35,9 +35,9 @@ This produces five binaries:
 | `compile_cliffordt` | `target/release/compile_cliffordt` | Clifford+T compiler (Step 1 below) |
 
 Building `compile_cliffordt` links against the `cyclosynth` git submodule unconditionally (it's a
-regular Cargo path dependency, used whenever `--cyclosynth` is passed), so `cargo build --release`
-needs `git submodule update --init --recursive` to have been run first even if you never pass that
-flag.
+regular Cargo path dependency, and the only rotation-synthesis backend the binary has -- used on
+every run, `--cyclosynth` or not), so `cargo build --release` needs
+`git submodule update --init --recursive` to have been run first.
 
 ## Usage
 
@@ -114,10 +114,11 @@ If your circuit is not already in the Clifford+T gate set, compile it first usin
 
 This produces `circuit.cliffordt.qasm`. Its pipeline: exact phase-polynomial merge, a
 gauge-collapse cycle (blocking + exact-Clifford recognition + angle rounding), windowed
-multi-qubit resynthesis, gauge collapse again, then final per-block synthesis (gridsynth by
-default, or cyclosynth's joint ZYZ lattice search with `--cyclosynth`).
+multi-qubit resynthesis, gauge collapse again, then final per-block synthesis via cyclosynth --
+its independent per-axis Rz synthesis by default, or its joint ZYZ lattice search with
+`--cyclosynth`.
 
-Notable flags (`--help` for the full list): `--epsilon` (default `1e-8`) and `--seed`;
+Notable flags (`--help` for the full list): `--epsilon` (default `1e-8`);
 `--approx-cancel` (opt-in infidelity-based cancellation -- the resulting error is always measured
 exactly and folded into the reported error bound, but can be larger per cancellation than
 `--epsilon` itself); `--verify` (exact unitary fidelity check against the original circuit,

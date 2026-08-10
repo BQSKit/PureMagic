@@ -1,9 +1,9 @@
 //! Stage 4: final synthesis of whatever continuous rotation survives all
-//! earlier stages, via a three-tier dispatch: exact Clifford hit (free) ->
-//! near-Clifford numerical-stability guard -> cyclosynth's joint ZYZ
-//! lattice search -> rsgridsynth fallback (used directly for the
-//! independent per-axis path, and as the safety net when cyclosynth is
-//! skipped or fails).
+//! earlier stages, via a two-tier dispatch: exact Clifford hit (free) ->
+//! cyclosynth's joint ZYZ lattice search (`--cyclosynth`) or its native
+//! per-axis Rz synthesis (default), the latter also serving as the
+//! fallback when the joint search is skipped or fails. Both tiers run
+//! entirely on cyclosynth -- there is no non-cyclosynth backend left.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -11,34 +11,21 @@ use std::sync::Mutex;
 use cyclosynth::synthesis::Synthesizer;
 use cyclosynth::synthesis::angle::Angle;
 use rayon::prelude::*;
-use rsgridsynth::config::config_from_theta_epsilon;
-use rsgridsynth::gridsynth::gridsynth_gates;
 
 use crate::cliffordt::clifford::CliffordTable;
 use crate::cliffordt::matrix::{C64, Unitary};
 use crate::cliffordt::qgate_circuit::{Circuit, Gate};
 
-/// rsgridsynth keeps its arbitrary-precision search state in a
-/// process-global `AtomicUsize` (`PREC_BITS` in its own `common.rs`) rather
-/// than per-call state, so concurrent calls on different threads can read
-/// or reset each other's in-flight precision state, making the (still
-/// individually valid, within-epsilon) gate sequence depend on scheduling.
-/// Serializing every call through this lock restores reproducibility for a
-/// given seed; gridsynth's own search dominates each block's cost anyway,
-/// so this has little effect on Stage 4's total runtime.
-static GRIDSYNTH_LOCK: Mutex<()> = Mutex::new(());
-
 pub struct SynthConfig {
     pub epsilon: f64,
-    pub seed: u64,
     /// Whether to try cyclosynth's joint synthesis before falling back to
-    /// independent per-axis gridsynth.
+    /// its independent per-axis Rz synthesis.
     pub use_cyclosynth: bool,
 }
 
 impl Default for SynthConfig {
     fn default() -> Self {
-        SynthConfig { epsilon: 1e-8, seed: 0, use_cyclosynth: false }
+        SynthConfig { epsilon: 1e-8, use_cyclosynth: false }
     }
 }
 
@@ -71,54 +58,48 @@ pub fn zyz_angles(target: &Unitary) -> (f64, f64, f64) {
     }
 }
 
-/// Run rsgridsynth on `Rz(theta)` and return the resulting gate word in
-/// circuit (temporal) order. rsgridsynth's own string convention is
-/// "leftmost = last applied" (built up by successive right-multiplication
-/// during its search), the opposite of cyclosynth's -- reversed here so
-/// every caller in this module can just push characters left-to-right.
-fn gridsynth_rz_word(theta: f64, epsilon: f64, seed: u64, cache: &SynthCache) -> Vec<Gate> {
-    let key = (theta.to_bits(), epsilon.to_bits(), seed);
-    // Held for the whole call: without this, Stage 4's parallel block
-    // dispatch can send many threads to independently (and redundantly)
-    // search the exact same angle before any of them populate the cache
-    // (see `SynthCache::rz_words`'s doc comment). Checking and populating
-    // the cache inside the same critical section that already serializes
-    // every call (for `GRIDSYNTH_LOCK`'s own, separate `PREC_BITS` reason)
-    // guarantees each distinct angle is only ever searched once, with no
-    // extra locking needed since no other thread can be in this function's
-    // body concurrently.
-    let _guard = GRIDSYNTH_LOCK.lock().unwrap();
+/// Run cyclosynth's native Ross-Selinger route on `Rz(theta)` and return
+/// the resulting gate word in circuit (temporal) order. Cyclosynth's own
+/// gate-string convention is already "leftmost = first applied" (per
+/// `SynthResult::gates`'s doc comment), so unlike the rsgridsynth backend
+/// this used to call, no reversal is needed here.
+///
+/// Panics if cyclosynth declines -- only expected below its ~1e-48
+/// precision floor, far outside this pipeline's usual epsilon range.
+fn synthesize_rz_word(theta: f64, epsilon: f64, cache: &SynthCache) -> Vec<Gate> {
+    let key = (theta.to_bits(), epsilon.to_bits());
+    // A cache miss racing another thread's miss on the same angle just
+    // redoes the (correct, redundant) search rather than corrupting
+    // anything, so no extra locking beyond the map's own mutex is needed
+    // here (unlike the old rsgridsynth backend, which needed a single
+    // global lock to work around its process-wide `PREC_BITS` state --
+    // cyclosynth carries no such global mutable state).
     if let Some(hit) = cache.rz_words.lock().unwrap().get(&key) {
         return hit.clone();
     }
-    // rsgridsynth memoizes its own timeout-bound number-theory subroutines
-    // (primality/factoring/dyadic-Diophantine search, in its own
-    // `diophantine.rs`) in caches that are global to the whole process and
-    // never expire, keyed only on the integers involved -- not on which
-    // angle or call they came from. With this module's own `rz_words`
-    // dedup ensuring each distinct angle is only ever computed once, those
-    // internal caches would otherwise still leak state *between* different
-    // angles' searches, in whatever order Stage 4's parallel dispatch
-    // happens to interleave them in -- confirmed directly: the same
-    // (theta, epsilon, seed) triple produced different word lengths across
-    // runs until this was added. Clearing them before every fresh search
-    // trades away legitimate cross-call reuse inside rsgridsynth for full
-    // determinism; acceptable here since this module's own two-level
-    // caching (`SynthCache`) already eliminates the vast majority of
-    // repeat work before it ever reaches this point.
-    rsgridsynth::clear_caches();
-    let mut config = config_from_theta_epsilon(theta, epsilon, seed, false, true);
-    let result = gridsynth_gates(&mut config);
-    let word: Vec<Gate> = result
-        .gates
+    let synth = Synthesizer::new(epsilon, false);
+    let gates = synth
+        .synthesize_rz(Angle::Rad(theta))
+        .and_then(|r| r.gates)
+        .unwrap_or_else(|| {
+            panic!(
+                "cyclosynth failed to synthesize Rz({theta}) at epsilon={epsilon:e} (below its ~1e-48 precision floor?)"
+            )
+        });
+    let word: Vec<Gate> = gates
         .chars()
-        .rev()
         .filter_map(|c| match c {
+            // Uppercase = the gate; lowercase = its dagger -- not
+            // documented in cyclosynth's own public doc comment, which
+            // only lists the uppercase alphabet.
             'H' => Some(Gate::H),
             'S' => Some(Gate::S),
+            's' => Some(Gate::Sdg),
             'T' => Some(Gate::T),
+            't' => Some(Gate::Tdg),
             'X' => Some(Gate::X),
-            'W' => None, // pure global phase, no physical gate
+            'Y' => Some(Gate::Y),
+            'Z' => Some(Gate::Z),
             _ => None,
         })
         .collect();
@@ -131,38 +112,38 @@ fn gridsynth_rz_word(theta: f64, epsilon: f64, seed: u64, cache: &SynthCache) ->
 /// Z->X, then S maps X->Y), so `Ry(theta) = (S*H) * Rz(theta) * (S*H)^dagger`.
 /// In circuit/temporal order that's `(S*H)^dagger` first, then the Rz
 /// word, then `S*H`.
-fn ry_word_via_rz(theta: f64, epsilon: f64, seed: u64, cache: &SynthCache) -> Vec<Gate> {
+fn ry_word_via_rz(theta: f64, epsilon: f64, cache: &SynthCache) -> Vec<Gate> {
     let mut word = vec![Gate::Sdg, Gate::H]; // (S*H)^dagger = H * Sdg (matrix); circuit order Sdg,H
-    word.extend(gridsynth_rz_word(theta, epsilon, seed, cache));
+    word.extend(synthesize_rz_word(theta, epsilon, cache));
     word.push(Gate::H); // S*H (matrix); circuit order H,S
     word.push(Gate::S);
     word
 }
 
 /// Independent per-axis synthesis: decompose into ZYZ Euler angles and
-/// synthesize each axis separately via rsgridsynth.
+/// synthesize each axis separately via cyclosynth's native Rz route.
 ///
 /// Uses the *full* `config.epsilon` per axis, not a conservatively-split
 /// epsilon/3: a per-axis split measurably inflated T-count for no
 /// corresponding fidelity benefit.
-pub fn gridsynth_unitary(target: &Unitary, config: &SynthConfig, cache: &SynthCache) -> Circuit {
+pub fn independent_axis_unitary(target: &Unitary, config: &SynthConfig, cache: &SynthCache) -> Circuit {
     let (theta, phi, lam) = zyz_angles(target);
 
     let mut circuit = Circuit::new(1);
-    for gate in gridsynth_rz_word(lam, config.epsilon, config.seed, cache) {
+    for gate in synthesize_rz_word(lam, config.epsilon, cache) {
         circuit.push(gate, vec![0]);
     }
-    for gate in ry_word_via_rz(theta, config.epsilon, config.seed.wrapping_add(1), cache) {
+    for gate in ry_word_via_rz(theta, config.epsilon, cache) {
         circuit.push(gate, vec![0]);
     }
-    for gate in gridsynth_rz_word(phi, config.epsilon, config.seed.wrapping_add(2), cache) {
+    for gate in synthesize_rz_word(phi, config.epsilon, cache) {
         circuit.push(gate, vec![0]);
     }
     circuit
 }
 
 /// Cyclosynth's joint ZYZ lattice search; `None` if it fails to find a
-/// result (falls back to `gridsynth_unitary` at the call site).
+/// result (falls back to `independent_axis_unitary` at the call site).
 ///
 /// `synthesize_u3`'s actual behavior does not match its own doc comment
 /// ("U3(θ,φ,λ) ≡ ZYZ(α=φ, β=θ, γ=λ)", i.e. `Rz(phi)*Ry(theta)*Rz(lam)`):
@@ -198,7 +179,8 @@ fn try_cyclosynth(target: &Unitary, config: &SynthConfig) -> Option<Circuit> {
 }
 
 /// The expensive part of the full two-tier dispatch for one single-qubit
-/// block's target unitary: cyclosynth -> gridsynth fallback.
+/// block's target unitary: cyclosynth's joint search -> its independent
+/// per-axis Rz synthesis as a fallback.
 /// `synthesize_block_cached` is the actual entry point (it adds the
 /// exact-Clifford check ahead of this and caches this part -- the
 /// exact-Clifford check is already cheap, a lookup against 24 entries, so
@@ -232,7 +214,7 @@ fn synthesize_non_clifford(
         }
     }
 
-    gridsynth_unitary(target, config, cache)
+    independent_axis_unitary(target, config, cache)
 }
 
 /// Hashable, global-phase-invariant, rounded key for a 2x2 unitary: round
@@ -247,9 +229,10 @@ fn synthesize_non_clifford(
 /// constant coarser than epsilon (this used to round to a flat `1e-7`,
 /// which is *coarser* than this pipeline's usual `1e-8` epsilon, not finer)
 /// could merge targets that are not actually safe substitutes for each
-/// other -- e.g. two distinct near-zero-angle rotations that rsgridsynth's
-/// own near-zero cliff (a trivial 1-gate word below some tiny threshold,
-/// ~250+ gates just above it) treats very differently.
+/// other -- e.g. two distinct near-zero-angle rotations that cyclosynth's
+/// own near-Clifford snapping (a trivial constant-depth word right at a
+/// diagonal-gate power, a much longer search-derived word just off it)
+/// treats very differently.
 ///
 /// Keyed on the matrix directly, not a ZYZ-angle decomposition: two
 /// matrices that are "the same" rotation can have genuinely different
@@ -283,19 +266,19 @@ fn canonical_key(target: &Unitary, epsilon: f64) -> [(i64, i64); 4] {
 
 /// The two synthesis memoization layers for one pipeline run, both existing
 /// to make repeated (or, under Stage 4's parallel block dispatch, *racing*)
-/// requests into rsgridsynth's search consistent rather than redundant:
+/// requests into cyclosynth's search consistent rather than redundant:
 /// - `targets`: full single-qubit target unitary -> synthesized circuit,
 ///   keyed by `canonical_key` (coarse; short-circuits repeated whole blocks).
-/// - `rz_words`: individual Euler-axis angle -> rsgridsynth gate word, keyed
-///   by the exact `(theta, epsilon, seed)` bit pattern (fine; catches angle
-///   reuse *across* otherwise-distinct targets -- e.g. many targets sharing
-///   a zero lam/phi component -- and, more importantly, guarantees each
-///   distinct angle is only ever handed to rsgridsynth's own internal
+/// - `rz_words`: individual Euler-axis angle -> cyclosynth gate word, keyed
+///   by the exact `(theta, epsilon)` bit pattern (fine; catches angle reuse
+///   *across* otherwise-distinct targets -- e.g. many targets sharing a
+///   zero lam/phi component -- and, more importantly, guarantees each
+///   distinct angle is only ever handed to cyclosynth's own internal
 ///   search once, however many blocks or racing threads ask for it).
 #[derive(Default)]
 pub struct SynthCache {
     targets: Mutex<HashMap<[(i64, i64); 4], Circuit>>,
-    rz_words: Mutex<HashMap<(u64, u64, u64), Vec<Gate>>>,
+    rz_words: Mutex<HashMap<(u64, u64), Vec<Gate>>>,
 }
 
 impl SynthCache {
@@ -308,7 +291,7 @@ impl SynthCache {
 /// among `targets`, synthesizing each exactly once. Deduplication is
 /// sequential over `targets` in the order given, so that when several
 /// targets collide on one bucket, the representative actually handed to
-/// rsgridsynth/cyclosynth is always `targets`' first occurrence, never
+/// cyclosynth is always `targets`' first occurrence, never
 /// whichever parallel Stage 4 worker's cache-miss happened to win a race --
 /// full reproducibility on top of `canonical_key`'s epsilon-tied grid
 /// already guaranteeing that choice is safe.
@@ -443,26 +426,26 @@ mod tests {
     }
 
     #[test]
-    fn gridsynth_unitary_approximates_generic_rotation_within_epsilon() {
+    fn independent_axis_unitary_approximates_generic_rotation_within_epsilon() {
         let target = Gate::Rz(0.123456789).matrix();
-        let config = SynthConfig { epsilon: 1e-6, seed: 1, use_cyclosynth: false };
-        let result = gridsynth_unitary(&target, &config, &SynthCache::new());
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: false };
+        let result = independent_axis_unitary(&target, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
 
     #[test]
-    fn gridsynth_unitary_approximates_hadamard_within_epsilon() {
+    fn independent_axis_unitary_approximates_hadamard_within_epsilon() {
         let target = Gate::H.matrix();
-        let config = SynthConfig { epsilon: 1e-6, seed: 2, use_cyclosynth: false };
-        let result = gridsynth_unitary(&target, &config, &SynthCache::new());
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: false };
+        let result = independent_axis_unitary(&target, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
 
     #[test]
-    fn synthesize_block_generic_target_via_gridsynth_within_epsilon() {
+    fn synthesize_block_generic_target_via_independent_axis_within_epsilon() {
         let table = CliffordTable::build();
         let target = Gate::Rz(0.37).matrix();
-        let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: false };
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: false };
         let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
@@ -471,7 +454,7 @@ mod tests {
     fn synthesize_block_generic_target_via_cyclosynth_within_epsilon() {
         let table = CliffordTable::build();
         let target = Gate::Rz(0.37).matrix();
-        let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: true };
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: true };
         let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
@@ -487,7 +470,7 @@ mod tests {
         c.push(Gate::Rz(0.6), vec![0]);
         c.push(Gate::H, vec![0]);
         let target = c.get_unitary();
-        let config = SynthConfig { epsilon: 1e-6, seed: 3, use_cyclosynth: true };
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: true };
         let result = synthesize_block_cached(&target, &table, &config, &SynthCache::new());
         assert!(distance(&target, &result.get_unitary()) < 3e-6);
     }
@@ -496,7 +479,7 @@ mod tests {
     fn synth_cache_reuses_result_for_repeated_angle() {
         let table = CliffordTable::build();
         let target = Gate::Rz(0.37).matrix();
-        let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: false };
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: false };
         let cache = SynthCache::new();
         let first = synthesize_block_cached(&target, &table, &config, &cache);
         let second = synthesize_block_cached(&target, &table, &config, &cache);
@@ -515,7 +498,7 @@ mod tests {
         noisy_circuit.push(Gate::Rz(0.37 + 1e-10), vec![0]);
         let noisy_target = noisy_circuit.get_unitary();
 
-        let config = SynthConfig { epsilon: 1e-6, seed: 5, use_cyclosynth: false };
+        let config = SynthConfig { epsilon: 1e-6, use_cyclosynth: false };
         let cache = SynthCache::new();
         let first = synthesize_block_cached(&target, &table, &config, &cache);
         let second = synthesize_block_cached(&noisy_target, &table, &config, &cache);

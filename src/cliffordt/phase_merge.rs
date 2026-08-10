@@ -113,7 +113,7 @@ pub fn merge_phase_polynomial(circuit: &Circuit) -> Circuit {
 
 /// How many ZYZ Euler axes across `circuit`'s Stage-1 blocks are NOT within
 /// `tol` of a multiple of pi/4 -- i.e. how many will actually need a
-/// gridsynth/cyclosynth call in Stage 4, unlike a raw count of non-pi/4 `Rz`
+/// cyclosynth call in Stage 4, unlike a raw count of non-pi/4 `Rz`
 /// *occurrences* (this function's predecessor): an occurrence sitting at a
 /// block boundary can still land in an otherwise-all-Clifford block and cost
 /// nothing, and merging a boundary Clifford rotation into a real one

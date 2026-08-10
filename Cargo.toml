@@ -31,7 +31,6 @@ indexmap = "2.11"
 # Clifford+T compilation pipeline (compile_cliffordt bin)
 nalgebra = "0.34"
 num-complex = "0.4"
-rsgridsynth = "0.2.2"
 cyclosynth = { path = "cyclosynth", default-features = false }
 # NLS instantiation (Stage 4/5) uses the rust-cv `levenberg-marquardt`
 # crate (a nalgebra-native port of MINPACK's trust-region LM) instead of
