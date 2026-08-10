@@ -114,18 +114,20 @@ If your circuit is not already in the Clifford+T gate set, compile it first usin
 
 This produces `circuit.cliffordt.qasm`. Its pipeline: exact phase-polynomial merge, a
 gauge-collapse cycle (blocking + exact-Clifford recognition + angle rounding), windowed
-multi-qubit resynthesis, gauge collapse again, then final per-block synthesis via cyclosynth --
+multi-qubit resynthesis, gauge collapse again, final per-block synthesis via cyclosynth --
 its independent per-axis Rz synthesis by default, or its joint ZYZ lattice search with
-`--cyclosynth`.
+`--cyclosynth` -- then a Clifford-run simplification pass that canonicalizes the Clifford
+gates synthesis leaves around each T gate (exact, no fidelity cost).
 
 Notable flags (`--help` for the full list): `--epsilon` (default `1e-8`);
 `--approx-cancel` (opt-in infidelity-based cancellation -- the resulting error is always measured
 exactly and folded into the reported error bound, but can be larger per cancellation than
 `--epsilon` itself); `--verify` (exact unitary fidelity check against the original circuit,
 circuits of ≤10 qubits only); and `--skip-gauge-collapse`/`--skip-windowed-resynthesis`/
-`--skip-phase-merge` to isolate each stage's contribution, e.g. for ablation studies. Accepts
-multiple input files at once, writing `<name>.cliffordt.qasm` next to each input by default (`-o`
-to override, or to name an output directory when compiling more than one file).
+`--skip-phase-merge`/`--skip-clifford-simplify` to isolate each stage's contribution, e.g. for
+ablation studies. Accepts multiple input files at once, writing `<name>.cliffordt.qasm` next to
+each input by default (`-o` to override, or to name an output directory when compiling more than
+one file).
 
 Its QASM loader is deliberately narrow (this pipeline's own Clifford+`rz`/`u3` vocabulary, plus the
 OpenQASM 3 subset needed for MQT Bench exports) and fails loudly on anything it doesn't recognize,

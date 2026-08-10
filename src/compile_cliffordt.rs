@@ -1,6 +1,6 @@
 //! Compile an arbitrary circuit down to Clifford+T.
 //!
-//! Runs a four-stage compilation pipeline. Terminal output includes a git
+//! Runs a five-stage compilation pipeline. Terminal output includes a git
 //! banner, backend params, per-circuit before/after stats, and a timing
 //! breakdown.
 
@@ -67,6 +67,11 @@ struct Args {
     /// to the result.
     #[arg(long)]
     skip_phase_merge: bool,
+
+    /// Skip Stage 4 (Clifford-run simplification), to isolate its
+    /// contribution to the result.
+    #[arg(long)]
+    skip_clifford_simplify: bool,
 }
 
 fn output_path(input: &str, output: &Option<String>, multiple_inputs: bool) -> String {
@@ -152,13 +157,14 @@ fn main() {
         env!("VERGEN_BUILD_TIMESTAMP")
     );
     println!(
-        "backend: rust (epsilon={:e}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={})",
+        "backend: rust (epsilon={:e}, cyclosynth={}, approx_cancel={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={}, skip_clifford_simplify={})",
         args.epsilon,
         args.cyclosynth,
         args.approx_cancel,
         args.skip_gauge_collapse,
         args.skip_windowed_resynthesis,
-        args.skip_phase_merge
+        args.skip_phase_merge,
+        args.skip_clifford_simplify
     );
 
     let mut failures = 0usize;
@@ -188,6 +194,7 @@ fn main() {
             skip_gauge_collapse: args.skip_gauge_collapse,
             skip_windowed_resynthesis: args.skip_windowed_resynthesis,
             skip_phase_merge: args.skip_phase_merge,
+            skip_clifford_simplify: args.skip_clifford_simplify,
         };
 
         let compile_timer = Timer::new("compile");
@@ -254,8 +261,21 @@ fn main() {
                     // error_bound already sums each synthesized block's own
                     // epsilon budget, so comparing against it (not a flat
                     // epsilon) avoids false-positive warnings on circuits
-                    // with many leftover rotations.
-                    if d > error_bound * 10.0 {
+                    // with many leftover rotations. Floored at 1e-12: a
+                    // circuit that reduces to exact Cliffords has
+                    // error_bound == 0.0 exactly, but Stage 4's cross-qubit
+                    // gate reordering (safe -- gates on disjoint qubits
+                    // commute) still does floating-point work after that
+                    // bound is finalized, so `d` lands around 1e-16 rather
+                    // than bit-exact zero -- measured, not guessed. Kept
+                    // three orders of magnitude above that measured noise
+                    // (not something looser like 1e-9) so the check still
+                    // means something at a tight --epsilon: this comparison
+                    // is itself limited to about 1e-15 by dense f64 unitary
+                    // arithmetic regardless of epsilon, so there's no floor
+                    // that stays meaningful all the way down to that limit,
+                    // but 1e-12 leaves real headroom before hitting it.
+                    if d > (error_bound * 10.0).max(1e-12) {
                         eprintln!(
                             "WARNING {input}: distance from original exceeds 10x the computed upper error bound"
                         );

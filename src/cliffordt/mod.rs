@@ -1,4 +1,5 @@
 pub mod clifford;
+pub mod clifford_simplify;
 pub mod group_single_qubit;
 pub mod instantiate;
 pub mod matrix;

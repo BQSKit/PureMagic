@@ -1,13 +1,16 @@
 //! Orchestrates all stages into one `compile` entry point: exact
 //! phase-polynomial merge -> gauge collapse (blocking + exact-Clifford +
 //! rounding, run and reported as one combined stage) -> windowed
-//! multi-qubit resynthesis -> gauge collapse again -> final synthesis.
+//! multi-qubit resynthesis -> gauge collapse again -> final synthesis ->
+//! Clifford-run simplification (canonicalize the Clifford framing final
+//! synthesis leaves around each T gate).
 
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
 use crate::cliffordt::clifford::CliffordTable;
+use crate::cliffordt::clifford_simplify::simplify_clifford_runs;
 use crate::cliffordt::group_single_qubit::group_single_qubit_gates;
 use crate::cliffordt::matrix::{Unitary, distance};
 use crate::cliffordt::partition::partition;
@@ -90,6 +93,9 @@ pub struct PipelineConfig {
     /// Skip Stage 0 (phase-polynomial merge), for isolating its
     /// contribution to the final result.
     pub skip_phase_merge: bool,
+    /// Skip Stage 4 (Clifford-run simplification), for isolating its
+    /// contribution to the final result.
+    pub skip_clifford_simplify: bool,
 }
 
 impl Default for PipelineConfig {
@@ -101,6 +107,7 @@ impl Default for PipelineConfig {
             skip_gauge_collapse: false,
             skip_windowed_resynthesis: false,
             skip_phase_merge: false,
+            skip_clifford_simplify: false,
         }
     }
 }
@@ -338,6 +345,21 @@ pub fn compile(
         detail: None,
     });
 
+    // Stage 4: canonicalize the Clifford framing final synthesis leaves
+    // around each T gate. Exact and tolerance-gated (see
+    // clifford_simplify.rs), so it never spends any of `total_error`'s
+    // accuracy budget.
+    if !config.skip_clifford_simplify {
+        let t = Instant::now();
+        final_circuit = simplify_clifford_runs(&final_circuit, &table, 1e-10);
+        on_stage(StageReport {
+            name: "stage 4: clifford simplification".to_string(),
+            elapsed: t.elapsed(),
+            circuit: &final_circuit,
+            detail: None,
+        });
+    }
+
     (final_circuit, total_error)
 }
 
@@ -412,6 +434,47 @@ mod tests {
 
         assert!(error_bound < 1e-5);
         assert!(distance(&original, &compiled.get_unitary()) < 1e-5);
+    }
+
+    #[test]
+    fn clifford_simplification_reduces_or_preserves_clifford_count() {
+        // Two separate `compile()` calls can legitimately pick different
+        // (equally valid) synthesis representatives for the same input --
+        // Stage 3's dispatch dedups via a `HashSet` keyed on canonical
+        // angle buckets, and Rust's default hasher is randomized per
+        // process, so which representative "wins" a tie is not guaranteed
+        // stable across calls. Comparing clifford_count between two
+        // independent `compile()` runs would therefore be comparing two
+        // potentially different Stage 0-3 outputs, not measuring Stage 4's
+        // own effect. Instead: compile once with Stage 4 off to get a
+        // single fixed "raw" circuit, then apply `simplify_clifford_runs`
+        // to that same circuit directly and compare before/after.
+        use crate::cliffordt::clifford_simplify::simplify_clifford_runs;
+        use crate::cliffordt::stats::compute_stats;
+
+        let mut c = Circuit::new(2);
+        c.push(Gate::H, vec![0]);
+        c.push(Gate::Rz(0.37), vec![0]);
+        c.push(Gate::Cx, vec![0, 1]);
+        c.push(Gate::Rz(1.1), vec![1]);
+        c.push(Gate::H, vec![1]);
+        let original = c.get_unitary();
+
+        let config = PipelineConfig {
+            epsilon: 1e-6,
+            cyclosynth: true,
+            skip_clifford_simplify: true,
+            ..PipelineConfig::default()
+        };
+        let (raw, error_bound) = compile(&c, &config, |_| {});
+        let table = CliffordTable::build();
+        let simplified = simplify_clifford_runs(&raw, &table, 1e-10);
+
+        assert!(compute_stats(&simplified).clifford_count <= compute_stats(&raw).clifford_count);
+        assert!(distance(&original, &raw.get_unitary()) < error_bound * 10.0);
+        // Exact, tolerance-gated rewrite -- must not spend any extra
+        // accuracy budget beyond ordinary floating-point noise.
+        assert!(distance(&original, &simplified.get_unitary()) < (error_bound * 10.0).max(1e-9));
     }
 
     /// End-to-end check that `approx_cancel` is "properly accounted", not
