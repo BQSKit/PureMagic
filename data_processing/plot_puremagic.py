@@ -106,7 +106,7 @@ def parse_output_file(filepath):
 
     Columns (NaN where missing):
         circuit, weight, magic_state_lambda, scheduling_efficiency,
-        parallel_efficiency, parallelism, cliffords, lcycles,
+        parallel_efficiency, parallelism, cliffords, layers, lcycles,
         data_qubits, total_qubits, magic_qubits, loaded_qubits, timing,
         avg_cultivation_time, inv_lambda, ancilla_qubits, volume, max_parallelism,
         min_volume, ppl
@@ -139,6 +139,7 @@ def parse_output_file(filepath):
                 "parallel_efficiency": pe,
                 "parallelism": cur.get("parallelism"),
                 "cliffords": cur.get("cliffords"),
+                "layers": cur.get("layers"),
                 "lcycles": cur.get("lcycles"),
                 "data_qubits": cur.get("data_qubits"),
                 "total_qubits": cur.get("total_qubits"),
@@ -159,6 +160,7 @@ def parse_output_file(filepath):
             "scheduling_efficiency",
             "lcycles",
             "cliffords",
+            "layers",
             "timing",
             "loaded_qubits",
             "avg_cultivation_time",
@@ -201,6 +203,9 @@ def parse_output_file(filepath):
 
             if m := re.match(r"Number of Cliffords:\s+(\d+)", s):
                 cur["cliffords"] = int(m.group(1))
+
+            if m := re.match(r"Layers:\s+(\d+)", s):
+                cur["layers"] = int(m.group(1))
 
             if m := re.match(r"Scheduled products written to (.+)\.schedule", s):
                 if cur.get("circuit"):
