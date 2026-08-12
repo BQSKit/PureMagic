@@ -592,6 +592,20 @@ impl Scheduler {
         root_info
     }
 
+    /// Conjugates a Pauli label by S_axis (sign dropped, matching this codebase's existing
+    /// no-phase-tracking convention: `PauliProduct`/`Operator` carry no sign field). A label
+    /// equal to `axis` is fixed; any other label is swapped with the remaining third label,
+    /// e.g. S_Z fixes Z and swaps X<->Y, S_X fixes X and swaps Y<->Z, S_Y fixes Y and swaps X<->Z.
+    fn conjugate_pauli_label(basis: char, axis: char) -> char {
+        match (basis, axis) {
+            (b, a) if b == a => b,
+            ('X', 'Y') | ('Y', 'X') => 'Z',
+            ('X', 'Z') | ('Z', 'X') => 'Y',
+            ('Y', 'Z') | ('Z', 'Y') => 'X',
+            _ => basis,
+        }
+    }
+
     /// Applies the current per-qubit S^k conjugation to a T gate's operators, updating
     /// `precomputed_terminals`/`precomputed_root_info` and returning any (qubit, new_basis) swaps.
     /// Always recomputes from the circuit's original operators so changing correction_power
@@ -606,18 +620,14 @@ impl Scheduler {
             .iter()
             .map(|op| (op.qubit, op.basis))
             .collect();
-        // Apply S^k conjugation in a single pass: odd power swaps X↔Y (Z unchanged).
+        // Apply S^k conjugation in a single pass: odd power conjugates by the pending
+        // correction's own axis (correction_basis), not always Z - a failed T gate's
+        // correction is S about whichever axis that T gate itself targeted.
         let mut new_ops = Vec::with_capacity(orig_ops.len());
         let mut swapped = Vec::new();
         for &(qubit, basis) in &orig_ops {
             let new_basis = if self.correction_power[qubit as usize] % 2 == 1 {
-                if basis == 'X' {
-                    'Y'
-                } else if basis == 'Y' {
-                    'X'
-                } else {
-                    basis
-                }
+                Self::conjugate_pauli_label(basis, self.correction_basis[qubit as usize])
             } else {
                 basis
             };
@@ -1695,5 +1705,50 @@ mod tests {
             active_lcycles,
             n_t,
         );
+    }
+
+    #[test]
+    fn conjugate_pauli_label_fixes_axis_and_swaps_the_other_two() {
+        for axis in ['X', 'Y', 'Z'] {
+            assert_eq!(Scheduler::conjugate_pauli_label(axis, axis), axis);
+        }
+        // S_Z fixes Z, swaps X<->Y.
+        assert_eq!(Scheduler::conjugate_pauli_label('X', 'Z'), 'Y');
+        assert_eq!(Scheduler::conjugate_pauli_label('Y', 'Z'), 'X');
+        // S_X fixes X, swaps Y<->Z.
+        assert_eq!(Scheduler::conjugate_pauli_label('Y', 'X'), 'Z');
+        assert_eq!(Scheduler::conjugate_pauli_label('Z', 'X'), 'Y');
+        // S_Y fixes Y, swaps X<->Z.
+        assert_eq!(Scheduler::conjugate_pauli_label('X', 'Y'), 'Z');
+        assert_eq!(Scheduler::conjugate_pauli_label('Z', 'Y'), 'X');
+    }
+
+    fn build_scheduler(lines: &[&str], rseed: u32) -> Scheduler {
+        Node::set_magic_routing(true);
+        let mut f = NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        let fname = f.path().to_string_lossy().to_string();
+        let mut circuit = Circuit::new(&fname);
+        circuit.load_circuit().expect("circuit load failed");
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false)
+    }
+
+    #[test]
+    fn t_conjugation_uses_the_pending_correction_own_axis_not_always_z() {
+        // A single T gate on qubit 0 measuring Z. A pending correction with axis X (as if
+        // an earlier failed T gate on this qubit had targeted X, not Z) is active.
+        let lines = &["+Z___<T>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.precompute_terminals_and_roots();
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'X';
+        let swapped = sched.apply_t_conjugation(0);
+        // Conjugating a Z operand by S_X (fixes X, swaps Y<->Z) must give Y, not the
+        // unconjugated Z that the old hardcoded-S_Z-only rule would have produced.
+        assert_eq!(swapped, vec![(0u16, 'Y')]);
     }
 }
