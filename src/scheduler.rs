@@ -860,8 +860,9 @@ impl Scheduler {
     /// On success the correction power is cleared to 0. On failure (NoPath), the circuit push is
     /// rolled back and the correction power is left unchanged so the caller can retry next lcycle.
     ///
-    /// Only reached ahead of a blocked `SX` product now - a blocked `S` product shares its
-    /// generator with the correction itself, so `try_merge_s_correction` folds the two
+    /// Only reached when the pending correction's axis doesn't match the blocked S/SX
+    /// product's own fixed axis (S is Z, SX is X) - a same-axis correction shares the
+    /// blocked product's generator, so `try_merge_clifford_correction` folds the two
     /// together directly instead of materializing a standalone gate first.
     fn try_emit_s_correction(&mut self, qubit: u16, plotting: bool) -> bool {
         let q = qubit as usize;
@@ -938,28 +939,31 @@ impl Scheduler {
         }
     }
 
-    /// Merges a pending correction directly into a blocked `S` product on the same qubit,
-    /// rather than materializing it as a separate gate first. The caller must have already
-    /// verified `correction_basis[qubit] == 'Z'` (S's own fixed axis) - only then do the
-    /// pending correction and the blocked S share a generator, making composition pure
-    /// exponent addition mod 4: at most one physical S gate is ever needed for the combined
-    /// effect, and it is `pp_id` itself - no new product is injected. Returns `true` if
-    /// `pp_id` was fully handled this lcycle (pushed onto `pp_paths`, whether or not a
-    /// physical gate was scheduled), `false` if the physical S gate could not be routed this
-    /// lcycle (`correction_power` is left unchanged so the caller retries next lcycle).
-    fn try_merge_s_correction(&mut self, pp_id: i32, qubit: u16, plotting: bool) -> bool {
+    /// Merges a pending correction directly into a blocked `S` or `SX` product on the same
+    /// qubit, rather than materializing it as a separate gate first. The caller must have
+    /// already verified the correction's axis matches this product's own fixed axis (Z for
+    /// S, X for SX) - only then do the pending correction and the blocked product share a
+    /// generator, making composition pure exponent addition mod 4: at most one physical gate
+    /// is ever needed for the combined effect, and it is `pp_id` itself - no new product is
+    /// injected. Returns `true` if `pp_id` was fully handled this lcycle (pushed onto
+    /// `pp_paths`, whether or not a physical gate was scheduled), `false` if the physical
+    /// gate could not be routed this lcycle (`correction_power` is left unchanged so the
+    /// caller retries next lcycle).
+    fn try_merge_clifford_correction(&mut self, pp_id: i32, qubit: u16, plotting: bool) -> bool {
         let q = qubit as usize;
-        debug_assert_eq!(self.correction_basis[q], 'Z');
+        let gate_type = self.input.circuit.product(pp_id).gate_type;
+        debug_assert_eq!(self.correction_basis[q], if gate_type.is_s() { 'Z' } else { 'X' });
         let merged_power = (self.correction_power[q] + 1) % 4;
         info_sched!(
-            "  Merging S product {} (qubit {}): pending power={} + 1 -> merged={}",
+            "  Merging {:?} product {} (qubit {}): pending power={} + 1 -> merged={}",
+            gate_type,
             pp_id,
             qubit,
             self.correction_power[q],
             merged_power
         );
         if merged_power == 0 || merged_power == 2 {
-            // Combined effect is classical only (identity or Z) - no physical gate needed.
+            // Combined effect is classical only (identity or Z/X) - no physical gate needed.
             info_sched!(
                 "  Product {} fully absorbed classically (merged power={}), clearing correction",
                 pp_id,
@@ -970,7 +974,7 @@ impl Scheduler {
             self.pp_paths.push((pp_id, None));
             return true;
         }
-        // merged_power is 1 or 3: exactly one physical S gate realizes the combined effect,
+        // merged_power is 1 or 3: exactly one physical gate realizes the combined effect,
         // and sched_s_sx's footprint doesn't depend on which net phase it represents, so
         // scheduling the pending product itself (unmodified) suffices.
         if !self.terminal_nodes(pp_id) {
@@ -980,7 +984,8 @@ impl Scheduler {
         match self.sched_s_sx(pp_id, plotting) {
             PathResult::PathFound(opt_graph) => {
                 info_sched!(
-                    "  Merge-scheduled S product {} (qubit {}, merged power={}), clearing correction",
+                    "  Merge-scheduled {:?} product {} (qubit {}, merged power={}), clearing correction",
+                    gate_type,
                     pp_id,
                     qubit,
                     merged_power
@@ -995,7 +1000,8 @@ impl Scheduler {
             }
             PathResult::NoPath => {
                 info_sched!(
-                    "  Merge-schedule for S product {} (qubit {}) failed (NoPath), retry next lcycle",
+                    "  Merge-schedule for {:?} product {} (qubit {}) failed (NoPath), retry next lcycle",
+                    gate_type,
                     pp_id,
                     qubit
                 );
@@ -1016,46 +1022,34 @@ impl Scheduler {
                 continue;
             }
             let (pp_id, gate_type) = (pp.id, pp.gate_type);
-            // For a blocked SX, emit any pending correction S gate first (different
-            // generator, can't be merged); CX is multi-qubit and handled by
-            // sched_precomputed, so it never appears here.
-            if gate_type.is_sx() {
-                let op_qubit = self.input.circuit.product(pp_id).operators[0].qubit;
-                if self.correction_power[op_qubit as usize] != 0 {
-                    info_sched!(
-                        "  Clifford {:?} {} (qubit {}) deferred: pending correction power={}",
-                        gate_type,
-                        pp_id,
-                        op_qubit,
-                        self.correction_power[op_qubit as usize]
-                    );
-                    let emitted = self.try_emit_s_correction(op_qubit, plotting);
-                    // Block the qubit node only if the correction S gate was placed; otherwise
-                    // leave it free so T gates can still route through it (avoids deadlock).
-                    if emitted {
-                        let pp = self.input.circuit.product(pp_id);
-                        Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
-                    }
-                    continue;
-                }
-            } else if gate_type.is_s() {
-                // A blocked S shares its generator with the pending correction only when
-                // the correction's own axis is Z (S's fixed axis) - e.g. left over from an
-                // S^k debt that has already worked its way back to Z, or from a failed T
-                // gate that itself targeted Z. A correction about a different axis (X or Y,
-                // common since failed T gates can target any axis) is a different Clifford
-                // generator and can't be folded in; it must still be materialized first,
-                // exactly like the SX case.
+            // For a blocked S/SX, fold in a pending correction that shares its fixed axis
+            // (S is always Z-basis, SX is always X-basis, per real .trans circuits) rather
+            // than materializing a standalone gate first. A correction about a different
+            // axis (common, since failed T gates can target any axis) is a different
+            // Clifford generator and can't be folded in - it must still be materialized
+            // first. CX is multi-qubit and handled by sched_precomputed, so it never
+            // appears here.
+            if gate_type.is_s() || gate_type.is_sx() {
                 let op_qubit = self.input.circuit.product(pp_id).operators[0].qubit;
                 let power = self.correction_power[op_qubit as usize];
-                if power != 0 && self.correction_basis[op_qubit as usize] == 'Z' {
-                    if !self.try_merge_s_correction(pp_id, op_qubit, plotting) {
+                let native_axis = if gate_type.is_s() { 'Z' } else { 'X' };
+                if power != 0 && self.correction_basis[op_qubit as usize] == native_axis {
+                    if !self.try_merge_clifford_correction(pp_id, op_qubit, plotting) {
                         let pp = self.input.circuit.product(pp_id);
                         Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
                     }
                     continue;
                 } else if power != 0 {
+                    info_sched!(
+                        "  Clifford {:?} {} (qubit {}) deferred: pending correction power={}",
+                        gate_type,
+                        pp_id,
+                        op_qubit,
+                        power
+                    );
                     let emitted = self.try_emit_s_correction(op_qubit, plotting);
+                    // Block the qubit node only if the correction S gate was placed; otherwise
+                    // leave it free so T gates can still route through it (avoids deadlock).
                     if emitted {
                         let pp = self.input.circuit.product(pp_id);
                         Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
@@ -1917,5 +1911,58 @@ mod tests {
         assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
         let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
         assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the S gate");
+    }
+
+    #[test]
+    fn sx_correction_merges_free_when_axis_matches_and_net_power_is_even() {
+        // Native SX products are always X-basis, so a pending X-axis correction shares
+        // SX's own generator, exactly like S/Z. Power 1 + SX's own power gives net 2
+        // (classical) - fully absorbed with zero physical gates.
+        let lines = &["+X___<SX>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'X';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(sched.free_merged_products.contains(&0));
+        assert!(sched.scheduled_products.contains(&0));
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 1, "fully-absorbed correction costs zero extra lcycles");
+    }
+
+    #[test]
+    fn sx_correction_merges_to_one_physical_gate_when_axis_matches_and_net_power_is_odd() {
+        // Power 2 + SX's own power gives net 3 - exactly one physical SX gate realizes
+        // it, reusing the original product id.
+        let lines = &["+X___<SX>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 2;
+        sched.correction_basis[0] = 'X';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0, "no new product was injected");
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(!sched.free_merged_products.contains(&0));
+        assert!(sched.scheduled_products.contains(&0));
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 3, "one physical SX gate occupies exactly 3 lcycles");
+    }
+
+    #[test]
+    fn sx_correction_falls_back_to_materializing_when_axis_does_not_match() {
+        // A pending correction about Z is a different generator from SX's fixed X axis
+        // and can't be folded in - it must still be materialized as its own gate first.
+        let lines = &["+X___<SX>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'Z';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 1, "standalone correction gate injected");
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(sched.free_merged_products.is_empty());
+        assert!(sched.scheduled_products.contains(&0), "original SX product scheduled");
+        assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the SX gate");
     }
 }
