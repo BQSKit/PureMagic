@@ -402,6 +402,12 @@ def _ordered_union_xs(series_list):
 _LABEL_FONTSIZE = 15  # ~50 % larger than the default 10 pt
 _TICK_FONTSIZE = 15  # ~50 % larger than the default 10 pt
 _LEGEND_FONTSIZE = 15  # ~50 % larger than the default 10 pt
+_BAR_LABEL_FONTSIZE = 9
+
+
+def _label_bars(ax, container, fmt="%.3g"):
+    """Annotate each bar in a BarContainer with its height, above the bar."""
+    ax.bar_label(container, fmt=fmt, fontsize=_BAR_LABEL_FONTSIZE, padding=2)
 
 
 def _combine_legend(ax, ax2=None, no_legend=False):
@@ -901,9 +907,7 @@ def main():
                 # outputs of the run itself and differ between the two files being compared,
                 # so an exact-match merge on them would drop every row; match on circuit alone
                 # and take the x value from file1.
-                merge_keys = (
-                    ["circuit", x_field] if x_key in _EXACT_MATCH_X_AXES else ["circuit"]
-                )
+                merge_keys = ["circuit", x_field] if x_key in _EXACT_MATCH_X_AXES else ["circuit"]
                 merged = d1.merge(d2[merge_keys + [y_field]], on=merge_keys, suffixes=("_1", "_2"))
                 merged = merged[merged[f"{y_field}_2"] != 0.0]
                 if merged.empty:
@@ -1357,7 +1361,8 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    _figsize = (8, 4.5)
+    # _figsize = (8, 4.5)
+    _figsize = (16, 9)
     if args.figsize:
         try:
             _fw, _fh = args.figsize.split(",", 1)
@@ -1399,7 +1404,7 @@ def main():
                 colour = _COLOURS[(colour_start + j) % len(_COLOURS)]
                 lookup = dict(zip(s.xs, s.ys))
                 heights = [lookup.get(c, 0.0) for c in all_circuits]
-                cur_ax.bar(
+                bars = cur_ax.bar(
                     np.arange(len(all_circuits)) + offsets[j],
                     heights,
                     width=bar_width * 0.9,
@@ -1408,6 +1413,7 @@ def main():
                     edgecolor="black",
                     linewidth=0.4,
                 )
+                _label_bars(cur_ax, bars)
 
             cur_ax.set_ylabel(
                 (
@@ -1513,6 +1519,16 @@ def main():
                     )
                     bottoms += seg_heights
                     prev_heights = heights
+
+                for xi, top in enumerate(bottoms):
+                    ax.text(
+                        xi + file_offsets[fi],
+                        top,
+                        f"{top:.3g}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=_BAR_LABEL_FONTSIZE,
+                    )
 
                 if n_files > 1:
                     file_label = split_file_arg(args.files[fi], f"file{fi + 1}")[2]
@@ -1717,7 +1733,7 @@ def main():
                     for j, (lbl, ratio_map) in enumerate(ratio_series_data):
                         colour = _COLOURS[j % len(_COLOURS)]
                         heights_r = [ratio_map.get(c, 0.0) for c in ratio_circuits]
-                        ax.bar(
+                        bars_r = ax.bar(
                             np.arange(n_c) + offsets_r[j],
                             heights_r,
                             width=bar_width_r * 0.9,
@@ -1726,6 +1742,7 @@ def main():
                             edgecolor="black",
                             linewidth=0.4,
                         )
+                        _label_bars(ax, bars_r)
 
                     ax.set_ylabel(ratio_y_label, fontsize=_LABEL_FONTSIZE)
                     ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
@@ -1819,7 +1836,7 @@ def main():
                     if not all_circuits:
                         all_circuits = [_wisq_canonical(e[0]) for e in wisq_entries]
                     heights = [wisq_map.get(c, 0.0) for c in all_circuits]
-                    ax.bar(
+                    bars_w = ax.bar(
                         np.arange(len(all_circuits)),
                         heights,
                         width=0.8,
@@ -1828,6 +1845,7 @@ def main():
                         edgecolor="black",
                         linewidth=0.4,
                     )
+                    _label_bars(ax, bars_w)
                     ax.set_ylabel(
                         args.ylabel if args.ylabel else _Y_AXES["volume"],
                         fontsize=_LABEL_FONTSIZE,
