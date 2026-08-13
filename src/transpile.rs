@@ -1307,8 +1307,7 @@ mod tests {
             }
         }
         let mut in_degrees: Vec<usize> = parents.iter().map(|p| p.len()).collect();
-        let mut ready: Vec<usize> =
-            (0..items.len()).filter(|&i| in_degrees[i] == 0).collect();
+        let mut ready: Vec<usize> = (0..items.len()).filter(|&i| in_degrees[i] == 0).collect();
         let mut n_layers = 0;
         while !ready.is_empty() {
             n_layers += 1;
@@ -1485,9 +1484,8 @@ mod tests {
             gates.push(QasmGate::T { qubit: 0 });
             gates.push(QasmGate::T { qubit: 1 });
         }
-        let paulis = |items: &[TransItem]| {
-            items.iter().filter(|i| matches!(i, TransItem::Pauli(_))).count()
-        };
+        let paulis =
+            |items: &[TransItem]| items.iter().filter(|i| matches!(i, TransItem::Pauli(_))).count();
         assert_eq!(
             paulis(&transpile_full(2, &gates, 1, true)),
             paulis(&transpile_full(2, &gates, 1, false))
@@ -1550,5 +1548,4 @@ mod tests {
             );
         }
     }
-
 }
