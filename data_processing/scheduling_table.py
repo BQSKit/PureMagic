@@ -24,14 +24,11 @@ Arguments:
 """
 
 import argparse
-import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 
 import puremagic_log
+from table_common import generate_pdf, latex_escape
 
 
 # ---------------------------------------------------------------------------
@@ -226,25 +223,6 @@ def pretty_name(name, num_qubits=None):
 # ---------------------------------------------------------------------------
 
 
-def latex_escape(s):
-    """Escape special LaTeX characters in a string."""
-    replacements = [
-        ("\\", r"\textbackslash{}"),
-        ("&", r"\&"),
-        ("%", r"\%"),
-        ("$", r"\$"),
-        ("#", r"\#"),
-        ("_", r"\_"),
-        ("{", r"\{"),
-        ("}", r"\}"),
-        ("~", r"\textasciitilde{}"),
-        ("^", r"\textasciicircum{}"),
-    ]
-    for old, new in replacements:
-        s = s.replace(old, new)
-    return s
-
-
 def fmt_pct(value):
     """Format a percentage value to 1 decimal place (no % sign)."""
     return f"{value:.1f}"
@@ -258,69 +236,6 @@ def fmt_volume(value):
 def fmt_cultivation(value):
     """Format cultivation average (cycles) as a float with 2 decimal places."""
     return f"{value:.2f}"
-
-
-# ---------------------------------------------------------------------------
-# PDF rendering (same as circuit_table.py)
-# ---------------------------------------------------------------------------
-
-
-def generate_pdf(latex_table: str, pdf_path: str) -> None:
-    """
-    Wrap *latex_table* in a minimal standalone document and render it to
-    *pdf_path*.  Tries pdflatex / xelatex / lualatex first, then pandoc.
-    Raises RuntimeError if no suitable tool is found.
-    """
-    standalone_doc = (
-        r"\documentclass{article}" + "\n"
-        r"\usepackage{booktabs}" + "\n"
-        r"\usepackage{makecell}" + "\n"
-        r"\usepackage{geometry}" + "\n"
-        r"\geometry{margin=1in}" + "\n"
-        r"\begin{document}" + "\n"
-        r"\pagestyle{empty}" + "\n" + latex_table + "\n"
-        r"\end{document}" + "\n"
-    )
-
-    pdf_path = os.path.abspath(pdf_path)
-
-    for engine in ("pdflatex", "xelatex", "lualatex"):
-        if not shutil.which(engine):
-            continue
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tex_path = os.path.join(tmpdir, "table.tex")
-            with open(tex_path, "w") as f:
-                f.write(standalone_doc)
-            try:
-                subprocess.run(
-                    [engine, "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path],
-                    check=True,
-                    capture_output=True,
-                )
-                shutil.copy(os.path.join(tmpdir, "table.pdf"), pdf_path)
-                print(f"PDF written to {pdf_path} (via {engine})", file=sys.stderr)
-                return
-            except subprocess.CalledProcessError as e:
-                print(f"{engine} failed: {e.stderr.decode()}", file=sys.stderr)
-
-    if shutil.which("pandoc"):
-        with tempfile.NamedTemporaryFile(suffix=".tex", mode="w", delete=False) as tmp:
-            tmp.write(standalone_doc)
-            tex_path = tmp.name
-        try:
-            subprocess.run(
-                ["pandoc", tex_path, "-o", pdf_path, "--pdf-engine=pdflatex", "--from=latex"],
-                check=True,
-                capture_output=True,
-            )
-            print(f"PDF written to {pdf_path} (via pandoc)", file=sys.stderr)
-            return
-        except subprocess.CalledProcessError as e:
-            print(f"pandoc failed: {e.stderr.decode()}", file=sys.stderr)
-        finally:
-            os.unlink(tex_path)
-
-    raise RuntimeError("No PDF renderer found. Install pdflatex, xelatex, lualatex, or pandoc.")
 
 
 # ---------------------------------------------------------------------------
