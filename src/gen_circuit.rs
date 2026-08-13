@@ -126,10 +126,34 @@ struct Args {
     #[arg(short = 'n', long, default_value = "1000")]
     random_products: usize,
     /// Spread probability: probability of adding operators to adjacent qubits (0.0–1.0).
-    #[arg(short = 's', long, default_value = "0.4")]
+    #[arg(
+        short = 's',
+        long,
+        default_value = "0.4",
+        value_parser = |s: &str| -> Result<f64, String> {
+            let v: f64 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+            if (0.0..=1.0).contains(&v) {
+                Ok(v)
+            } else {
+                Err(format!("spread_probability must be between 0.0 and 1.0, got {}", v))
+            }
+        }
+    )]
     spread_probability: f64,
     /// Decay factor: how much probability decreases with distance (0.0–1.0).
-    #[arg(short = 'd', long, default_value = "0.7")]
+    #[arg(
+        short = 'd',
+        long,
+        default_value = "0.7",
+        value_parser = |s: &str| -> Result<f64, String> {
+            let v: f64 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+            if (0.0..=1.0).contains(&v) {
+                Ok(v)
+            } else {
+                Err(format!("decay_factor must be between 0.0 and 1.0, got {}", v))
+            }
+        }
+    )]
     decay_factor: f64,
     /// Output filename (default: auto-generated from parameters).
     #[arg(short, long)]
@@ -139,14 +163,6 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     utils::print_banner("gen_circuit");
-    if args.spread_probability < 0.0 || args.spread_probability > 1.0 {
-        eprintln!("Error: spread_probability must be between 0.0 and 1.0");
-        std::process::exit(1);
-    }
-    if args.decay_factor < 0.0 || args.decay_factor > 1.0 {
-        eprintln!("Error: decay_factor must be between 0.0 and 1.0");
-        std::process::exit(1);
-    }
     println!(
         "Generating random circuit with {} products on {} qubits",
         args.random_products, args.random_qubits
