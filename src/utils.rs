@@ -1,7 +1,31 @@
+use clap::Args;
 use colored::Colorize;
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
+
+/// CLI arguments shared between `puremagic` and `circuit_stats`, flattened into
+/// each binary's own `Args` via `#[command(flatten)]` so the flag names,
+/// defaults, and types can't drift between the two independently again.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct CommonArgs {
+    /// Name of file containing input circuit, in `.trans` format (required).
+    #[arg(short, long = "circuit")]
+    pub(crate) circuit_fname: String,
+    /// Random seed for reproducible results.
+    #[arg(short, long, default_value = "29")]
+    pub(crate) rseed: u64,
+    /// Lambda parameter for the exponential distribution of magic-state
+    /// cultivation cycles (magic states produced per magic qubit per lcycle).
+    #[arg(short, long, default_value = "0.0387396")]
+    pub(crate) magic_state_lambda: f64,
+    /// Disable T gate failures (every T gate succeeds on first attempt).
+    #[arg(short = 'F', long)]
+    pub(crate) no_t_failures: bool,
+    /// Number of ancilla rows between data patches (magic routing only).
+    #[arg(short, long, default_value = "1")]
+    pub(crate) ancilla_rows: usize,
+}
 
 /// RAII timer that prints elapsed wall-clock time on drop.
 pub(crate) struct Timer {
