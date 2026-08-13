@@ -21,20 +21,11 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# Style constants (consistent with plot_puremagic.py)
-# ---------------------------------------------------------------------------
-_COLOURS = [
-    "steelblue",
-    "darkorange",
-    "forestgreen",
-    "crimson",
-    "mediumpurple",
-    "saddlebrown",
-    "deeppink",
-    "teal",
-]
+from plot_puremagic import _COLOURS
 
+# ---------------------------------------------------------------------------
+# Style constants
+# ---------------------------------------------------------------------------
 _LABEL_FONTSIZE = 15
 _TICK_FONTSIZE = 15
 _LEGEND_FONTSIZE = 15
