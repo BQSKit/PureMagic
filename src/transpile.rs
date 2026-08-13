@@ -888,6 +888,7 @@ fn count_stats(items: &[TransItem]) -> (usize, usize, usize, f64) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    utils::print_banner("transpile");
     let _total_timer = Timer::new("transpilation");
 
     let input_file = &args.input_file;

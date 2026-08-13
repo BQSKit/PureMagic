@@ -27,6 +27,23 @@ pub(crate) struct CommonArgs {
     pub(crate) ancilla_rows: usize,
 }
 
+/// Prints a `<name> - Git branch: ... | Commit: ... | Built: ...` startup
+/// banner and returns it, since some callers (`puremagic`) persist it into an
+/// output file's header. The commit SHA is sliced to at most 8 characters
+/// rather than a fixed `[0..8]`, since it isn't guaranteed to be that long.
+pub(crate) fn print_banner(name: &str) -> String {
+    let git_sha = env!("VERGEN_GIT_SHA");
+    let short_sha = &git_sha[..git_sha.len().min(8)];
+    let hdr = format!(
+        "{name} - Git branch: {} | Commit: {} | Built: {}",
+        env!("VERGEN_GIT_BRANCH"),
+        short_sha,
+        env!("VERGEN_BUILD_TIMESTAMP")
+    );
+    println!("{hdr}");
+    hdr
+}
+
 /// RAII timer that prints elapsed wall-clock time on drop.
 pub(crate) struct Timer {
     name: String,

@@ -86,13 +86,8 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
     let args = Args::parse();
-    let mut hdr = format!(
-        "PureMagic - Git branch: {} | Commit: {} | Built: {}",
-        env!("VERGEN_GIT_BRANCH"),
-        &(env!("VERGEN_GIT_SHA"))[0..8],
-        env!("VERGEN_BUILD_TIMESTAMP")
-    );
-    println!("{}\n{:#?}", hdr, args);
+    let mut hdr = utils::print_banner("PureMagic");
+    println!("{:#?}", args);
     hdr = format!("# {}\n# {:?}", &hdr, args);
     let circuit_fname = args.common.circuit_fname;
     let mut circuit = Circuit::new(&circuit_fname);

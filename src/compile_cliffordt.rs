@@ -142,14 +142,7 @@ fn main() {
 
     let args = Args::parse();
 
-    let git_sha = env!("VERGEN_GIT_SHA");
-    let short_sha = &git_sha[..git_sha.len().min(8)];
-    println!(
-        "compile_cliffordt (rust) - Git branch: {} | Commit: {} | Built: {}",
-        env!("VERGEN_GIT_BRANCH"),
-        short_sha,
-        env!("VERGEN_BUILD_TIMESTAMP")
-    );
+    utils::print_banner("compile_cliffordt (rust)");
     println!(
         "backend: rust (epsilon={:e}, skip_cyclosynth={}, skip_gauge_collapse={}, skip_windowed_resynthesis={}, skip_phase_merge={}, skip_clifford_simplify={})",
         args.epsilon,

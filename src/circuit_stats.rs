@@ -47,6 +47,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    utils::print_banner("circuit_stats");
 
     let mut circuit = Circuit::new(&args.common.circuit_fname);
     circuit.load_circuit()?;

@@ -138,6 +138,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    utils::print_banner("gen_circuit");
     if args.spread_probability < 0.0 || args.spread_probability > 1.0 {
         eprintln!("Error: spread_probability must be between 0.0 and 1.0");
         std::process::exit(1);
