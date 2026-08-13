@@ -103,7 +103,7 @@ impl PauliProduct {
     pub(crate) fn set_from_str(&mut self, product_id: i32, s: &str) -> Result<(), Box<dyn Error>> {
         self.id = product_id;
 
-        for (i, c) in s.chars().enumerate() {
+        for (i, c) in s.char_indices() {
             if i == 0 {
                 continue;
             }
