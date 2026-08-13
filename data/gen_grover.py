@@ -19,10 +19,10 @@ bare MCZ for an all-ones target.
 """
 
 import argparse
-import os
-from pathlib import Path
 
-from qiskit import QuantumCircuit, qasm2, transpile
+from qiskit import QuantumCircuit, transpile
+
+from gen_common import write_benchmark_qasm
 
 # Matches push_gate's accepted vocabulary in src/cliffordt/qasm.rs -- ccx is
 # kept as a literal primitive (the Rust side decomposes it to Clifford+T
@@ -79,11 +79,7 @@ def generate(num_qubits: int, iterations: int, output_dir: str, target: str | No
     qc = build_grover(num_qubits, iterations, target)
     qc.measure_all()
     decomposed = transpile(qc, basis_gates=BASIS_GATES, optimization_level=1)
-
-    os.makedirs(output_dir, exist_ok=True)
-    file_path = os.path.join(output_dir, f"grover_n{num_qubits}_i{iterations}.qasm")
-    qasm2.dump(decomposed, Path(file_path))
-    return file_path
+    return write_benchmark_qasm(decomposed, output_dir, f"grover_n{num_qubits}_i{iterations}.qasm")
 
 
 def main():
@@ -111,8 +107,7 @@ def main():
     args = parser.parse_args()
 
     for n in args.qubits:
-        path = generate(n, args.iterations, args.output_dir, args.target)
-        print(f"Generated: {path}")
+        generate(n, args.iterations, args.output_dir, args.target)
 
 
 if __name__ == "__main__":

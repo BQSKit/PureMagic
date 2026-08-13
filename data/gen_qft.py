@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
-from pathlib import Path
 
-from qiskit import qasm2, transpile
+from qiskit import transpile
 from qiskit.circuit.library import QFT
+
+from gen_common import write_benchmark_qasm
 
 DEFAULT_QUBITS = [10, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220]
 
@@ -27,8 +27,6 @@ def generate_benchpress_qft_set(qubit_counts, output_dir="custom_qft_benchmarks"
     Generates a homogeneous set of QFT QASM files matching
     the native Benchpress testing logic up to any qubit size.
     """
-    os.makedirs(output_dir, exist_ok=True)
-
     for n in qubit_counts:
         # QFT is deprecated as of Qiskit 2.1 in favor of QFTGate /
         # qiskit.synthesis.qft.synth_qft_full -- kept here since it's the
@@ -43,10 +41,7 @@ def generate_benchpress_qft_set(qubit_counts, output_dir="custom_qft_benchmarks"
         # can rely on.
         decomposed_circuit = transpile(qft_circuit, basis_gates=BASIS_GATES, optimization_level=0)
 
-        # Export cleanly to an OpenQASM 2.0 text file
-        file_path = os.path.join(output_dir, f"qft_N{n:03d}_qiskit.qasm")
-        qasm2.dump(decomposed_circuit, Path(file_path))
-        print(f"Generated: {file_path}")
+        write_benchmark_qasm(decomposed_circuit, output_dir, f"qft_N{n:03d}_qiskit.qasm")
 
 
 def main():
