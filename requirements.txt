@@ -42,6 +42,11 @@ pygridsynth
 # development (pyright data_processing/compile_cliffordt.py). Not a runtime
 # dependency of the pipeline itself.
 pyright
+# Without this, pyright falls back to pandas' own (much less precise) inline
+# stubs and misreports dozens of DataFrame/Series methods (dropna, apply,
+# to_numpy, fillna, ...) as attribute-access errors across data_processing/
+# (e.g. plot_puremagic.py). Not a runtime dependency.
+pandas-stubs
 # PyTorch: CPU-only build installed by default.
 # For GPU support, replace with a CUDA-enabled build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121

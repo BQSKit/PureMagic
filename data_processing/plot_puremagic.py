@@ -775,6 +775,7 @@ def main():
     # When --flasq is given, -f volumes are normalized to the conservative bound
     # (see the circuit-x bar chart and the FLASQ overlay below).
     flasq_cons_map, flasq_opt_map = {}, {}
+    _flasq_entries = []
     if args.flasq_file is not None:
         _flasq_entries = parse_flasq_file(args.flasq_file)
         _flasq_entries = [e for e in _flasq_entries if _flasq_canonical(e[0]) in _allowed_circuits]
