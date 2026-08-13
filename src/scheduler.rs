@@ -236,6 +236,9 @@ impl Scheduler {
         let n_qubits = circuit.n_qubits;
         let n_initial_products = circuit.n_products() as i32;
         if log_level != "none" {
+            // Installed regardless of build profile, but debug_sched!/info_sched! (see
+            // utils.rs) are compiled out entirely in release, so a release build still
+            // creates trace_fname, it just never gets anything written to it.
             let trace_fname = format!("{}.sched_trace", circuit_stem(&circuit.circuit_fname));
             let level_filter = match log_level.to_lowercase().as_str() {
                 "debug" => log::LevelFilter::Debug,

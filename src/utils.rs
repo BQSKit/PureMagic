@@ -82,6 +82,10 @@ macro_rules! fn_timer {
     ($custom_name:expr) => {{ $crate::utils::Timer::new($custom_name) }};
 }
 
+/// Scheduler trace logging (`puremagic`'s `--log-scheduler`). Compiled out entirely in
+/// release builds -- the logger `Scheduler::new` installs still creates the
+/// `.sched_trace` file in release, it just stays empty, since these call sites never
+/// exist in that profile to write anything to it.
 #[macro_export]
 macro_rules! debug_sched {
     ($($arg:tt)*) => {
@@ -90,6 +94,7 @@ macro_rules! debug_sched {
     };
 }
 
+/// See [`debug_sched`].
 #[macro_export]
 macro_rules! info_sched {
     ($($arg:tt)*) => {

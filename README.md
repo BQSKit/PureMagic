@@ -61,7 +61,7 @@ Run with `-h` to see all options.
 | `-F, --no-t-failures` | off | Disable T gate failures (every T gate succeeds on first attempt) |
 | `-C, --record-cultivation-dist` | off | Record normalized cultivation-time distribution to `<name>.cultivation_dist` |
 | `-a, --ancilla-rows <N>` | `1` | Number of ancilla rows between data patches (magic routing only) |
-| `-l, --log-scheduler <LEVEL>` | `none` | Scheduler trace log level: `none`, `info`, or `debug` |
+| `-l, --log-scheduler <LEVEL>` | `none` | Scheduler trace log level: `none`, `info`, or `debug`; only populated in debug builds |
 | `-I, --show-product-ids` | off | Show product IDs instead of Pauli terms in circuit plots |
 | `-p, --plot <LIST>` | *(none)* | Comma-separated plot options: `topo`, `circuit`, `coupling`, `cstats`, `paths` |
 
@@ -155,7 +155,7 @@ After scheduling, the following files are produced. Throughout the output, **lcy
 | File | Contents |
 |------|----------|
 | `<name>.circuit.txt` | Circuit layer and dependency information. Debug builds only. |
-| `<name>.sched_trace` | Detailed scheduling trace (requires `--log-scheduler info` or `debug`). |
+| `<name>.sched_trace` | Detailed scheduling trace (requires `--log-scheduler info` or `debug`). Only populated in debug builds; a release build still creates the file but leaves it empty. |
 | `<name>.schedule` | Final schedule (lcycle → operations). |
 | `<name>.cultivation_dist` | Normalized cultivation-time distribution (requires `--record-cultivation-dist`). |
 | `<name>.topo.png` | Topology visualization (requires `--plot topo`). |

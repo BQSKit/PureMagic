@@ -34,7 +34,9 @@ struct Args {
     /// Show product IDs instead of Pauli terms when plotting the circuit.
     #[arg(short = 'I', long)]
     show_product_ids: bool,
-    /// Log scheduler actions to <CIRCUIT_FNAME>.sched file.
+    /// Log scheduler actions to <CIRCUIT_FNAME>.sched_trace. Only populated in debug
+    /// builds: the debug_sched!/info_sched! call sites are compiled out entirely in
+    /// release builds, so a release build still creates the file but leaves it empty.
     #[arg(
         short = 'l',
         long = "log-scheduler",
@@ -48,7 +50,7 @@ struct Args {
                 ))
             }
         },
-        help = "Log level for scheduler (none, info, or debug)"
+        help = "Log level for scheduler (none, info, or debug); debug builds only"
     )]
     log_scheduler: String,
     /// Use magic qubits for routing in addition to bus qubits
