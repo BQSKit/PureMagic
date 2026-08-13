@@ -1197,8 +1197,7 @@ def timed(label: str, timings: dict) -> Iterator[None]:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compile a QASM circuit to the Clifford+T gate set, via qiskit "
-        "or bqskit.",
+        description="Compile a QASM circuit to the Clifford+T gate set, via qiskit " "or bqskit.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("inputs", nargs="+", type=Path, help="input .qasm file(s)")
@@ -1224,7 +1223,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=float,
         default=EPSILON_DEFAULT,
         help="gridsynth target error per rotation, shared by both backends -- "
-        "see module docstring's \"Rotation synthesis: gridsynth\" section "
+        'see module docstring\'s "Rotation synthesis: gridsynth" section '
         "for the measurements behind this number",
     )
     parser.add_argument(

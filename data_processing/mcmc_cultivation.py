@@ -46,22 +46,22 @@ rng = np.random.default_rng(42)
 per_cycle_survival_d3 = [
     1.0,  # encode T
     1.0,  # stabilize
-    0.83, # check T
-    0.83, # check T
-    0.74, # stabilize
-    0.64, # stabilize
+    0.83,  # check T
+    0.83,  # check T
+    0.74,  # stabilize
+    0.64,  # stabilize
     0.6,  # stabilize
-    0.57, # escaped
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.55, # wait
-    0.25 # ready
+    0.57,  # escaped
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.55,  # wait
+    0.25,  # ready
 ]
 assert len(per_cycle_survival_d3) == 18, f"Expected 18 cycles, got {len(per_cycle_survival_d3)}"
 
@@ -72,31 +72,32 @@ assert len(per_cycle_survival_d3) == 18, f"Expected 18 cycles, got {len(per_cycl
 per_cycle_survival_d5 = [
     1.0,  # encode T
     1.0,  # stabilize
-    0.83, # check T
-    0.83, # check T
-    0.72, # stabilze
-    0.53, # stabilize
+    0.83,  # check T
+    0.83,  # check T
+    0.72,  # stabilze
+    0.53,  # stabilize
     0.4,  # stabilize
     0.3,  # check T
     0.3,  # check T
-    0.19, # stabilize
-    0.12, # stabilize
+    0.19,  # stabilize
+    0.12,  # stabilize
     0.1,  # stabilize
-    0.08, # stabilize
-    0.075, # stabilize
-    0.07, # escaped
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.06, # wait
-    0.018, # ready
+    0.08,  # stabilize
+    0.075,  # stabilize
+    0.07,  # escaped
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.06,  # wait
+    0.018,  # ready
 ]
 assert len(per_cycle_survival_d5) == 25, f"Expected 25 cycles, got {len(per_cycle_survival_d5)}"
+
 
 # Convert cumulative survival fractions to conditional per-cycle probabilities
 # cond[i] = P(survive cycle i | survived all previous cycles)
@@ -108,6 +109,7 @@ def cumulative_to_conditional(cumulative):
     for i in range(1, len(arr)):
         cond[i] = arr[i] / arr[i - 1] if arr[i - 1] > 0 else 0.0
     return cond
+
 
 # Report end-to-end survival (final value of each array)
 cum_d3 = per_cycle_survival_d3[-1]
@@ -140,7 +142,11 @@ def run_mcmc(conditional_probs, n_samples=1_000_000):
     for i in range(n_samples):
         if i % report_every == 0:
             pct = 100.0 * i / n_samples
-            print(f"  progress: {i:>{len(str(n_samples))}}/{n_samples} ({pct:5.1f}%)", end="\r", flush=True)
+            print(
+                f"  progress: {i:>{len(str(n_samples))}}/{n_samples} ({pct:5.1f}%)",
+                end="\r",
+                flush=True,
+            )
         total_cycles = 0
         while True:
             survived = True
@@ -183,8 +189,13 @@ def plot_results(times_d3, times_d5, lam_d3, lam_d5):
 
         # Fitted exponential CDF
         t_range = np.linspace(0, sorted_t[-1], 1000)
-        ax.plot(t_range, 1 - np.exp(-lam * t_range), "k--", lw=1.5,
-                label=f"Exp fit: λ={lam:.5f}\nmean={mean_t:.1f} cycles")
+        ax.plot(
+            t_range,
+            1 - np.exp(-lam * t_range),
+            "k--",
+            lw=1.5,
+            label=f"Exp fit: λ={lam:.5f}\nmean={mean_t:.1f} cycles",
+        )
 
         ax.set_xlabel("Circuit cycles until success")
         ax.set_ylabel("CDF")
@@ -229,9 +240,13 @@ if __name__ == "__main__":
     print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d})")
 
     print(f"\nAnalytic estimate (N_cycles / end-to-end survival):")
-    print(f"  d1=3: {n_cycles_d3} / {cum_d3:.4f} = {n_cycles_d3 / cum_d3:.1f} circuit cycles"
-          f" = {n_cycles_d3 / cum_d3 / paper_d:.1f} logical cycles")
-    print(f"  d1=5: {n_cycles_d5} / {cum_d5:.4f} = {n_cycles_d5 / cum_d5:.1f} circuit cycles"
-          f" = {n_cycles_d5 / cum_d5 / paper_d:.1f} logical cycles")
+    print(
+        f"  d1=3: {n_cycles_d3} / {cum_d3:.4f} = {n_cycles_d3 / cum_d3:.1f} circuit cycles"
+        f" = {n_cycles_d3 / cum_d3 / paper_d:.1f} logical cycles"
+    )
+    print(
+        f"  d1=5: {n_cycles_d5} / {cum_d5:.4f} = {n_cycles_d5 / cum_d5:.1f} circuit cycles"
+        f" = {n_cycles_d5 / cum_d5 / paper_d:.1f} logical cycles"
+    )
 
     plot_results(times_d3, times_d5, lam_d3, lam_d5)

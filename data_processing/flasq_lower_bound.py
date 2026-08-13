@@ -46,7 +46,6 @@ import sys
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-
 # ---------------------------------------------------------------------------
 # PureMagic layout: total qubit count from data qubit count
 # ---------------------------------------------------------------------------

@@ -31,7 +31,6 @@ import puremagic_log
 from plot_puremagic import prettify_circuit_name
 from table_common import generate_pdf, latex_escape
 
-
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------

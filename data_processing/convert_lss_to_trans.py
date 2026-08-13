@@ -91,8 +91,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Convert quantum circuit operations from verbose LSS format to .trans format",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=CLI_EPILOG
-        + """
+        epilog=CLI_EPILOG + """
 Output format:
   -XXXX<pi/8>
   +__ZX<pi/4>

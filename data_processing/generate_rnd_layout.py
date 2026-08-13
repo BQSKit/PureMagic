@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 """Generate random sequences of Pauli Products."""
+
 from argparse import ArgumentParser
 
 from random import randint
