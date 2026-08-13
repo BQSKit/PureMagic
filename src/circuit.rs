@@ -27,6 +27,22 @@ pub(crate) struct Circuit {
     pub(crate) n_qubits: usize,
 }
 
+/// Result of [`Circuit::estimate_layer_volume`]'s combined layer/volume lower bound.
+///
+/// Not every field is read by every caller (`puremagic` only prints the summary
+/// fields, `circuit_stats` prints the full breakdown), so this allows dead code
+/// the same way the shared modules already do on a per-binary basis.
+#[allow(dead_code)]
+pub(crate) struct LayerVolumeEstimate {
+    pub(crate) min_layers: usize,
+    pub(crate) n_t_gates: usize,
+    pub(crate) n_t_layers: usize,
+    pub(crate) n_clifford_layers: usize,
+    pub(crate) magic_min_layers: usize,
+    pub(crate) lmin: usize,
+    pub(crate) vmin: usize,
+}
+
 impl Circuit {
     pub(crate) fn new(fname: &String) -> Self {
         Circuit {
@@ -524,6 +540,41 @@ impl Circuit {
         (n_t_gates, n_t_layers)
     }
 
+    /// Estimates a lower bound on the number of scheduled layers/volume needed to
+    /// execute this circuit, given `n_magic_qubits` magic-state factories each
+    /// producing states at rate `magic_state_lambda` per lcycle.
+    ///
+    /// Combines two independent lower bounds: the circuit's own dependency-depth
+    /// estimate from `estimate_num_layers` (Clifford layers, including T-failure
+    /// corrections) plus the magic-state throughput bound (how many lcycles it
+    /// takes the factories alone to supply enough T gates) -- the true schedule
+    /// can't beat whichever bound is larger.
+    pub(crate) fn estimate_layer_volume(
+        &self, n_magic_qubits: usize, n_qubits: usize, magic_state_lambda: f64,
+        no_t_failures: bool, rng: &mut StdRng,
+    ) -> LayerVolumeEstimate {
+        let min_layers = self.estimate_num_layers(rng, no_t_failures);
+        let (n_t_gates, n_t_layers) = self.count_t_stats();
+        let n_clifford_layers = min_layers.saturating_sub(n_t_layers);
+        let max_t_parallelism = n_magic_qubits as f64 * magic_state_lambda;
+        let magic_min_layers = if max_t_parallelism > 0.0 {
+            (n_t_gates as f64 / max_t_parallelism).ceil() as usize
+        } else {
+            0
+        };
+        let lmin = std::cmp::max(min_layers, n_clifford_layers + magic_min_layers);
+        let vmin = lmin * n_qubits;
+        LayerVolumeEstimate {
+            min_layers,
+            n_t_gates,
+            n_t_layers,
+            n_clifford_layers,
+            magic_min_layers,
+            lmin,
+            vmin,
+        }
+    }
+
     pub(crate) fn print_statistics(&self) -> usize {
         let layers = self.compute_layers();
         let mut n_cliffords = 0;
@@ -890,6 +941,57 @@ mod tests {
         let (n_t, n_t_layers) = c.count_t_stats();
         assert_eq!(n_t, 3);
         assert_eq!(n_t_layers, 3);
+    }
+
+    #[test]
+    fn estimate_layer_volume_normal_case() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let est = c.estimate_layer_volume(4, 2, 0.5, false, &mut rng);
+        assert_eq!(est.n_t_gates, 2);
+        assert_eq!(est.n_t_layers, 1);
+        assert!(est.lmin >= est.min_layers);
+        assert_eq!(est.vmin, est.lmin * 2);
+    }
+
+    #[test]
+    fn estimate_layer_volume_zero_magic_qubits_does_not_divide_by_zero() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        // n_magic_qubits = 0 -> max_t_parallelism = 0.0; must not panic or produce NaN/inf.
+        let est = c.estimate_layer_volume(0, 2, 0.5, false, &mut rng);
+        assert_eq!(est.magic_min_layers, 0);
+        assert_eq!(est.lmin, est.min_layers.max(est.n_clifford_layers));
+    }
+
+    #[test]
+    fn estimate_layer_volume_zero_t_gates() {
+        let f = make_circuit_file(&["+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let est = c.estimate_layer_volume(4, 2, 0.5, false, &mut rng);
+        assert_eq!(est.n_t_gates, 0);
+        assert_eq!(est.magic_min_layers, 0);
+    }
+
+    #[test]
+    fn estimate_layer_volume_does_not_underflow_when_t_layers_exceed_min_layers() {
+        // A single T-gate-only circuit: min_layers (from estimate_num_layers) and
+        // n_t_layers (from count_t_stats) both come from the same single T layer, so
+        // min_layers == n_t_layers here -- the closest this circuit shape gets to the
+        // n_t_layers > min_layers case that motivated using saturating_sub over plain
+        // subtraction. Must not panic regardless.
+        let f = make_circuit_file(&["+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let est = c.estimate_layer_volume(4, 1, 0.5, true, &mut rng);
+        assert_eq!(est.n_clifford_layers, est.min_layers.saturating_sub(est.n_t_layers));
     }
 
     #[test]

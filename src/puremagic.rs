@@ -170,21 +170,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
     let mut rng = StdRng::seed_from_u64(args.rseed as u64);
-    // this estimates layers including additional clifford cycles and T correction cycles
-    let min_layers = sched.input.circuit.estimate_num_layers(&mut rng, args.no_t_failures);
-    // this is just the T layers, so it doesn't include T corrections
-    let (n_t_gates, n_t_layers) = sched.input.circuit.count_t_stats();
-    // this means the clifford layers will also include T corrections
-    let n_clifford_layers = min_layers - n_t_layers;
-    // how many layers do we need to execute just T gates, given the magic state production rate?
-    let max_t_parallelism = n_magic_qubits as f64 * args.magic_state_lambda;
-    let magic_min_layers = (n_t_gates as f64 / max_t_parallelism) as usize;
-    let lmin = std::cmp::max::<usize>(min_layers, n_clifford_layers as usize + magic_min_layers);
-    let vmin = lmin * n_qubits;
-    let max_parallelism_estimate = (n_products + n_t_gates / 2) as f64 / lmin as f64;
+    let est = sched.input.circuit.estimate_layer_volume(
+        n_magic_qubits,
+        n_qubits,
+        args.magic_state_lambda,
+        args.no_t_failures,
+        &mut rng,
+    );
+    let max_parallelism_estimate = (n_products + est.n_t_gates / 2) as f64 / est.lmin as f64;
     println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
-    println!("Volume estimate: {}", vmin);
-    println!("Normalized scheduling efficiency: {:.3}", (vmin as f64 / volume as f64).min(1.0));
+    println!("Volume estimate: {}", est.vmin);
+    println!("Normalized scheduling efficiency: {:.3}", (est.vmin as f64 / volume as f64).min(1.0));
 
     sched.print_schedule(&hdr)?;
     Ok(())

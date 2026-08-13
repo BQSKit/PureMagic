@@ -94,43 +94,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_magic_qubits = topo.n_magic_qubits;
 
     let mut rng = StdRng::seed_from_u64(args.rseed);
-    let min_layers = circuit.estimate_num_layers(&mut rng, args.no_t_failures);
-
-    let (n_t_gates, n_t_layers) = circuit.count_t_stats();
-    // Clifford layers = estimated total − pure-T layers
-    let n_clifford_layers = min_layers.saturating_sub(n_t_layers);
-
-    // Magic-state throughput constraint: each magic qubit produces λ magic states per
-    // lcycle on average, so this is the minimum lcycles needed to supply all T gates.
-    let max_t_parallelism = n_magic_qubits as f64 * args.magic_state_lambda;
-    let magic_min_layers = if max_t_parallelism > 0.0 {
-        (n_t_gates as f64 / max_t_parallelism).ceil() as usize
-    } else {
-        0
-    };
-
-    // Overall lower bound is whichever is larger: the circuit-depth bound or the
-    // magic-state throughput bound.
-    let lmin = std::cmp::max(min_layers, n_clifford_layers + magic_min_layers);
-    let vmin = lmin * n_qubits;
+    let est = circuit.estimate_layer_volume(
+        n_magic_qubits,
+        n_qubits,
+        args.magic_state_lambda,
+        args.no_t_failures,
+        &mut rng,
+    );
 
     println!("Routing mode: {}", routing_label);
     println!("Layer estimates:");
     println!("  Circuit layers (DAG depth):    {}", n_layers);
-    println!("  T gates:                       {}", n_t_gates);
-    println!("  T layers:                      {}", n_t_layers);
-    println!("  Clifford layers (est.):        {}", n_clifford_layers);
+    println!("  T gates:                       {}", est.n_t_gates);
+    println!("  T layers:                      {}", est.n_t_layers);
+    println!("  Clifford layers (est.):        {}", est.n_clifford_layers);
     println!(
         "  Estimated min layers (circuit depth, T-failures={}): {}",
-        !args.no_t_failures, min_layers
+        !args.no_t_failures, est.min_layers
     );
     println!(
         "  Magic-state throughput min layers (λ={:.7}, {} magic qubits): {}",
-        args.magic_state_lambda, n_magic_qubits, magic_min_layers
+        args.magic_state_lambda, n_magic_qubits, est.magic_min_layers
     );
-    println!("  Combined min layers (lmin):    {}", lmin);
+    println!("  Combined min layers (lmin):    {}", est.lmin);
     println!("Volume estimate:");
-    println!("  lmin × total_qubits = {} × {} = {}", lmin, n_qubits, vmin);
+    println!("  lmin × total_qubits = {} × {} = {}", est.lmin, n_qubits, est.vmin);
 
     Ok(())
 }
