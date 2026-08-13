@@ -32,6 +32,7 @@ import re
 import sys
 
 import puremagic_log
+from plot_puremagic import prettify_circuit_name
 from table_common import generate_pdf, latex_escape
 
 
@@ -186,54 +187,6 @@ def format_number(n):
     return f"{n:,}"
 
 
-# Names that should be fully uppercased after prefix truncation
-_UPPERCASE_NAMES = {"dnn", "knn", "qft", "qv"}
-
-
-def pretty_name(name, num_qubits):
-    """
-    Apply human-readable substitutions to raw circuit names, appending the
-    qubit count in parentheses.
-
-    Rules (applied in order):
-      square_heisenberg_N<k>  ->  Heis.(<k>)
-      qaoa_barabasi_albert_N<k>_3reps  ->  QAOA(<k>)
-      Truncate at first '_' or ' '
-      dnn/knn/qft/qv  ->  uppercase
-      everything else ->  title-case first letter
-    Then append (<num_qubits>) unless the size was already extracted from name.
-    """
-    m = re.fullmatch(r"square_heisenberg_[Nn](\d+)", name)
-    if m:
-        return f"Heis.({m.group(1)})"
-
-    m = re.fullmatch(r"qaoa_barabasi_albert_[Nn](\d+)_3reps", name)
-    if m:
-        return f"QAOA({m.group(1)})"
-
-    # Try to extract a size number from the name.
-    # Prefer an explicit _N<digits> or _n<digits> segment (strip leading zeros).
-    # For names like qv_N008_12345 we want the first such segment, not the last.
-    m = re.search(r"_[Nn](\d+)", name)
-    if m:
-        size = str(int(m.group(1)))  # strip leading zeros
-    elif num_qubits is not None:
-        size = str(num_qubits)
-    else:
-        size = None
-
-    prefix = re.split(r"[_ ]", name)[0]
-
-    if prefix.lower() in _UPPERCASE_NAMES:
-        base = prefix.upper()
-    else:
-        base = prefix.capitalize()
-
-    if size is not None:
-        return f"{base}({size})"
-    return base
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Generate a LaTeX table of circuit statistics from QASM files."
@@ -359,7 +312,7 @@ def main():
             else None
         )
         cells = [
-            pretty_name(name, num_qubits),
+            prettify_circuit_name(name),
             format_number(circuit_length),
         ]
         if use_transpiled:

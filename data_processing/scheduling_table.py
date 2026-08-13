@@ -28,6 +28,7 @@ import re
 import sys
 
 import puremagic_log
+from plot_puremagic import prettify_circuit_name
 from table_common import generate_pdf, latex_escape
 
 
@@ -170,55 +171,6 @@ def parse_puremagic_output(filepath):
 
 
 # ---------------------------------------------------------------------------
-# Circuit name prettifier (identical rules to circuit_table.py)
-# ---------------------------------------------------------------------------
-
-_UPPERCASE_NAMES = {"dnn", "knn", "qft", "qv"}
-
-
-def pretty_name(name, num_qubits=None):
-    """
-    Apply human-readable substitutions to raw circuit names, appending the
-    qubit/size count in parentheses.
-
-    Rules (applied in order):
-      square_heisenberg_N<k>  ->  Heis.(<k>)
-      qaoa_barabasi_albert_N<k>_3reps  ->  QAOA(<k>)
-      Truncate at first '_' or ' '
-      dnn/knn/qft/qv  ->  uppercase
-      everything else ->  title-case first letter
-    Then append (<size>) extracted from the name, or (<num_qubits>) as fallback.
-    """
-    m = re.fullmatch(r"square_heisenberg_[Nn](\d+)", name)
-    if m:
-        return f"Heis.({m.group(1)})"
-
-    m = re.fullmatch(r"qaoa_barabasi_albert_[Nn](\d+)_3reps", name)
-    if m:
-        return f"QAOA({m.group(1)})"
-
-    # Try to extract a size number: prefer _N<digits> or _n<digits> segment
-    m = re.search(r"_[Nn](\d+)", name)
-    if m:
-        size = str(int(m.group(1)))  # strip leading zeros
-    elif num_qubits is not None:
-        size = str(num_qubits)
-    else:
-        size = None
-
-    prefix = re.split(r"[_ ]", name)[0]
-
-    if prefix.lower() in _UPPERCASE_NAMES:
-        base = prefix.upper()
-    else:
-        base = prefix.capitalize()
-
-    if size is not None:
-        return f"{base}({size})"
-    return base
-
-
-# ---------------------------------------------------------------------------
 # LaTeX helpers
 # ---------------------------------------------------------------------------
 
@@ -330,14 +282,7 @@ def main():
     # Each row: [circuit_name, (vol1, vol2, pct, cult1, cult2) per group]
     formatted_rows = []
     for name in circuit_names:
-        # Determine qubit count from first group's first file
-        data_qubits = None
-        for d1, _, d2, _ in loaded_groups:
-            data_qubits = d1.get(name, {}).get("data_qubits") or d2.get(name, {}).get("data_qubits")
-            if data_qubits:
-                break
-
-        display_name = latex_escape(pretty_name(name, data_qubits))
+        display_name = latex_escape(prettify_circuit_name(name))
         cells = [display_name]
 
         for d1, label1, d2, label2 in loaded_groups:
