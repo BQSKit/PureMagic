@@ -31,6 +31,8 @@ import subprocess
 import sys
 import tempfile
 
+import puremagic_log
+
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -60,7 +62,7 @@ def parse_puremagic_output(filepath):
         Timing: main took ...          <- end of run
     """
     result = {}
-    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    ansi_escape = puremagic_log.ANSI_ESCAPE
 
     # Per-run state
     cur_circuit = None
@@ -72,12 +74,12 @@ def parse_puremagic_output(filepath):
     cur_optimal_speedup = None
     in_cult_block = False
 
-    lambda_re = re.compile(r"magic_state_lambda:\s*([0-9.eE+\-]+),?")
-    loaded_re = re.compile(r"Loaded circuit with \d+ products and (\d+) qubits")
+    lambda_re = puremagic_log.MAGIC_STATE_LAMBDA
+    loaded_re = puremagic_log.LOADED_CIRCUIT
     cult_block_re = re.compile(r"Magic state cultivation time:")
     cult_avg_re = re.compile(r"average:\s*([0-9.eE+\-]+)")
     volume_re = re.compile(r"Scheduled \d+ in \d+ logical cycles, volume (\d+)")
-    wrote_re = re.compile(r"Scheduled products written to (.+?)\.schedule")
+    wrote_re = puremagic_log.WROTE_SCHEDULE
     flush_re = re.compile(r"Timing: main took")
     parallel_eff_re = re.compile(r"Parallel efficiency:\s*([0-9.eE+\-]+)")
     parallelism_re = re.compile(r"Parallelism:\s*([0-9.eE+\-]+)x")

@@ -17,6 +17,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+import puremagic_log
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -172,7 +174,7 @@ def parse_output_file(filepath):
 
     with open(filepath) as f:
         for line in f:
-            s = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            s = puremagic_log.ANSI_ESCAPE.sub("", line).strip()
 
             if m := re.match(r"^weight\s+(\d+)$", s):
                 _flush()
@@ -180,7 +182,7 @@ def parse_output_file(filepath):
                 in_qubit_block = False
                 continue
 
-            if m := re.match(r"magic_state_lambda:\s*([0-9.eE+\-]+),?", s):
+            if m := puremagic_log.MAGIC_STATE_LAMBDA.match(s):
                 _flush()
                 cur["lambda"] = float(m.group(1))
                 in_qubit_block = False
@@ -204,15 +206,15 @@ def parse_output_file(filepath):
             if m := re.match(r"Number of Cliffords:\s+(\d+)", s):
                 cur["cliffords"] = int(m.group(1))
 
-            if m := re.match(r"Layers:\s+(\d+)", s):
+            if m := puremagic_log.LAYERS.match(s):
                 cur["layers"] = int(m.group(1))
 
-            if m := re.match(r"Scheduled products written to (.+)\.schedule", s):
+            if m := puremagic_log.WROTE_SCHEDULE.match(s):
                 if cur.get("circuit"):
                     _flush()
                 cur["circuit"] = m.group(1)
 
-            if m := re.match(r"Loaded circuit with \d+ products and (\d+) qubits", s):
+            if m := puremagic_log.LOADED_CIRCUIT.match(s):
                 cur["loaded_qubits"] = int(m.group(1))
 
             if m := re.match(r"Scheduled \d+ in (\d+) logical cycles", s):

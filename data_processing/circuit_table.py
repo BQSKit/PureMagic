@@ -34,6 +34,8 @@ import subprocess
 import sys
 import tempfile
 
+import puremagic_log
+
 
 def parse_qasm(filepath):
     """
@@ -147,13 +149,13 @@ def parse_puremagic_file(filepath):
       Layers:  <n>
     """
     result = {}
-    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    ansi_escape = puremagic_log.ANSI_ESCAPE
 
     cur_layers = None
     in_stats = False
 
-    layers_re = re.compile(r"Layers:\s+(\d+)")
-    wrote_re = re.compile(r"Scheduled products written to (.+?)\.schedule")
+    layers_re = puremagic_log.LAYERS
+    wrote_re = puremagic_log.WROTE_SCHEDULE
     stats_re = re.compile(r"Circuit statistics:")
 
     with open(filepath, "r") as f:
