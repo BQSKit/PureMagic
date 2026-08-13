@@ -1,81 +1,34 @@
 #!/usr/bin/env python3
 """
-Script to convert quantum circuit operations from verbose format to compact format.
+Convert quantum circuit operations from the verbose "LSS" format (see
+lss_common.py) directly to the `.trans` Pauli-product format: each Rotate
+line becomes a `<pi/8>`- or `<pi/4>`-tagged rotation and each Measure line
+becomes an `<M>`-tagged line.
 
 Input format:
     Rotate -1: XXXX
-    Rotate 2: IIZX
+    Rotate 1: IIZX
     Measure +: IIZX
     Measure -: YZIX
-
-Output format:
-    -XXXX<pi/8>
-    +__ZX<pi/4>
-    +__ZX<M>
-    -YZ_X<M>
 """
 
 import sys
 import argparse
-import re
 from pathlib import Path
+
+from lss_common import CLI_EPILOG, parse_operation
 
 
 def convert_operation(line):
+    """Convert a single line from LSS format to the `.trans`-style compact format.
+
+    Returns the converted line, or None if the line is blank.
     """
-    Convert a single line from input format to output format.
-
-    Args:
-        line (str): Input line in format "Operation sign: PAULI_STRING"
-
-    Returns:
-        str: Converted line in compact format, or None if line is invalid
-    """
-    line = line.strip()
-    if not line:
+    parsed = parse_operation(line)
+    if parsed is None:
         return None
-
-    # Parse the input line using regex
-    # Matches: "Rotate -1:", "Rotate 1:", "Measure +:", "Measure -:"
-    pattern = r"^(Rotate|Measure)\s+([+-]?\d*):?\s+([IXYZ]+)$"
-    match = re.match(pattern, line)
-
-    if not match:
-        print(f"Warning: Could not parse line: {line}", file=sys.stderr)
-        return None
-
-    operation, sign_part, pauli_string = match.groups()
-
-    if operation == "Rotate":
-        if sign_part in ["-1", "-2"]:
-            sign = "-"
-        elif sign_part in ["1", "+1", "2", "+2"]:
-            sign = "+"
-        else:
-            raise RuntimeError(f"Warning: Unknown rotation sign '{sign_part}' in line: {line}")
-    elif operation == "Measure":
-        if sign_part == "+":
-            sign = "+"
-        elif sign_part == "-":
-            sign = "-"
-        else:
-            raise RuntimeError(f"Warning: Unknown measurement sign '{sign_part}' in line: {line}")
-    else:
-        raise RuntimeError(f"Warning: Unknown operation '{operation}' in line: {line}")
-
-    converted_pauli = pauli_string.replace("I", "_")
-
-    # Determine the angle bracket
-    if operation == "Rotate":
-        if sign_part in ["1", "-1", "+1"]:
-            angle = "<pi/8>"
-        else:
-            angle = "<pi/4>"
-    elif operation == "Measure":
-        angle = "<M>"
-    else:
-        raise RuntimeError(f"Warning: Unknown operation type {operation} in line: {line}")
-
+    sign, converted_pauli, gate_type = parsed
+    angle = {"T": "<pi/8>", "clifford": "<pi/4>", "M": "<M>"}[gate_type]
     return f"{sign}{converted_pauli}{angle}"
 
 
@@ -104,15 +57,16 @@ def convert_file(input_file, output_file=None):
 
     try:
         with open(input_path, "r", encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 total_lines += 1
                 converted_line = convert_operation(line)
 
                 if converted_line is not None:
                     converted_lines.append(converted_line)
                     converted_count += 1
-                elif line.strip():  # Only warn about non-empty lines
-                    print(f"Warning: Skipped line {line_num}: {line.strip()}", file=sys.stderr)
+                # A blank line converts to None; anything else that fails to
+                # parse raises (see lss_common.parse_operation) rather than
+                # being silently skipped.
 
     except Exception as e:
         raise RuntimeError(f"Error reading input file: {e}")
@@ -135,23 +89,13 @@ def convert_file(input_file, output_file=None):
 def main():
     """Main function to handle command line arguments and run the conversion."""
     parser = argparse.ArgumentParser(
-        description="Convert quantum circuit operations from verbose to compact format",
+        description="Convert quantum circuit operations from verbose LSS format to .trans format",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s input.txt
-  %(prog)s input.txt -o output.txt
-  %(prog)s input.txt --output converted_circuit.txt
-
-Input format:
-  Rotate -1: XXXX
-  Rotate 1: IIZX
-  Measure +: IIZX
-  Measure -: YZIX
-
+        epilog=CLI_EPILOG
+        + """
 Output format:
   -XXXX<pi/8>
-  +__ZX<pi/8>
+  +__ZX<pi/4>
   +__ZX<M>
   -YZ_X<M>
         """,
