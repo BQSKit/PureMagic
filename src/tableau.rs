@@ -202,10 +202,6 @@ impl Tableau {
         Tableau { n, rows }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.n
-    }
-
     /// Conjugate a Pauli string through this tableau: P → U·P·U†.
     pub(crate) fn conjugate(&self, pauli: &PauliString) -> PauliString {
         let n = self.n.max(pauli.n);
@@ -778,12 +774,6 @@ mod tests {
     fn weight_mixed() {
         let ps = PauliString::from_str("+XIZ");
         assert_eq!(ps.weight(), 2);
-    }
-
-    #[test]
-    fn tableau_len_matches_n_qubits() {
-        let t = Tableau::new(3);
-        assert_eq!(t.len(), 3);
     }
 
     #[test]
