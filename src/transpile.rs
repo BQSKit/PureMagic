@@ -1280,9 +1280,9 @@ mod tests {
 
     // --- Dynamic (layer-aware) flush policy ---
 
-    fn n_cliffords(items: &[TransItem]) -> usize {
-        items.iter().filter(|i| matches!(i, TransItem::Clifford(_))).count()
-    }
+    //fn n_cliffords(items: &[TransItem]) -> usize {
+    //    items.iter().filter(|i| matches!(i, TransItem::Clifford(_))).count()
+    //}
 
     /// Reference layer count: rebuilds the qubit-overlap DAG over the emitted stream and runs
     /// Kahn's algorithm, exactly as `Circuit::gen_deps` + `Circuit::compute_layers` do.
