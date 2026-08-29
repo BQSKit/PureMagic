@@ -30,7 +30,7 @@ struct Args {
     #[arg(short, long = "output_file", default_value = "")]
     output_file: String,
 
-    /// Maximum Pauli product weight; 0 = no limit. Ignored when --dynamic is set.
+    /// Maximum Pauli product weight; 0 = no limit. Ignored when --auto is set.
     #[arg(short = 'm', long = "max_width", default_value = "0")]
     max_width: i32,
 

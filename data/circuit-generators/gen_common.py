@@ -1,4 +1,4 @@
-"""Shared benchmark-generation helpers for data/gen_qft.py and data/gen_grover.py."""
+"""Shared benchmark-generation helpers for gen_qft.py and gen_grover.py."""
 
 import os
 from pathlib import Path

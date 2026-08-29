@@ -57,7 +57,7 @@ Run with `-h` to see all options.
 | `-r, --rseed <N>` | `29` | Random seed for reproducible results |
 | `-R, --randomize-data-qubits` | off | Randomize data qubit numbering |
 | `-u, --use-magic-routing` | off | Use magic qubits for routing in addition to bus qubits |
-| `-S, --sides-only` | off | Use only side edges of data patches (not top/bottom) |
+| `-S, --sides_only` | off | Use only side edges of data patches (not top/bottom) |
 | `-F, --no-t-failures` | off | Disable T gate failures (every T gate succeeds on first attempt) |
 | `-C, --record-cultivation-dist` | off | Record normalized cultivation-time distribution to `<name>.cultivation_dist` |
 | `-a, --ancilla-rows <N>` | `1` | Number of ancilla rows between data patches (magic routing only) |
@@ -115,13 +115,14 @@ If your circuit is not already in the Clifford+T gate set, compile it first usin
 This produces `circuit.cliffordt.qasm`. Its pipeline: exact phase-polynomial merge, a
 gauge-collapse cycle (blocking + exact-Clifford recognition + angle rounding), windowed
 multi-qubit resynthesis, gauge collapse again, final per-block synthesis via cyclosynth --
-its independent per-axis Rz synthesis by default, or its joint ZYZ lattice search with
-`--cyclosynth` -- then a Clifford-run simplification pass that canonicalizes the Clifford
+its joint ZYZ lattice search by default, or its independent per-axis Rz synthesis with
+`--skip-cyclosynth` -- then a Clifford-run simplification pass that canonicalizes the Clifford
 gates synthesis leaves around each T gate (exact, no fidelity cost).
 
 Notable flags (`--help` for the full list): `--epsilon` (default `1e-8`);
 `--verify` (exact unitary fidelity check against the original circuit,
-circuits of ≤10 qubits only); and `--skip-gauge-collapse`/`--skip-windowed-resynthesis`/
+circuits of ≤10 qubits only); `--skip-cyclosynth` to fall back to independent per-axis Rz
+synthesis for Stage 3; and `--skip-gauge-collapse`/`--skip-windowed-resynthesis`/
 `--skip-phase-merge`/`--skip-clifford-simplify` to isolate each stage's contribution, e.g. for
 ablation studies. Accepts multiple input files at once, writing `<name>.cliffordt.qasm` next to
 each input by default (`-o` to override, or to name an output directory when compiling more than
@@ -132,7 +133,7 @@ OpenQASM 3 subset needed for MQT Bench exports) and fails loudly on anything it 
 rather than silently dropping a gate. Output works as input to Step 2. A basis check and error
 bound are always reported.
 
-**Acknowledgements**: `--cyclosynth` runs [mtweiden/cyclosynth](https://github.com/mtweiden/cyclosynth),
+**Acknowledgements**: cyclosynth's joint search runs [mtweiden/cyclosynth](https://github.com/mtweiden/cyclosynth),
 implementing the lattice-search algorithm of [Morisaki et al.](https://arxiv.org/abs/2510.05816).
 
 ### Step 2 — Transpile to `.trans` format (Rust)
@@ -145,7 +146,12 @@ Convert the Clifford+T QASM file to the Pauli product `.trans` format using the 
 
 This produces `circuit.trans`, which is the correct input format for `puremagic`.
 
-Run `./target/release/transpile --help` to see all options, including `--max_width` to limit Pauli product weight.
+Notable flags (`--help` for the full list): `--max_width` (default `0`, no limit) to cap Pauli
+product weight -- lower weights emit more, cheaper-to-route products; `--defer_trailing` to hold
+back each qubit's trailing single-qubit Clifford run at a flush instead of always emitting it,
+reducing logical cycles at any weight; and `--auto`, which ignores `--max_width` and instead
+transpiles at each candidate weight (always with `--defer_trailing`) and keeps the one with the
+lowest predicted circuit depth.
 
 ## Output Files
 
@@ -159,11 +165,11 @@ After scheduling, the following files are produced. Throughout the output, **lcy
 | `<name>.schedule` | Final schedule (lcycle → operations). |
 | `<name>.cultivation_dist` | Normalized cultivation-time distribution (requires `--record-cultivation-dist`). |
 | `<name>.topo.png` | Topology visualization (requires `--plot topo`). |
-| `<name>.topo.txt` | Topology grid dump. Debug builds only. |
+| `<name>.topo.txt` | Topology grid dump (requires `--plot topo`; not gated by build profile). |
 | `<name>.circuit/` | Circuit layer plots as PNGs in a subdirectory (requires `--plot circuit`). |
 | `<name>.layer_stats.svg` | Circuit layer statistics (requires `--plot cstats`). |
 | `<name>.qubit_coupling.svg` | Qubit coupling matrix heatmap (requires `--plot coupling`). |
-| `<name>.paths/` | Per-lcycle path visualizations (requires `--plot paths`). |
+| `<name>.paths/` | Per-lcycle path visualizations, first 100 lcycles (requires `--plot paths`). |
 
 ## Topology File Format
 

@@ -79,7 +79,7 @@ struct Args {
         help = format!("Plot options (one or more):\n{}{}{}{}",
         "  topo:     plot topology in <CIRCUIT_FNAME>.topo.png\n",
         "  circuit:  plot full circuit in files in subdirectory <CIRCUIT_FNAME>.circuit\n",
-        "  cstats:   plot circuit statistics over time in <CIRCUIT_FNAME>.layer_stats.png\n",
+        "  cstats:   plot circuit statistics over time in <CIRCUIT_FNAME>.layer_stats.svg\n",
         "  paths:    plot paths for first 100 lcycles in subdirectory <CIRCUIT_FNAME>.paths")
     )]
     plot: Vec<String>,
