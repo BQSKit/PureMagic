@@ -7,7 +7,9 @@ The original Lattice Surgery Scheduling problem is described in the paper [Game 
 The implementation here is inspired by the approach described in [Multi-qubit lattice surgery scheduling](https://arxiv.org/pdf/2405.17688v2).
 
 The code in this repository is used for the paper [Scheduling Lattice Surgery with Magic State
-Cultivation](https://arxiv.org/pdf/2512.06484).
+Cultivation](https://arxiv.org/pdf/2512.06484), to be published at
+[QCE](https://qce.quantum.ieee.org/). The code and data snapshot corresponding to that paper is
+tagged [`QCE`](https://github.com/BQSKit/PureMagic/tree/QCE) in this repository.
 
 
 ## Building

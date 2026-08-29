@@ -23,6 +23,7 @@ data/*out
 data/all_compiled_bqskit/
 data/all_compiled_pipe-testing/
 data/all_compiled_qiskit/
+data/old-all-compiled/
 data/circuits/small
 data/circuits/*.trans*
 data/circuits/*out*
