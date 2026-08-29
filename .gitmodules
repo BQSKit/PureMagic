@@ -1,0 +1,3 @@
+[submodule "cyclosynth"]
+	path = cyclosynth
+	url = https://github.com/mtweiden/cyclosynth.git

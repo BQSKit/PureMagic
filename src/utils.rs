@@ -1,7 +1,48 @@
+use clap::Args;
 use colored::Colorize;
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
+
+/// CLI arguments shared between `puremagic` and `circuit_stats`, flattened into
+/// each binary's own `Args` via `#[command(flatten)]` so the flag names,
+/// defaults, and types can't drift between the two independently again.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct CommonArgs {
+    /// Name of file containing input circuit, in `.trans` format (required).
+    #[arg(short, long = "circuit")]
+    pub(crate) circuit_fname: String,
+    /// Random seed for reproducible results.
+    #[arg(short, long, default_value = "29")]
+    pub(crate) rseed: u64,
+    /// Lambda parameter for the exponential distribution of magic-state
+    /// cultivation cycles (magic states produced per magic qubit per lcycle).
+    #[arg(short, long, default_value = "0.0387396")]
+    pub(crate) magic_state_lambda: f64,
+    /// Disable T gate failures (every T gate succeeds on first attempt).
+    #[arg(short = 'F', long)]
+    pub(crate) no_t_failures: bool,
+    /// Number of ancilla rows between data patches (magic routing only).
+    #[arg(short, long, default_value = "1")]
+    pub(crate) ancilla_rows: usize,
+}
+
+/// Prints a `<name> - Git branch: ... | Commit: ... | Built: ...` startup
+/// banner and returns it, since some callers (`puremagic`) persist it into an
+/// output file's header. The commit SHA is sliced to at most 8 characters
+/// rather than a fixed `[0..8]`, since it isn't guaranteed to be that long.
+pub(crate) fn print_banner(name: &str) -> String {
+    let git_sha = env!("VERGEN_GIT_SHA");
+    let short_sha = &git_sha[..git_sha.len().min(8)];
+    let hdr = format!(
+        "{name} - Git branch: {} | Commit: {} | Built: {}",
+        env!("VERGEN_GIT_BRANCH"),
+        short_sha,
+        env!("VERGEN_BUILD_TIMESTAMP")
+    );
+    println!("{hdr}");
+    hdr
+}
 
 /// RAII timer that prints elapsed wall-clock time on drop.
 pub(crate) struct Timer {
@@ -41,6 +82,10 @@ macro_rules! fn_timer {
     ($custom_name:expr) => {{ $crate::utils::Timer::new($custom_name) }};
 }
 
+/// Scheduler trace logging (`puremagic`'s `--log-scheduler`). Compiled out entirely in
+/// release builds -- the logger `Scheduler::new` installs still creates the
+/// `.sched_trace` file in release, it just stays empty, since these call sites never
+/// exist in that profile to write anything to it.
 #[macro_export]
 macro_rules! debug_sched {
     ($($arg:tt)*) => {
@@ -49,6 +94,7 @@ macro_rules! debug_sched {
     };
 }
 
+/// See [`debug_sched`].
 #[macro_export]
 macro_rules! info_sched {
     ($($arg:tt)*) => {
@@ -261,7 +307,7 @@ mod tests {
     fn stop_without_start_is_noop() {
         let mut timers = AccumTimers::new();
         let idx = timers.add_or_get("t");
-        timers.stop(idx); // should not panic
+        timers.stop(idx);
         let (_, t) = timers.timers.get_index(idx).unwrap();
         assert_eq!(t.n_intervals, 0);
     }
@@ -269,8 +315,8 @@ mod tests {
     #[test]
     fn start_stop_out_of_bounds_index_is_noop() {
         let mut timers = AccumTimers::new();
-        timers.start(999); // no panic
-        timers.stop(999); // no panic
+        timers.start(999);
+        timers.stop(999);
     }
 
     #[test]
@@ -310,7 +356,7 @@ mod tests {
         let mut timers = AccumTimers::default();
         let i1 = timers.add_or_get("alpha");
         let i2 = timers.add_or_get("beta");
-        let i3 = timers.add_or_get("alpha"); // same as first
+        let i3 = timers.add_or_get("alpha");
         assert_ne!(i1, i2);
         assert_eq!(i1, i3);
     }
@@ -321,7 +367,6 @@ mod tests {
         let idx = timers.add_or_get("t1");
         timers.start(idx);
         timers.stop(idx);
-        // Second round
         timers.start(idx);
         timers.stop(idx);
     }

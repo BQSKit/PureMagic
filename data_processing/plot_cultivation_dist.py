@@ -21,20 +21,11 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# Style constants (consistent with plot_puremagic.py)
-# ---------------------------------------------------------------------------
-_COLOURS = [
-    "steelblue",
-    "darkorange",
-    "forestgreen",
-    "crimson",
-    "mediumpurple",
-    "saddlebrown",
-    "deeppink",
-    "teal",
-]
+from plot_puremagic import _COLOURS
 
+# ---------------------------------------------------------------------------
+# Style constants
+# ---------------------------------------------------------------------------
 _LABEL_FONTSIZE = 15
 _TICK_FONTSIZE = 15
 _LEGEND_FONTSIZE = 15
@@ -107,7 +98,6 @@ def load_directory(directory: str, equal_weight: bool) -> dict[int, float] | Non
             continue
 
         if equal_weight:
-            # Re-normalize this file's distribution to sum to 1 before adding.
             total = sum(dist.values())
             if total > 0:
                 dist = {t: v / total for t, v in dist.items()}
@@ -281,12 +271,10 @@ def main() -> None:
     for directory, label in dir_entries:
         if not os.path.isdir(directory):
             continue
-        # Count files
         try:
             n_files = sum(1 for f in os.listdir(directory) if f.endswith(".cultivation_dist"))
         except OSError:
             n_files = "?"
-        # Find the matching distribution
         dist_match = next((d for lbl, d in distributions if lbl == label), None)
         if dist_match is None:
             continue

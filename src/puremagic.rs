@@ -18,30 +18,25 @@ mod utils;
 use circuit::Circuit;
 use scheduler::Scheduler;
 use topograph::TopoGraph;
-use utils::Timer;
+use utils::{CommonArgs, Timer};
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Random seed for reproducible results.
-    #[arg(short, long, default_value = "29")]
-    rseed: u32,
+    #[command(flatten)]
+    common: CommonArgs,
     /// Randomize data qubit numbering.
     #[arg(short = 'R', long)]
     randomize_data_qubits: bool,
-    /// Name of file containing input circuit (required).
-    #[arg(short, long = "circuit")]
-    circuit_fname: String,
     /// Name of file containing topology. If this is not set, it will be generated.
     #[arg(short, long = "topo", default_value = "")]
     topo_fname: String,
-    /// Lambda parameter for exponential distribution of magic state cultivation lcycles.
-    #[arg(short, long, default_value = "0.0387396")]
-    magic_state_lambda: f64,
     /// Show product IDs instead of Pauli terms when plotting the circuit.
     #[arg(short = 'I', long)]
     show_product_ids: bool,
-    /// Log scheduler actions to <CIRCUIT_FNAME>.sched file.
+    /// Log scheduler actions to <CIRCUIT_FNAME>.sched_trace. Only populated in debug
+    /// builds: the debug_sched!/info_sched! call sites are compiled out entirely in
+    /// release builds, so a release build still creates the file but leaves it empty.
     #[arg(
         short = 'l',
         long = "log-scheduler",
@@ -55,7 +50,7 @@ struct Args {
                 ))
             }
         },
-        help = "Log level for scheduler (none, info, or debug)"
+        help = "Log level for scheduler (none, info, or debug); debug builds only"
     )]
     log_scheduler: String,
     /// Use magic qubits for routing in addition to bus qubits
@@ -64,15 +59,9 @@ struct Args {
     /// Use only the sides of data qubits for edges, not the top and bottom
     #[arg(short = 'S', long = "sides_only")]
     sides_only: bool,
-    /// Disable T gate failures (every T gate succeeds on first attempt)
-    #[arg(short = 'F', long)]
-    no_t_failures: bool,
     /// Record normalized cultivation-time distribution to <CIRCUIT_FNAME>.cultivation_dist
     #[arg(short = 'C', long)]
     record_cultivation_dist: bool,
-    /// Number of ancilla between each data patch (all magic routing only)
-    #[arg(short, long, default_value = "1")]
-    ancilla_rows: usize,
     #[arg(
         short,
         long,
@@ -90,7 +79,7 @@ struct Args {
         help = format!("Plot options (one or more):\n{}{}{}{}",
         "  topo:     plot topology in <CIRCUIT_FNAME>.topo.png\n",
         "  circuit:  plot full circuit in files in subdirectory <CIRCUIT_FNAME>.circuit\n",
-        "  cstats:   plot circuit statistics over time in <CIRCUIT_FNAME>.layer_stats.png\n",
+        "  cstats:   plot circuit statistics over time in <CIRCUIT_FNAME>.layer_stats.svg\n",
         "  paths:    plot paths for first 100 lcycles in subdirectory <CIRCUIT_FNAME>.paths")
     )]
     plot: Vec<String>,
@@ -99,19 +88,15 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
     let args = Args::parse();
-    let mut hdr = format!(
-        "PureMagic - Git branch: {} | Commit: {} | Built: {}",
-        env!("VERGEN_GIT_BRANCH"),
-        &(env!("VERGEN_GIT_SHA"))[0..8],
-        env!("VERGEN_BUILD_TIMESTAMP")
-    );
-    println!("{}\n{:#?}", hdr, args);
+    let mut hdr = utils::print_banner("PureMagic");
+    println!("{:#?}", args);
     hdr = format!("# {}\n# {:?}", &hdr, args);
-    let circuit_fname = args.circuit_fname;
+    let circuit_fname = args.common.circuit_fname;
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
     let n_products = circuit.n_products();
-    let n_sx_cliffords = circuit.pps.iter().filter(|pp| pp.gate_type.is_s() || pp.gate_type.is_sx()).count();
+    let n_sx_cliffords =
+        circuit.pps.iter().filter(|pp| pp.gate_type.is_s() || pp.gate_type.is_sx()).count();
     let _n_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
@@ -125,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circuit.plot_layer_stats()?;
     }
     let mut topo_graph = TopoGraph::new();
-    let rseed = if args.randomize_data_qubits { args.rseed } else { 0 };
+    let rseed: u32 = if args.randomize_data_qubits { args.common.rseed as u32 } else { 0 };
     let n_data_qubits = circuit.n_qubits;
     topo_graph.set_topo(
         n_data_qubits,
@@ -133,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.topo_fname,
         &rseed,
         args.use_magic_routing,
-        args.ancilla_rows,
+        args.common.ancilla_rows,
         args.sides_only,
     );
     if args.plot.contains(&"topo".to_string()) {
@@ -145,11 +130,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sched = Scheduler::new(
         circuit,
         topo_graph,
-        args.magic_state_lambda,
+        args.common.magic_state_lambda,
         &args.log_scheduler,
         args.plot.join(" "),
-        args.rseed,
-        args.no_t_failures,
+        args.common.rseed as u32,
+        args.common.no_t_failures,
         args.record_cultivation_dist,
     );
 
@@ -157,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
-    if !args.no_t_failures && n_sx_cliffords > 0 {
+    if !args.common.no_t_failures && n_sx_cliffords > 0 {
         let corrections = sched.correction_gates_emitted;
         println!(
             "S correction gates: {} / {} S/SX Cliffords ({:.1}%)",
@@ -168,23 +153,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
-    //let min_layers = if args.no_t_failures { n_layers } else { (n_layers * 3) / 2 };
-    let mut rng = StdRng::seed_from_u64(args.rseed as u64);
-    // this estimates layers including additional clifford cycles and T correction cycles
-    let min_layers = sched.input.circuit.estimate_num_layers(&mut rng, args.no_t_failures);
-    // this is just the T layers, so it doesn't include T corrections
-    let (n_t_gates, n_t_layers) = sched.input.circuit.count_t_stats();
-    // this means the clifford layers will also include T corrections
-    let n_clifford_layers = min_layers - n_t_layers;
-    // how many layers do we need to execute just T gates, given the magic state production rate?
-    let max_t_parallelism = n_magic_qubits as f64 * args.magic_state_lambda;
-    let magic_min_layers = (n_t_gates as f64 / max_t_parallelism) as usize;
-    let lmin = std::cmp::max::<usize>(min_layers, n_clifford_layers as usize + magic_min_layers);
-    let vmin = lmin * n_qubits;
-    let max_parallelism_estimate = (n_products + n_t_gates / 2) as f64 / lmin as f64;
+    let mut rng = StdRng::seed_from_u64(args.common.rseed);
+    let est = sched.input.circuit.estimate_layer_volume(
+        n_magic_qubits,
+        n_qubits,
+        args.common.magic_state_lambda,
+        args.common.no_t_failures,
+        &mut rng,
+    );
+    let max_parallelism_estimate = (n_products + est.n_t_gates / 2) as f64 / est.lmin as f64;
     println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
-    println!("Volume estimate: {}", vmin);
-    println!("Normalized scheduling efficiency: {:.3}", (vmin as f64 / volume as f64).min(1.0));
+    println!("Volume estimate: {}", est.vmin);
+    println!("Normalized scheduling efficiency: {:.3}", (est.vmin as f64 / volume as f64).min(1.0));
 
     sched.print_schedule(&hdr)?;
     Ok(())

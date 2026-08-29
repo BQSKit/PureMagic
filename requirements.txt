@@ -1,8 +1,52 @@
 numpy
 matplotlib
 pandas
-bqskit
-bqskit-ft
+# Editable install from the local bqskit/ clone (branch ZXZXZ-fix), not stock
+# PyPI bqskit: fixes ZXZXZDecomposition doubling synthesis calls for diagonal
+# unitaries (see data_processing/compile_cliffordt.py's build_bqskit_workflow
+# docstring -- ~25% fewer T gates on diagonal-heavy circuits via the bqskit
+# backend). A plain `bqskit` line here would silently reinstall the stock
+# package and lose that fix with no error -- it's still a valid, importable
+# package either way, just worse. Resolved relative to the cwd pip is run
+# from (postCreateCommand runs from the workspace root), not this file's own
+# location -- a pip quirk for local-path editable installs.
+#
+# This editable line alone is NOT enough to make `import bqskit` work: bqskit-ft
+# below installs into site-packages/bqskit/ft/, which without a sibling
+# __init__.py is a namespace portion that shadows the editable clone entirely
+# (`from bqskit import Circuit` then fails). The devcontainer's PYTHONPATH
+# entry is what resolves it -- see the containerEnv comment in
+# .devcontainer/devcontainer.json before changing either line.
+-e ./bqskit
+# Editable install from the local bqskit-ft/ clone, not stock PyPI bqskit-ft:
+# the PyPI-published bqskit-ft==0.2.0 has a materially different GridSynthPass
+# API (a `precision: int` gate-count-style parameter) from this clone's
+# (`algorithmic_error: float`, an actual epsilon bound), which is what
+# data_processing/compile_cliffordt.py's build_final_synthesis_passes calls
+# with. A plain `bqskit-ft` line here installs cleanly and imports fine, so
+# there's no install-time signal that anything is wrong -- it only surfaces
+# as `TypeError: GridSynthPass.__init__() got an unexpected keyword argument
+# 'algorithmic_error'` the first time the bqskit backend actually runs.
+-e ./bqskit-ft
+qiskit>=2.5
+# Needed for load_circuit's OpenQASM 3 fallback in data_processing/compile_cliffordt.py
+# (e.g. MQT Bench's OQASM3 exports) -- qasm3.load() raises MissingOptionalLibraryError
+# without it, which load_circuit's except-clause otherwise just folds into an opaque
+# "could not parse as OpenQASM 2 (...) or OpenQASM 3 (...)" error.
+qiskit-qasm3-import
+# Optional: fallback rotation synthesiser for data_processing/compile_cliffordt.py,
+# used only for the angles qiskit's Rust gridsynth panics on at coarse --epsilon.
+# Already pulled in by bqskit-ft.
+pygridsynth
+# Type checker used to verify data_processing/compile_cliffordt.py during
+# development (pyright data_processing/compile_cliffordt.py). Not a runtime
+# dependency of the pipeline itself.
+pyright
+# Without this, pyright falls back to pandas' own (much less precise) inline
+# stubs and misreports dozens of DataFrame/Series methods (dropna, apply,
+# to_numpy, fillna, ...) as attribute-access errors across data_processing/
+# (e.g. plot_puremagic.py). Not a runtime dependency.
+pandas-stubs
 # PyTorch: CPU-only build installed by default.
 # For GPU support, replace with a CUDA-enabled build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121

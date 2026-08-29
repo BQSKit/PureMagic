@@ -42,7 +42,6 @@ type PlotChart<'a> = plotters::prelude::ChartContext<
     >,
 >;
 
-/// Handles all visualization/plotting for a [`TopoGraph`].
 pub(crate) struct TopoGraphPlotter<'a> {
     topo: &'a TopoGraph,
 }
@@ -53,8 +52,7 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 
     pub(crate) fn plot(
-        &self, fname_added: &str, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
-        title_str: &str,
+        &self, fname_added: &str, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)], title_str: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let topo_stem = self.topo.circuit_stem();
@@ -69,10 +67,7 @@ impl<'a> TopoGraphPlotter<'a> {
         let mut chart = ChartBuilder::on(&root)
             .margin(10)
             .set_label_area_size(LabelAreaPosition::Bottom, 50)
-            .build_cartesian_2d(
-                -1f32..self.topo.n_cols as f32,
-                -1f32..self.topo.n_rows as f32,
-            )?;
+            .build_cartesian_2d(-1f32..self.topo.n_cols as f32, -1f32..self.topo.n_rows as f32)?;
 
         let product_label_positions = self.compute_product_label_positions(pp_paths);
         let mut product_label_covered: std::collections::HashSet<(i32, i32)> =
@@ -116,9 +111,8 @@ impl<'a> TopoGraphPlotter<'a> {
         Ok(())
     }
 
-    /// Returns a stable, visually distinct color for a product ID.
-    /// Uses the golden-ratio hue sequence to maximise perceptual separation
-    /// between consecutive product IDs.
+    /// Assigns colors via the golden-ratio hue sequence, for maximal perceptual
+    /// separation between consecutive product IDs.
     fn product_color(pp_id: i32) -> RGBAColor {
         const GOLDEN: f64 = 0.618_033_988_749_895;
         let hue = (pp_id as f64 * GOLDEN).fract().abs();
@@ -127,8 +121,8 @@ impl<'a> TopoGraphPlotter<'a> {
     }
 
     /// Draws all node fills and routing node borders with no path coloring.
-    /// Magic nodes show: their label (no paths), nothing (in a path), remaining
-    /// cultivation lcycles (cultivating), or "T" (ready).
+    /// Magic nodes show their label (no paths), nothing (in a path), remaining
+    /// cultivation cycles (cultivating), or "T" (ready).
     fn draw_all_nodes_plain(
         &self, chart: &mut PlotChart, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         product_label_covered: &std::collections::HashSet<(i32, i32)>,
@@ -163,7 +157,7 @@ impl<'a> TopoGraphPlotter<'a> {
                         } else if path_node_ids.contains(&node.id) {
                             String::new() // Covered by path overlay.
                         } else if self.topo.is_cultivating(node.id) {
-                            // Show remaining cultivation lcycles.
+                            // Show remaining cultivation cycles.
                             (self.topo.cultivation_times[node.id as usize]
                                 - self.topo.busy_counts[node.id as usize])
                                 .to_string()
@@ -510,7 +504,7 @@ impl<'a> TopoGraphPlotter<'a> {
                     let center_x = (xs.iter().cloned().fold(f32::INFINITY, f32::min)
                         + xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
                         / 2.0;
-                    // Width accounts for optional "/n" cycle suffix (3 chars × 0.125 each)
+                    // 0.125 per char approximates the monospace glyph width.
                     let op_str = pp.to_operator_str();
                     let tw = op_str.len() as f32 * 0.125;
                     (center_x, row_y, tw, i)
@@ -523,8 +517,7 @@ impl<'a> TopoGraphPlotter<'a> {
         &self, chart: &mut PlotChart, pp_paths: &[(PauliProduct, Rc<TreeGraph>, u32)],
         positions: &[Option<(f32, f32, f32, usize)>],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for (pos_opt, (pp, _path_graph, cycle)) in positions.iter().zip(pp_paths.iter())
-        {
+        for (pos_opt, (pp, _path_graph, cycle)) in positions.iter().zip(pp_paths.iter()) {
             if let Some(&(center_x, row_y, tw, _i)) = pos_opt.as_ref() {
                 draw_text(
                     chart,

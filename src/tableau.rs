@@ -7,10 +7,6 @@
 
 use std::fmt;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PauliString
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// A Pauli string on `n` qubits with a ±1 sign.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PauliString {
@@ -182,10 +178,6 @@ impl fmt::Display for PauliString {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tableau
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Symplectic Clifford tableau on `n` qubits.
 ///
 /// `prepend` applies a gate *before* the existing tableau (matching stim's `tableau.prepend`).
@@ -208,10 +200,6 @@ impl Tableau {
             rows.push(zrow);
         }
         Tableau { n, rows }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.n
     }
 
     /// Conjugate a Pauli string through this tableau: P → U·P·U†.
@@ -294,10 +282,6 @@ fn combine_rows(
     result
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Single-qubit gates
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Gate1Q {
     H,
@@ -363,15 +347,9 @@ impl Gate2Q {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── PauliString::from_str ─────────────────────────────────────────────────
 
     #[test]
     fn pauli_string_from_str_identity() {
@@ -404,8 +382,6 @@ mod tests {
         let p = PauliString::from_str("+XIZIY");
         assert_eq!(p.weight(), 3);
     }
-
-    // ── PauliString::mul ──────────────────────────────────────────────────────
 
     #[test]
     fn pauli_mul_xx_is_identity() {
@@ -451,8 +427,6 @@ mod tests {
         assert!(result.sign);
     }
 
-    // ── Tableau identity ──────────────────────────────────────────────────────
-
     #[test]
     fn tableau_identity_conjugates_x_trivially() {
         let t = Tableau::new(3);
@@ -494,8 +468,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── H gate ────────────────────────────────────────────────────────────────
-
     #[test]
     fn h_swaps_x_and_z() {
         let mut t = Tableau::new(1);
@@ -531,8 +503,6 @@ mod tests {
         assert!(result.sign);
     }
 
-    // ── S gate ────────────────────────────────────────────────────────────────
-
     #[test]
     fn s_maps_x_to_y() {
         let mut t = Tableau::new(1);
@@ -563,8 +533,6 @@ mod tests {
         assert!(result.sign);
     }
 
-    // ── Sdg gate ──────────────────────────────────────────────────────────────
-
     #[test]
     fn sdg_maps_x_to_minus_y() {
         let mut t = Tableau::new(1);
@@ -585,8 +553,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── S then Sdg = identity ─────────────────────────────────────────────────
-
     #[test]
     fn s_sdg_is_identity() {
         let mut t = Tableau::new(1);
@@ -601,8 +567,6 @@ mod tests {
         assert_eq!(result.pauli_at(0), 'Z');
         assert!(!result.sign);
     }
-
-    // ── SX gate ───────────────────────────────────────────────────────────────
 
     #[test]
     fn sx_maps_x_to_x() {
@@ -634,8 +598,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── Z gate ────────────────────────────────────────────────────────────────
-
     #[test]
     fn z_maps_x_to_minus_x() {
         let mut t = Tableau::new(1);
@@ -656,8 +618,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── X gate ────────────────────────────────────────────────────────────────
-
     #[test]
     fn x_maps_z_to_minus_z() {
         let mut t = Tableau::new(1);
@@ -677,8 +637,6 @@ mod tests {
         assert_eq!(result.pauli_at(0), 'X');
         assert!(!result.sign);
     }
-
-    // ── CX gate ───────────────────────────────────────────────────────────────
 
     #[test]
     fn cx_maps_x0_to_x0x1() {
@@ -724,8 +682,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── CZ gate ───────────────────────────────────────────────────────────────
-
     #[test]
     fn cz_maps_x0_to_x0z1() {
         let mut t = Tableau::new(2);
@@ -736,8 +692,6 @@ mod tests {
         assert_eq!(result.pauli_at(1), 'Z');
         assert!(!result.sign);
     }
-
-    // ── SWAP gate ─────────────────────────────────────────────────────────────
 
     #[test]
     fn swap_maps_x0_to_x1() {
@@ -750,8 +704,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── Multi-qubit Y conjugation ─────────────────────────────────────────────
-
     #[test]
     fn identity_conjugates_multi_qubit_y() {
         let t = Tableau::new(3);
@@ -762,8 +714,6 @@ mod tests {
         assert_eq!(result.pauli_at(2), 'Z');
         assert!(!result.sign);
     }
-
-    // ── S^4 = identity ────────────────────────────────────────────────────────
 
     #[test]
     fn s_four_times_is_identity() {
@@ -781,8 +731,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── H·S·H = SX (up to global phase) ──────────────────────────────────────
-
     #[test]
     fn h_s_h_maps_z_to_x() {
         let mut t = Tableau::new(1);
@@ -795,8 +743,6 @@ mod tests {
         assert_eq!(result.pauli_at(0), 'Y');
         assert!(result.sign);
     }
-
-    // ── PauliString::pauli_at ─────────────────────────────────────────────────
 
     #[test]
     fn pauli_at_identity_qubit() {
@@ -811,8 +757,6 @@ mod tests {
         let ps = PauliString::from_str("+Y");
         assert_eq!(ps.pauli_at(0), 'Y');
     }
-
-    // ── PauliString::weight ───────────────────────────────────────────────────
 
     #[test]
     fn weight_identity_is_zero() {
@@ -832,28 +776,15 @@ mod tests {
         assert_eq!(ps.weight(), 2);
     }
 
-    // ── Tableau::len ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn tableau_len_matches_n_qubits() {
-        let t = Tableau::new(3);
-        assert_eq!(t.len(), 3);
-    }
-
-    // ── Gate1Q images — Sdg·Y = X ────────────────────────────────────────────
-
     #[test]
     fn sdg_maps_y_to_x() {
         // Sdg: X→-Y, Z→Z; Y = iXZ → Sdg(Y) = i·(-Y)·Z = -i·YZ = X (up to phase)
-        // Concretely: Sdg maps Y→X
         let mut t = Tableau::new(1);
         t.prepend_1q_correct(Gate1Q::Sdg, 0);
         let y = PauliString::from_str("+Y");
         let result = t.conjugate(&y);
         assert_eq!(result.pauli_at(0), 'X');
     }
-
-    // ── Gate2Q::CZ — Z0 and Z1 are fixed points ──────────────────────────────
 
     #[test]
     fn cz_maps_z0_to_z0() {
@@ -888,8 +819,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── Gate2Q::Swap — swaps both X and Z ────────────────────────────────────
-
     #[test]
     fn swap_maps_z0_to_z1() {
         let mut t = Tableau::new(2);
@@ -912,8 +841,6 @@ mod tests {
         assert!(!result.sign);
     }
 
-    // ── Negative sign propagation ─────────────────────────────────────────────
-
     #[test]
     fn conjugate_preserves_negative_sign() {
         let mut t = Tableau::new(1);
@@ -924,8 +851,6 @@ mod tests {
         assert_eq!(result.pauli_at(0), 'Z');
         assert!(result.sign);
     }
-
-    // ── Multi-qubit conjugation with identity tableau ─────────────────────────
 
     #[test]
     fn conjugate_multi_qubit_independent_qubits() {

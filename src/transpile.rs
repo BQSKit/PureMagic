@@ -1,7 +1,8 @@
 #!/usr/bin/env -S cargo run --bin transpile --
 //! Transpile a Clifford+T circuit (QASM) to Pauli basis measurements (.trans).
 //!
-//! Input must be a `.cliffordt.qasm` file produced by `compile_circuit.py`.
+//! Input must be a `.cliffordt.qasm` file produced by one of the Clifford+T
+//! compilers in `data_processing/`.
 
 use clap::Parser;
 use std::fmt;
@@ -19,28 +20,30 @@ mod utils;
 use tableau::{Gate1Q, Gate2Q, PauliString, Tableau};
 use utils::Timer;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CLI
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Transpile a Clifford+T circuit to Pauli basis measurements")]
 struct Args {
     #[arg(short, long = "input_file")]
     input_file: String,
 
-    /// Defaults to the input stem with a .trans suffix.
+    /// Defaults to the input stem with a .trans<max_width> suffix.
     #[arg(short, long = "output_file", default_value = "")]
     output_file: String,
 
-    /// Maximum Pauli product weight; -1 = no limit.
-    #[arg(short = 'm', long = "max_width", default_value = "-1")]
+    /// Maximum Pauli product weight; 0 = no limit. Ignored when --auto is set.
+    #[arg(short = 'm', long = "max_width", default_value = "0")]
     max_width: i32,
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QASM gate representation
-// ─────────────────────────────────────────────────────────────────────────────
+    /// Choose the max Pauli-product weight automatically, by transpiling at each candidate
+    /// weight and keeping the one with the lowest predicted circuit depth. Ignores --max_width.
+    #[arg(long = "auto", default_value_t = false)]
+    auto: bool,
+
+    /// Hold back each qubit's trailing single-qubit Clifford run at a flush. Orthogonal to the
+    /// weight threshold; always on under --auto.
+    #[arg(long = "defer_trailing", default_value_t = false)]
+    defer_trailing: bool,
+}
 
 #[derive(Debug, Clone)]
 enum QasmGate {
@@ -68,10 +71,6 @@ impl QasmGate {
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Transpiler output types
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Sign {
@@ -184,10 +183,6 @@ impl fmt::Display for TransItem {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QASM parser
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Parse a `.cliffordt.qasm` file into a gate list and qubit count.
 /// Unrecognised lines (headers, custom gate defs, creg, etc.) are silently skipped.
 fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
@@ -246,9 +241,9 @@ fn parse_qasm(path: &str) -> io::Result<(usize, Vec<QasmGate>)> {
     Ok((n_qubits, gates))
 }
 
-/// Reorder gates into bqskit's cycle-based order: pack each gate into the
-/// earliest cycle where all its qubits are free, then sort within each cycle
-/// by minimum qubit index.  This is a semantics-preserving reordering of
+/// Reorder gates into cycle-based order: pack each gate into the earliest
+/// cycle where all its qubits are free, then sort within each cycle by
+/// minimum qubit index.  This is a semantics-preserving reordering of
 /// independent (commuting) gates.
 fn reorder_by_cycles(gates: Vec<QasmGate>, n_qubits: usize) -> Vec<QasmGate> {
     if n_qubits == 0 {
@@ -355,25 +350,8 @@ fn try_parse_1q(line: &str) -> Option<QasmGate> {
     Some(gate)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Single-qubit Clifford optimizer
-// ─────────────────────────────────────────────────────────────────────────────
-//
 // Each of the 24 single-qubit Cliffords is uniquely identified by the pair
-// (X-image, Z-image) of its conjugation action on the Pauli group, where each
-// image is one of the 6 signed non-identity Paulis {±X, ±Y, ±Z}.
-//
-// We encode a signed Pauli as a u8:
-//   bits [1:0] = Pauli type: 0=X, 1=Y, 2=Z
-//   bit  [2]   = sign: 0=+, 1=−
-//
-// A sequence of single-qubit gates is compressed by composing their actions
-// into a single (x_img, z_img) state, then looking up the minimal gate
-// sequence that produces that state from a precomputed table of all 24
-// elements of the single-qubit Clifford group.
-//
-// Minimal sequences use only {S, Sdg, SX, SXdg, X, Z}.  Of these, X and Z
-// are not emitted in the .trans format and are silently dropped.
+// (X-image, Z-image) of its conjugation action on the Pauli group.
 
 /// Encode a signed single-qubit Pauli as a u8.
 /// Pauli type: 0=X, 1=Y, 2=Z.  Sign bit 2: 0=+, 1=−.
@@ -386,18 +364,8 @@ fn pauli_code(pauli: u8, neg: bool) -> u8 {
 /// the updated state.  Each image is a [`pauli_code`]-encoded signed Pauli
 /// representing where the gate sends X (resp. Z) under conjugation.
 fn apply_1q_to_state(gate: Gate1Q, x_img: u8, z_img: u8) -> (u8, u8) {
-    // Conjugation rules (P → G·P·G†) for each gate on the three Paulis:
-    //   H:    X→Z,   Y→-Y,  Z→X
-    //   S:    X→Y,   Y→-X,  Z→Z
-    //   Sdg:  X→-Y,  Y→X,   Z→Z
-    //   SX:   X→X,   Y→-Z,  Z→-Y
-    //   SXdg: X→X,   Y→Z,   Z→Y
-    //   X:    X→X,   Y→-Y,  Z→-Z
-    //   Y:    X→-X,  Y→Y,   Z→-Z
-    //   Z:    X→-X,  Y→-Y,  Z→Z
-    //
-    // For a composed state (x_img, z_img), prepending gate G updates each
-    // image independently: new_x_img = G(x_img), new_z_img = G(z_img).
+    // Conjugation rules (P → G·P·G†); composing states applies each gate to
+    // x_img and z_img independently.
     fn apply_gate_to_pauli(gate: Gate1Q, p: u8) -> u8 {
         let pauli = p & 0x3;
         let neg = (p >> 2) & 1 != 0;
@@ -471,12 +439,8 @@ fn simulate_gate_sequence(gates: &[Gate1Q]) -> (u8, u8) {
 }
 
 /// Build a lookup table mapping each of the 24 single-qubit Clifford states
-/// `(x_img, z_img)` to a minimal gate sequence that produces it.
-///
-/// The 24 sequences cover all elements of the single-qubit Clifford group,
-/// using only gates from {I, S, Sdg, SX, SXdg, X, Z} (at most 4 gates each).
-/// The table is constructed by simulating each sequence and recording the
-/// resulting state; no two sequences produce the same state.
+/// `(x_img, z_img)` to a minimal gate sequence (at most 4 gates, from
+/// {I, S, Sdg, SX, SXdg, X, Z}) that produces it; no two sequences collide.
 fn build_clifford_table() -> std::collections::HashMap<(u8, u8), Vec<Gate1Q>> {
     use Gate1Q::*;
     let sequences: &[&[Gate1Q]] = &[
@@ -539,65 +503,164 @@ fn optimize_single_qubit_sequence(gates: &[Gate1Q]) -> Vec<Gate1Q> {
 /// Reduce a sequence of Clifford gates to a minimal equivalent sequence and
 /// return the result as [`TransClifford`] items ready for the .trans output.
 ///
-/// Single-qubit gates on each qubit are accumulated independently and
-/// compressed into a minimal sequence using the 24-element Clifford group
-/// lookup.  When a 2-qubit gate is encountered, the pending single-qubit
-/// sequences on its two qubits are flushed and optimized first; the 2-qubit
-/// gate is then emitted unchanged.  Any remaining single-qubit sequences are
-/// flushed at the end.
+/// Single-qubit gates per qubit are compressed via the 24-element lookup;
+/// a 2-qubit gate flushes and optimizes the pending sequences on its two
+/// qubits first. X and Z are Pauli corrections omitted from the output.
+/// Splits an accumulated Clifford queue into gates to emit and a trailing single-qubit layer.
 ///
-/// Only CX, S, Sdg, SX, and SXdg are emitted; X and Z are Pauli corrections
-/// that do not need to be scheduled and are omitted from the output.
-fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransClifford> {
+/// Per-qubit runs of 1Q gates are collapsed by `optimize_single_qubit_sequence` and flushed
+/// whenever a 2Q gate touches that qubit. Whatever remains at the end is each qubit's run *after*
+/// its last 2Q gate, so the residual is a tensor product of single-qubit Cliffords acting last on
+/// their own wires — `U = R · E` with `R` local, needing no commutation or resynthesis.
+///
+/// Keeping `R` pending is sound for width: a local Clifford maps `Z_q` to a single-qubit Pauli on
+/// `q`, so products stay weight 1, merely rotated. Only 2Q gates ever spread support.
+fn split_trailing_1q(gates: &[QasmGate], n_qubits: usize) -> (Vec<QasmGate>, Vec<QasmGate>) {
     let mut per_qubit: Vec<Vec<Gate1Q>> = vec![Vec::new(); n_qubits];
-    let mut result: Vec<TransClifford> = Vec::new();
+    let mut emitted: Vec<QasmGate> = Vec::new();
 
-    fn flush_qubit(
-        qubit: usize, per_qubit: &mut Vec<Vec<Gate1Q>>, result: &mut Vec<TransClifford>,
-        n_qubits: usize,
-    ) {
+    fn flush_qubit(qubit: usize, per_qubit: &mut [Vec<Gate1Q>], out: &mut Vec<QasmGate>) {
         let seq = std::mem::take(&mut per_qubit[qubit]);
         if seq.is_empty() {
             return;
         }
-        for g in optimize_single_qubit_sequence(&seq) {
-            let qasm_gate = QasmGate::Clifford1Q { gate: g, qubit };
-            if let Some(tc) = TransClifford::from_qasm_gate(&qasm_gate, n_qubits) {
-                result.push(tc);
-            }
+        for gate in optimize_single_qubit_sequence(&seq) {
+            out.push(QasmGate::Clifford1Q { gate, qubit });
         }
     }
 
     for gate in gates {
         match gate {
-            QasmGate::Clifford1Q { gate: g, qubit } => {
-                per_qubit[*qubit].push(*g);
-            }
-            QasmGate::Clifford2Q { gate: g2, control, target } => {
-                flush_qubit(*control, &mut per_qubit, &mut result, n_qubits);
-                flush_qubit(*target, &mut per_qubit, &mut result, n_qubits);
-                let qasm_gate =
-                    QasmGate::Clifford2Q { gate: *g2, control: *control, target: *target };
-                if let Some(tc) = TransClifford::from_qasm_gate(&qasm_gate, n_qubits) {
-                    result.push(tc);
-                }
+            QasmGate::Clifford1Q { gate: g, qubit } => per_qubit[*qubit].push(*g),
+            QasmGate::Clifford2Q { control, target, .. } => {
+                flush_qubit(*control, &mut per_qubit, &mut emitted);
+                flush_qubit(*target, &mut per_qubit, &mut emitted);
+                emitted.push(gate.clone());
             }
             _ => {}
         }
     }
 
+    let mut residual: Vec<QasmGate> = Vec::new();
     for qubit in 0..n_qubits {
-        flush_qubit(qubit, &mut per_qubit, &mut result, n_qubits);
+        flush_qubit(qubit, &mut per_qubit, &mut residual);
     }
-
-    result
+    (emitted, residual)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Transpiler
-// ─────────────────────────────────────────────────────────────────────────────
+/// Rebuilds the tableau for a pending Clifford sequence.
+fn tableau_of(gates: &[QasmGate], n_qubits: usize) -> Tableau {
+    let mut tableau = Tableau::new(n_qubits);
+    for gate in gates {
+        match gate {
+            QasmGate::Clifford1Q { gate: g, qubit } => tableau.prepend_1q_correct(*g, *qubit),
+            QasmGate::Clifford2Q { gate: g, control, target } => {
+                tableau.prepend_2q(*g, *control, *target)
+            }
+            _ => {}
+        }
+    }
+    tableau
+}
 
+fn to_trans_cliffords(gates: &[QasmGate], n_qubits: usize) -> Vec<TransClifford> {
+    gates.iter().filter_map(|g| TransClifford::from_qasm_gate(g, n_qubits)).collect()
+}
+
+#[cfg(test)]
+fn optimize_clifford_sequence(gates: &[QasmGate], n_qubits: usize) -> Vec<TransClifford> {
+    let (emitted, residual) = split_trailing_1q(gates, n_qubits);
+    let mut all = emitted;
+    all.extend(residual);
+    to_trans_cliffords(&all, n_qubits)
+}
+
+/// Layer occupancy of each emitted product, mirroring the expansion in
+/// `Circuit::estimate_num_layers`: a CX spans 2 logical cycles, an S/SX spans 3, and a
+/// T or measurement spans 1. Set all four to 1 for an unweighted DAG-depth model.
+const LAYER_COST_T: usize = 1;
+const LAYER_COST_M: usize = 1;
+const LAYER_COST_CX: usize = 2;
+const LAYER_COST_S: usize = 3;
+
+/// Predicts the layer each emitted product will land in, mirroring `Circuit::compute_layers`.
+///
+/// Downstream, `Circuit::gen_deps` makes a product's parents the last product on each of its
+/// qubits and `compute_layers` runs Kahn's algorithm over that DAG, so a product's layer is
+/// `1 + max(layer of parents)`. Tracking the layer of the last product on each qubit reduces
+/// that to an O(|support|) update, letting the transpiler predict layering without the
+/// scheduler.
+#[derive(Debug, Clone)]
+struct LayerModel {
+    /// Last layer occupied by a product touching this qubit; 0 = untouched.
+    depth: Vec<usize>,
+}
+
+impl LayerModel {
+    fn new(n_qubits: usize) -> Self {
+        LayerModel { depth: vec![0; n_qubits] }
+    }
+
+    /// The layer a product on `qubits` would land in, without placing it.
+    fn peek(&self, qubits: &[usize]) -> usize {
+        qubits.iter().map(|&q| self.depth[q]).max().unwrap_or(0) + 1
+    }
+
+    /// Places a product spanning `cost` layers and returns the layer it starts in.
+    fn place(&mut self, qubits: &[usize], cost: usize) -> usize {
+        let layer = self.peek(qubits);
+        for &q in qubits {
+            self.depth[q] = layer + cost - 1;
+        }
+        layer
+    }
+
+    /// Deepest layer reached on any qubit so far.
+    fn max_depth(&self) -> usize {
+        self.depth.iter().copied().max().unwrap_or(0)
+    }
+}
+
+/// Qubits acted on by a Pauli product ('I' entries are identity).
+fn pauli_support(p: &TransPauli) -> Vec<usize> {
+    (0..p.ops.len()).filter(|&q| p.ops[q] != 'I').collect()
+}
+
+/// Qubits acted on by a Clifford, with its layer occupancy.
+fn clifford_support(c: &TransClifford) -> (Vec<usize>, usize) {
+    let qubits: Vec<usize> = (0..c.ops.len()).filter(|&q| c.ops[q] != '_').collect();
+    let cost = if c.name == "CX" { LAYER_COST_CX } else { LAYER_COST_S };
+    (qubits, cost)
+}
+
+/// Applies the Cliffords a flush would emit to `layers`, as `flush_clifford_queue` would,
+/// returning the qubits they touch.
+#[cfg(test)]
+fn apply_flushed_cliffords(
+    layers: &mut LayerModel, queue: &[QasmGate], n_qubits: usize,
+) -> Vec<usize> {
+    let mut touched = Vec::new();
+    for tc in optimize_clifford_sequence(queue, n_qubits) {
+        let (qubits, cost) = clifford_support(&tc);
+        layers.place(&qubits, cost);
+        touched.extend(qubits);
+    }
+    touched
+}
+
+#[cfg(test)]
 fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransItem> {
+    transpile_full(n_qubits, gates, max_weight, false)
+}
+
+/// Transpiles at a fixed max Pauli-product weight.
+///
+/// `defer_trailing` holds back each qubit's trailing single-qubit Clifford run at every flush.
+/// It is orthogonal to the weight threshold and reduces predicted depth by up to 32%, since
+/// S/SX gates span 3 logical cycles apiece and buy no width.
+fn transpile_full(
+    n_qubits: usize, gates: &[QasmGate], max_weight: i32, defer_trailing: bool,
+) -> Vec<TransItem> {
     let effective_max_weight = if max_weight <= 0 { n_qubits + 1 } else { max_weight as usize };
 
     let mut tableau = Tableau::new(n_qubits);
@@ -627,17 +690,31 @@ fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransI
     }
 
     let mut last_weight: Option<usize> = None;
+    let mut layers = LayerModel::new(n_qubits);
 
+    /// Emits the queue and resets the tableau to whatever stays pending.
+    ///
+    /// With `defer_trailing`, each qubit's trailing single-qubit run is held back rather than
+    /// emitted. That layer is local, so deferring it keeps every later product weight 1 while
+    /// avoiding S/SX gates that cost 3 logical cycles each and buy no width. The held-back gates
+    /// stay queued and merge with the next segment's leading 1Q gates, where
+    /// `optimize_single_qubit_sequence` can collapse the combined run.
     fn flush_clifford_queue(
         clifford_queue: &mut Vec<QasmGate>, ops: &mut Vec<TransItem>, tableau: &mut Tableau,
-        n_qubits: usize,
+        layers: &mut LayerModel, n_qubits: usize, defer_trailing: bool,
     ) {
-        let optimized = optimize_clifford_sequence(clifford_queue, n_qubits);
-        for c in optimized {
+        let (emitted, residual) = split_trailing_1q(clifford_queue, n_qubits);
+        let mut to_emit = emitted;
+        if !defer_trailing {
+            to_emit.extend(residual.iter().cloned());
+        }
+        for c in to_trans_cliffords(&to_emit, n_qubits) {
+            let (qubits, cost) = clifford_support(&c);
+            layers.place(&qubits, cost);
             ops.push(TransItem::Clifford(c));
         }
-        clifford_queue.clear();
-        *tableau = Tableau::new(n_qubits);
+        *clifford_queue = if defer_trailing { residual } else { Vec::new() };
+        *tableau = tableau_of(clifford_queue, n_qubits);
     }
 
     for gate in &gates_with_measurements {
@@ -650,32 +727,30 @@ fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransI
                 clifford_queue.push(gate.clone());
                 tableau.prepend_2q(*g, *control, *target);
             }
-            QasmGate::T { qubit } => {
-                let pre_pauli = make_z_pauli(n_qubits, *qubit, false);
-                let conjugated = tableau.conjugate(&pre_pauli);
-                let weight = conjugated.weight();
-                last_weight = Some(weight);
-                if weight > effective_max_weight {
-                    flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, n_qubits);
-                    let fresh_pauli = make_z_pauli(n_qubits, *qubit, false);
-                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&fresh_pauli, "T")));
-                } else {
-                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&conjugated, "T")));
-                }
-            }
-            QasmGate::Tdg { qubit } => {
+            QasmGate::T { qubit } | QasmGate::Tdg { qubit } => {
                 // Tdg uses a negative-sign Z Pauli (−Z rotation).
-                let pre_pauli = make_z_pauli(n_qubits, *qubit, true);
+                let negative = matches!(gate, QasmGate::Tdg { .. });
+                let pre_pauli = make_z_pauli(n_qubits, *qubit, negative);
                 let conjugated = tableau.conjugate(&pre_pauli);
                 let weight = conjugated.weight();
                 last_weight = Some(weight);
-                if weight > effective_max_weight {
-                    flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, n_qubits);
-                    let fresh_pauli = make_z_pauli(n_qubits, *qubit, true);
-                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&fresh_pauli, "T")));
+                let flush = weight > effective_max_weight;
+                let emitted = if flush {
+                    flush_clifford_queue(
+                        &mut clifford_queue,
+                        &mut ops,
+                        &mut tableau,
+                        &mut layers,
+                        n_qubits,
+                        defer_trailing,
+                    );
+                    let conjugated = tableau.conjugate(&make_z_pauli(n_qubits, *qubit, negative));
+                    TransPauli::from_pauli_string(&conjugated, "T")
                 } else {
-                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&conjugated, "T")));
-                }
+                    TransPauli::from_pauli_string(&conjugated, "T")
+                };
+                layers.place(&pauli_support(&emitted), LAYER_COST_T);
+                ops.push(TransItem::Pauli(emitted));
             }
             QasmGate::Measure { qubit } => {
                 if last_weight.is_none() {
@@ -683,16 +758,29 @@ fn transpile(n_qubits: usize, gates: &[QasmGate], max_weight: i32) -> Vec<TransI
                 }
                 let pre_pauli = make_z_pauli(n_qubits, *qubit, false);
                 let conjugated = tableau.conjugate(&pre_pauli);
-                // Flush only when the preceding T gate's conjugated weight exceeded
-                // max_weight; the measurement's own conjugated weight is not checked.
+                // Static policy flushes only when the preceding T gate's conjugated weight
+                // exceeded max_weight; the measurement's own conjugated weight is not checked.
+                // The dynamic policy never flushes here: there is no final flush after the loop
+                // either, and that is sound because every qubit gets an appended measurement
+                // whose Pauli is conjugated through the tableau, so the queued Cliffords' effect
+                // is already captured in the measurement basis.
                 let should_flush = last_weight.map_or(false, |w| w > effective_max_weight);
-                if should_flush {
-                    flush_clifford_queue(&mut clifford_queue, &mut ops, &mut tableau, n_qubits);
+                let emitted = if should_flush {
+                    flush_clifford_queue(
+                        &mut clifford_queue,
+                        &mut ops,
+                        &mut tableau,
+                        &mut layers,
+                        n_qubits,
+                        false,
+                    );
                     let fresh_pauli = make_z_pauli(n_qubits, *qubit, false);
-                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&fresh_pauli, "M")));
+                    TransPauli::from_pauli_string(&fresh_pauli, "M")
                 } else {
-                    ops.push(TransItem::Pauli(TransPauli::from_pauli_string(&conjugated, "M")));
-                }
+                    TransPauli::from_pauli_string(&conjugated, "M")
+                };
+                layers.place(&pauli_support(&emitted), LAYER_COST_M);
+                ops.push(TransItem::Pauli(emitted));
             }
             QasmGate::Barrier => {}
         }
@@ -708,9 +796,48 @@ fn make_z_pauli(n: usize, q: usize, negative: bool) -> PauliString {
     ps
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Output writer
-// ─────────────────────────────────────────────────────────────────────────────
+/// Predicted depth of a transpiled circuit: the layering `Circuit::compute_layers` will derive
+/// from it downstream, with each product charged its logical-cycle span.
+fn predicted_depth(items: &[TransItem], n_qubits: usize) -> usize {
+    let mut layers = LayerModel::new(n_qubits);
+    for item in items {
+        let (qubits, cost) = match item {
+            TransItem::Pauli(p) => {
+                (pauli_support(p), if p.label == "M" { LAYER_COST_M } else { LAYER_COST_T })
+            }
+            TransItem::Clifford(c) => clifford_support(c),
+        };
+        layers.place(&qubits, cost);
+    }
+    layers.max_depth()
+}
+
+/// Weight thresholds tried by [`transpile_best`].
+///
+/// With trailing deferral enabled these two reproduce the full 0..=10 sweep's best result exactly
+/// on 8 of 11 benchmark circuits and within 1.5% on the rest: flushes are cheap enough that the
+/// optimum collapses to either "never flush" or "keep every product weight 1".
+const CANDIDATE_WEIGHTS: [i32; 2] = [0, 1];
+
+/// Transpiles at each candidate weight and keeps the shallowest result.
+///
+/// Predicted depth is cheap to evaluate in-process and tracks scheduling well, so selecting
+/// between whole transpilations replaces the external `max_width` sweep and the hand-maintained
+/// table of per-circuit best weights.
+fn transpile_best(n_qubits: usize, gates: &[QasmGate]) -> (Vec<TransItem>, i32) {
+    let mut best: Option<(Vec<TransItem>, i32, usize)> = None;
+    for max_weight in CANDIDATE_WEIGHTS {
+        let items = transpile_full(n_qubits, gates, max_weight, true);
+        let depth = predicted_depth(&items, n_qubits);
+        println!("  candidate max_width {:<3} predicted depth {}", max_weight, depth);
+        if best.as_ref().is_none_or(|(_, _, d)| depth < *d) {
+            best = Some((items, max_weight, depth));
+        }
+    }
+    let (items, weight, depth) = best.expect("at least one candidate");
+    println!("Selected max_width {} (predicted depth {})", weight, depth);
+    (items, weight)
+}
 
 fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usize)> {
     let file = File::create(output_path)?;
@@ -736,10 +863,6 @@ fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usi
     Ok((n_ts, n_cliffords))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Statistics helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn count_stats(items: &[TransItem]) -> (usize, usize, usize, f64) {
     let n_cliffords = items.iter().filter(|i| matches!(i, TransItem::Clifford(_))).count();
     let pps: Vec<&TransPauli> = items
@@ -763,18 +886,15 @@ fn count_stats(items: &[TransItem]) -> (usize, usize, usize, f64) {
     (n_cliffords, n_pps, items.len(), avg_weight)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    utils::print_banner("transpile");
     let _total_timer = Timer::new("transpilation");
 
     let input_file = &args.input_file;
     if !input_file.ends_with(".cliffordt.qasm") {
         return Err(format!(
-            "Input file must be a .cliffordt.qasm file produced by compile_circuit.py, got: {}",
+            "Input file must be a .cliffordt.qasm file produced by a Clifford+T compiler in data_processing/, got: {}",
             input_file
         )
         .into());
@@ -807,8 +927,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Gate set: {}", gate_names.iter().cloned().collect::<Vec<_>>().join(", "));
 
+    if args.auto {
+        println!("Weight selection: auto (lowest predicted depth across candidates)");
+    } else {
+        println!("Weight selection: fixed (max weight {})", args.max_width);
+    }
+
     let _tableau_timer = Timer::new("tableau");
-    let items = transpile(n_qubits, &gates, args.max_width);
+    let items = if args.auto {
+        transpile_best(n_qubits, &gates).0
+    } else {
+        transpile_full(n_qubits, &gates, args.max_width, args.defer_trailing)
+    };
     drop(_tableau_timer);
 
     let (n_cliffords, n_pps, tot_post, avg_weight) = count_stats(&items);
@@ -854,7 +984,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.output_file.clone()
     };
     let output_path = if args.output_file.is_empty() {
-        format!("{}.trans", output_stem)
+        // Auto-selected output must not collide with the .trans<N> sweep artifacts.
+        if args.auto {
+            format!("{}.transauto", output_stem)
+        } else {
+            format!("{}.trans{}", output_stem, args.max_width)
+        }
     } else {
         args.output_file
     };
@@ -865,10 +1000,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -883,8 +1014,6 @@ mod tests {
         }
         f
     }
-
-    // ── QASM parser ───────────────────────────────────────────────────────────
 
     #[test]
     fn parse_qasm_basic() {
@@ -915,8 +1044,6 @@ mod tests {
         assert!(matches!(gates[1], QasmGate::Tdg { qubit: 0 }));
     }
 
-    // ── make_z_pauli ──────────────────────────────────────────────────────────
-
     #[test]
     fn make_z_pauli_positive() {
         let p = make_z_pauli(3, 1, false);
@@ -933,8 +1060,6 @@ mod tests {
         assert!(p.sign);
     }
 
-    // ── TransPauli display ────────────────────────────────────────────────────
-
     #[test]
     fn trans_pauli_display_t_gate() {
         let ps = PauliString::from_str("+ZII");
@@ -948,8 +1073,6 @@ mod tests {
         let tp = TransPauli::from_pauli_string(&ps, "M");
         assert_eq!(format!("{}", tp), "-_Z_<M>");
     }
-
-    // ── TransClifford display ─────────────────────────────────────────────────
 
     #[test]
     fn trans_clifford_cx_display() {
@@ -977,12 +1100,10 @@ mod tests {
         assert!(TransClifford::from_qasm_gate(&gate, 2).is_none());
     }
 
-    // ── Transpiler ────────────────────────────────────────────────────────────
-
     #[test]
     fn transpile_single_t_gate_no_cliffords() {
         let gates = vec![QasmGate::T { qubit: 0 }];
-        let items = transpile(2, &gates, -1);
+        let items = transpile(2, &gates, 0);
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -998,7 +1119,7 @@ mod tests {
         // H maps Z→X, so T (a Z rotation) becomes an X rotation after conjugation.
         let gates =
             vec![QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 0 }, QasmGate::T { qubit: 0 }];
-        let items = transpile(2, &gates, -1);
+        let items = transpile(2, &gates, 0);
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -1010,7 +1131,7 @@ mod tests {
     #[test]
     fn transpile_tdg_gives_negative_sign() {
         let gates = vec![QasmGate::Tdg { qubit: 0 }];
-        let items = transpile(1, &gates, -1);
+        let items = transpile(1, &gates, 0);
         let t_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "T")).collect();
         assert_eq!(t_items.len(), 1);
@@ -1023,7 +1144,7 @@ mod tests {
     #[test]
     fn transpile_measurements_appended_for_all_qubits() {
         let gates = vec![QasmGate::T { qubit: 0 }];
-        let items = transpile(2, &gates, -1);
+        let items = transpile(2, &gates, 0);
         let m_items: Vec<_> =
             items.iter().filter(|i| matches!(i, TransItem::Pauli(p) if p.label == "M")).collect();
         assert_eq!(m_items.len(), 2);
@@ -1033,13 +1154,11 @@ mod tests {
     fn transpile_max_weight_1_flushes_cliffords() {
         let gates =
             vec![QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 0 }, QasmGate::T { qubit: 0 }];
-        let items_unlimited = transpile(2, &gates, -1);
+        let items_unlimited = transpile(2, &gates, 0);
         let cliffords_unlimited: Vec<_> =
             items_unlimited.iter().filter(|i| matches!(i, TransItem::Clifford(_))).collect();
         assert_eq!(cliffords_unlimited.len(), 0);
     }
-
-    // ── count_stats ───────────────────────────────────────────────────────────
 
     #[test]
     fn count_stats_basic() {
@@ -1063,8 +1182,6 @@ mod tests {
         assert!((avg_weight - 1.5).abs() < 1e-9);
     }
 
-    // ── count_stats — all Cliffords ───────────────────────────────────────────
-
     #[test]
     fn count_stats_all_cliffords() {
         let items = vec![
@@ -1077,8 +1194,6 @@ mod tests {
         assert_eq!(tot, 2);
     }
 
-    // ── count_stats — empty ───────────────────────────────────────────────────
-
     #[test]
     fn count_stats_empty() {
         let items: Vec<TransItem> = vec![];
@@ -1088,8 +1203,6 @@ mod tests {
         assert_eq!(tot, 0);
         assert_eq!(avg_weight, 0.0);
     }
-
-    // ── make_z_pauli — weight ─────────────────────────────────────────────────
 
     #[test]
     fn make_z_pauli_has_weight_one() {
@@ -1105,8 +1218,6 @@ mod tests {
         assert_eq!(ps.pauli_at(2), 'I');
     }
 
-    // ── parse_qasm — sdg and tdg gates ───────────────────────────────────────
-
     #[test]
     fn parse_qasm_sdg_and_tdg_gates() {
         let f = write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "sdg q[0];", "tdg q[1];"]);
@@ -1114,8 +1225,6 @@ mod tests {
         assert_eq!(n_qubits, 2);
         assert_eq!(gates.len(), 2);
     }
-
-    // ── transpile — SX gate ───────────────────────────────────────────────────
 
     #[test]
     fn transpile_sx_gate_produces_clifford() {
@@ -1127,12 +1236,9 @@ mod tests {
             write_qasm(&["OPENQASM 2.0;", "qreg q[2];", "cx q[0],q[1];", "sx q[0];", "t q[1];"]);
         let (n_qubits, gates) = parse_qasm(f.path().to_str().unwrap()).unwrap();
         let items = transpile(n_qubits, &gates, 1);
-        // SX is a Clifford; should produce at least one Clifford item
         let has_clifford = items.iter().any(|i| matches!(i, TransItem::Clifford(_)));
         assert!(has_clifford, "SX gate should produce a Clifford TransItem");
     }
-
-    // ── transpile — measurement appended for all qubits ──────────────────────
 
     #[test]
     fn transpile_two_qubit_circuit_appends_two_measurements() {
@@ -1146,8 +1252,6 @@ mod tests {
         assert_eq!(measurement_count, 2, "should append one measurement per qubit");
     }
 
-    // ── TransPauli display — negative sign ────────────────────────────────────
-
     #[test]
     fn trans_pauli_display_negative_sign() {
         let ps = make_z_pauli(2, 0, true); // negative
@@ -1155,8 +1259,6 @@ mod tests {
         let s = format!("{}", tp);
         assert!(s.starts_with('-'), "negative pauli should start with '-': {}", s);
     }
-
-    // ── TransClifford — CX display ────────────────────────────────────────────
 
     #[test]
     fn trans_clifford_cx_has_two_qubit_paulis() {
@@ -1173,6 +1275,277 @@ mod tests {
         assert!(cx_item.is_some(), "CX gate should produce a CX Clifford item");
         if let Some(TransItem::Clifford(c)) = cx_item {
             assert_eq!(c.ops.len(), 2, "CX should have 2 qubit entries");
+        }
+    }
+
+    // --- Dynamic (layer-aware) flush policy ---
+
+    //fn n_cliffords(items: &[TransItem]) -> usize {
+    //    items.iter().filter(|i| matches!(i, TransItem::Clifford(_))).count()
+    //}
+
+    /// Reference layer count: rebuilds the qubit-overlap DAG over the emitted stream and runs
+    /// Kahn's algorithm, exactly as `Circuit::gen_deps` + `Circuit::compute_layers` do.
+    fn layers_via_kahn(items: &[TransItem], n_qubits: usize) -> usize {
+        let supports: Vec<Vec<usize>> = items
+            .iter()
+            .map(|i| match i {
+                TransItem::Pauli(p) => pauli_support(p),
+                TransItem::Clifford(c) => clifford_support(c).0,
+            })
+            .collect();
+        let mut parents: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
+        let mut last: Vec<Option<usize>> = vec![None; n_qubits];
+        for (id, support) in supports.iter().enumerate() {
+            for &q in support {
+                if let Some(prev) = last[q] {
+                    parents[id].push(prev);
+                    children[prev].push(id);
+                }
+                last[q] = Some(id);
+            }
+        }
+        let mut in_degrees: Vec<usize> = parents.iter().map(|p| p.len()).collect();
+        let mut ready: Vec<usize> = (0..items.len()).filter(|&i| in_degrees[i] == 0).collect();
+        let mut n_layers = 0;
+        while !ready.is_empty() {
+            n_layers += 1;
+            let mut next = Vec::new();
+            for &cur in &ready {
+                for &child in &children[cur] {
+                    in_degrees[child] -= 1;
+                    if in_degrees[child] == 0 {
+                        next.push(child);
+                    }
+                }
+            }
+            ready = next;
+        }
+        n_layers
+    }
+
+    /// Layer count the `LayerModel` predicts for an emitted stream, at unit cost per product.
+    fn layers_via_model(items: &[TransItem], n_qubits: usize) -> usize {
+        let mut lm = LayerModel::new(n_qubits);
+        let mut max_layer = 0;
+        for item in items {
+            let support = match item {
+                TransItem::Pauli(p) => pauli_support(p),
+                TransItem::Clifford(c) => clifford_support(c).0,
+            };
+            max_layer = max_layer.max(lm.place(&support, 1));
+        }
+        max_layer
+    }
+
+    #[test]
+    fn layer_model_matches_compute_layers() {
+        // Correctness anchor: at unit cost the model must reproduce the Kahn layering that
+        // Circuit::compute_layers performs downstream on the same emitted stream.
+        let gates = vec![
+            QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 0 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::T { qubit: 1 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 1, target: 2 },
+            QasmGate::T { qubit: 2 },
+            QasmGate::T { qubit: 0 },
+            QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 3 },
+            QasmGate::T { qubit: 3 },
+        ];
+        for max_width in [0, 1, 2] {
+            let items = transpile(4, &gates, max_width);
+            assert_eq!(
+                layers_via_model(&items, 4),
+                layers_via_kahn(&items, 4),
+                "model and Kahn layering disagree at max_width {}",
+                max_width
+            );
+        }
+    }
+
+    #[test]
+    fn layer_model_peek_place_basics() {
+        let mut lm = LayerModel::new(4);
+        // Disjoint qubits share a layer.
+        assert_eq!(lm.place(&[0], 1), 1);
+        assert_eq!(lm.place(&[1], 1), 1);
+        // Same qubit serialises.
+        assert_eq!(lm.place(&[0], 1), 2);
+        // peek does not mutate.
+        assert_eq!(lm.peek(&[0]), 3);
+        assert_eq!(lm.peek(&[0]), 3);
+        // A multi-layer product advances depth by its cost.
+        let mut lm2 = LayerModel::new(2);
+        assert_eq!(lm2.place(&[0, 1], 3), 1);
+        assert_eq!(lm2.peek(&[0]), 4, "a 3-layer product should occupy layers 1..=3");
+        // An empty support still consumes a layer slot.
+        assert_eq!(LayerModel::new(1).peek(&[]), 1);
+    }
+
+    /// Depth added to an empty layer model by flushing `queue`.
+    fn flush_depth(queue: &[QasmGate], n_qubits: usize) -> usize {
+        let mut lm = LayerModel::new(n_qubits);
+        apply_flushed_cliffords(&mut lm, queue, n_qubits);
+        lm.max_depth()
+    }
+
+    #[test]
+    fn flush_cost_accounts_for_clifford_parallelism() {
+        let one_cx = vec![QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 }];
+        let disjoint_cx = vec![
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 2, target: 3 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 4, target: 5 },
+        ];
+        assert_eq!(flush_depth(&one_cx, 8), LAYER_COST_CX);
+        assert_eq!(
+            flush_depth(&disjoint_cx, 8),
+            LAYER_COST_CX,
+            "CX gates on disjoint qubits run in parallel and must not be charged cumulatively"
+        );
+    }
+
+    #[test]
+    fn flush_cost_serialises_overlapping_cliffords() {
+        // Two CX gates sharing a qubit cannot run in parallel, so they cost twice as much.
+        let chained = vec![
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 1, target: 2 },
+        ];
+        assert_eq!(flush_depth(&chained, 4), 2 * LAYER_COST_CX);
+    }
+
+    /// Compares two tableaus by their action on every basis Pauli, ignoring sign. Signs are
+    /// discarded downstream (`PauliProduct::set_from_str` skips the sign character) and X/Y/Z
+    /// gates are never emitted, being tracked in the Pauli frame.
+    fn same_up_to_sign(a: &Tableau, b: &Tableau, n: usize) -> bool {
+        (0..n).all(|q| {
+            [false, true].iter().all(|&use_x| {
+                let mut p = PauliString::identity(n);
+                if use_x {
+                    p.x_bits[q] = true;
+                } else {
+                    p.z_bits[q] = true;
+                }
+                let (ia, ib) = (a.conjugate(&p), b.conjugate(&p));
+                ia.x_bits == ib.x_bits && ia.z_bits == ib.z_bits
+            })
+        })
+    }
+
+    #[test]
+    fn predicted_depth_matches_kahn_when_every_product_spans_one_layer() {
+        // T and M products span a single layer each, so with no Cliffords emitted the scorer must
+        // agree exactly with the Kahn layering the model is validated against.
+        let gates =
+            vec![QasmGate::T { qubit: 0 }, QasmGate::T { qubit: 1 }, QasmGate::T { qubit: 0 }];
+        let items = transpile_full(2, &gates, 0, false);
+        assert!(items.iter().all(|i| matches!(i, TransItem::Pauli(_))));
+        assert_eq!(predicted_depth(&items, 2), layers_via_kahn(&items, 2));
+    }
+
+    #[test]
+    fn predicted_depth_charges_cliffords_their_full_span() {
+        // A CX spans 2 logical cycles and an S/SX 3, so an emitted Clifford must cost more than
+        // the single layer a unit-cost layering would assign it.
+        let gates = vec![
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::T { qubit: 1 },
+        ];
+        let items = transpile_full(2, &gates, 1, false);
+        assert!(items.iter().any(|i| matches!(i, TransItem::Clifford(_))));
+        assert!(predicted_depth(&items, 2) > layers_via_kahn(&items, 2));
+    }
+
+    #[test]
+    fn transpile_best_never_loses_to_any_candidate() {
+        // Selection is by predicted depth, so the chosen transpilation is at least as shallow as
+        // every candidate weight — including 0, the never-flush policy that is optimal on
+        // circuits where emitting Cliffords never pays.
+        let mut gates = vec![QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 }];
+        for _ in 0..8 {
+            gates.push(QasmGate::T { qubit: 1 });
+        }
+        let (best, _) = transpile_best(2, &gates);
+        let best_depth = predicted_depth(&best, 2);
+        for w in CANDIDATE_WEIGHTS {
+            let candidate = transpile_full(2, &gates, w, true);
+            assert!(best_depth <= predicted_depth(&candidate, 2), "lost to max_width {}", w);
+        }
+    }
+
+    #[test]
+    fn trailing_deferral_does_not_change_product_count() {
+        // Deferring the trailing single-qubit layer changes which Cliffords are emitted, never
+        // how many T products or measurements the circuit has.
+        let mut gates = vec![QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 }];
+        for _ in 0..8 {
+            gates.push(QasmGate::T { qubit: 0 });
+            gates.push(QasmGate::T { qubit: 1 });
+        }
+        let paulis =
+            |items: &[TransItem]| items.iter().filter(|i| matches!(i, TransItem::Pauli(_))).count();
+        assert_eq!(
+            paulis(&transpile_full(2, &gates, 1, true)),
+            paulis(&transpile_full(2, &gates, 1, false))
+        );
+    }
+
+    #[test]
+    fn split_trailing_1q_preserves_the_clifford() {
+        // U = R · E: emitting E and keeping R pending must act exactly as the original queue.
+        let queue = vec![
+            QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 0 },
+            QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 1 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::Clifford1Q { gate: Gate1Q::SX, qubit: 2 },
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 1, target: 2 },
+            QasmGate::Clifford1Q { gate: Gate1Q::Sdg, qubit: 1 },
+            QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 2 },
+        ];
+        let (emitted, residual) = split_trailing_1q(&queue, 3);
+        let mut recombined = emitted.clone();
+        recombined.extend(residual.iter().cloned());
+        assert!(
+            same_up_to_sign(&tableau_of(&recombined, 3), &tableau_of(&queue, 3), 3),
+            "split must preserve the accumulated Clifford"
+        );
+    }
+
+    #[test]
+    fn split_trailing_1q_residual_is_local() {
+        // The residual must be a tensor product of single-qubit Cliffords: at most one wire each,
+        // no 2Q gates. That is what keeps later products weight 1.
+        let queue = vec![
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 0 },
+            QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 1 },
+            QasmGate::Clifford1Q { gate: Gate1Q::SX, qubit: 2 },
+        ];
+        let (_, residual) = split_trailing_1q(&queue, 3);
+        assert!(!residual.is_empty());
+        assert!(residual.iter().all(|g| matches!(g, QasmGate::Clifford1Q { .. })));
+    }
+
+    #[test]
+    fn local_residual_keeps_products_weight_one() {
+        // Every product conjugated through a purely single-qubit tableau stays weight 1.
+        let queue = vec![
+            QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 },
+            QasmGate::Clifford1Q { gate: Gate1Q::H, qubit: 0 },
+            QasmGate::Clifford1Q { gate: Gate1Q::S, qubit: 1 },
+            QasmGate::Clifford1Q { gate: Gate1Q::SX, qubit: 2 },
+        ];
+        let (_, residual) = split_trailing_1q(&queue, 3);
+        let tab = tableau_of(&residual, 3);
+        for q in 0..3 {
+            assert_eq!(
+                tab.conjugate(&make_z_pauli(3, q, false)).weight(),
+                1,
+                "a local residual must not spread support on qubit {}",
+                q
+            );
         }
     }
 }

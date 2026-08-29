@@ -7,8 +7,8 @@ use crate::treegraph::TreeGraph;
 use colored::Colorize;
 use std::collections::VecDeque;
 
-/// Returns true when a nb node qualifies as the magic-state cultivator for a T gate:
-/// the gate must be T, no cultivator has been found yet, and the node must be ready (time=0).
+/// True when a nb qualifies as the magic-state cultivator for a T gate: gate is T, no
+/// cultivator found yet, and the node is ready (cultivation_time == 0).
 #[inline]
 fn is_cultivator_candidate(
     gate_type: GateType, cultivator: Option<u16>, cultivation_time: i32,
@@ -16,13 +16,11 @@ fn is_cultivator_candidate(
     gate_type.is_t() && cultivator.is_none() && cultivation_time == 0
 }
 
-/// State container for greedy multi-source BFS Steiner tree computation.
+/// State for greedy multi-source BFS Steiner tree computation.
 ///
-/// `visited[node_id]` stores the root ID that first reached that node, enabling
-/// detection of when two different root groups meet (a new path is formed).
-/// `paths[root_id]` lists all other root IDs reachable from `root_id`; the
-/// total count across all roots equals the number of distinct root-pair paths
-/// found so far, which is compared against `reqd_paths = n*(n-1)` for n roots.
+/// `visited[node_id]` is the root that first reached that node, so two different roots
+/// meeting there signals a new path. `paths[root_id]` lists roots reachable from `root_id`;
+/// the total count is compared against `reqd_paths = n*(n-1)` for n roots.
 pub(crate) struct SteinerTree {
     n_nodes: usize,
     visited: Vec<Option<u16>>,
@@ -85,8 +83,7 @@ impl SteinerTree {
                 &mut tree,
             );
             if n_paths == n_paths_reqd {
-                // All roots are connected, but for T gates we must also have found
-                // a ready magic cultivator before we can declare success.
+                // T gates also need a ready cultivator before declaring success.
                 if gate_type.is_t() && cultivator.is_none() {
                     continue;
                 }
@@ -212,8 +209,7 @@ impl SteinerTree {
                     continue;
                 }
             }
-            // Both nodes are routing and both already visited: check if they belong
-            // to different root groups (a new path between groups has been found).
+            // Both routing and already visited: differing root groups mean a new path was found.
             if nb.is_routing() && node.is_routing() && self.visited[*nb_id as usize].is_some() {
                 let nb_root_id = self.visited[*nb_id as usize].unwrap();
                 if curr_root_id == nb_root_id {
@@ -262,11 +258,9 @@ impl SteinerTree {
         (n_paths as usize, cultivator)
     }
 
-    /// Merges the connectivity groups of `curr_root_id` and `nb_root_id`.
-    ///
-    /// After merging, every root in the combined group has the full merged list
-    /// in `self.paths[root_id]` (excluding itself). `n_paths` is updated to
-    /// reflect the new total count of directed root-pair paths.
+    /// Merges the connectivity groups of `curr_root_id` and `nb_root_id`; every root in the
+    /// combined group ends up with the full merged list in `self.paths[root_id]` (excluding
+    /// itself).
     fn merge_root_groups(
         &mut self, curr_root_id: u16, nb_root_id: u16, n_start_paths: usize,
         #[cfg_attr(not(debug_assertions), allow(unused_variables))] reqd_paths: usize,

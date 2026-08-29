@@ -3,7 +3,6 @@ use crate::node::{Node, NodeType};
 #[allow(unused_imports)]
 use colored::Colorize;
 
-/// Internal node representation for a tree subgraph.
 #[derive(Debug, Clone)]
 struct TreeNode {
     pub nbs: Vec<u16>,
@@ -48,12 +47,7 @@ pub(crate) struct TreeGraph {
 
 impl TreeGraph {
     pub(crate) fn new(n_nodes: usize) -> Self {
-        TreeGraph {
-            nodes: vec![None; n_nodes],
-            n_edges: 0,
-            n_nodes: n_nodes,
-            root_node_id: None,
-        }
+        TreeGraph { nodes: vec![None; n_nodes], n_edges: 0, n_nodes: n_nodes, root_node_id: None }
     }
 
     pub(crate) fn iter_nodes(&self) -> impl Iterator<Item = u16> {
@@ -105,8 +99,8 @@ impl TreeGraph {
         self.n_edges += 1;
     }
 
-    /// Removes the magic root and trims dangling routing nodes.
-    /// Routing nodes whose sole remaining nb is a data node are preserved.
+    /// Removes the magic root and trims dangling routing nodes, except those whose sole
+    /// remaining nb is a data node.
     #[cfg(test)]
     pub(crate) fn trim_magic_root(&mut self) {
         let root_id = match self.root_node_id.take() {
@@ -143,8 +137,8 @@ impl TreeGraph {
         }
     }
 
-    /// Removes routing nodes with degree ≤ 1 (except root) until none remain.
-    /// Returns the number of nodes trimmed.
+    /// Removes routing nodes with degree ≤ 1 (except root) until none remain; returns the
+    /// number of nodes trimmed.
     pub(crate) fn trim_dangling_nodes(&mut self) -> usize {
         let mut n_trimmed = 0;
         let root_id = self.root_node_id.unwrap();
@@ -195,21 +189,17 @@ impl TreeGraph {
         self.n_nodes -= 1;
     }
 
-    /// Resolves data nodes that ended up with two edges (one side, one vertical).
-    ///
-    /// This can happen during `init_bfs_from_roots` when two adjacent roots both
-    /// connect to the same terminal data node. The weaker edge is removed:
-    /// - If the vertical nb has only one below/above edge (to this data node),
-    ///   the vertical edge is removed (the routing node is not needed vertically).
-    /// - Otherwise the side edge is removed.
+    /// Resolves data nodes left with two edges (one side, one vertical) when two adjacent
+    /// roots connect to the same terminal: the vertical edge is dropped if it's a dead-end
+    /// stub (the vertical nb has no other edge in that direction), otherwise the side edge
+    /// is dropped.
     pub(crate) fn remove_double_edges(&mut self) {
         let mut edges_to_remove: Vec<(u16, u16)> = Vec::new();
         for (node_id, node_opt) in self.nodes.iter().enumerate() {
             if let Some(node) = node_opt {
                 if node.is_data && node.nbs.len() == 2 {
                     let (side_nb_id, vert_nb_id) = {
-                        if node.pos.1 == self.nodes[node.nbs[0] as usize].as_ref().unwrap().pos.1
-                        {
+                        if node.pos.1 == self.nodes[node.nbs[0] as usize].as_ref().unwrap().pos.1 {
                             (node.nbs[0], node.nbs[1])
                         } else {
                             (node.nbs[1], node.nbs[0])
@@ -260,8 +250,7 @@ impl TreeGraph {
         }
     }
 
-    /// Counts vertical nbs of `node` in one direction.
-    /// `upward=true` counts nbs with higher y (above); `false` counts lower y (below).
+    /// Counts nbs of `node` above (`upward=true`) or below (`upward=false`).
     fn get_horizontal_edge_count(&self, node: &TreeNode, upward: bool) -> usize {
         node.nbs
             .iter()

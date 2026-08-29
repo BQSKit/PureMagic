@@ -29,10 +29,11 @@ Output:
 import argparse
 import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
+
+import puremagic_log
+from plot_puremagic import prettify_circuit_name
+from table_common import generate_pdf, latex_escape
 
 
 def parse_qasm(filepath):
@@ -64,25 +65,20 @@ def parse_qasm(filepath):
         for line in f:
             stripped = line.strip()
 
-            # Skip empty lines
             if not stripped:
                 continue
 
-            # Skip comment lines
             if stripped.startswith("//"):
                 continue
 
-            # Remove inline comments
             code_part = stripped.split("//")[0].strip()
             if not code_part:
                 continue
 
-            # Check for qreg to extract qubit count
             m = qreg_pattern.match(code_part)
             if m:
                 num_qubits = int(m.group(1))
 
-            # Check if this is a header/declaration line
             is_header = any(p.match(code_part) for p in header_patterns)
             if not is_header:
                 circuit_length += 1
@@ -152,13 +148,13 @@ def parse_puremagic_file(filepath):
       Layers:  <n>
     """
     result = {}
-    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    ansi_escape = puremagic_log.ANSI_ESCAPE
 
     cur_layers = None
     in_stats = False
 
-    layers_re = re.compile(r"Layers:\s+(\d+)")
-    wrote_re = re.compile(r"Scheduled products written to (.+?)\.schedule")
+    layers_re = puremagic_log.LAYERS
+    wrote_re = puremagic_log.WROTE_SCHEDULE
     stats_re = re.compile(r"Circuit statistics:")
 
     with open(filepath, "r") as f:
@@ -186,138 +182,9 @@ def parse_puremagic_file(filepath):
     return result
 
 
-def latex_escape(s):
-    """Escape special LaTeX characters in a string."""
-    replacements = [
-        ("\\", r"\textbackslash{}"),
-        ("&", r"\&"),
-        ("%", r"\%"),
-        ("$", r"\$"),
-        ("#", r"\#"),
-        ("_", r"\_"),
-        ("{", r"\{"),
-        ("}", r"\}"),
-        ("~", r"\textasciitilde{}"),
-        ("^", r"\textasciicircum{}"),
-    ]
-    for old, new in replacements:
-        s = s.replace(old, new)
-    return s
-
-
 def format_number(n):
     """Format a large integer with comma thousands separators."""
     return f"{n:,}"
-
-
-# Names that should be fully uppercased after prefix truncation
-_UPPERCASE_NAMES = {"dnn", "knn", "qft", "qv"}
-
-
-def generate_pdf(latex_table: str, pdf_path: str) -> None:
-    """
-    Wrap *latex_table* in a minimal standalone document and render it to
-    *pdf_path*.  Tries pdflatex / xelatex / lualatex first (they compile the
-    .tex directly and preserve all LaTeX commands), then falls back to pandoc.
-    Raises RuntimeError if no suitable tool is found.
-    """
-    standalone_doc = (
-        r"\documentclass{article}" + "\n"
-        r"\usepackage{booktabs}" + "\n"
-        r"\usepackage{makecell}" + "\n"
-        r"\usepackage{geometry}" + "\n"
-        r"\geometry{margin=1in}" + "\n"
-        r"\begin{document}" + "\n"
-        r"\pagestyle{empty}" + "\n" + latex_table + "\n"
-        r"\end{document}" + "\n"
-    )
-
-    pdf_path = os.path.abspath(pdf_path)
-
-    # --- try pdflatex / xelatex / lualatex (compile .tex directly) ---
-    for engine in ("pdflatex", "xelatex", "lualatex"):
-        if not shutil.which(engine):
-            continue
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tex_path = os.path.join(tmpdir, "table.tex")
-            with open(tex_path, "w") as f:
-                f.write(standalone_doc)
-            try:
-                subprocess.run(
-                    [engine, "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path],
-                    check=True,
-                    capture_output=True,
-                )
-                shutil.copy(os.path.join(tmpdir, "table.pdf"), pdf_path)
-                print(f"PDF written to {pdf_path} (via {engine})", file=sys.stderr)
-                return
-            except subprocess.CalledProcessError as e:
-                print(f"{engine} failed: {e.stderr.decode()}", file=sys.stderr)
-
-    # --- fall back to pandoc (passes --pdf-engine so it invokes pdflatex) ---
-    if shutil.which("pandoc"):
-        with tempfile.NamedTemporaryFile(suffix=".tex", mode="w", delete=False) as tmp:
-            tmp.write(standalone_doc)
-            tex_path = tmp.name
-        try:
-            subprocess.run(
-                ["pandoc", tex_path, "-o", pdf_path, "--pdf-engine=pdflatex", "--from=latex"],
-                check=True,
-                capture_output=True,
-            )
-            print(f"PDF written to {pdf_path} (via pandoc)", file=sys.stderr)
-            return
-        except subprocess.CalledProcessError as e:
-            print(f"pandoc failed: {e.stderr.decode()}", file=sys.stderr)
-        finally:
-            os.unlink(tex_path)
-
-    raise RuntimeError("No PDF renderer found. Install pdflatex, xelatex, lualatex, or pandoc.")
-
-
-def pretty_name(name, num_qubits):
-    """
-    Apply human-readable substitutions to raw circuit names, appending the
-    qubit count in parentheses.
-
-    Rules (applied in order):
-      square_heisenberg_N<k>  ->  Heis.(<k>)
-      qaoa_barabasi_albert_N<k>_3reps  ->  QAOA(<k>)
-      Truncate at first '_' or ' '
-      dnn/knn/qft/qv  ->  uppercase
-      everything else ->  title-case first letter
-    Then append (<num_qubits>) unless the size was already extracted from name.
-    """
-    m = re.fullmatch(r"square_heisenberg_[Nn](\d+)", name)
-    if m:
-        return f"Heis.({m.group(1)})"
-
-    m = re.fullmatch(r"qaoa_barabasi_albert_[Nn](\d+)_3reps", name)
-    if m:
-        return f"QAOA({m.group(1)})"
-
-    # Try to extract a size number from the name.
-    # Prefer an explicit _N<digits> or _n<digits> segment (strip leading zeros).
-    # For names like qv_N008_12345 we want the first such segment, not the last.
-    m = re.search(r"_[Nn](\d+)", name)
-    if m:
-        size = str(int(m.group(1)))  # strip leading zeros
-    elif num_qubits is not None:
-        size = str(num_qubits)
-    else:
-        size = None
-
-    # Truncate at first underscore or space
-    prefix = re.split(r"[_ ]", name)[0]
-
-    if prefix.lower() in _UPPERCASE_NAMES:
-        base = prefix.upper()
-    else:
-        base = prefix.capitalize()
-
-    if size is not None:
-        return f"{base}({size})"
-    return base
 
 
 def main():
@@ -369,7 +236,6 @@ def main():
     benchmarks_file = args.benchmarks
     qasm_dir = args.qasmdir
 
-    # Optionally load transpiler output
     transpiled_data = {}
     if args.transpiled:
         transpiled_data = parse_transpiler_output_file(args.transpiled)
@@ -384,7 +250,6 @@ def main():
             label = "W?"
         puremagic_entries.append((label, parse_puremagic_file(filepath)))
 
-    # Read circuit names
     with open(benchmarks_file, "r") as f:
         circuit_names = [line.strip() for line in f if line.strip()]
 
@@ -430,14 +295,7 @@ def main():
 
     col_spec = "|l|" + "r|" * (num_cols - 1)
 
-    # ---- header row 1 ----
-    # Fixed columns: Circuit, Unitary Gates
-    # Transpiled columns: Compiled Gates, Transpiled T Gates, Transpiled Cliffords
-    # PureMagic columns: grouped under \multicolumn{N}{c|}{Transpiled Depth} if >1
-    #                    or a single header if only 1
-
-    # We need to compute column widths for alignment.
-    # Collect all data cells first.
+    # Collect formatted data cells before computing column widths for alignment.
     formatted_rows = []
     for (
         name,
@@ -454,7 +312,7 @@ def main():
             else None
         )
         cells = [
-            pretty_name(name, num_qubits),
+            prettify_circuit_name(name),
             format_number(circuit_length),
         ]
         if use_transpiled:
@@ -535,10 +393,8 @@ def main():
     lines.append(r"\end{table}")
     latex_table = "\n".join(lines)
 
-    # Print to stdout
     print(latex_table)
 
-    # Optionally render to PDF
     if args.pdf:
         try:
             generate_pdf(latex_table, args.pdf)

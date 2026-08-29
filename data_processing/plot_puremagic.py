@@ -17,6 +17,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+import puremagic_log
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -76,6 +78,11 @@ _Y_FIELD = {
 # (1 - ratio) in ratio mode.
 _Y_INVERT = {"scheduling_efficiency_loss", "volume_loss"}
 
+# X-axis keys that are swept experimental controls rather than run outputs, so both
+# files in a ratio (-f file1,file2) comparison share the same values per circuit and
+# can be used as an additional exact-match merge key alongside "circuit".
+_EXACT_MATCH_X_AXES = {"weight", "cultivation", "data_qubits"}
+
 
 # ---------------------------------------------------------------------------
 # Series dataclass
@@ -101,7 +108,7 @@ def parse_output_file(filepath):
 
     Columns (NaN where missing):
         circuit, weight, magic_state_lambda, scheduling_efficiency,
-        parallel_efficiency, parallelism, cliffords, lcycles,
+        parallel_efficiency, parallelism, cliffords, layers, lcycles,
         data_qubits, total_qubits, magic_qubits, loaded_qubits, timing,
         avg_cultivation_time, inv_lambda, ancilla_qubits, volume, max_parallelism,
         min_volume, ppl
@@ -134,6 +141,7 @@ def parse_output_file(filepath):
                 "parallel_efficiency": pe,
                 "parallelism": cur.get("parallelism"),
                 "cliffords": cur.get("cliffords"),
+                "layers": cur.get("layers"),
                 "lcycles": cur.get("lcycles"),
                 "data_qubits": cur.get("data_qubits"),
                 "total_qubits": cur.get("total_qubits"),
@@ -154,6 +162,7 @@ def parse_output_file(filepath):
             "scheduling_efficiency",
             "lcycles",
             "cliffords",
+            "layers",
             "timing",
             "loaded_qubits",
             "avg_cultivation_time",
@@ -165,7 +174,7 @@ def parse_output_file(filepath):
 
     with open(filepath) as f:
         for line in f:
-            s = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            s = puremagic_log.ANSI_ESCAPE.sub("", line).strip()
 
             if m := re.match(r"^weight\s+(\d+)$", s):
                 _flush()
@@ -173,7 +182,7 @@ def parse_output_file(filepath):
                 in_qubit_block = False
                 continue
 
-            if m := re.match(r"magic_state_lambda:\s*([0-9.eE+\-]+),?", s):
+            if m := puremagic_log.MAGIC_STATE_LAMBDA.match(s):
                 _flush()
                 cur["lambda"] = float(m.group(1))
                 in_qubit_block = False
@@ -197,12 +206,15 @@ def parse_output_file(filepath):
             if m := re.match(r"Number of Cliffords:\s+(\d+)", s):
                 cur["cliffords"] = int(m.group(1))
 
-            if m := re.match(r"Scheduled products written to (.+)\.schedule", s):
+            if m := puremagic_log.LAYERS.match(s):
+                cur["layers"] = int(m.group(1))
+
+            if m := puremagic_log.WROTE_SCHEDULE.match(s):
                 if cur.get("circuit"):
                     _flush()
                 cur["circuit"] = m.group(1)
 
-            if m := re.match(r"Loaded circuit with \d+ products and (\d+) qubits", s):
+            if m := puremagic_log.LOADED_CIRCUIT.match(s):
                 cur["loaded_qubits"] = int(m.group(1))
 
             if m := re.match(r"Scheduled \d+ in (\d+) logical cycles", s):
@@ -339,9 +351,21 @@ def prettify_circuit_name(name):
         (r"knn", "KNN"),
         (r"ghz(?:_state)?", "GHZ"),
         (r"vqe_uccsd", "VQE"),
+        (r"cdkm_ripple_carry_adder_indep_opt0_200", "ADD(200)"),
+        (r"fermi_hubbard_1d_128q", "HUBBARD(128)"),
+        (r"grover_n100_i10", "GROVER(100)"),
     ]
     for pattern, replacement in _PREFIX_MAP:
         name = re.sub(rf"(?i)^{pattern}(?=_|$)", replacement, name)
+
+    if name == "cdkm_ripple_carry_adder_indep_opt0_200":
+        name = "ADD(200)"
+
+    if name == "grover_n100_i10":
+        name = "GROVER(100)"
+
+    if name == "fermi_hubbard_1d_128q":
+        name = "HUBBARD(128)"
 
     # heisenberg -> heis
     name = re.sub(r"(?i)heisenberg", "heis", name)
@@ -380,6 +404,12 @@ def _ordered_union_xs(series_list):
 _LABEL_FONTSIZE = 15  # ~50 % larger than the default 10 pt
 _TICK_FONTSIZE = 15  # ~50 % larger than the default 10 pt
 _LEGEND_FONTSIZE = 15  # ~50 % larger than the default 10 pt
+_BAR_LABEL_FONTSIZE = 9
+
+
+def _label_bars(ax, container, fmt="%.3g"):
+    """Annotate each bar in a BarContainer with its height, above the bar."""
+    ax.bar_label(container, fmt=fmt, fontsize=_BAR_LABEL_FONTSIZE, padding=2)
 
 
 def _combine_legend(ax, ax2=None, no_legend=False):
@@ -451,7 +481,6 @@ def parse_wisq_dir(directory: str, magic_cost: int = 1) -> list:
             n_steps = len(data["steps"])
             total, magic = _dascot_square_sparse_counts(n_data)
             area = (total - magic) + magic * magic_cost
-            # Derive a canonical circuit name from the filename
             stem = fname[: -len(".json")]
             # Strip trailing "-wisq" or "_wisq" suffix if present
             stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
@@ -491,18 +520,15 @@ def parse_flasq_file(filepath):
     with open(filepath) as f:
         for line in f:
             s = line.strip()
-            # Header: "FLASQ Lower Bound for <path>"
             m = re.match(r"^FLASQ Lower Bound for\s+(.+)$", s)
             if m:
                 current_circuit = m.group(1).strip()
                 current_n_qubits = None
                 continue
-            # n_qubits row: "Circuit qubits (n_qubits)  :  <n>"
             m = re.match(r"Circuit qubits \(n_qubits\)\s*:\s*(\d+)", s)
             if m and current_circuit is not None:
                 current_n_qubits = int(m.group(1))
                 continue
-            # Volume row: "FLASQ spacetime volume (S, blocks)  :  <cons>  <opt>"
             m = re.match(
                 r"FLASQ spacetime volume \(S, blocks\)\s*:\s*([0-9.eE+\-]+)\s+([0-9.eE+\-]+)",
                 s,
@@ -517,6 +543,28 @@ def parse_flasq_file(filepath):
                 current_circuit = None
                 current_n_qubits = None
     return entries
+
+
+def _flasq_canonical(path):
+    """Canonicalize a circuit name from a FLASQ header line for matching against
+    the -c circuits file and the -f series' circuit names."""
+    name = os.path.basename(path)
+    while True:
+        root, ext = os.path.splitext(name)
+        if ext.lower() in (
+            ".pkl",
+            ".qasm",
+            ".trans",
+            ".schedule",
+            ".txt",
+            ".cliffordt",
+            ".compiled",
+        ):
+            name = root
+        else:
+            break
+    name = re.sub(r"^m\d+\.", "", name)
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +762,6 @@ def main():
     if not args.files:
         args.files = []
 
-    # Load the allowed circuits set from the -c file
     try:
         with open(args.circuits_file) as _cf:
             _allowed_circuits = {
@@ -723,6 +770,26 @@ def main():
     except OSError as e:
         print(f"Error: cannot read circuits file '{args.circuits_file}': {e}", file=sys.stderr)
         sys.exit(1)
+
+    # FLASQ conservative/optimistic volume bounds, keyed by canonical circuit name.
+    # When --flasq is given, -f volumes are normalized to the conservative bound
+    # (see the circuit-x bar chart and the FLASQ overlay below).
+    flasq_cons_map, flasq_opt_map = {}, {}
+    _flasq_entries = []
+    if args.flasq_file is not None:
+        _flasq_entries = parse_flasq_file(args.flasq_file)
+        _flasq_entries = [e for e in _flasq_entries if _flasq_canonical(e[0]) in _allowed_circuits]
+        if args.select:
+            _flasq_entries = [e for e in _flasq_entries if args.select in _flasq_canonical(e[0])]
+        flasq_cons_map = {_flasq_canonical(e[0]): e[1] for e in _flasq_entries}
+        flasq_opt_map = {_flasq_canonical(e[0]): e[2] for e in _flasq_entries}
+
+    def _flasq_cons_for(circuit):
+        """Look up the FLASQ conservative bound for a (possibly un-canonicalized) circuit name."""
+        return flasq_cons_map.get(circuit) or flasq_cons_map.get(_flasq_canonical(circuit))
+
+    def _flasq_opt_for(circuit):
+        return flasq_opt_map.get(circuit) or flasq_opt_map.get(_flasq_canonical(circuit))
 
     # --max-efficiency: override the volume y-axis label to reflect 1/volume
     if args.max_efficiency:
@@ -878,7 +945,13 @@ def main():
                     df2 is not None
                 )  # guaranteed: is_ratio=True and _load_df returned non-None (else continued)
                 d2 = df2.dropna(subset=[x_field, y_field])
-                merge_keys = ["circuit"] if is_circuit_x else ["circuit", x_field]
+                # Only fold x_field into the merge key for axes that are swept experimental
+                # controls (weight, cultivation/lambda, data_qubits), where both files share
+                # the same x values per circuit. Axes like parallelism/ancilla_qubits/ppl are
+                # outputs of the run itself and differ between the two files being compared,
+                # so an exact-match merge on them would drop every row; match on circuit alone
+                # and take the x value from file1.
+                merge_keys = ["circuit", x_field] if x_key in _EXACT_MATCH_X_AXES else ["circuit"]
                 merged = d1.merge(d2[merge_keys + [y_field]], on=merge_keys, suffixes=("_1", "_2"))
                 merged = merged[merged[f"{y_field}_2"] != 0.0]
                 if merged.empty:
@@ -889,7 +962,6 @@ def main():
                     continue
                 merged["_ratio"] = merged[f"{y_field}_1"] / merged[f"{y_field}_2"]
                 if y_key in _Y_INVERT:
-                    # For loss keys: plot 1 - ratio
                     ys_values = (1.0 - merged["_ratio"]).tolist()
                 elif args.percent_improvement:
                     # ys_values = ((1.0 - merged["_ratio"]) * 100.0).tolist()
@@ -1032,7 +1104,6 @@ def main():
                 if mask.sum() >= 2:
                     lx_all = np.where(mask, np.log(np.where(xa > 0, xa, 1.0)), np.nan)
                     ly_all = np.where(mask, np.log(np.where(ya > 0, ya, 1.0)), np.nan)
-                    # Initial fit
                     a, b = np.polyfit(lx_all[mask], ly_all[mask], 1)
                     inliers = mask.copy()
                     for _ in range(10):
@@ -1298,7 +1369,6 @@ def main():
                 )
             )
 
-    # Print data table
     table_frames, col_names = [], []
     for yk_list, (series_list, any_ratio, ratio_labels) in zip(multi_y_keys, all_series):
         # Use a combined label for the axis when multiple keys share it
@@ -1335,7 +1405,8 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    _figsize = (8, 4.5)
+    # _figsize = (8, 4.5)
+    _figsize = (16, 9)
     if args.figsize:
         try:
             _fw, _fh = args.figsize.split(",", 1)
@@ -1376,22 +1447,37 @@ def main():
             for j, s in enumerate(series_list):
                 colour = _COLOURS[(colour_start + j) % len(_COLOURS)]
                 lookup = dict(zip(s.xs, s.ys))
-                heights = [lookup.get(c, 0.0) for c in all_circuits]
-                cur_ax.bar(
+                if args.flasq_file is not None:
+                    # Normalize each circuit's volume to its FLASQ conservative bound.
+                    heights = [
+                        (lookup[c] / _flasq_cons_for(c))
+                        if c in lookup and _flasq_cons_for(c)
+                        else 0.0
+                        for c in all_circuits
+                    ]
+                else:
+                    heights = [lookup.get(c, 0.0) for c in all_circuits]
+                bars = cur_ax.bar(
                     np.arange(len(all_circuits)) + offsets[j],
                     heights,
                     width=bar_width * 0.9,
                     label=s.label if s.label is not None else "_nolegend_",
                     color=colour,
+                    alpha=0.6 if args.flasq_file is not None else 1.0,
                     edgecolor="black",
                     linewidth=0.4,
                 )
+                _label_bars(cur_ax, bars)
 
             cur_ax.set_ylabel(
                 (
                     args.ylabel
                     if (axis_idx == 0 and args.ylabel)
-                    else _axis_label(yk_list, any_ratio, args.percent_improvement)
+                    else (
+                        f"{_axis_label(yk_list, any_ratio, args.percent_improvement)} / FLASQ Conservative Bound"
+                        if args.flasq_file is not None
+                        else _axis_label(yk_list, any_ratio, args.percent_improvement)
+                    )
                 ),
                 fontsize=_LABEL_FONTSIZE,
             )
@@ -1408,6 +1494,11 @@ def main():
                 for xi, c in enumerate(all_circuits):
                     mv_val = mv_lookup.get(c)
                     if mv_val is not None:
+                        if args.flasq_file is not None:
+                            cons = _flasq_cons_for(c)
+                            if not cons:
+                                continue
+                            mv_val = mv_val / cons
                         ax.plot(
                             [xi - half_w, xi + half_w],
                             [mv_val, mv_val],
@@ -1491,6 +1582,16 @@ def main():
                     )
                     bottoms += seg_heights
                     prev_heights = heights
+
+                for xi, top in enumerate(bottoms):
+                    ax.text(
+                        xi + file_offsets[fi],
+                        top,
+                        f"{top:.3g}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=_BAR_LABEL_FONTSIZE,
+                    )
 
                 if n_files > 1:
                     file_label = split_file_arg(args.files[fi], f"file{fi + 1}")[2]
@@ -1620,9 +1721,8 @@ def main():
 
             if has_f_series:
                 # -----------------------------------------------------------------
-                # Ratio mode: for each -f series produce TWO ratio series:
-                #   one vs WISQ with 1 qubit/magic, one vs WISQ with 121 qubits/magic
-                # Clear the axes and redraw.
+                # Ratio mode: for each -f series, compute the per-circuit ratio
+                # against the WISQ volume (per --wisq-magic-q). Clear and redraw.
                 # -----------------------------------------------------------------
                 ax.cla()
                 if ax2 is not None:
@@ -1660,7 +1760,6 @@ def main():
                     ]
                     all_circuits[:] = ratio_circuits  # update in-place for deferred setup
 
-                    # Print WISQ ratio table
                     series_labels = [
                         lbl or f"series{i}" for i, (lbl, _) in enumerate(ratio_series_data)
                     ]
@@ -1697,7 +1796,7 @@ def main():
                     for j, (lbl, ratio_map) in enumerate(ratio_series_data):
                         colour = _COLOURS[j % len(_COLOURS)]
                         heights_r = [ratio_map.get(c, 0.0) for c in ratio_circuits]
-                        ax.bar(
+                        bars_r = ax.bar(
                             np.arange(n_c) + offsets_r[j],
                             heights_r,
                             width=bar_width_r * 0.9,
@@ -1706,6 +1805,7 @@ def main():
                             edgecolor="black",
                             linewidth=0.4,
                         )
+                        _label_bars(ax, bars_r)
 
                     ax.set_ylabel(ratio_y_label, fontsize=_LABEL_FONTSIZE)
                     ax.tick_params(axis="y", labelsize=_TICK_FONTSIZE)
@@ -1799,7 +1899,7 @@ def main():
                     if not all_circuits:
                         all_circuits = [_wisq_canonical(e[0]) for e in wisq_entries]
                     heights = [wisq_map.get(c, 0.0) for c in all_circuits]
-                    ax.bar(
+                    bars_w = ax.bar(
                         np.arange(len(all_circuits)),
                         heights,
                         width=0.8,
@@ -1808,6 +1908,7 @@ def main():
                         edgecolor="black",
                         linewidth=0.4,
                     )
+                    _label_bars(ax, bars_w)
                     ax.set_ylabel(
                         args.ylabel if args.ylabel else _Y_AXES["volume"],
                         fontsize=_LABEL_FONTSIZE,
@@ -1912,95 +2013,87 @@ def main():
         _combine_legend(ax, ax2, no_legend=args.no_legend)
 
     # -----------------------------------------------------------------------
-    # FLASQ overlay: add conservative and optimistic series on top of the plot
+    # FLASQ overlay: add conservative and optimistic series on top of the plot.
+    # The -f volumes were already normalized to the FLASQ conservative bound
+    # above (circuit-x bar chart), so the conservative bound itself is a flat
+    # line at 1.0 and the optimistic bound is plotted relative to it.
     # -----------------------------------------------------------------------
     if args.flasq_file is not None:
-
-        def _flasq_canonical(path):
-            name = os.path.basename(path)
-            while True:
-                root, ext = os.path.splitext(name)
-                if ext.lower() in (
-                    ".pkl",
-                    ".qasm",
-                    ".trans",
-                    ".schedule",
-                    ".txt",
-                    ".cliffordt",
-                    ".compiled",
-                ):
-                    name = root
-                else:
-                    break
-            name = re.sub(r"^m\d+\.", "", name)
-            return name
-
-        flasq_entries = parse_flasq_file(args.flasq_file)
-        # Filter by allowed circuits and --select
-        try:
-            with open(args.circuits_file) as _cf:
-                _flasq_allowed = {l.strip() for l in _cf if l.strip() and not l.startswith("#")}
-        except OSError:
-            _flasq_allowed = set()
-        flasq_entries = [e for e in flasq_entries if _flasq_canonical(e[0]) in _flasq_allowed]
-        if args.select:
-            flasq_entries = [e for e in flasq_entries if args.select in _flasq_canonical(e[0])]
-
         colour_cons = _COLOURS[len(args.files) % len(_COLOURS)]
         colour_opt = _COLOURS[(len(args.files) + 1) % len(_COLOURS)]
 
-        def _plot_flasq_series(xs, ys, label, colour):
-            """Draw FLASQ series as a dashed line (no markers), sorted by x."""
+        def _plot_flasq_series(xs, ys, label, colour, stepped=False, edge_margin=0.6):
+            """Draw a FLASQ series as a thick dashed line, sorted by x.
+
+            stepped=True renders a staircase (flat segment per x, joined by vertical
+            jumps at the midpoints between neighbours) instead of connecting points
+            with diagonal segments, which turns a jagged ratio series into a clean
+            step plot. The first/last segment is extended by edge_margin so the
+            line spans the full plot width instead of stopping at the outermost
+            data point (matching the 0.6 margin used for the circuit-x xlim).
+            """
             if not xs:
                 return
             pairs = sorted(zip(xs, ys))
             xp, yp = zip(*pairs)
+            if stepped:
+                n = len(xp)
+                path_x, path_y = [], []
+                for i in range(n):
+                    left = xp[i] - edge_margin if i == 0 else (xp[i - 1] + xp[i]) / 2.0
+                    right = xp[i] + edge_margin if i == n - 1 else (xp[i] + xp[i + 1]) / 2.0
+                    path_x += [left, right]
+                    path_y += [yp[i], yp[i]]
+                xp, yp = path_x, path_y
             ax.plot(
                 xp,
                 yp,
                 color=colour,
-                linewidth=2.0,
+                linewidth=3.5,
                 alpha=0.85,
-                linestyle="--",
+                linestyle="-",
                 zorder=3,
                 label=label,
             )
 
-        if flasq_entries and is_circuit_x:
-            flasq_map = {_flasq_canonical(e[0]): (e[1], e[2]) for e in flasq_entries}
+        if flasq_cons_map and is_circuit_x:
             xs_cons, ys_cons, xs_opt, ys_opt = [], [], [], []
             for xi, c in enumerate(all_circuits):
-                entry = flasq_map.get(c) or flasq_map.get(_flasq_canonical(c))
-                if entry:
-                    xs_cons.append(xi)
-                    ys_cons.append(entry[0])
+                cons = _flasq_cons_for(c)
+                if not cons:
+                    continue
+                xs_cons.append(xi)
+                ys_cons.append(1.0)
+                opt = _flasq_opt_for(c)
+                if opt is not None:
                     xs_opt.append(xi)
-                    ys_opt.append(entry[1])
-            _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons)
-            _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt)
+                    ys_opt.append(opt / cons)
+            _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons, stepped=True)
+            _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt, stepped=True)
             _combine_legend(ax, ax2, no_legend=args.no_legend)
 
-        elif flasq_entries and x_key == "data_qubits":
+        elif flasq_cons_map and x_key == "data_qubits":
+            # Not normalized: the -f series on this x-axis is plotted in absolute
+            # volume, so the FLASQ bounds are shown in absolute volume too.
             xs_cons, ys_cons, xs_opt, ys_opt = [], [], [], []
-            for e in flasq_entries:
-                q = e[3]
+            for e in _flasq_entries:
+                q, cons, opt = e[3], e[1], e[2]
                 if q is not None:
                     xs_cons.append(q)
-                    ys_cons.append(e[1])
+                    ys_cons.append(cons)
                     xs_opt.append(q)
-                    ys_opt.append(e[2])
+                    ys_opt.append(opt)
             _plot_flasq_series(xs_cons, ys_cons, "FLASQ conservative", colour_cons)
             _plot_flasq_series(xs_opt, ys_opt, "FLASQ optimistic", colour_opt)
             _combine_legend(ax, ax2, no_legend=args.no_legend)
 
-        elif flasq_entries:
+        elif flasq_cons_map:
             print(
                 f"Warning: FLASQ overlay is not supported for x-axis '{x_key}'. "
                 "Use 'circuit' or 'data_qubits'.",
                 file=sys.stderr,
             )
 
-    # Y-axis limits
     if args.xlim:
         ax.set_xlim(*map(float, args.xlim.split(",", 1)))
     if args.ylim:

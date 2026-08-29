@@ -93,8 +93,7 @@ impl ScheduleStats {
             if tot_available == 0 { 1.0 } else { pp_paths_len as f64 / tot_available as f64 };
         let frac_qubits =
             if tot_qubits == 0 { 0.0 } else { tot_qubits_used as f64 / tot_qubits as f64 };
-        // magic_denom = ready nodes that were available for T gates (excludes those
-        // consumed purely as routing intermediaries in magic-routing mode).
+        // magic_denom excludes nodes consumed purely as routing intermediaries (magic-routing mode).
         let magic_ready_routing = self.magic_ready_used.saturating_sub(self.t_scheduled);
         let magic_denom = magic_ready.saturating_sub(magic_ready_routing);
         let frac_magic =
@@ -218,10 +217,15 @@ pub(crate) struct Scheduler {
     /// Maps product_id → (qubit, new_basis) pairs for T gates whose operators were
     /// conjugated this lcycle. Populated in sched_remaining; consumed in process_t_gate_outcomes.
     t_conjugated_bases: HashMap<i32, Vec<(u16, char)>>,
-    /// Set of T gate product IDs whose precomputed_terminals/root_info currently reflect a
-    /// conjugated (non-original) operator basis.  Needed to trigger a restore call to
-    /// apply_t_conjugation when correction_power later drops back to zero.
+    /// T gate product IDs whose precomputed_terminals/root_info currently reflect a
+    /// conjugated basis; triggers a restore via apply_t_conjugation once correction_power hits zero.
     conjugated_t_products: HashSet<i32>,
+    /// S product IDs fully discharged for free by `try_merge_s_correction`: a pending
+    /// correction merged with this product's own S to a net power of 0 or 2 (identity or
+    /// classical Z), so zero physical gates were scheduled. Consulted by `unlock_children`/
+    /// `advance_clifford_state`/`check_clifford_repetitions` to treat these as complete,
+    /// single-lcycle, zero-node events instead of ordinary 3-lcycle S/SX Cliffords.
+    free_merged_products: HashSet<i32>,
 }
 
 impl Scheduler {
@@ -232,6 +236,9 @@ impl Scheduler {
         let n_qubits = circuit.n_qubits;
         let n_initial_products = circuit.n_products() as i32;
         if log_level != "none" {
+            // Installed regardless of build profile, but debug_sched!/info_sched! (see
+            // utils.rs) are compiled out entirely in release, so a release build still
+            // creates trace_fname, it just never gets anything written to it.
             let trace_fname = format!("{}.sched_trace", circuit_stem(&circuit.circuit_fname));
             let level_filter = match log_level.to_lowercase().as_str() {
                 "debug" => log::LevelFilter::Debug,
@@ -284,6 +291,7 @@ impl Scheduler {
             next_correction_id: n_initial_products,
             t_conjugated_bases: HashMap::new(),
             conjugated_t_products: HashSet::new(),
+            free_merged_products: HashSet::new(),
         }
     }
 
@@ -324,9 +332,7 @@ impl Scheduler {
         let mut prev_pct_complete = 0usize;
         self.current_lcycle = 0;
         self.pp_paths = Vec::new();
-        while !self.pps_pending.is_empty()
-            || !self.clifford_paths.is_empty()
-        {
+        while !self.pps_pending.is_empty() || !self.clifford_paths.is_empty() {
             self.timers.start(self.loop_timer);
             self.current_lcycle += 1;
             info_sched!(
@@ -352,8 +358,7 @@ impl Scheduler {
                     if self.current_lcycle == plot_lcycles {
                         print!("Scheduling {} products:    ", tot_pps_to_sched);
                     }
-                    let pct_complete =
-                        ((n_scheduled * 100) / tot_pps_to_sched).min(100);
+                    let pct_complete = ((n_scheduled * 100) / tot_pps_to_sched).min(100);
                     if pct_complete > prev_pct_complete {
                         // \x08 is backspace; overwrite the previous "XX%" in-place.
                         print!("\x08\x08\x08{:02}%", pct_complete);
@@ -367,7 +372,6 @@ impl Scheduler {
                     let plot_info_str = self.stats.plot_info_str();
                     assert!(!plot_info_str.is_empty());
                     let fname_added = format!(".{}", self.current_lcycle);
-                    // fname_added is used as a suffix for the plot file name
                     let curr_dir = std::env::current_dir()?;
                     std::env::set_current_dir(path_dir.as_ref().unwrap())?;
                     let pp_paths_plot: Vec<(PauliProduct, Rc<TreeGraph>, u32)> = self
@@ -376,9 +380,8 @@ impl Scheduler {
                         .filter_map(|(pp_id, opt_tree)| {
                             opt_tree.as_ref().map(|t| {
                                 let pp = self.input.circuit.product(*pp_id);
-                                // Determine which cycle of a multi-lcycle product this is.
-                                // advance_clifford_state has already run, so clifford_paths
-                                // reflects the post-advance state for this lcycle.
+                                // Determine which cycle of a multi-lcycle product this is;
+                                // clifford_paths already reflects post-advance_clifford_state.
                                 let cycle: u32 = if pp.gate_type.is_clifford() {
                                     match self.clifford_paths.get(pp_id) {
                                         Some((c, _, _, _)) => {
@@ -411,10 +414,8 @@ impl Scheduler {
                 }
             } else {
                 debug_sched!("Could not schedule anything on lcycle {}", self.current_lcycle);
-                // If nothing is cultivating, no magic state will ever become ready —
-                // but only T gates need magic. If all pending products are Cliffords
-                // (e.g. correction S gate emission temporarily failed), they don't need
-                // magic and will route once the area frees up; don't error in that case.
+                // Only error if T gates are pending: pending Cliffords may just be waiting on a
+                // temporarily-blocked correction S gate and don't need magic to make progress.
                 let has_pending_t = self.pps_pending.iter().any(|pp| pp.gate_type.is_t());
                 if has_pending_t
                     && !(0..self.input.topo.n_nodes)
@@ -463,10 +464,8 @@ impl Scheduler {
         )
     }
 
-    /// Fills `terminals_buf` from precomputed IDs.
-    /// Returns false early if any terminal data node is already occupied, or if
-    /// all root candidates for a terminal are occupied (fast pre-check before
-    /// the more expensive `root_nodes` call).
+    /// Fills `terminals_buf` from precomputed IDs. Returns false early if any terminal
+    /// is occupied or all its root candidates are occupied (cheap pre-check before `root_nodes`).
     #[inline]
     fn terminal_nodes(&mut self, pp_id: i32) -> bool {
         let pp_id = pp_id as usize;
@@ -479,9 +478,8 @@ impl Scheduler {
                 return false;
             }
             let (_, preferred, side) = &root_info[i];
-            // Only reject when there are root candidates and all are occupied.
-            // Empty preferred+side means the gate uses sched_s_sx (no root needed),
-            // so the vacuous-truth case must not fire here.
+            // Only reject when candidates exist and all are occupied; empty preferred+side
+            // means the gate uses sched_s_sx (no root needed), so don't reject vacuously.
             if (!preferred.is_empty() || !side.is_empty())
                 && preferred.iter().all(|&rid| self.used[rid as usize])
                 && side.iter().all(|&rid| self.used[rid as usize])
@@ -495,11 +493,9 @@ impl Scheduler {
     }
 
     /// Returns routing nodes adjacent to each terminal.
-    ///
-    /// For Y-basis operators the X and Z data nodes are paired; a single routing
-    /// node between them (in the "preferred" direction) can serve both, so
-    /// `unmatched_count` is decremented by 2 when a paired root is found.
-    /// If no paired root is free, each terminal falls back to a side nb.
+    /// For Y-basis operators the paired X/Z data nodes can share a single routing node
+    /// (the "preferred" root), decrementing `unmatched_count` by 2; if none is free,
+    /// each terminal falls back to a side nb.
     fn root_nodes(&self, pp_id: usize, terminals: &[u16]) -> Vec<u16> {
         let root_info = &self.precomputed_root_info[pp_id];
         let mut root_ids: Vec<u16> = Vec::new();
@@ -606,12 +602,24 @@ impl Scheduler {
         root_info
     }
 
-    /// Applies the current per-qubit S^k conjugation to a T gate's operators just-in-time,
-    /// updates `precomputed_terminals` and `precomputed_root_info` for the product, and
-    /// returns the list of (qubit, new_basis) pairs where a swap occurred.
-    ///
-    /// Always recomputes from the circuit's original operators so that correction_power
-    /// changes between lcycles are always reflected correctly.
+    /// Conjugates a Pauli label by S_axis (sign dropped, matching this codebase's existing
+    /// no-phase-tracking convention: `PauliProduct`/`Operator` carry no sign field). A label
+    /// equal to `axis` is fixed; any other label is swapped with the remaining third label,
+    /// e.g. S_Z fixes Z and swaps X<->Y, S_X fixes X and swaps Y<->Z, S_Y fixes Y and swaps X<->Z.
+    fn conjugate_pauli_label(basis: char, axis: char) -> char {
+        match (basis, axis) {
+            (b, a) if b == a => b,
+            ('X', 'Y') | ('Y', 'X') => 'Z',
+            ('X', 'Z') | ('Z', 'X') => 'Y',
+            ('Y', 'Z') | ('Z', 'Y') => 'X',
+            _ => basis,
+        }
+    }
+
+    /// Applies the current per-qubit S^k conjugation to a T gate's operators, updating
+    /// `precomputed_terminals`/`precomputed_root_info` and returning any (qubit, new_basis) swaps.
+    /// Always recomputes from the circuit's original operators so changing correction_power
+    /// between lcycles is reflected correctly.
     fn apply_t_conjugation(&mut self, pp_id: i32) -> Vec<(u16, char)> {
         // Copy original operator data to release the borrow on self.input.circuit.
         let orig_ops: Vec<(u16, char)> = self
@@ -622,12 +630,14 @@ impl Scheduler {
             .iter()
             .map(|op| (op.qubit, op.basis))
             .collect();
-        // Apply S^k conjugation in a single pass: odd power swaps X↔Y (Z unchanged).
+        // Apply S^k conjugation in a single pass: odd power conjugates by the pending
+        // correction's own axis (correction_basis), not always Z - a failed T gate's
+        // correction is S about whichever axis that T gate itself targeted.
         let mut new_ops = Vec::with_capacity(orig_ops.len());
         let mut swapped = Vec::new();
         for &(qubit, basis) in &orig_ops {
             let new_basis = if self.correction_power[qubit as usize] % 2 == 1 {
-                if basis == 'X' { 'Y' } else if basis == 'Y' { 'X' } else { basis }
+                Self::conjugate_pauli_label(basis, self.correction_basis[qubit as usize])
             } else {
                 basis
             };
@@ -672,8 +682,7 @@ impl Scheduler {
                 Vec::with_capacity(terminals.len());
             for &term_id in &terminals {
                 let node = self.input.topo.node(term_id);
-                // is_paired: this terminal's paired data node is also a terminal
-                // (i.e. the operator is Y-basis, producing both X and Z data nodes).
+                // is_paired: the operator is Y-basis, so both its X and Z data nodes are terminals.
                 let is_paired =
                     node.paired_data_id.map(|pid| terminals.contains(&pid)).unwrap_or(false);
                 let mut preferred: Vec<u16> = Vec::new();
@@ -721,7 +730,6 @@ impl Scheduler {
     }
 
     /// Reserves the nodes of an in-progress multi-lcycle product for this lcycle.
-    /// Called for both Clifford carry-forwards and failed-T recovery paths.
     fn carry_forward_path(
         &mut self, pp_id: i32, node_ids: &[u16], opt_tree: Option<Rc<TreeGraph>>,
     ) {
@@ -764,10 +772,8 @@ impl Scheduler {
         );
         if self.pp_paths.is_empty() {
             if n_avail_magic > 0 {
-                // Only panic when T gates are pending but couldn't consume available magic.
-                // If all pending products are Cliffords whose correction S gate emission failed
-                // this lcycle (e.g. routing area temporarily congested), they will retry next
-                // lcycle — that is not a bug.
+                // Only panic when T gates couldn't consume available magic; pending Cliffords
+                // whose correction S gate emission failed will simply retry next lcycle.
                 let has_pending_t = self.pps_pending.iter().any(|pp| pp.gate_type.is_t());
                 if has_pending_t {
                     panic!(
@@ -856,6 +862,11 @@ impl Scheduler {
     ///
     /// On success the correction power is cleared to 0. On failure (NoPath), the circuit push is
     /// rolled back and the correction power is left unchanged so the caller can retry next lcycle.
+    ///
+    /// Only reached when the pending correction's axis doesn't match the blocked S/SX
+    /// product's own fixed axis (S is Z, SX is X) - a same-axis correction shares the
+    /// blocked product's generator, so `try_merge_clifford_correction` folds the two
+    /// together directly instead of materializing a standalone gate first.
     fn try_emit_s_correction(&mut self, qubit: u16, plotting: bool) -> bool {
         let q = qubit as usize;
         let power = self.correction_power[q];
@@ -931,6 +942,77 @@ impl Scheduler {
         }
     }
 
+    /// Merges a pending correction directly into a blocked `S` or `SX` product on the same
+    /// qubit, rather than materializing it as a separate gate first. The caller must have
+    /// already verified the correction's axis matches this product's own fixed axis (Z for
+    /// S, X for SX) - only then do the pending correction and the blocked product share a
+    /// generator, making composition pure exponent addition mod 4: at most one physical gate
+    /// is ever needed for the combined effect, and it is `pp_id` itself - no new product is
+    /// injected. Returns `true` if `pp_id` was fully handled this lcycle (pushed onto
+    /// `pp_paths`, whether or not a physical gate was scheduled), `false` if the physical
+    /// gate could not be routed this lcycle (`correction_power` is left unchanged so the
+    /// caller retries next lcycle).
+    fn try_merge_clifford_correction(&mut self, pp_id: i32, qubit: u16, plotting: bool) -> bool {
+        let q = qubit as usize;
+        let gate_type = self.input.circuit.product(pp_id).gate_type;
+        debug_assert_eq!(self.correction_basis[q], if gate_type.is_s() { 'Z' } else { 'X' });
+        let merged_power = (self.correction_power[q] + 1) % 4;
+        info_sched!(
+            "  Merging {:?} product {} (qubit {}): pending power={} + 1 -> merged={}",
+            gate_type,
+            pp_id,
+            qubit,
+            self.correction_power[q],
+            merged_power
+        );
+        if merged_power == 0 || merged_power == 2 {
+            // Combined effect is classical only (identity or Z/X) - no physical gate needed.
+            info_sched!(
+                "  Product {} fully absorbed classically (merged power={}), clearing correction",
+                pp_id,
+                merged_power
+            );
+            self.correction_power[q] = 0;
+            self.free_merged_products.insert(pp_id);
+            self.pp_paths.push((pp_id, None));
+            return true;
+        }
+        // merged_power is 1 or 3: exactly one physical gate realizes the combined effect,
+        // and sched_s_sx's footprint doesn't depend on which net phase it represents, so
+        // scheduling the pending product itself (unmodified) suffices.
+        if !self.terminal_nodes(pp_id) {
+            info_sched!("  Cannot merge-schedule {}: no data nodes found in working graph", pp_id);
+            return false;
+        }
+        match self.sched_s_sx(pp_id, plotting) {
+            PathResult::PathFound(opt_graph) => {
+                info_sched!(
+                    "  Merge-scheduled {:?} product {} (qubit {}, merged power={}), clearing correction",
+                    gate_type,
+                    pp_id,
+                    qubit,
+                    merged_power
+                );
+                if let Some(ref g) = opt_graph {
+                    let node_ids: Vec<u16> = g.iter_nodes().collect();
+                    self.mark_nodes_used(&node_ids);
+                }
+                self.pp_paths.push((pp_id, opt_graph.map(Rc::new)));
+                self.correction_power[q] = 0;
+                true
+            }
+            PathResult::NoPath => {
+                info_sched!(
+                    "  Merge-schedule for {:?} product {} (qubit {}) failed (NoPath), retry next lcycle",
+                    gate_type,
+                    pp_id,
+                    qubit
+                );
+                false
+            }
+        }
+    }
+
     /// Second pass: greedily schedule T gates, measurements, and S/SX gates.
     /// T gates are skipped when no magic state is available.
     fn sched_remaining(&mut self, n_avail_magic: &mut usize, plotting: bool) {
@@ -943,23 +1025,34 @@ impl Scheduler {
                 continue;
             }
             let (pp_id, gate_type) = (pp.id, pp.gate_type);
-            // For single-qubit Clifford gates (S/SX), check for pending correction and emit
-            // a physical S gate before proceeding.  CX is multi-qubit and handled by
-            // sched_precomputed, so it never appears here.
+            // For a blocked S/SX, fold in a pending correction that shares its fixed axis
+            // (S is always Z-basis, SX is always X-basis, per real .trans circuits) rather
+            // than materializing a standalone gate first. A correction about a different
+            // axis (common, since failed T gates can target any axis) is a different
+            // Clifford generator and can't be folded in - it must still be materialized
+            // first. CX is multi-qubit and handled by sched_precomputed, so it never
+            // appears here.
             if gate_type.is_s() || gate_type.is_sx() {
                 let op_qubit = self.input.circuit.product(pp_id).operators[0].qubit;
-                if self.correction_power[op_qubit as usize] != 0 {
+                let power = self.correction_power[op_qubit as usize];
+                let native_axis = if gate_type.is_s() { 'Z' } else { 'X' };
+                if power != 0 && self.correction_basis[op_qubit as usize] == native_axis {
+                    if !self.try_merge_clifford_correction(pp_id, op_qubit, plotting) {
+                        let pp = self.input.circuit.product(pp_id);
+                        Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
+                    }
+                    continue;
+                } else if power != 0 {
                     info_sched!(
                         "  Clifford {:?} {} (qubit {}) deferred: pending correction power={}",
                         gate_type,
                         pp_id,
                         op_qubit,
-                        self.correction_power[op_qubit as usize]
+                        power
                     );
                     let emitted = self.try_emit_s_correction(op_qubit, plotting);
-                    // Block the Clifford's qubit node only when the correction S gate was
-                    // successfully placed; if emission failed, leave the node free so T gates
-                    // can still route through it this lcycle (avoids deadlock).
+                    // Block the qubit node only if the correction S gate was placed; otherwise
+                    // leave it free so T gates can still route through it (avoids deadlock).
                     if emitted {
                         let pp = self.input.circuit.product(pp_id);
                         Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
@@ -967,12 +1060,14 @@ impl Scheduler {
                     continue;
                 }
             }
-            // For T gates, apply just-in-time S^k conjugation (X↔Y swap for odd power).
-            // Skip entirely when no qubit in the product has an odd correction power AND
-            // the precomputed terminals are not stale from a prior conjugation — this is
-            // the common case and avoids Vec allocations + topology lookups every lcycle.
+            // Apply just-in-time S^k conjugation (X<->Y swap for odd power) only when needed;
+            // skipping the common case avoids Vec allocations and topology lookups every lcycle.
             if gate_type.is_t() {
-                let any_odd_correction = self.input.circuit.product(pp_id).operators
+                let any_odd_correction = self
+                    .input
+                    .circuit
+                    .product(pp_id)
+                    .operators
                     .iter()
                     .any(|op| self.correction_power[op.qubit as usize] % 2 == 1);
                 let was_conjugated = self.conjugated_t_products.contains(&pp_id);
@@ -1193,8 +1288,8 @@ impl Scheduler {
             } else {
                 self.t_gate_failures += 1;
                 info_sched!("  T gate {} failed (50% probability), S correction tracked", pp_id);
-                // Update per-qubit correction tracking using the conjugated operator bases
-                // recorded in sched_remaining.  Each failed qubit increments its S^k power.
+                // Each failed qubit's S^k power increments, using the conjugated basis
+                // recorded in sched_remaining.
                 let pp = self.input.circuit.product(pp_id);
                 let conjugated_map: HashMap<u16, char> = self
                     .t_conjugated_bases
@@ -1227,7 +1322,7 @@ impl Scheduler {
             let pp_id = self.pp_paths[i].0;
             let pp = self.input.circuit.product(pp_id);
             let gate_type = pp.gate_type;
-            if gate_type.is_clifford() {
+            if gate_type.is_clifford() && !self.free_merged_products.contains(&pp_id) {
                 match self.clifford_paths.get(&pp_id) {
                     // S/SX: count==2 means this is the second of three lcycles;
                     // children are not unlocked until the third (final) lcycle.
@@ -1241,6 +1336,8 @@ impl Scheduler {
                     _ => {}
                 }
             }
+            // Free-merged S products (see try_merge_s_correction) are single-lcycle,
+            // zero-node events - fall straight through to unlocking their children.
             let children: Vec<i32> = self.input.circuit.product(pp_id).children.clone();
             for child_id in children {
                 self.remaining_parents[child_id as usize] -= 1;
@@ -1264,7 +1361,9 @@ impl Scheduler {
         for (pp_id, opt_pp_path) in &pp_paths_snapshot {
             let pp_id = *pp_id;
             let pp = self.input.circuit.product(pp_id);
-            if !pp.gate_type.is_clifford() {
+            if !pp.gate_type.is_clifford() || self.free_merged_products.contains(&pp_id) {
+                // Free-merged S products (see try_merge_s_correction) are already complete
+                // after their single lcycle - never enter the multi-lcycle carry-forward state.
                 continue;
             }
             let gate_type = pp.gate_type;
@@ -1438,7 +1537,14 @@ impl Scheduler {
         }
         for (pp_id, lcycles) in &s_counts {
             let pp = self.input.circuit.product(*pp_id);
-            if pp.gate_type.is_s() || pp.gate_type.is_sx() {
+            if self.free_merged_products.contains(pp_id) {
+                if lcycles.len() != 1 {
+                    errors.push(format!(
+                        "  merge-completed product {} expected exactly 1 lcycle, got {:?}",
+                        pp, lcycles
+                    ));
+                }
+            } else if pp.gate_type.is_s() || pp.gate_type.is_sx() {
                 if lcycles.len() != 3
                     || lcycles[0] != lcycles[1] - 1
                     || lcycles[1] != lcycles[2] - 1
@@ -1587,9 +1693,8 @@ fn circuit_stem(fname: &str) -> &str {
     Path::new(fname).file_stem().and_then(|s| s.to_str()).unwrap_or("circuit")
 }
 
-/// Expands operators into data node IDs.
-/// Y-basis operators expand to two nodes (X patch + Z patch) because a Y
-/// measurement requires both the X and Z stabiliser data qubits.
+/// Expands operators into data node IDs; Y-basis operators expand to two nodes
+/// (X patch + Z patch) since a Y measurement needs both stabiliser data qubits.
 fn operators_to_node_ids(topo: &TopoGraph, operators: &[Operator]) -> Vec<u16> {
     let mut node_ids = Vec::with_capacity(operators.len());
     for op in operators {
@@ -1698,9 +1803,8 @@ mod tests {
 
     #[test]
     fn lcycle_count_not_inflated_by_t_gate_failures() {
-        // T gate failures are tracked classically (correction_power); they do NOT
-        // add extra scheduling lcycles.  All N independent T gates complete in at
-        // most N lcycles regardless of failure count.
+        // T gate failures are tracked classically (correction_power) and do not add
+        // extra scheduling lcycles.
         let lines = &["+X___<T>", "-_X__<T>", "+__X_<T>", "-___X<T>"];
         let sched = run_scheduler(lines, 5);
         let n_t = 4usize;
@@ -1711,5 +1815,157 @@ mod tests {
             active_lcycles,
             n_t,
         );
+    }
+
+    #[test]
+    fn conjugate_pauli_label_fixes_axis_and_swaps_the_other_two() {
+        for axis in ['X', 'Y', 'Z'] {
+            assert_eq!(Scheduler::conjugate_pauli_label(axis, axis), axis);
+        }
+        // S_Z fixes Z, swaps X<->Y.
+        assert_eq!(Scheduler::conjugate_pauli_label('X', 'Z'), 'Y');
+        assert_eq!(Scheduler::conjugate_pauli_label('Y', 'Z'), 'X');
+        // S_X fixes X, swaps Y<->Z.
+        assert_eq!(Scheduler::conjugate_pauli_label('Y', 'X'), 'Z');
+        assert_eq!(Scheduler::conjugate_pauli_label('Z', 'X'), 'Y');
+        // S_Y fixes Y, swaps X<->Z.
+        assert_eq!(Scheduler::conjugate_pauli_label('X', 'Y'), 'Z');
+        assert_eq!(Scheduler::conjugate_pauli_label('Z', 'Y'), 'X');
+    }
+
+    fn build_scheduler(lines: &[&str], rseed: u32) -> Scheduler {
+        Node::set_magic_routing(true);
+        let mut f = NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        let fname = f.path().to_string_lossy().to_string();
+        let mut circuit = Circuit::new(&fname);
+        circuit.load_circuit().expect("circuit load failed");
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false)
+    }
+
+    #[test]
+    fn t_conjugation_uses_the_pending_correction_own_axis_not_always_z() {
+        // A single T gate on qubit 0 measuring Z. A pending correction with axis X (as if
+        // an earlier failed T gate on this qubit had targeted X, not Z) is active.
+        let lines = &["+Z___<T>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.precompute_terminals_and_roots();
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'X';
+        let swapped = sched.apply_t_conjugation(0);
+        // Conjugating a Z operand by S_X (fixes X, swaps Y<->Z) must give Y, not the
+        // unconjugated Z that the old hardcoded-S_Z-only rule would have produced.
+        assert_eq!(swapped, vec![(0u16, 'Y')]);
+    }
+
+    #[test]
+    fn s_correction_merges_free_when_axis_matches_and_net_power_is_even() {
+        // Native S products are always Z-basis, so a pending Z-axis correction shares S's
+        // own generator. Power 1 (owes one S) plus the blocked S's own power gives net 2
+        // (Z, classical) - fully absorbed with zero physical gates.
+        let lines = &["+Z___<S>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'Z';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(sched.free_merged_products.contains(&0));
+        assert!(sched.scheduled_products.contains(&0));
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 1, "fully-absorbed correction costs zero extra lcycles");
+    }
+
+    #[test]
+    fn s_correction_merges_to_one_physical_gate_when_axis_matches_and_net_power_is_odd() {
+        // Power 2 (owes S^2 = Z) plus the blocked S's own power gives net 3 (S dagger) -
+        // exactly one physical S gate realizes it, reusing the original product id.
+        let lines = &["+Z___<S>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 2;
+        sched.correction_basis[0] = 'Z';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0, "no new product was injected");
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(!sched.free_merged_products.contains(&0));
+        assert!(sched.scheduled_products.contains(&0));
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 3, "one physical S gate occupies exactly 3 lcycles");
+    }
+
+    #[test]
+    fn s_correction_falls_back_to_materializing_when_axis_does_not_match() {
+        // A pending correction about X (e.g. left over from a failed T gate that targeted
+        // X) is a different generator from S's fixed Z axis and can't be folded in -
+        // it must still be materialized as its own standalone gate first.
+        let lines = &["+Z___<S>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'X';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 1, "standalone correction gate injected");
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(sched.free_merged_products.is_empty());
+        assert!(sched.scheduled_products.contains(&0), "original S product scheduled");
+        assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the S gate");
+    }
+
+    #[test]
+    fn sx_correction_merges_free_when_axis_matches_and_net_power_is_even() {
+        // Native SX products are always X-basis, so a pending X-axis correction shares
+        // SX's own generator, exactly like S/Z. Power 1 + SX's own power gives net 2
+        // (classical) - fully absorbed with zero physical gates.
+        let lines = &["+X___<SX>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'X';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(sched.free_merged_products.contains(&0));
+        assert!(sched.scheduled_products.contains(&0));
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 1, "fully-absorbed correction costs zero extra lcycles");
+    }
+
+    #[test]
+    fn sx_correction_merges_to_one_physical_gate_when_axis_matches_and_net_power_is_odd() {
+        // Power 2 + SX's own power gives net 3 - exactly one physical SX gate realizes
+        // it, reusing the original product id.
+        let lines = &["+X___<SX>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 2;
+        sched.correction_basis[0] = 'X';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0, "no new product was injected");
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(!sched.free_merged_products.contains(&0));
+        assert!(sched.scheduled_products.contains(&0));
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 3, "one physical SX gate occupies exactly 3 lcycles");
+    }
+
+    #[test]
+    fn sx_correction_falls_back_to_materializing_when_axis_does_not_match() {
+        // A pending correction about Z is a different generator from SX's fixed X axis
+        // and can't be folded in - it must still be materialized as its own gate first.
+        let lines = &["+X___<SX>"];
+        let mut sched = build_scheduler(lines, 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'Z';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 1, "standalone correction gate injected");
+        assert_eq!(sched.correction_power[0], 0);
+        assert!(sched.free_merged_products.is_empty());
+        assert!(sched.scheduled_products.contains(&0), "original SX product scheduled");
+        assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
+        let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
+        assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the SX gate");
     }
 }

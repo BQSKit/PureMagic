@@ -1,12 +1,12 @@
 use crate::fn_timer;
 use crate::pauliproduct::{GateType, Operator, PauliProduct};
-use std::collections::HashMap;
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use rand::Rng;
 #[cfg(test)]
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 #[cfg(debug_assertions)]
 use std::io::{BufWriter, Write};
@@ -18,16 +18,29 @@ use std::{
 };
 
 /// A quantum circuit as a DAG of Pauli products with dependency tracking.
-///
-/// Products are ordered by their circuit-file position; dependencies are derived
-/// from qubit overlap (the last product to touch a qubit becomes the parent of
-/// the next one on that qubit). Layers are lazily computed via topological sort
-/// and cached after the first call to avoid repeated recomputation.
+/// Dependencies come from qubit overlap: the last product to touch a qubit becomes
+/// the parent of the next one on that qubit. Layers are computed lazily and cached.
 pub(crate) struct Circuit {
     pub(crate) pps: Vec<PauliProduct>,
     layers: RefCell<Option<Vec<Vec<usize>>>>,
     pub(crate) circuit_fname: String,
     pub(crate) n_qubits: usize,
+}
+
+/// Result of [`Circuit::estimate_layer_volume`]'s combined layer/volume lower bound.
+///
+/// Not every field is read by every caller (`puremagic` only prints the summary
+/// fields, `circuit_stats` prints the full breakdown), so this allows dead code
+/// the same way the shared modules already do on a per-binary basis.
+#[allow(dead_code)]
+pub(crate) struct LayerVolumeEstimate {
+    pub(crate) min_layers: usize,
+    pub(crate) n_t_gates: usize,
+    pub(crate) n_t_layers: usize,
+    pub(crate) n_clifford_layers: usize,
+    pub(crate) magic_min_layers: usize,
+    pub(crate) lmin: usize,
+    pub(crate) vmin: usize,
 }
 
 impl Circuit {
@@ -40,9 +53,8 @@ impl Circuit {
         }
     }
 
-    /// Loads Pauli products from file, skipping X and Z gates.
-    /// X and Z are Pauli corrections that are tracked classically in the
-    /// Pauli frame and do not require physical operations on the layout.
+    /// Loads Pauli products from file. X and Z gates are skipped: they are Pauli-frame
+    /// corrections tracked classically, not physical operations on the layout.
     pub(crate) fn load_circuit(&mut self) -> io::Result<()> {
         let _timer = fn_timer!();
 
@@ -375,23 +387,14 @@ impl Circuit {
         Ok(())
     }
 
-    /// Calculates the number of layers in an expanded circuit where:
-    /// - [`GateType::CX`]: expanded to 2 identical products in sequence
-    /// - [`GateType::S`] / [`GateType::SX`]: expanded to 3 identical products in sequence
-    /// - [`GateType::T`]: kept as-is; when `no_t_failures` is `false`, with 50% probability
-    ///   an [`GateType::S`] product on the **same qubits** as the T is inserted immediately
-    ///   after it (modelling the Clifford correction needed after a T-gate failure)
-    /// - All other gates (M): kept as-is (1 copy)
-    ///
-    /// Dependencies are recomputed from scratch on the expanded list via qubit-overlap
-    /// (mirroring [`Circuit::gen_deps`]); the original `self.pps` and `self.layers` cache
-    /// are never modified.
+    /// Estimates layers in an expanded circuit: CX → 2 copies, S/SX → 3 copies, T kept
+    /// as-is (with 50% chance of an appended same-qubit S modelling a T-gate-failure
+    /// correction, unless `no_t_failures`), other gates kept as 1 copy. Dependencies are
+    /// recomputed from scratch on the expanded list; `self.pps`/`self.layers` are untouched.
     pub(crate) fn estimate_num_layers(&self, rng: &mut StdRng, no_t_failures: bool) -> usize {
-        // Per-qubit S^k correction power (0=none, 1=S, 2=Z, 3=S†).
-        // Incremented on each T gate failure; cleared when a Clifford is encountered.
+        // Per-qubit S^k correction power (0=none, 1=S, 2=Z, 3=S†); increments on T failure, resets on Clifford.
         let mut correction_power: HashMap<u16, u8> = HashMap::new();
 
-        // Build the expanded product list.
         let mut expanded: Vec<PauliProduct> = Vec::with_capacity(self.pps.len() * 4);
         for pp in &self.pps {
             if pp.gate_type.is_cx() {
@@ -413,7 +416,6 @@ impl Circuit {
                     }
                     correction_power.insert(op.qubit, 0);
                 }
-                // CX → 2 sequential copies
                 for _ in 0..2 {
                     let mut copy = pp.clone();
                     copy.id = expanded.len() as i32;
@@ -440,7 +442,6 @@ impl Circuit {
                     }
                     correction_power.insert(op.qubit, 0);
                 }
-                // S / SX → 3 sequential copies
                 for _ in 0..3 {
                     let mut copy = pp.clone();
                     copy.id = expanded.len() as i32;
@@ -457,8 +458,13 @@ impl Circuit {
                 for op in &mut t_copy.operators {
                     let power = *correction_power.get(&op.qubit).unwrap_or(&0);
                     if power % 2 == 1 {
-                        op.basis =
-                            if op.basis == 'X' { 'Y' } else if op.basis == 'Y' { 'X' } else { op.basis };
+                        op.basis = if op.basis == 'X' {
+                            'Y'
+                        } else if op.basis == 'Y' {
+                            'X'
+                        } else {
+                            op.basis
+                        };
                     }
                 }
                 expanded.push(t_copy.clone());
@@ -532,6 +538,41 @@ impl Circuit {
         let n_t_layers =
             layers.iter().filter(|layer| layer.iter().any(|pp| pp.gate_type.is_t())).count();
         (n_t_gates, n_t_layers)
+    }
+
+    /// Estimates a lower bound on the number of scheduled layers/volume needed to
+    /// execute this circuit, given `n_magic_qubits` magic-state factories each
+    /// producing states at rate `magic_state_lambda` per lcycle.
+    ///
+    /// Combines two independent lower bounds: the circuit's own dependency-depth
+    /// estimate from `estimate_num_layers` (Clifford layers, including T-failure
+    /// corrections) plus the magic-state throughput bound (how many lcycles it
+    /// takes the factories alone to supply enough T gates) -- the true schedule
+    /// can't beat whichever bound is larger.
+    pub(crate) fn estimate_layer_volume(
+        &self, n_magic_qubits: usize, n_qubits: usize, magic_state_lambda: f64,
+        no_t_failures: bool, rng: &mut StdRng,
+    ) -> LayerVolumeEstimate {
+        let min_layers = self.estimate_num_layers(rng, no_t_failures);
+        let (n_t_gates, n_t_layers) = self.count_t_stats();
+        let n_clifford_layers = min_layers.saturating_sub(n_t_layers);
+        let max_t_parallelism = n_magic_qubits as f64 * magic_state_lambda;
+        let magic_min_layers = if max_t_parallelism > 0.0 {
+            (n_t_gates as f64 / max_t_parallelism).ceil() as usize
+        } else {
+            0
+        };
+        let lmin = std::cmp::max(min_layers, n_clifford_layers + magic_min_layers);
+        let vmin = lmin * n_qubits;
+        LayerVolumeEstimate {
+            min_layers,
+            n_t_gates,
+            n_t_layers,
+            n_clifford_layers,
+            magic_min_layers,
+            lmin,
+            vmin,
+        }
     }
 
     pub(crate) fn print_statistics(&self) -> usize {
@@ -903,6 +944,57 @@ mod tests {
     }
 
     #[test]
+    fn estimate_layer_volume_normal_case() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let est = c.estimate_layer_volume(4, 2, 0.5, false, &mut rng);
+        assert_eq!(est.n_t_gates, 2);
+        assert_eq!(est.n_t_layers, 1);
+        assert!(est.lmin >= est.min_layers);
+        assert_eq!(est.vmin, est.lmin * 2);
+    }
+
+    #[test]
+    fn estimate_layer_volume_zero_magic_qubits_does_not_divide_by_zero() {
+        let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        // n_magic_qubits = 0 -> max_t_parallelism = 0.0; must not panic or produce NaN/inf.
+        let est = c.estimate_layer_volume(0, 2, 0.5, false, &mut rng);
+        assert_eq!(est.magic_min_layers, 0);
+        assert_eq!(est.lmin, est.min_layers.max(est.n_clifford_layers));
+    }
+
+    #[test]
+    fn estimate_layer_volume_zero_t_gates() {
+        let f = make_circuit_file(&["+XZ<CX>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let est = c.estimate_layer_volume(4, 2, 0.5, false, &mut rng);
+        assert_eq!(est.n_t_gates, 0);
+        assert_eq!(est.magic_min_layers, 0);
+    }
+
+    #[test]
+    fn estimate_layer_volume_does_not_underflow_when_t_layers_exceed_min_layers() {
+        // A single T-gate-only circuit: min_layers (from estimate_num_layers) and
+        // n_t_layers (from count_t_stats) both come from the same single T layer, so
+        // min_layers == n_t_layers here -- the closest this circuit shape gets to the
+        // n_t_layers > min_layers case that motivated using saturating_sub over plain
+        // subtraction. Must not panic regardless.
+        let f = make_circuit_file(&["+X_<T>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let est = c.estimate_layer_volume(4, 1, 0.5, true, &mut rng);
+        assert_eq!(est.n_clifford_layers, est.min_layers.saturating_sub(est.n_t_layers));
+    }
+
+    #[test]
     fn build_coupling_matrix_symmetric_for_cx_gate() {
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
@@ -996,9 +1088,7 @@ mod tests {
 
     #[test]
     fn n_cycles_parallel_cx_and_t() {
-        // CX on qubits 0,1 expands to 2 sequential copies.
-        // T on qubit 2 is independent; may get an S appended (also on qubit 2).
-        // Result is 2 (T alone) or 3 (T + S appended, S is in its own layer after T).
+        // CX (qubits 0,1) takes 2 layers; T (qubit 2) may get an appended S, giving 2 or 3.
         let f = make_circuit_file(&["+XZ_<CX>", "+__X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
@@ -1008,8 +1098,7 @@ mod tests {
 
     #[test]
     fn n_cycles_parallel_s_and_cx() {
-        // S on qubit 0 expands to 3 sequential copies; CX on qubits 2,3 to 2.
-        // No T gates, so no randomness. Result is exactly 3.
+        // S (3 layers, qubit 0) and CX (2 layers, qubits 2,3) run in parallel; no T gates, so exactly 3.
         let f = make_circuit_file(&["+X___<S>", "+__XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
@@ -1065,10 +1154,8 @@ mod tests {
 
     #[test]
     fn n_cycles_t_gate_s_insertion_varies_across_seeds() {
-        // With the lazy correction model, S corrections are emitted only when a Clifford
-        // gate is encountered.  Use a chain of T gates followed by an S gate so that the
-        // accumulated correction is flushed before the S, producing different layer counts
-        // depending on how many T gates failed (odd failures → extra 3-layer correction).
+        // S corrections flush only when a Clifford gate is hit; a T-chain followed by an S
+        // lets the number of failed T gates (odd → extra 3-layer correction) vary the total.
         let mut lines: Vec<&str> = vec!["+X_<T>"; 19];
         lines.push("+X_<S>");
         let f = make_circuit_file(&lines);

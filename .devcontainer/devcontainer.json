@@ -7,10 +7,21 @@
 	// Grant the container access to all host GPUs via the NVIDIA Container Toolkit.
 	// Requires: NVIDIA drivers + nvidia-container-toolkit installed on the host.
 	// Remove or comment out this block if no GPU is available.
-	//"runArgs": [
-	//	"--gpus",
-	//	"all"
-	//],
+	"runArgs": [
+		"--gpus",
+		"all"
+	],
+	// Keep Claude Code's state (session transcripts, /resume history, memory) in a
+	// named volume so it survives a container rebuild. Without this it lives in the
+	// container filesystem and every rebuild silently discards it. The volume is
+	// created root-owned on first use, so postCreateCommand chowns it -- see below.
+	"mounts": [
+		{
+			"source": "puremagic-claude-state",
+			"target": "/home/vscode/.claude",
+			"type": "volume"
+		}
+	],
 	"features": {
 		"ghcr.io/devcontainers/features/python:1": {
 			"installTools": true,
@@ -20,18 +31,43 @@
 			"version": "lts"
 		}
 	},
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt && npm install -g @anthropic-ai/claude-code",
+	// cyclosynth (data_processing/compile_cliffordt.py --backend cyclosynth) is a
+	// git submodule with a Rust extension, so it needs a real build step here
+	// rather than a requirements.txt line -- see that file's own cyclosynth
+	// comment for why, and cyclosynth/README.md for the system libs and pinned
+	// Rust toolchain (cyclosynth/rust-toolchain.toml). PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+	// is needed because this image's Python is newer than pyo3 0.22's documented
+	// max (3.13 at last check); harmless to set unconditionally otherwise.
+	// The leading chown fixes the root-owned /home/vscode/.claude volume on the
+	// rebuild that first creates it; a no-op on every rebuild after that.
+	// core.hooksPath arms the tracked .githooks/ (see .githooks/commit-msg and
+	// CLAUDE.md); it lives in .git/config, which a rebuild would otherwise carry
+	// over silently but a fresh clone would not have at all.
+	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && git config core.hooksPath .githooks && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
 	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
 	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
-	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
+	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs && git lfs install && git lfs pull && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
+	// Claude Code signs in through the claude.ai browser login, which stores OAuth
+	// tokens in ~/.claude/.credentials.json (persisted by the volume mount above).
+	// The ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL passthroughs that used to live
+	// here were for API-key or proxy/gateway auth and are deliberately gone: an
+	// AUTH_TOKEN set on the host takes precedence over the OAuth credentials and
+	// would silently switch auth paths. Pick models with /model rather than
+	// reinstating the ANTHROPIC_*_MODEL passthroughs.
+	// Put the bqskit fork's repo root on sys.path so `import bqskit` resolves to
+	// the local ZXZXZ-fix clone. Without this the import silently degrades to a
+	// namespace package and `from bqskit import Circuit` fails outright:
+	// bqskit-ft installs into site-packages/bqskit/ft/, and with bqskit itself
+	// installed editable there is no site-packages/bqskit/__init__.py, so that
+	// directory is a bare namespace portion. setuptools appends its editable
+	// finder to sys.meta_path *after* PathFinder, so PathFinder resolves the
+	// namespace first and the fork's own __init__.py -- including the
+	// extend_path call that merges bqskit.ft back in -- never executes.
+	// Naming the repo root here makes PathFinder find a real package and win.
+	"containerEnv": {
+		"PYTHONPATH": "${containerWorkspaceFolder}/bqskit"
+	},
 	"remoteEnv": {
-		"ANTHROPIC_AUTH_TOKEN": "${localEnv:ANTHROPIC_AUTH_TOKEN}",
-		"ANTHROPIC_BASE_URL": "${localEnv:ANTHROPIC_BASE_URL}",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL": "${localEnv:ANTHROPIC_DEFAULT_HAIKU_MODEL}",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL": "${localEnv:ANTHROPIC_DEFAULT_SONNET_MODEL}",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL": "${localEnv:ANTHROPIC_DEFAULT_OPUS_MODEL}",
-		"ANTHROPIC_MODEL": "${localEnv:ANTHROPIC_MODEL}",
-		"CLAUDE_CODE_SUBAGENT_MODEL": "${localEnv:CLAUDE_CODE_SUBAGENT_MODEL}",
 		"DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
 		"DISABLE_TELEMETRY": "1",
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"

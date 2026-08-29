@@ -15,13 +15,12 @@ use circuit::Circuit;
 use pauliproduct::{GateType, Operator, PauliProduct};
 
 impl Circuit {
-    /// Generates a random T-gate circuit with spatial locality.
-    /// Each product is generated with Pauli operators spreading from a center qubit.
-    /// `spread_probability` controls spreading to adjacent qubits, decaying with `decay_factor`.
-    /// `rng` is a caller-supplied seeded RNG so that results are reproducible.
+    /// Generates a random T-gate circuit: each product's Pauli operators spread from a
+    /// center qubit with probability decaying by `decay_factor` per step.
+    /// `rng` is caller-seeded so results are reproducible.
     pub(crate) fn generate_random(
-        &mut self, n_products: usize, n_qubits: usize, spread_probability: f64,
-        decay_factor: f64, rng: &mut StdRng,
+        &mut self, n_products: usize, n_qubits: usize, spread_probability: f64, decay_factor: f64,
+        rng: &mut StdRng,
     ) {
         self.pps.extend((0..n_products).map(|product_id| {
             PauliProduct::gen_rnd_t(
@@ -41,8 +40,7 @@ impl Circuit {
         self.gen_deps();
     }
 
-    /// Writes all products to a circuit file in standard format.
-    /// `rng` is used to assign a random sign (`+`/`-`) to each product line.
+    /// Writes all products to a circuit file; `rng` assigns a random sign (`+`/`-`) to each line.
     pub(crate) fn save_circuit_to_file(
         &self, circuit_fname: String, rng: &mut StdRng,
     ) -> io::Result<()> {
@@ -58,9 +56,8 @@ impl Circuit {
 }
 
 impl PauliProduct {
-    /// Generates a random T-gate product with spatial locality.
     /// Starts at a random qubit and spreads to nbs with decaying probability.
-    /// `rng` is a caller-supplied seeded RNG so that results are reproducible.
+    /// `rng` is caller-seeded so results are reproducible.
     pub(crate) fn gen_rnd_t(
         product_id: i32, n_qubits: usize, spread_probability: f64, decay_factor: f64,
         rng: &mut StdRng,
@@ -116,7 +113,6 @@ impl PauliProduct {
     }
 }
 
-/// Command-line arguments for random circuit generation.
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Generate random T-gate circuits for PureMagic", long_about = None)]
 struct Args {
@@ -130,10 +126,34 @@ struct Args {
     #[arg(short = 'n', long, default_value = "1000")]
     random_products: usize,
     /// Spread probability: probability of adding operators to adjacent qubits (0.0–1.0).
-    #[arg(short = 's', long, default_value = "0.4")]
+    #[arg(
+        short = 's',
+        long,
+        default_value = "0.4",
+        value_parser = |s: &str| -> Result<f64, String> {
+            let v: f64 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+            if (0.0..=1.0).contains(&v) {
+                Ok(v)
+            } else {
+                Err(format!("spread_probability must be between 0.0 and 1.0, got {}", v))
+            }
+        }
+    )]
     spread_probability: f64,
     /// Decay factor: how much probability decreases with distance (0.0–1.0).
-    #[arg(short = 'd', long, default_value = "0.7")]
+    #[arg(
+        short = 'd',
+        long,
+        default_value = "0.7",
+        value_parser = |s: &str| -> Result<f64, String> {
+            let v: f64 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+            if (0.0..=1.0).contains(&v) {
+                Ok(v)
+            } else {
+                Err(format!("decay_factor must be between 0.0 and 1.0, got {}", v))
+            }
+        }
+    )]
     decay_factor: f64,
     /// Output filename (default: auto-generated from parameters).
     #[arg(short, long)]
@@ -142,14 +162,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    if args.spread_probability < 0.0 || args.spread_probability > 1.0 {
-        eprintln!("Error: spread_probability must be between 0.0 and 1.0");
-        std::process::exit(1);
-    }
-    if args.decay_factor < 0.0 || args.decay_factor > 1.0 {
-        eprintln!("Error: decay_factor must be between 0.0 and 1.0");
-        std::process::exit(1);
-    }
+    utils::print_banner("gen_circuit");
     println!(
         "Generating random circuit with {} products on {} qubits",
         args.random_products, args.random_qubits

@@ -24,13 +24,12 @@ Arguments:
 """
 
 import argparse
-import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 
+import puremagic_log
+from plot_puremagic import prettify_circuit_name
+from table_common import generate_pdf, latex_escape
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -60,7 +59,7 @@ def parse_puremagic_output(filepath):
         Timing: main took ...          <- end of run
     """
     result = {}
-    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    ansi_escape = puremagic_log.ANSI_ESCAPE
 
     # Per-run state
     cur_circuit = None
@@ -72,12 +71,12 @@ def parse_puremagic_output(filepath):
     cur_optimal_speedup = None
     in_cult_block = False
 
-    lambda_re = re.compile(r"magic_state_lambda:\s*([0-9.eE+\-]+),?")
-    loaded_re = re.compile(r"Loaded circuit with \d+ products and (\d+) qubits")
+    lambda_re = puremagic_log.MAGIC_STATE_LAMBDA
+    loaded_re = puremagic_log.LOADED_CIRCUIT
     cult_block_re = re.compile(r"Magic state cultivation time:")
     cult_avg_re = re.compile(r"average:\s*([0-9.eE+\-]+)")
     volume_re = re.compile(r"Scheduled \d+ in \d+ logical cycles, volume (\d+)")
-    wrote_re = re.compile(r"Scheduled products written to (.+?)\.schedule")
+    wrote_re = puremagic_log.WROTE_SCHEDULE
     flush_re = re.compile(r"Timing: main took")
     parallel_eff_re = re.compile(r"Parallel efficiency:\s*([0-9.eE+\-]+)")
     parallelism_re = re.compile(r"Parallelism:\s*([0-9.eE+\-]+)x")
@@ -120,12 +119,10 @@ def parse_puremagic_output(filepath):
                 cur_qubits = int(m.group(1))
                 continue
 
-            # Enter cultivation time block
             if cult_block_re.search(s):
                 in_cult_block = True
                 continue
 
-            # Cultivation average (inside the block)
             if in_cult_block:
                 m = cult_avg_re.match(s)
                 if m:
@@ -165,7 +162,6 @@ def parse_puremagic_output(filepath):
                 cur_circuit = m.group(1)
                 continue
 
-            # End-of-run marker
             if flush_re.match(s):
                 _flush()
 
@@ -174,77 +170,8 @@ def parse_puremagic_output(filepath):
 
 
 # ---------------------------------------------------------------------------
-# Circuit name prettifier (identical rules to circuit_table.py)
-# ---------------------------------------------------------------------------
-
-_UPPERCASE_NAMES = {"dnn", "knn", "qft", "qv"}
-
-
-def pretty_name(name, num_qubits=None):
-    """
-    Apply human-readable substitutions to raw circuit names, appending the
-    qubit/size count in parentheses.
-
-    Rules (applied in order):
-      square_heisenberg_N<k>  ->  Heis.(<k>)
-      qaoa_barabasi_albert_N<k>_3reps  ->  QAOA(<k>)
-      Truncate at first '_' or ' '
-      dnn/knn/qft/qv  ->  uppercase
-      everything else ->  title-case first letter
-    Then append (<size>) extracted from the name, or (<num_qubits>) as fallback.
-    """
-    m = re.fullmatch(r"square_heisenberg_[Nn](\d+)", name)
-    if m:
-        return f"Heis.({m.group(1)})"
-
-    m = re.fullmatch(r"qaoa_barabasi_albert_[Nn](\d+)_3reps", name)
-    if m:
-        return f"QAOA({m.group(1)})"
-
-    # Try to extract a size number: prefer _N<digits> or _n<digits> segment
-    m = re.search(r"_[Nn](\d+)", name)
-    if m:
-        size = str(int(m.group(1)))  # strip leading zeros
-    elif num_qubits is not None:
-        size = str(num_qubits)
-    else:
-        size = None
-
-    # Truncate at first underscore or space
-    prefix = re.split(r"[_ ]", name)[0]
-
-    if prefix.lower() in _UPPERCASE_NAMES:
-        base = prefix.upper()
-    else:
-        base = prefix.capitalize()
-
-    if size is not None:
-        return f"{base}({size})"
-    return base
-
-
-# ---------------------------------------------------------------------------
 # LaTeX helpers
 # ---------------------------------------------------------------------------
-
-
-def latex_escape(s):
-    """Escape special LaTeX characters in a string."""
-    replacements = [
-        ("\\", r"\textbackslash{}"),
-        ("&", r"\&"),
-        ("%", r"\%"),
-        ("$", r"\$"),
-        ("#", r"\#"),
-        ("_", r"\_"),
-        ("{", r"\{"),
-        ("}", r"\}"),
-        ("~", r"\textasciitilde{}"),
-        ("^", r"\textasciicircum{}"),
-    ]
-    for old, new in replacements:
-        s = s.replace(old, new)
-    return s
 
 
 def fmt_pct(value):
@@ -260,69 +187,6 @@ def fmt_volume(value):
 def fmt_cultivation(value):
     """Format cultivation average (cycles) as a float with 2 decimal places."""
     return f"{value:.2f}"
-
-
-# ---------------------------------------------------------------------------
-# PDF rendering (same as circuit_table.py)
-# ---------------------------------------------------------------------------
-
-
-def generate_pdf(latex_table: str, pdf_path: str) -> None:
-    """
-    Wrap *latex_table* in a minimal standalone document and render it to
-    *pdf_path*.  Tries pdflatex / xelatex / lualatex first, then pandoc.
-    Raises RuntimeError if no suitable tool is found.
-    """
-    standalone_doc = (
-        r"\documentclass{article}" + "\n"
-        r"\usepackage{booktabs}" + "\n"
-        r"\usepackage{makecell}" + "\n"
-        r"\usepackage{geometry}" + "\n"
-        r"\geometry{margin=1in}" + "\n"
-        r"\begin{document}" + "\n"
-        r"\pagestyle{empty}" + "\n" + latex_table + "\n"
-        r"\end{document}" + "\n"
-    )
-
-    pdf_path = os.path.abspath(pdf_path)
-
-    for engine in ("pdflatex", "xelatex", "lualatex"):
-        if not shutil.which(engine):
-            continue
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tex_path = os.path.join(tmpdir, "table.tex")
-            with open(tex_path, "w") as f:
-                f.write(standalone_doc)
-            try:
-                subprocess.run(
-                    [engine, "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path],
-                    check=True,
-                    capture_output=True,
-                )
-                shutil.copy(os.path.join(tmpdir, "table.pdf"), pdf_path)
-                print(f"PDF written to {pdf_path} (via {engine})", file=sys.stderr)
-                return
-            except subprocess.CalledProcessError as e:
-                print(f"{engine} failed: {e.stderr.decode()}", file=sys.stderr)
-
-    if shutil.which("pandoc"):
-        with tempfile.NamedTemporaryFile(suffix=".tex", mode="w", delete=False) as tmp:
-            tmp.write(standalone_doc)
-            tex_path = tmp.name
-        try:
-            subprocess.run(
-                ["pandoc", tex_path, "-o", pdf_path, "--pdf-engine=pdflatex", "--from=latex"],
-                check=True,
-                capture_output=True,
-            )
-            print(f"PDF written to {pdf_path} (via pandoc)", file=sys.stderr)
-            return
-        except subprocess.CalledProcessError as e:
-            print(f"pandoc failed: {e.stderr.decode()}", file=sys.stderr)
-        finally:
-            os.unlink(tex_path)
-
-    raise RuntimeError("No PDF renderer found. Install pdflatex, xelatex, lualatex, or pandoc.")
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +262,6 @@ def main():
         (_load(f1), label1, _load(f2), label2) for (f1, label1), (f2, label2) in groups
     ]
 
-    # Read circuit names
     with open(args.benchmarks, "r") as f:
         circuit_names = [line.strip() for line in f if line.strip()]
 
@@ -418,14 +281,7 @@ def main():
     # Each row: [circuit_name, (vol1, vol2, pct, cult1, cult2) per group]
     formatted_rows = []
     for name in circuit_names:
-        # Determine qubit count from first group's first file
-        data_qubits = None
-        for d1, _, d2, _ in loaded_groups:
-            data_qubits = d1.get(name, {}).get("data_qubits") or d2.get(name, {}).get("data_qubits")
-            if data_qubits:
-                break
-
-        display_name = latex_escape(pretty_name(name, data_qubits))
+        display_name = latex_escape(prettify_circuit_name(name))
         cells = [display_name]
 
         for d1, label1, d2, label2 in loaded_groups:
@@ -462,7 +318,6 @@ def main():
     # cols: 1 (Circuit) + 3*num_groups (eff triples) + 2*show_cultivation (cult pair)
     col_spec = "|l|" + "r|r|r|" * num_groups + ("r|r|" if show_cultivation else "")
 
-    # Sub-header labels
     sub_headers = ["Circuit"]
     for _, label1, _, label2 in loaded_groups:
         sub_headers += [label1, label2, "\% Impr."]

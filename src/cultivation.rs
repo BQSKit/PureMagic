@@ -53,9 +53,8 @@ impl CultivationManager {
         self.pool_index = 0;
     }
 
-    /// Returns the next cultivation time from the pool, refilling if exhausted.
     /// The pool is pre-generated to amortise RNG cost; refilling mid-run is a
-    /// fallback that should rarely occur if the initial pool was sized correctly.
+    /// rare fallback that should only trigger if the initial pool was undersized.
     #[inline]
     pub(crate) fn draw(&mut self, n_topo_nodes: usize) -> i32 {
         if self.pool_index >= self.cultivation_time_pool.len() {
@@ -92,14 +91,11 @@ impl CultivationManager {
         }
     }
 
-    /// Advances cultivation state for all magic nodes after an lcycle.
     /// Returns the number of available (ready) magic nodes.
-    ///
     /// New cultivation times are drawn before the update loop to avoid
     /// interleaving RNG calls with the state mutation.
     pub(crate) fn update_cultivators(&mut self, topo: &mut TopoGraph, used: &[bool]) -> usize {
         let n_topo_nodes = topo.n_nodes;
-        // Pre-draw new times for all used nodes before mutating topo state.
         self.new_cultivation_times.clear();
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
@@ -122,7 +118,6 @@ impl CultivationManager {
             } else if topo.is_cultivating(id) {
                 topo.busy_counts[id as usize] += 1;
                 if topo.busy_counts[id as usize] == topo.cultivation_times[id as usize] {
-                    // Cultivation complete: log the time and mark node as ready.
                     self.cultivation_times_log.push(topo.cultivation_times[id as usize]);
                     topo.cultivation_times[id as usize] = 0;
                     topo.busy_counts[id as usize] = 0;

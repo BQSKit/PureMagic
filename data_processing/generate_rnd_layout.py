@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 """Generate random sequences of Pauli Products."""
+
 from argparse import ArgumentParser
 
 from random import randint
@@ -115,7 +116,7 @@ def generate_circuits_for_thresholds(num_qubits, num_products_per_threshold, thr
     circuits = [[] for _ in range(len(thresholds))]
     target_counts = [num_products_per_threshold] * len(thresholds)
 
-    batch_size = 1000  # Generate products in batches
+    batch_size = 1000
     iteration = 0
     thresholds_done = [False] * len(thresholds)
 
@@ -124,8 +125,6 @@ def generate_circuits_for_thresholds(num_qubits, num_products_per_threshold, thr
         if iteration % 10 == 0:
             print(f"Generation iteration {iteration}...")
 
-        # Generate a batch of products with
-        # varying parameters
         for s in range(2, min(num_qubits, 36), 2):  # Limit max size for efficiency
             for p_int in range(0, 10):
                 p = p_int / 10
@@ -160,9 +159,7 @@ def generate_circuits_for_thresholds(num_qubits, num_products_per_threshold, thr
 def parse_thresholds(threshold_str):
     """Parse threshold string into list of floats."""
     try:
-        # Split by comma and convert to floats
         thresholds = [float(x.strip()) for x in threshold_str.split(",")]
-        # Sort thresholds to ensure proper ordering
         thresholds.sort()
         return thresholds
     except ValueError as e:
@@ -232,7 +229,6 @@ if __name__ == "__main__":
             j = p_vals.index(p)
             Z[i, j] = para
 
-        # Plot heatmap
         plt.figure(figsize=(8, 6))
         im = plt.imshow(
             Z,
