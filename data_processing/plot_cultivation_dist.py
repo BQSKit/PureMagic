@@ -18,6 +18,13 @@ import os
 import sys
 from collections import defaultdict
 
+import matplotlib
+
+# Default to the non-interactive Agg backend: these scripts write their output
+# to a file, and a GUI window popping up blocks batch figure regeneration.
+# Override with matplotlib's own MPLBACKEND, e.g. MPLBACKEND=TkAgg.
+if "MPLBACKEND" not in os.environ:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -474,7 +481,9 @@ def main() -> None:
     plt.tight_layout()
     plt.savefig(args.output, dpi=150)
     print(f"Plot saved to {args.output}")
-    plt.show()
+    # Only pop up a window when explicitly asked; the figure is already saved.
+    if os.environ.get("PUREMAGIC_SHOW_PLOTS"):
+        plt.show()
 
 
 if __name__ == "__main__":
