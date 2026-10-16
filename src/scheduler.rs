@@ -170,6 +170,7 @@ pub(crate) struct Scheduler {
     pub(crate) input: SchedulerInput,
     rng_uniform: StdRng,
     magic_state_lambda: f64,
+    cultivation_floor: f64,
     plot_option: String,
     pub(crate) cultivation: CultivationManager,
     pub(crate) stats: ScheduleStats,
@@ -230,8 +231,9 @@ pub(crate) struct Scheduler {
 
 impl Scheduler {
     pub(crate) fn new(
-        circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, log_level: &str,
-        plot_option: String, rseed: u32, no_t_failures: bool, record_cultivation_dist: bool,
+        circuit: Circuit, topo: TopoGraph, magic_state_lambda: f64, cultivation_floor: f64,
+        log_level: &str, plot_option: String, rseed: u32, no_t_failures: bool,
+        record_cultivation_dist: bool,
     ) -> Self {
         let n_qubits = circuit.n_qubits;
         let n_initial_products = circuit.n_products() as i32;
@@ -259,6 +261,7 @@ impl Scheduler {
             input: SchedulerInput { circuit, topo },
             rng_uniform: StdRng::seed_from_u64(rseed as u64),
             magic_state_lambda,
+            cultivation_floor,
             plot_option,
             cultivation: CultivationManager::new(rseed),
             stats: ScheduleStats::new(n_data_qubits, n_bus_qubits, n_magic_qubits),
@@ -305,7 +308,7 @@ impl Scheduler {
     pub(crate) fn sched_circuit(&mut self) -> io::Result<(usize, usize)> {
         let _timer = fn_timer!();
         self.cultivation
-            .set_lambda(self.magic_state_lambda)
+            .set_lambda(self.magic_state_lambda, self.cultivation_floor)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         self.init_magic_nodes();
         let n_t_products = self.count_t_products();
@@ -1728,8 +1731,17 @@ mod tests {
         circuit.load_circuit().expect("circuit load failed");
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
-        let mut sched =
-            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false);
+        let mut sched = Scheduler::new(
+            circuit,
+            topo,
+            0.0387396,
+            0.0,
+            "none",
+            String::new(),
+            rseed,
+            false,
+            false,
+        );
         sched.sched_circuit().expect("sched_circuit failed");
         sched
     }
@@ -1844,7 +1856,7 @@ mod tests {
         circuit.load_circuit().expect("circuit load failed");
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
-        Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false)
+        Scheduler::new(circuit, topo, 0.0387396, 0.0, "none", String::new(), rseed, false, false)
     }
 
     #[test]

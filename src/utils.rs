@@ -19,6 +19,14 @@ pub(crate) struct CommonArgs {
     /// cultivation cycles (magic states produced per magic qubit per lcycle).
     #[arg(short, long, default_value = "0.0387396")]
     pub(crate) magic_state_lambda: f64,
+    /// Fixed per-attempt cultivation cost, in lcycles, added to every draw.
+    /// Models the near-deterministic injection and escape stages: a restarted
+    /// cultivation attempt must pay them again, which a memoryless exponential
+    /// does not capture. The exponential component is rescaled so the total
+    /// mean stays 1/`magic_state_lambda`, making a floor sweep a pure
+    /// shape change at fixed mean. 0 reproduces the memoryless model.
+    #[arg(long, default_value = "0.0")]
+    pub(crate) cultivation_floor: f64,
     /// Disable T gate failures (every T gate succeeds on first attempt).
     #[arg(short = 'F', long)]
     pub(crate) no_t_failures: bool,

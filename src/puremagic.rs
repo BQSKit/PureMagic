@@ -131,6 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circuit,
         topo_graph,
         args.common.magic_state_lambda,
+        args.common.cultivation_floor,
         &args.log_scheduler,
         args.plot.join(" "),
         args.common.rseed as u32,

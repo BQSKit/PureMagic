@@ -8,11 +8,14 @@ use rand_simple::Exponential;
 ///
 /// Magic state cultivation is modelled as a stochastic process: each magic node
 /// is assigned a random cultivation time drawn from an exponential distribution
-/// with parameter `lambda`. The node becomes "ready" (cultivation_time = 0) after
+/// with parameter `lambda`, optionally shifted by a fixed floor (see
+/// [`CultivationManager::set_lambda`]). The node becomes "ready" (cultivation_time = 0) after
 /// `busy_count` reaches `cultivation_time`. Once consumed by a T gate, a new
 /// cultivation time is drawn and the cycle restarts.
 pub(crate) struct CultivationManager {
     rng_exp: Exponential,
+    /// Fixed cost added to every cultivation draw; see `set_lambda`.
+    floor: f64,
     cultivation_time_pool: Vec<i32>,
     pool_index: usize,
     /// T-gate products not yet scheduled; used to size pool refills.
@@ -29,6 +32,7 @@ impl CultivationManager {
     pub(crate) fn new(rseed: u32) -> Self {
         CultivationManager {
             rng_exp: Exponential::new(rseed),
+            floor: 0.0,
             cultivation_time_pool: Vec::new(),
             pool_index: 0,
             t_products_remaining: 0,
@@ -40,15 +44,31 @@ impl CultivationManager {
         }
     }
 
-    pub(crate) fn set_lambda(&mut self, magic_state_lambda: f64) -> Result<f64, &'static str> {
-        self.rng_exp.try_set_params(1.0 / magic_state_lambda)
+    /// Sets the cultivation time distribution to `floor` plus an exponential,
+    /// with the exponential's mean reduced by `floor` so the total mean stays
+    /// 1/`magic_state_lambda`. A floor sweep is therefore a pure
+    /// shape change at fixed mean: `floor = 0` is the memoryless model, and
+    /// `floor -> 1/lambda` approaches a deterministic cultivation time.
+    /// Errors if `floor` would leave the exponential component non-positive.
+    pub(crate) fn set_lambda(
+        &mut self, magic_state_lambda: f64, floor: f64,
+    ) -> Result<f64, &'static str> {
+        let total_mean = 1.0 / magic_state_lambda;
+        if floor < 0.0 {
+            return Err("cultivation floor must be non-negative");
+        }
+        if floor >= total_mean {
+            return Err("cultivation floor must be below the total mean 1/lambda");
+        }
+        self.floor = floor;
+        self.rng_exp.try_set_params(total_mean - floor)
     }
 
     pub(crate) fn fill_pool(&mut self, n: usize) {
         self.cultivation_time_pool.clear();
         self.cultivation_time_pool.reserve(n);
         for _ in 0..n {
-            self.cultivation_time_pool.push(self.rng_exp.sample().round() as i32);
+            self.cultivation_time_pool.push((self.floor + self.rng_exp.sample()).round() as i32);
         }
         self.pool_index = 0;
     }
@@ -153,21 +173,72 @@ mod tests {
     #[test]
     fn set_lambda_valid_returns_ok() {
         let mut mgr = CultivationManager::new(1);
-        let result = mgr.set_lambda(1.0);
+        let result = mgr.set_lambda(1.0, 0.0);
         assert!(result.is_ok());
     }
 
     #[test]
     fn set_lambda_large_value_returns_ok() {
         let mut mgr = CultivationManager::new(1);
-        let result = mgr.set_lambda(100.0);
+        let result = mgr.set_lambda(100.0, 0.0);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn set_lambda_rejects_floor_at_or_above_the_mean() {
+        let mut mgr = CultivationManager::new(1);
+        // 1/lambda = 25, so a floor of 25 leaves the exponential no mass.
+        assert!(mgr.set_lambda(0.04, 25.0).is_err());
+        assert!(mgr.set_lambda(0.04, 30.0).is_err());
+        assert!(mgr.set_lambda(0.04, 24.0).is_ok());
+    }
+
+    #[test]
+    fn set_lambda_rejects_negative_floor() {
+        let mut mgr = CultivationManager::new(1);
+        assert!(mgr.set_lambda(0.04, -1.0).is_err());
+    }
+
+    #[test]
+    fn floor_shifts_the_distribution_but_preserves_its_mean() {
+        // A floor is a pure shape change: every draw is at least the floor,
+        // while the mean stays 1/lambda, because the exponential component's
+        // mean is reduced by exactly the floor.
+        let mean = |floor: f64| {
+            let mut mgr = CultivationManager::new(11);
+            mgr.set_lambda(0.04, floor).unwrap();
+            mgr.fill_pool(20_000);
+            let pool = &mgr.cultivation_time_pool;
+            assert!(
+                pool.iter().all(|&t| t as f64 >= floor.floor()),
+                "a draw fell below the floor {floor}"
+            );
+            pool.iter().map(|&t| t as f64).sum::<f64>() / pool.len() as f64
+        };
+        let (m0, m10, m20) = (mean(0.0), mean(10.0), mean(20.0));
+        for (floor, m) in [(0.0, m0), (10.0, m10), (20.0, m20)] {
+            assert!((m - 25.0).abs() < 1.0, "floor {floor} gave mean {m}, expected ~25 (1/lambda)");
+        }
+    }
+
+    #[test]
+    fn zero_floor_reproduces_the_unshifted_pool() {
+        // The default must be bit-identical to the memoryless model, so that
+        // results predating the floor option remain reproducible.
+        let pool = |floor: f64| {
+            let mut mgr = CultivationManager::new(29);
+            mgr.set_lambda(0.0387396, floor).unwrap();
+            mgr.fill_pool(500);
+            mgr.cultivation_time_pool.clone()
+        };
+        assert_eq!(pool(0.0), pool(0.0));
+        assert_ne!(pool(0.0), pool(5.0));
     }
 
     #[test]
     fn fill_pool_produces_correct_count() {
         let mut mgr = CultivationManager::new(7);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.fill_pool(10);
         assert_eq!(mgr.cultivation_time_pool.len(), 10);
     }
@@ -175,7 +246,7 @@ mod tests {
     #[test]
     fn fill_pool_resets_pool_index() {
         let mut mgr = CultivationManager::new(7);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.fill_pool(5);
         mgr.t_products_remaining = 10;
         let _ = mgr.draw(20);
@@ -187,7 +258,7 @@ mod tests {
     #[test]
     fn fill_pool_zero_produces_empty_pool() {
         let mut mgr = CultivationManager::new(7);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.fill_pool(0);
         assert!(mgr.cultivation_time_pool.is_empty());
     }
@@ -195,7 +266,7 @@ mod tests {
     #[test]
     fn draw_returns_value_from_pool() {
         let mut mgr = CultivationManager::new(99);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.fill_pool(5);
         let first = mgr.cultivation_time_pool[0];
         let drawn = mgr.draw(10);
@@ -206,7 +277,7 @@ mod tests {
     #[test]
     fn draw_increments_pool_index() {
         let mut mgr = CultivationManager::new(3);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.fill_pool(3);
         assert_eq!(mgr.pool_index, 0);
         let _ = mgr.draw(10);
@@ -218,7 +289,7 @@ mod tests {
     #[test]
     fn draw_refills_when_pool_exhausted() {
         let mut mgr = CultivationManager::new(5);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 2;
         mgr.fill_pool(2);
         let _ = mgr.draw(10);
@@ -231,7 +302,7 @@ mod tests {
     fn init_magic_nodes_populates_ids_and_positions() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(11);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 10;
         mgr.fill_pool(100);
 
@@ -250,7 +321,7 @@ mod tests {
     fn init_magic_nodes_assigns_cultivation_times() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(13);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 10;
         mgr.fill_pool(100);
 
@@ -268,7 +339,7 @@ mod tests {
     fn update_cultivators_returns_count_of_ready_magic_nodes() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(17);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 20;
         mgr.fill_pool(200);
 
@@ -290,7 +361,7 @@ mod tests {
     fn update_cultivators_used_nodes_get_new_cultivation_time() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(19);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 20;
         mgr.fill_pool(200);
 
@@ -318,7 +389,7 @@ mod tests {
     fn update_cultivators_increments_busy_count_for_cultivating_nodes() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(23);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 20;
         mgr.fill_pool(200);
 
@@ -345,7 +416,7 @@ mod tests {
     fn update_cultivators_logs_completed_cultivation() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(29);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 20;
         mgr.fill_pool(200);
 
@@ -374,7 +445,7 @@ mod tests {
     fn update_cultivators_ready_positions_sorted_by_x() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(31);
-        mgr.set_lambda(1.0).unwrap();
+        mgr.set_lambda(1.0, 0.0).unwrap();
         mgr.t_products_remaining = 20;
         mgr.fill_pool(200);
 
