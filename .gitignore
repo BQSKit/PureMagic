@@ -39,3 +39,9 @@ data_processing/out_dir
 # The journal version of the paper is its own git repository, checked out
 # here for convenience; this repo must not embed or track it.
 journal-paper/
+
+# Gidney et al.'s cultivation data release (Zenodo 10.5281/zenodo.13777072).
+# stats.csv is committed -- it is a paper input and only 82 kB -- but the two
+# archives are large and nothing here reads them; re-fetch from the DOI if the
+# per-round survival curve behind Figure 15 is ever needed.
+data/cultivation/*.zip

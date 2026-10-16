@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Derive the fixed per-attempt cultivation cost (the "floor") from the
-survival-curve model in mcmc_cultivation.py.
+"""Cross-check the cultivation time *shape* against the survival-curve model
+in mcmc_cultivation.py.
+
+SUPERSEDED for the floor itself. cultivation_params.py derives that, plus the
+acceptance and error rates, from Gidney et al.'s published simulation data
+rather than from survival fractions transcribed by hand off a figure. Use that
+script for any number that goes in a paper. This one is retained only for what
+the published data does not contain: the distribution's shape between the floor
+and the mean, and hence how well an exponential fits it.
 
 `puremagic --cultivation-floor F` models cultivation as a shifted exponential
 to test how much of PureMagic's advantage depends on the distribution being
@@ -82,7 +89,11 @@ def main():
     print(f"survival curve {args.curve}, {args.samples:,} samples, d={d}")
     print(f"  one attempt          {attempt_rounds:>9} rounds")
     print(f"  end-to-end survival  {cumulative[-1]:>9.4f}")
-    print(f"  attempts per state   {mean / attempt_rounds:>9.1f}")
+    # NB: total rounds over the length of one *full* attempt, which is not the
+    # number of attempts -- a failed attempt stops early and costs less than a
+    # full one. cultivation_params.py reports the true count from the published
+    # acceptance rate.
+    print(f"  full-attempt equivs  {mean / attempt_rounds:>9.1f}")
     print()
     print(f"  {'':<14} {'rounds':>10} {'lcycles':>10}")
     print(f"  {'floor (min)':<14} {floor:>10} {floor / d:>10.2f}")
