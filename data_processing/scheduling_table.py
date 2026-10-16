@@ -78,9 +78,21 @@ def parse_puremagic_output(filepath):
     volume_re = re.compile(r"Scheduled \d+ in \d+ logical cycles, volume (\d+)")
     wrote_re = puremagic_log.WROTE_SCHEDULE
     flush_re = re.compile(r"Timing: main took")
-    parallel_eff_re = re.compile(r"Parallel efficiency:\s*([0-9.eE+\-]+)")
+    # `puremagic` emits "Normalized scheduling efficiency: <x>" -- the ratio of
+    # realized to best-estimated parallelism, i.e. exactly the quantity the
+    # "% Impr." column reports. It used to be called "Parallel efficiency", and
+    # the old name is still accepted so older logs keep parsing.
+    parallel_eff_re = re.compile(
+        r"(?:Normalized scheduling efficiency|Parallel efficiency):\s*([0-9.eE+\-]+)"
+    )
     parallelism_re = re.compile(r"Parallelism:\s*([0-9.eE+\-]+)x")
-    optimal_speedup_re = re.compile(r"Optimal logical cycles \d+ \(([0-9.eE+\-]+) speedup\)")
+    # Fallback for logs predating the normalized-efficiency line: the
+    # denominator was once reported as a speedup, and is now reported directly
+    # as "Max parallelism estimate".
+    optimal_speedup_re = re.compile(
+        r"(?:Max parallelism estimate:\s*([0-9.eE+\-]+)"
+        r"|Optimal logical cycles \d+ \(([0-9.eE+\-]+) speedup\))"
+    )
 
     def _flush():
         nonlocal cur_circuit, cur_qubits, cur_volume, cur_cult_avg, in_cult_block
@@ -151,7 +163,8 @@ def parse_puremagic_output(filepath):
             # Optimal speedup — "Optimal logical cycles N (<x> speedup)"
             m = optimal_speedup_re.match(s)
             if m:
-                cur_optimal_speedup = float(m.group(1))
+                # Two alternatives, so take whichever group matched.
+                cur_optimal_speedup = float(m.group(1) or m.group(2))
                 continue
 
             # Circuit name — appears after the volume line
