@@ -35,3 +35,7 @@ data/circuits/qft/*out*
 
 data_processing/*out
 data_processing/out_dir
+
+# The journal version of the paper is its own git repository, checked out
+# here for convenience; this repo must not embed or track it.
+journal-paper/

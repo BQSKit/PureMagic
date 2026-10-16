@@ -43,7 +43,14 @@
 	// core.hooksPath arms the tracked .githooks/ (see .githooks/commit-msg and
 	// CLAUDE.md); it lives in .git/config, which a rebuild would otherwise carry
 	// over silently but a fresh clone would not have at all.
-	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && git config core.hooksPath .githooks && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
+	// The TeX set covers journal-paper/: texlive-science carries physics.sty and
+	// the algorithms/algorithmicx bundles (algorithm.sty, algpseudocode.sty),
+	// none of which are in texlive-latex-extra despite appearances;
+	// texlive-publishers may carry quantumarticle.cls, but Debian's TeX Live is
+	// a release behind, so journal-paper/fetch-quantum-class.sh vendors a
+	// current quantumarticle.cls + quantum.bst either way. latexmk is the build
+	// driver journal-paper/.latexmkrc configures.
+	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && git config core.hooksPath .githooks && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-science texlive-publishers latexmk git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
 	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
 	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
 	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs && git lfs install && git lfs pull && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
@@ -79,7 +86,8 @@
 				"Anthropic.claude-code",
 				"RooVeterinaryInc.roo-cline",
 				"spencerwmiles.vscode-task-buttons",
-				"sammcleod.problems-filter"
+				"sammcleod.problems-filter",
+				"James-Yu.latex-workshop"
 			]
 		}
 	}
