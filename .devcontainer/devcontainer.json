@@ -20,6 +20,16 @@
 			"source": "puremagic-claude-state",
 			"target": "/home/vscode/.claude",
 			"type": "volume"
+		},
+		// Bind-mounts a host directory of other repos relevant to this project
+		// (clones not otherwise part of PureMagic) so they're browsable and
+		// importable from inside the container without copying them in. Mounted
+		// as a sibling of the workspace folder, not under it, so it stays outside
+		// the PureMagic repo tree.
+		{
+			"source": "/home/shofmeyr/code/fleqs/for-devcontainer",
+			"target": "/workspaces/other-code",
+			"type": "bind"
 		}
 	],
 	"features": {
@@ -81,13 +91,31 @@
 	},
 	"customizations": {
 		"vscode": {
+			// Extensions live in ~/.vscode-server/extensions, which is on the
+			// container's overlay filesystem, not on the /vscode volume -- so a
+			// rebuild drops anything not listed here. Several below are already
+			// supplied by the Rust base image or the python feature; listing
+			// them anyway is free (duplicates are ignored) and means a rebuild
+			// cannot silently lose one if an upstream image changes its set.
 			"extensions": [
 				"ms-python.black-formatter",
 				"Anthropic.claude-code",
 				"RooVeterinaryInc.roo-cline",
 				"spencerwmiles.vscode-task-buttons",
 				"sammcleod.problems-filter",
-				"James-Yu.latex-workshop"
+				"James-Yu.latex-workshop",
+				// Rust: from the base image.
+				"rust-lang.rust-analyzer",
+				"tamasfe.even-better-toml",
+				"vadimcn.vscode-lldb",
+				// Python: from the python feature. ms-python.python pulls in
+				// vscode-pylance and vscode-python-envs on its own.
+				"ms-python.python",
+				"ms-python.debugpy",
+				// Jupyter, for notebooks/ -- installed by hand when that
+				// walkthrough was added, so nothing else would restore it. It
+				// pulls in its own keymap/renderers/cell-tags/slideshow.
+				"ms-toolsai.jupyter"
 			]
 		}
 	}
