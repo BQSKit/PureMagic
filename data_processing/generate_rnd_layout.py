@@ -8,7 +8,15 @@ from random import randint
 from random import uniform
 from random import choice
 
+import os
 import numpy as np
+import matplotlib
+
+# Default to the non-interactive Agg backend: these scripts write their output
+# to a file, and a GUI window popping up blocks batch figure regeneration.
+# Override with matplotlib's own MPLBACKEND, e.g. MPLBACKEND=TkAgg.
+if "MPLBACKEND" not in os.environ:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
@@ -244,7 +252,9 @@ if __name__ == "__main__":
         plt.xticks(p_vals)
         plt.yticks(s_vals)
         plt.tight_layout()
-        plt.show()
+        # Only pop up a window when explicitly asked; the figure is already saved.
+        if os.environ.get("PUREMAGIC_SHOW_PLOTS"):
+            plt.show()
 
     try:
         thresholds = parse_thresholds(args.thresholds)

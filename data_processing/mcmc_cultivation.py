@@ -18,7 +18,15 @@ holds flat (no postselection). The final survival rates from Figure 2 are:
   - d1=5: ~1%  (discard rate 99%)
 """
 
+import os
 import numpy as np
+import matplotlib
+
+# Default to the non-interactive Agg backend: these scripts write their output
+# to a file, and a GUI window popping up blocks batch figure regeneration.
+# Override with matplotlib's own MPLBACKEND, e.g. MPLBACKEND=TkAgg.
+if "MPLBACKEND" not in os.environ:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 rng = np.random.default_rng(42)
@@ -205,7 +213,9 @@ def plot_results(times_d3, times_d5, lam_d3, lam_d5):
 
     plt.tight_layout()
     plt.savefig("cultivation_time_distribution.png", dpi=150)
-    plt.show()
+    # Only pop up a window when explicitly asked; the figure is already saved.
+    if os.environ.get("PUREMAGIC_SHOW_PLOTS"):
+        plt.show()
     print("Saved cultivation_time_distribution.png")
 
 
