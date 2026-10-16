@@ -68,6 +68,14 @@ def main():
     ap.add_argument("--pm", required=True, help="puremagic log for the PureMagic layout")
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("--figsize", default="7.0,3.2")
+    ap.add_argument(
+        "--mark-floor",
+        type=float,
+        default=None,
+        help="Draw a vertical marker at this floor, for the physically derived "
+        "operating point (see derive_cultivation_floor.py). Everything to the "
+        "right of it is hypothetical.",
+    )
     args = ap.parse_args()
 
     bus, pm = parse(args.bus), parse(args.pm)
@@ -101,6 +109,18 @@ def main():
     ax2.legend(fontsize=7)
     for ax in (ax1, ax2):
         ax.grid(alpha=0.3)
+        if args.mark_floor is not None:
+            ax.axvline(args.mark_floor, color="black", lw=1.2, ls="--")
+            ax.annotate(
+                f"actual\n$F\\approx{args.mark_floor:g}$",
+                xy=(args.mark_floor, 0.97),
+                xycoords=("data", "axes fraction"),
+                fontsize=7,
+                ha="left",
+                va="top",
+                xytext=(3, 0),
+                textcoords="offset points",
+            )
     fig.tight_layout()
     fig.savefig(args.output, dpi=150)
     print(f"\nwrote {args.output}")
