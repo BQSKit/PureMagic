@@ -11,11 +11,12 @@ which is standard Sinter output:
 
 Three things come out of it directly.
 
-*The floor.* `json_metadata` gives `r`, the number of rounds in one attempt of
-the end-to-end protocol. A cultivation attempt that fails post-selection
-restarts from zero, so the cheapest possible outcome is one attempt that
-survives every check: `r` rounds. That is the irreducible cost a restart pays
-again, i.e. the floor for `puremagic --cultivation-floor`.
+*The acceptance and error rates*, below. Note that `json_metadata`'s `r` is
+NOT the attempt length: for the end-to-end construction it runs five short of
+the cycle count the release's own sampler produces (13 vs 18 at d1=3, 20 vs 25
+at d1=5), so it cannot be used for the floor. The attempt length comes from
+`survival_curve.csv`, extracted by re-running their sampler -- see
+mcmc_cultivation.py.
 
 *The gap/fidelity curve.* `custom_counts` holds `C<g>` and `E<g>`: the number
 of accepted shots whose complementary gap landed in bin `g`, and how many of
@@ -127,12 +128,9 @@ def main():
     print(f"  logical error rate   {ler(G):>12.3e}")
     print(f"  attempts per state   {1 / p_accept(G):>12.1f}")
     print()
-    print(f"  floor: one attempt   {R:>12} rounds")
-    print(f"                       {R / d:>12.2f} logical cycles at d={d}")
-    print(f"  mean  (anchor)       {args.anchor_cycles:>12.2f} logical cycles")
-    print(f"  floor / mean         {R / d / args.anchor_cycles:>12.1%}"
-          f"   <- F/<t> for --cultivation-floor")
-    print(f"  --cultivation-floor  {R / d:>12.2f}")
+    print(f"  metadata r           {R:>12} (NOT the attempt length -- see the")
+    print(f"                       {'':>12}  module docstring; use the survival")
+    print(f"                       {'':>12}  curve's cycle count instead)")
     print()
 
     print("rate/fidelity trade, mean scaled as 1/p_accept(G) and anchored at "

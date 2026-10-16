@@ -3,21 +3,29 @@
 """
 MCMC simulation of magic state cultivation time distribution.
 
-Survival fractions are read from Figure 15 of Gidney et al.
-(arXiv:2409.17595). Each array entry is the proportion of shots surviving
-to that round (i.e. the y-value of the survival curve at that x position).
-Values must be non-increasing and start at 1.0.
+Per-cycle survival now comes from `data/cultivation/survival_d{3,5}.csv`,
+which `extract_survival_curve.py` produces by re-running the sampler from the
+cultivation paper's own code release. The hand-transcribed arrays below are
+kept only as a fallback when those files are absent, and should not be used
+for anything that goes in a paper -- they were read off Figure 15 by eye and
+differ from the real curve by 10-40% through the middle of the protocol.
 
-The x-axis of Figure 15 has:
-  - d1=3 case: 18 labelled cycles
-  - d1=5 case: 25 labelled cycles
+Two separate things cull a cultivation attempt, and conflating them is easy:
 
-The final ~10 cycles are the escape stage gap-wait, during which survival
-holds flat (no postselection). The final survival rates from Figure 2 are:
-  - d1=3: ~20% (discard rate 80%)
-  - d1=5: ~1%  (discard rate 99%)
+  1. Per-cycle post-selection, which the survival curve captures. For d1=5 at
+     p=1e-3 this leaves 5.36% of attempts alive at the end.
+  2. The complementary-gap cutoff, applied once after the gap is computed.
+     At the G=104 cutoff used by Gidney et al. and by PureMagic, stats.csv
+     gives 1.13% of all attempts accepted.
+
+A patch delivers a usable state only if it passes both, so the composite curve
+used here is the simulated per-cycle survival with its final entry replaced by
+the gap-cutoff acceptance. (The transcribed arrays baked a 1.8% figure into
+the last cycle, which is neither of the two numbers above.)
 """
 
+import csv
+import json
 import os
 import numpy as np
 import matplotlib
@@ -28,6 +36,8 @@ import matplotlib
 if "MPLBACKEND" not in os.environ:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+GAP_CUTOFF = 104  # the complementary-gap cutoff used by Gidney et al.
 
 rng = np.random.default_rng(42)
 
@@ -119,14 +129,65 @@ def cumulative_to_conditional(cumulative):
     return cond
 
 
+
+def load_survival_curve(which, stats_path=None):
+    """Cumulative per-cycle survival for `which` in {"d3","d5"}.
+
+    Prefers the extracted curve, falling back to the transcribed arrays with a
+    warning. The final entry is replaced by the gap-cutoff acceptance from
+    stats.csv when available, since surviving post-selection is necessary but
+    not sufficient for a state to be used.
+    """
+    # globals()["__file__"] rather than __file__: derive_cultivation_floor.py
+    # and cultivation_params.py exec this module's prelude to lift the arrays,
+    # and that context has no __file__.
+    here = os.path.dirname(os.path.abspath(
+        globals().get("__file__", os.path.join(os.getcwd(), "data_processing", "x"))))
+    csv_path = os.path.join(here, os.pardir, "data", "cultivation", f"survival_{which}.csv")
+    if not os.path.exists(csv_path):
+        print(f"warning: {csv_path} missing; falling back to the transcribed "
+              f"arrays, which are approximate and not citable")
+        return globals()[f"per_cycle_survival_{which}"]
+
+    with open(csv_path) as f:
+        cum = [float(r["survival"]) for r in csv.DictReader(f)]
+
+    stats_path = stats_path or os.path.join(
+        here, os.pardir, "data", "cultivation", "stats.csv")
+    if os.path.exists(stats_path):
+        d1 = int(which[1:])
+        with open(stats_path) as f:
+            for r in csv.DictReader(f):
+                r = {k.strip(): v for k, v in r.items()}
+                m = json.loads(r["json_metadata"])
+                if (m.get("c") == "end2end-inplace-distillation"
+                        and m.get("d1") == d1 and m.get("p") == 0.001):
+                    cc = json.loads(r["custom_counts"])
+                    shots = int(r["shots"])
+                    accepted = sum(v for k, v in cc.items()
+                                   if k.startswith("C") and int(k[1:]) >= GAP_CUTOFF)
+                    if accepted:
+                        cum[-1] = accepted / shots
+                    else:
+                        # The gap scale depends on the protocol: d1=3 produces
+                        # no states at or above the d1=5 cutoff, so applying it
+                        # there would zero the curve. Leave post-selection
+                        # survival as-is and say so.
+                        print(f"note: no d1={d1} states at gap >= {GAP_CUTOFF}; "
+                              f"leaving its curve at post-selection survival "
+                              f"({cum[-1]:.4f}) with no cutoff applied")
+                    break
+    return cum
+
+
 # Report end-to-end survival (final value of each array)
 cum_d3 = per_cycle_survival_d3[-1]
 cum_d5 = per_cycle_survival_d5[-1]
 print(f"d1=3 end-to-end survival: {cum_d3:.4f} (target ~0.20)")
 print(f"d1=5 end-to-end survival: {cum_d5:.4f} (target ~0.01)")
 
-cond_d3 = cumulative_to_conditional(per_cycle_survival_d3)
-cond_d5 = cumulative_to_conditional(per_cycle_survival_d5)
+cond_d3 = cumulative_to_conditional(load_survival_curve('d3'))
+cond_d5 = cumulative_to_conditional(load_survival_curve('d5'))
 
 
 def run_mcmc(conditional_probs, n_samples=1_000_000):

@@ -34,6 +34,11 @@ struct Args {
     /// Show product IDs instead of Pauli terms when plotting the circuit.
     #[arg(short = 'I', long)]
     show_product_ids: bool,
+    /// Restrict `--plot circuit` to layers `START:END`, as one file. Without
+    /// this the whole circuit is plotted in 1000-layer chunks, which is far
+    /// too wide to use as a figure.
+    #[arg(long, value_name = "START:END", value_parser = parse_layer_range)]
+    plot_layers: Option<(usize, usize)>,
     /// Log scheduler actions to <CIRCUIT_FNAME>.sched_trace. Only populated in debug
     /// builds: the debug_sched!/info_sched! call sites are compiled out entirely in
     /// release builds, so a release build still creates the file but leaves it empty.
@@ -85,6 +90,17 @@ struct Args {
     plot: Vec<String>,
 }
 
+/// Parses the `START:END` argument of `--plot-layers`.
+fn parse_layer_range(s: &str) -> Result<(usize, usize), String> {
+    let (a, b) = s.split_once(':').ok_or_else(|| format!("expected START:END, got '{s}'"))?;
+    let start: usize = a.trim().parse().map_err(|_| format!("bad start layer '{a}'"))?;
+    let end: usize = b.trim().parse().map_err(|_| format!("bad end layer '{b}'"))?;
+    if end <= start {
+        return Err(format!("end layer {end} must exceed start layer {start}"));
+    }
+    Ok((start, end))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _timer = Timer::new("main");
     let args = Args::parse();
@@ -101,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     circuit.print()?;
     if args.plot.contains(&"circuit".to_string()) {
-        circuit.plot(args.show_product_ids)?;
+        circuit.plot(args.show_product_ids, args.plot_layers)?;
     }
     if args.plot.contains(&"coupling".to_string()) {
         circuit.plot_qubit_coupling()?;

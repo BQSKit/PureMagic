@@ -112,7 +112,14 @@ impl Circuit {
         self.pps.len()
     }
 
-    pub(crate) fn plot(&self, show_product_ids: bool) -> Result<(), Box<dyn std::error::Error>> {
+    /// `layer_range` restricts plotting to `start..end` and emits it as a
+    /// single file, rather than covering the whole circuit in
+    /// `LAYERS_PER_FILE`-wide chunks. A full-circuit plot of a large benchmark
+    /// is thousands of layers wide and unreadable at figure scale, so a narrow
+    /// window is what any published excerpt actually wants.
+    pub(crate) fn plot(
+        &self, show_product_ids: bool, layer_range: Option<(usize, usize)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
         let circuit_stem = circuit_path.file_stem().and_then(|s| s.to_str()).unwrap_or("circuit");
@@ -120,11 +127,17 @@ impl Circuit {
         create_dir_all(&plot_dir)?;
 
         let layers = self.compute_layers();
-        let min_layer = 0;
-        let max_layer = layers.len();
         const LAYERS_PER_FILE: usize = 1000;
-        for chunk_start in (min_layer..max_layer).step_by(LAYERS_PER_FILE) {
-            let chunk_end = (chunk_start + LAYERS_PER_FILE).min(max_layer);
+        let (min_layer, max_layer, layers_per_file) = match layer_range {
+            Some((start, end)) => {
+                let start = start.min(layers.len());
+                let end = end.min(layers.len()).max(start);
+                (start, end, (end - start).max(1))
+            }
+            None => (0, layers.len(), LAYERS_PER_FILE),
+        };
+        for chunk_start in (min_layer..max_layer).step_by(layers_per_file) {
+            let chunk_end = (chunk_start + layers_per_file).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
             let plot_fname = format!("{}/{}-{}.png", plot_dir, circuit_stem, chunk_start);
             let root = BitMapBackend::new(
