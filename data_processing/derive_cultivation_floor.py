@@ -78,7 +78,10 @@ def main():
     args = ap.parse_args()
 
     ns = load_survival_curves()
-    cumulative = ns[f"per_cycle_survival_{args.curve}"]
+    # The extracted curve with the gap cutoff applied, not the transcribed
+    # array: load_survival_curve() handles both, and reading the raw array
+    # here was silently pinning this script to the superseded 1.8% endpoint.
+    cumulative = ns["load_survival_curve"](args.curve)
     conditional = ns["cumulative_to_conditional"](cumulative)
     attempt_rounds = len(conditional)
 
@@ -111,10 +114,13 @@ def main():
           f"for an exponential of this mean ({abs(median - exp_median) / exp_median:.1%} off)")
 
     print()
-    print("  NOTE: the survival arrays in mcmc_cultivation.py are transcribed by")
-    print("  hand from Figure 15 of Gidney et al. and are acknowledged there as")
-    print("  approximate. Re-deriving them from that paper's published end-to-end")
-    print("  simulation data would make this number citable rather than indicative.")
+    print("  Curve from data/cultivation/survival_<curve>.csv, produced by")
+    print("  re-running the cultivation paper's own sampler, with the final")
+    print("  entry replaced by the G=104 gap acceptance from stats.csv. The")
+    print("  mean above should agree with cultivation_params.py's 36.70")
+    print("  lcycles; what this script adds is the distribution's shape")
+    print("  between the floor and the mean, which the published data does")
+    print("  not contain.")
 
 
 if __name__ == "__main__":
