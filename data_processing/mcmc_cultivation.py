@@ -7,8 +7,12 @@ Per-cycle survival now comes from `data/cultivation/survival_d{3,5}.csv`,
 which `extract_survival_curve.py` produces by re-running the sampler from the
 cultivation paper's own code release. The hand-transcribed arrays below are
 kept only as a fallback when those files are absent, and should not be used
-for anything that goes in a paper -- they were read off Figure 15 by eye and
-differ from the real curve by 10-40% through the middle of the protocol.
+for anything that goes in a paper. They were read off Figure 15 by eye, and
+that reading was actually good: ticks 3-13 reproduce the simulated curve to
+within a percent. But the whole series sits one tick late, and the final two
+entries -- a 6% plateau and a 1.8% last cycle -- have no counterpart in the
+figure at all. The 1.8% is the expensive one: it is what put the conference
+paper's mean cultivation time at 26 logical cycles instead of 36.7.
 
 Two separate things cull a cultivation attempt, and conflating them is easy:
 
@@ -302,13 +306,17 @@ if __name__ == "__main__":
     print(f"  Median: {np.median(times_d5):.1f} cycles")
     print(f"  90th percentile: {np.percentile(times_d5, 90):.1f} cycles")
 
-    # Compare to paper's claimed value
+    # Compare to the conference paper's value, which this analysis supersedes.
+    # It was derived from the transcribed arrays above, whose 1.8% final entry
+    # is the single biggest error in the chain; the corrected figure is 36.70
+    # lcycles, i.e. --magic-state-lambda 0.0272498 per lcycle.
     paper_lam = 0.00227
     paper_mean_cycles = 1.0 / paper_lam
     paper_d = 17
     paper_mean_logical = paper_mean_cycles / paper_d
-    print(f"\nPaper's claimed λ={paper_lam}, mean={paper_mean_cycles:.1f} circuit cycles")
-    print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d})")
+    print(f"\nConference paper's λ={paper_lam} per round (SUPERSEDED),"
+          f" mean={paper_mean_cycles:.1f} circuit cycles")
+    print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d}); corrected value 36.70")
 
     print(f"\nAnalytic estimate (N_cycles / end-to-end survival):")
     print(

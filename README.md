@@ -55,7 +55,7 @@ Run with `-h` to see all options.
 |------|---------|-------------|
 | `-c, --circuit <FILE>` | *(required)* | Input circuit file (`.trans` format) |
 | `-t, --topo <FILE>` | *(auto-generated)* | Topology file; generated from qubit count if omitted |
-| `-m, --magic-state-lambda <F>` | `0.0387396` | λ parameter for exponential cultivation time distribution |
+| `-m, --magic-state-lambda <F>` | `0.0272498` | λ parameter for exponential cultivation time distribution (1/λ = 36.70 lcycles at d=17, for G=104 cultivation) |
 | `-r, --rseed <N>` | `29` | Random seed for reproducible results |
 | `-R, --randomize-data-qubits` | off | Randomize data qubit numbering |
 | `-u, --use-magic-routing` | off | Use magic qubits for routing in addition to bus qubits |

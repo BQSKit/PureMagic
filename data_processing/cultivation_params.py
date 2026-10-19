@@ -24,7 +24,8 @@ those carried a logical error. Suffix-summing from a cutoff `G` gives both the
 acceptance rate and the logical error rate of the states a scheduler using that
 cutoff would consume.
 
-*The rate/fidelity trade.* Mean cultivation time scales as 1/p_accept(G),
+*The rate/fidelity trade.* NOTE the anchor is unverified -- see the warning
+the script prints. Mean cultivation time scales as 1/p_accept(G),
 because the cutoff is applied once at the end and does not change the
 per-round discarding that precedes it. Anchoring that at one known operating
 point gives mean cultivation time at any cutoff. The anchor is cross-checked
@@ -47,9 +48,11 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_STATS = os.path.join(HERE, os.pardir, "data", "cultivation", "stats.csv")
 
-# Independently published mean cultivation times, in logical cycles, for the
-# d1=5 d2=15 p=1e-3 configuration at three gap cutoffs. Used only to check the
-# 1/p_accept scaling, never as an input.
+# Published mean cultivation times, in logical cycles, for the d1=5 d2=15
+# p=1e-3 configuration at three gap cutoffs, read off a figure in GapBud.
+# Used only to check the 1/p_accept scaling, never as an input -- and note
+# that GapBud identifies G=104 as the cutoff "used by PureMagic", so the
+# G=104 entry is not an independent witness to this paper's own anchor.
 PUBLISHED_TIMINGS = {53: 6.2, 104: 26.0, 116: 59.7}
 
 
@@ -93,7 +96,10 @@ def main():
                          "Gidney et al. and by this paper")
     ap.add_argument("--anchor-cycles", type=float, default=26.0,
                     help="mean cultivation time in logical cycles at --cutoff, "
-                         "used to anchor the 1/p_accept scaling")
+                         "used to anchor the 1/p_accept scaling. Defaults to "
+                         "the superseded 26.0 so the published-column "
+                         "comparison stays interpretable; the value the paper "
+                         "now uses is 36.698")
     ap.add_argument("--construction", default="end2end-inplace-distillation")
     ap.add_argument("--check-shape", action="store_true",
                     help="also report what mcmc_cultivation.py's transcribed "
@@ -151,8 +157,19 @@ def main():
             line += f" {pub:>10.1f} {abs(mean - pub) / pub:>5.0%}"
         print(line)
     print()
-    print("  The 'published' column is an independent timing model; agreement")
-    print("  across it validates both the anchor and the 1/p_accept scaling.")
+    print("  The 'published' column cross-checks the 1/p_accept SCALING, and")
+    print("  only that. The G=104 row is tautological: --anchor-cycles is set")
+    print("  to match it. Nor is the column independent in the way the name")
+    print("  suggests -- it is read off a figure in GapBud, which flags G=104")
+    print("  as the cutoff 'used by PureMagic', so it may trace back to the")
+    print("  very number it appears to corroborate.")
+    print()
+    print("  The absolute anchor is settled elsewhere, and 26 is not it:")
+    print("  running the full-restart retry model over survival_d5.csv, with")
+    print("  its last entry replaced by the G=104 acceptance above, gives")
+    print("  36.70 lcycles at d=17. That is what src/utils.rs now defaults to")
+    print("  (--magic-state-lambda 0.0272498). Pass --anchor-cycles 36.698 to")
+    print("  read the mean column in the units the paper actually uses.")
 
     if args.check_shape:
         print()
