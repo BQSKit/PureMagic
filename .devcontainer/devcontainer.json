@@ -32,13 +32,27 @@
 			"type": "bind"
 		}
 	],
+	// "os-provided" installs Debian trixie's own python3 (3.13) through apt instead
+	// of the feature's default of compiling CPython from source. A source build of
+	// Python < 3.14 verifies the tarball with GPG and fetches the signing key from
+	// keyservers; those were unreachable from the build, which retried ~17 minutes
+	// and then failed. Same 3.13 as the pin below, with no keyserver and no compile.
+	// Pinned to 3.13 rather than "latest". "latest" resolved to CPython 3.15, for
+	// which scipy publishes no wheels, so pip fell back to a source build, which
+	// needs a Fortran compiler the image does not carry -- and since
+	// requirements.txt lists scipy, `pip install -r requirements.txt` failed and
+	// took the rest of the && chain in postCreateCommand with it (maturin, the
+	// cyclosynth build, the claude-code install). The symptom is silent: the
+	// container comes up looking fine with scipy, maturin and a real cyclosynth
+	// all absent. 3.13 has wheels for the whole stack (scipy, qiskit, bqskit) and
+	// clears this project's floors -- pyproject requires >=3.12, and ruff and
+	// pyright are both configured for py312. Bump it only after checking that
+	// scipy and qiskit publish wheels for the version you move to (os-provided
+	// follows Debian's python3, so moving off trixie changes it).
 	"features": {
 		"ghcr.io/devcontainers/features/python:1": {
 			"installTools": true,
-			"version": "latest"
-		},
-		"ghcr.io/devcontainers/features/node:1": {
-			"version": "lts"
+			"version": "os-provided"
 		}
 	},
 	// cyclosynth (data_processing/compile_cliffordt.py --backend cyclosynth) is a
@@ -48,6 +62,9 @@
 	// Rust toolchain (cyclosynth/rust-toolchain.toml). PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 	// is needed because this image's Python is newer than pyo3 0.22's documented
 	// max (3.13 at last check); harmless to set unconditionally otherwise.
+	// nodejs/npm come from apt rather than the devcontainers node feature, whose
+	// ghcr.io blob download failed on every build (AggregateError); npm is only
+	// needed for the claude-code install at the end.
 	// The leading chown fixes the root-owned /home/vscode/.claude volume on the
 	// rebuild that first creates it; a no-op on every rebuild after that.
 	// core.hooksPath arms the tracked .githooks/ (see .githooks/commit-msg and
@@ -60,7 +77,43 @@
 	// a release behind, so journal-paper/fetch-quantum-class.sh vendors a
 	// current quantumarticle.cls + quantum.bst either way. latexmk is the build
 	// driver journal-paper/.latexmkrc configures.
-	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && git config core.hooksPath .githooks && sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-science texlive-publishers latexmk git-lfs libgmp-dev libmpfr-dev && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && pip install maturin && (cd cyclosynth && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
+	// `rm -f target/wheels/*.whl` before the cyclosynth build: target/ lives in the
+	// bind-mounted workspace, so wheels from an earlier Python (a cp314 one from
+	// when the feature resolved 3.14+) survive rebuilds, and the *.whl glob then
+	// handed pip a wheel for the wrong interpreter ("not a supported wheel").
+	// --no-install-recommends keeps the TeX and node installs from dragging in
+	// ~700 extra packages (java, ruby, webpack, eslint, a GTK stack) over a slow
+	// link. Recommends that the paper really needs are therefore listed by hand:
+	// texlive-fonts-recommended (the default font set) and lmodern, because
+	// quantumarticle.cls refuses to load without lmodern or cm-super. Checked by
+	// building journal-paper/main.tex with latexmk in a clean trixie container.
+	// libblas-dev/liblapack-dev are needed before requirements.txt is installed:
+	// sparsediffpy (pulled in transitively by the cvxpy-based optimization stack,
+	// alongside osqp/highspy/qdldl) builds a CMake extension that calls
+	// find_package(BLAS) and fails the build without a system BLAS -- which,
+	// being && earlier in this chain, used to abort everything after it
+	// (maturin, the cyclosynth build, the claude-code npm install) silently.
+	// python3-maturin replaces a `pip install maturin` that used to sit between
+	// requirements.txt and the cyclosynth build. That line left nothing on PATH
+	// -- `pip show maturin` reported the package absent afterwards, so the
+	// cyclosynth build below was relying on a maturin that was not reliably
+	// there. The apt package puts it at /usr/bin/maturin before any of the pip
+	// steps run, so it survives those steps failing.
+	// pipx install uv provisions uv for the bicycle architecture compiler under
+	// /workspaces/other-code. Trixie packages no uv at all (neither uv,
+	// python3-uv, nor cargo-uv), and that project's pyproject.toml pins
+	// bqskit-ft to a git branch under [tool.uv.sources] -- a section pip ignores
+	// entirely, so building it with pip would silently resolve a different
+	// bqskit-ft than the one it is locked against. pipx itself comes from the
+	// python feature's installTools. Both of these run early, ahead of the pip
+	// and npm steps that have aborted this chain before.
+	// poppler-utils supplies pdftotext and pdftoppm, for reading the PDFs in
+	// related/ and journal-paper/related/ -- cited papers get consulted
+	// directly when checking this paper's numbers against their sources, and
+	// without pdftoppm the editor-side PDF reader cannot render a page either.
+	// Neither binary is in the base image, and --no-install-recommends below
+	// stops anything else from pulling them in, so they must be named.
+	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && git config core.hooksPath .githooks && sudo apt-get update && sudo apt-get install -y --no-install-recommends linux-perf pandoc poppler-utils texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-science texlive-publishers texlive-fonts-recommended lmodern latexmk git-lfs libgmp-dev libmpfr-dev libblas-dev liblapack-dev python3-maturin nodejs npm && pipx install uv && git lfs install && git lfs pull && git submodule update --init --recursive && pip install -r requirements.txt && (cd cyclosynth && rm -f target/wheels/*.whl && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release && pip install target/wheels/*.whl) && npm install -g @anthropic-ai/claude-code",
 	// On a GPU host, replace the --index-url below with a CUDA-enabled PyTorch build,
 	// e.g.: pip install torch --index-url https://download.pytorch.org/whl/cu121
 	//"postCreateCommand": "sudo apt-get update && sudo apt-get install -y linux-perf pandoc texlive-latex-base texlive-latex-recommended texlive-latex-extra git-lfs && git lfs install && git lfs pull && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu && pip install -e tableau/",
@@ -81,7 +134,13 @@
 	// namespace first and the fork's own __init__.py -- including the
 	// extend_path call that merges bqskit.ft back in -- never executes.
 	// Naming the repo root here makes PathFinder find a real package and win.
+	// PIP_BREAK_SYSTEM_PACKAGES: the python feature's "os-provided" install is
+	// Debian's python3, which is marked externally-managed (PEP 668), so a bare
+	// `pip install` aborts with "externally-managed-environment" and takes the rest
+	// of the postCreateCommand chain with it. This is a disposable container, so
+	// opt out; as the non-root vscode user pip falls back to a user-site install.
 	"containerEnv": {
+		"PIP_BREAK_SYSTEM_PACKAGES": "1",
 		"PYTHONPATH": "${containerWorkspaceFolder}/bqskit"
 	},
 	"remoteEnv": {
