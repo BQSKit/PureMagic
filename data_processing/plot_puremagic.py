@@ -413,10 +413,11 @@ _LABEL_FONTSIZE = 8
 _TICK_FONTSIZE = 7
 _LEGEND_FONTSIZE = 7
 _BAR_LABEL_FONTSIZE = 4.5
-# Eleven circuit names rotated 45 degrees across one column: at the normal
-# 7 pt tick size they dominate the figure, so the circuit axis gets its own
-# smaller size. The names are short and all-caps, so they stay legible.
-_CIRCUIT_TICK_FONTSIZE = 5.5
+# Eleven circuit names rotated 45 degrees are far longer than a numeric tick,
+# so the circuit axis sits one step below the 7 pt used for ticks elsewhere
+# rather than matching it exactly. It was a hardcoded 12 pt, larger than the
+# body text, which is what made these labels dominate their figures.
+_CIRCUIT_TICK_FONTSIZE = 6
 
 
 def _label_bars(ax, container, fmt="%.3g"):
@@ -1640,7 +1641,7 @@ def main():
             ax.set_xticks(np.arange(n_x))
             x_tick_labels = [str(xv) for xv in all_x_vals]
             ax.set_xticklabels(x_tick_labels, rotation=45, ha="right",
-                               fontsize=_CIRCUIT_TICK_FONTSIZE)
+                               fontsize=_TICK_FONTSIZE)
             ax.set_xlim(-0.6, n_x - 0.4)
             ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
             if args.hline:
@@ -2022,7 +2023,8 @@ def main():
         ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
         ax.set_xticks(x_pos)
         ax.set_xticklabels(
-            [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=12
+            [prettify_circuit_name(c) for c in all_circuits],
+            rotation=45, ha="right", fontsize=_CIRCUIT_TICK_FONTSIZE,
         )
         ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
         if args.logy:
