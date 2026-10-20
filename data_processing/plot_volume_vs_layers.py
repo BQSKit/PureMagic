@@ -13,6 +13,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_style import figsize, use_paper_style  # noqa: E402
+
+use_paper_style()
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from plot_puremagic import parse_output_file, prettify_circuit_name  # noqa: E402
 
 # 11 visually-distinct (colour, marker) pairs -- assigned in a fixed order per
@@ -67,7 +72,7 @@ def main():
     slope, intercept = np.polyfit(log_x, log_y, 1)
     r = np.corrcoef(log_x, log_y)[0, 1]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=figsize())
 
     circuits = sorted(df["circuit_pretty"].unique())
     for i, name in enumerate(circuits):
@@ -108,8 +113,7 @@ def main():
     ax.set_ylabel("Volume (lcycles $\\times$ total qubits)")
     ax.set_title(f"Volume vs. Layers across weight 0-{args.max_weight}")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=False)
-    fig.tight_layout()
-    fig.savefig(args.output, dpi=150, bbox_inches="tight")
+    fig.savefig(args.output)
     print(f"Wrote {args.output}")
     print(f"Pooled log-log correlation: r={r:.3f}, slope={slope:.3f}")
 

@@ -25,7 +25,10 @@ if "MPLBACKEND" not in os.environ:
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_style import figsize_wide, use_paper_style  # noqa: E402
 from plot_puremagic import _COLOURS, prettify_circuit_name  # noqa: E402
+
+use_paper_style()
 
 CIRCUIT = re.compile(r'circuit_fname: "[^"]*/([^/"]+?)\.trans[^"]*"')
 ROWS = re.compile(r"ancilla_rows:\s*(\d+),?")
@@ -64,7 +67,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-f", "--file", required=True, help="puremagic log of an --ancilla-rows sweep")
     ap.add_argument("-o", "--output", required=True)
-    ap.add_argument("--figsize", default="7.0,3.2")
+    ap.add_argument("--figsize",
+                    default="{:.3f},{:.3f}".format(*figsize_wide()))
     ap.add_argument("--normalize", action="store_true",
                     help="plot volume relative to each circuit's own best, not absolute")
     args = ap.parse_args()
@@ -105,8 +109,7 @@ def main():
             ax.set_yscale("log")
     axes[0][0].set_ylabel("Volume relative to best" if args.normalize else "Volume")
     axes[0][-1].legend(fontsize=7)
-    fig.tight_layout()
-    fig.savefig(args.output, dpi=150)
+    fig.savefig(args.output)
     print(f"\nwrote {args.output}")
 
     # Only pop up a window when explicitly asked; the figure is already saved.

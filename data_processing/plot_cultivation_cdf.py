@@ -36,15 +36,19 @@ if "MPLBACKEND" not in os.environ:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_style import COLUMN_IN, PALETTE, REFERENCE, use_paper_style  # noqa: E402
+
+use_paper_style()
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CURVE = os.path.join(HERE, os.pardir, "data", "cultivation", "survival_d5.csv")
 
-# Validated for deuteranopia/protanopia/tritanopia separation against a light
-# surface; the exact curve is deliberately achromatic, since it is the
-# reference the two models are measured against rather than a third category.
-C_EXACT = "#1a1a1a"
-C_EXP = "#2171b5"
-C_SHIFT = "#d95f02"
+# The exact curve is deliberately achromatic: it is the reference the two
+# models are measured against, not a third category.
+C_EXACT = REFERENCE
+C_EXP = PALETTE[0]
+C_SHIFT = PALETTE[1]
 
 
 def exact_pmf(survival, p_accept, tmax):
@@ -87,7 +91,7 @@ def main():
     ap.add_argument("--tmax-rounds", type=int, default=20000,
                     help="PMF support; the default captures the mass to 1e-6")
     ap.add_argument("--xmax", type=float, default=120.0, help="x limit, lcycles")
-    ap.add_argument("--figsize", default="3.4,3.5")
+    ap.add_argument("--figsize", default=f"{COLUMN_IN},3.4")
     ap.add_argument("-o", "--output",
                     default=os.path.join(HERE, "cultivation_cdf.png"))
     args = ap.parse_args()
@@ -133,14 +137,8 @@ def main():
     sy = [shift_cdf(x) for x in xs]
 
     w, h = (float(v) for v in args.figsize.split(","))
-    plt.rcParams.update({
-        "font.size": 8, "axes.labelsize": 8, "legend.fontsize": 7,
-        "xtick.labelsize": 7, "ytick.labelsize": 7,
-    })
-    # constrained_layout rather than tight_layout: the latter does not
-    # understand a shared-x pair with an explicit hspace and warns.
     fig, (ax, axr) = plt.subplots(
-        2, 1, figsize=(w, h), sharex=True, layout="constrained",
+        2, 1, figsize=(w, h), sharex=True,
         gridspec_kw={"height_ratios": [2.0, 1.0]})
 
     # (a) the distributions themselves. They agree closely, which is the point:
@@ -175,8 +173,7 @@ def main():
         axr.spines[side].set_visible(False)
 
     fig.align_ylabels((ax, axr))
-    fig.get_layout_engine().set(h_pad=0.01, w_pad=0.01, hspace=0.03, wspace=0.0)
-    fig.savefig(args.output, dpi=300)
+    fig.savefig(args.output)
     print(f"wrote {args.output}")
 
     print()

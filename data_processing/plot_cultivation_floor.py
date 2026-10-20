@@ -30,7 +30,10 @@ if "MPLBACKEND" not in os.environ:
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_style import figsize_wide, use_paper_style  # noqa: E402
 from plot_puremagic import _COLOURS, prettify_circuit_name  # noqa: E402
+
+use_paper_style()
 
 BANNER = re.compile(r"PureMagic - Git branch")
 CIRCUIT = re.compile(r'circuit_fname: "[^"]*/([^/"]+?)\.trans[^"]*"')
@@ -67,7 +70,8 @@ def main():
     ap.add_argument("--bus", required=True, help="puremagic log for the bus layout")
     ap.add_argument("--pm", required=True, help="puremagic log for the PureMagic layout")
     ap.add_argument("-o", "--output", required=True)
-    ap.add_argument("--figsize", default="7.0,3.2")
+    ap.add_argument("--figsize",
+                    default="{:.3f},{:.3f}".format(*figsize_wide()))
     ap.add_argument(
         "--mark-floor",
         type=float,
@@ -121,8 +125,7 @@ def main():
                 xytext=(3, 0),
                 textcoords="offset points",
             )
-    fig.tight_layout()
-    fig.savefig(args.output, dpi=150)
+    fig.savefig(args.output)
     print(f"\nwrote {args.output}")
 
     # Only pop up a window when explicitly asked; the figure is already saved.

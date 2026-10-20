@@ -26,6 +26,11 @@ import matplotlib
 if "MPLBACKEND" not in os.environ:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_style import figsize as paper_figsize, use_paper_style  # noqa: E402
+
+use_paper_style()
 import numpy as np
 
 from plot_puremagic import _COLOURS
@@ -312,7 +317,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Plot
     # -----------------------------------------------------------------------
-    figsize = (8, 4.5)
+    figsize = paper_figsize()
     if args.figsize:
         try:
             fw, fh = args.figsize.split(",", 1)
@@ -478,8 +483,7 @@ def main() -> None:
     if not args.no_legend:
         ax.legend(fontsize=_LEGEND_FONTSIZE)
 
-    plt.tight_layout()
-    plt.savefig(args.output, dpi=150)
+    plt.savefig(args.output)
     print(f"Plot saved to {args.output}")
     # Only pop up a window when explicitly asked; the figure is already saved.
     if os.environ.get("PUREMAGIC_SHOW_PLOTS"):
