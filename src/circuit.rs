@@ -119,6 +119,7 @@ impl Circuit {
     /// window is what any published excerpt actually wants.
     pub(crate) fn plot(
         &self, show_product_ids: bool, layer_range: Option<(usize, usize)>,
+        qubit_range: Option<(usize, usize)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _timer = fn_timer!();
         let circuit_path = Path::new(&self.circuit_fname);
@@ -136,6 +137,14 @@ impl Circuit {
             }
             None => (0, layers.len(), LAYERS_PER_FILE),
         };
+        // A layer window usually touches only part of the register, and
+        // plotting the idle rows anyway leaves the figure mostly blank -- it
+        // then has to be scaled down to fit a column and stops being legible.
+        let (min_qubit, max_qubit) = match qubit_range {
+            Some((start, end)) => (start.min(self.n_qubits), end.min(self.n_qubits).max(start + 1)),
+            None => (0, self.n_qubits),
+        };
+        let n_rows = max_qubit - min_qubit;
         for chunk_start in (min_layer..max_layer).step_by(layers_per_file) {
             let chunk_end = (chunk_start + layers_per_file).min(max_layer);
             let chunk_layers = chunk_end - chunk_start;
@@ -144,7 +153,11 @@ impl Circuit {
                 &plot_fname,
                 (
                     (chunk_layers as f32 * 0.17 * 100.0) as u32,
-                    (self.n_qubits as f32 * 0.22 * 100.0) as u32,
+                    // 0.13 rather than 0.22 per row: the glyphs are 10 pt on a
+                    // 100 dpi canvas, so 0.13 in still leaves clear headroom
+                    // and keeps the excerpt closer to landscape, which is what
+                    // a one-column figure wants.
+                    (n_rows as f32 * 0.13 * 100.0) as u32,
                 ),
             )
             .into_drawing_area();
@@ -156,13 +169,13 @@ impl Circuit {
                 .set_label_area_size(LabelAreaPosition::Bottom, 40)
                 .build_cartesian_2d(
                     chunk_start as f32..chunk_end as f32,
-                    ((self.n_qubits - 1) as f32 + 0.5)..(-0.5f32),
+                    ((max_qubit - 1) as f32 + 0.5)..(min_qubit as f32 - 0.5),
                 )?;
             chart
                 .configure_mesh()
                 .x_labels(chunk_layers / 5)
                 .x_label_formatter(&|x| format!("{}", x))
-                .y_labels((self.n_qubits + 1) as usize)
+                .y_labels(n_rows + 1)
                 .y_label_formatter(&|y| format!("{}", y))
                 .x_desc("Layers")
                 .y_desc("Qubit Number")
@@ -178,6 +191,9 @@ impl Circuit {
                     let col = col + chunk_start;
                     let start_pos = pp.get_qubits()[0];
                     let end_pos = *pp.get_qubits().last().unwrap();
+                    if (end_pos as usize) < min_qubit || (start_pos as usize) >= max_qubit {
+                        continue;
+                    }
                     let rect_height = (end_pos - start_pos) as f32 + 0.8;
                     let product_color = self.get_layer_product_color(i);
 
@@ -207,7 +223,10 @@ impl Circuit {
                         )))?;
                     } else {
                         for op in &pp.operators {
-                            if op.basis != ' ' {
+                            if op.basis != ' '
+                                && (op.qubit as usize) >= min_qubit
+                                && (op.qubit as usize) < max_qubit
+                            {
                                 chart.draw_series(std::iter::once(Text::new(
                                     op.basis.to_string(),
                                     (col as f32 + 0.1, op.qubit as f32 - 0.4),

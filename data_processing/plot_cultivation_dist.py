@@ -38,9 +38,14 @@ from plot_puremagic import _COLOURS
 # ---------------------------------------------------------------------------
 # Style constants
 # ---------------------------------------------------------------------------
-_LABEL_FONTSIZE = 15
-_TICK_FONTSIZE = 15
-_LEGEND_FONTSIZE = 15
+# Point sizes that reach the page, the figure being drawn at the width it is
+# included at. These were 15/15/15, sized for a figure the column then shrank.
+_LABEL_FONTSIZE = 8
+_TICK_FONTSIZE = 7
+_LEGEND_FONTSIZE = 7
+# The p10/median/p90 markers are annotations on top of the data, so they sit
+# below the tick size to stay out of the way.
+_ANNOT_FONTSIZE = 5
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +371,7 @@ def main() -> None:
                 step_y,
                 where="pre",
                 color=colour,
-                linewidth=2.0,
+                linewidth=1.1,
                 alpha=0.85,
                 label=label,
             )
@@ -390,7 +395,7 @@ def main() -> None:
             x=median_val,
             color=colour,
             linestyle="--",
-            linewidth=1.5,
+            linewidth=0.9,
             alpha=0.9,
             label="_nolegend_",
         )
@@ -401,7 +406,7 @@ def main() -> None:
             f"  median={median_val:.2f}",
             transform=ax.get_xaxis_transform(),  # x in data coords, y in axes [0,1]
             color=colour,
-            fontsize=_TICK_FONTSIZE,
+            fontsize=_ANNOT_FONTSIZE,
             va="bottom",
             ha="left",
             rotation=90,
@@ -412,7 +417,7 @@ def main() -> None:
             x=p10_val,
             color=colour,
             linestyle=":",
-            linewidth=1.5,
+            linewidth=0.9,
             alpha=0.9,
             label="_nolegend_",
         )
@@ -422,7 +427,7 @@ def main() -> None:
             f"  p10={p10_val:.2f}",
             transform=ax.get_xaxis_transform(),
             color=colour,
-            fontsize=_TICK_FONTSIZE,
+            fontsize=_ANNOT_FONTSIZE,
             va="bottom",
             ha="left",
             rotation=90,
@@ -433,7 +438,7 @@ def main() -> None:
             x=p90_val,
             color=colour,
             linestyle=":",
-            linewidth=1.5,
+            linewidth=0.9,
             alpha=0.9,
             label="_nolegend_",
         )
@@ -443,7 +448,7 @@ def main() -> None:
             f"  p90={p90_val:.2f}",
             transform=ax.get_xaxis_transform(),
             color=colour,
-            fontsize=_TICK_FONTSIZE,
+            fontsize=_ANNOT_FONTSIZE,
             va="bottom",
             ha="left",
             rotation=90,
@@ -452,7 +457,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Axes formatting
     # -----------------------------------------------------------------------
-    ax.grid(True, which="major", linestyle=":", linewidth=0.7, alpha=0.7)
+    ax.grid(True, which="major", linestyle=":", linewidth=0.4, alpha=0.4)
     ax.set_axisbelow(True)
     ax.set_xlabel(args.xlabel, fontsize=_LABEL_FONTSIZE)
     ax.set_ylabel(args.ylabel, fontsize=_LABEL_FONTSIZE)

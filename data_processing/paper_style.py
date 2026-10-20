@@ -66,6 +66,27 @@ def figsize(ratio=DEFAULT_RATIO, width=COLUMN_IN):
     return (width, width * ratio)
 
 
+def figsize_panel(n, ratio=0.95, wide=True):
+    """(width, height) for one panel of an `n`-panel row.
+
+    A panel drawn at full column width and then included in a
+    `0.49\\columnwidth` subfigure is rescaled to 49%, which halves its font
+    sizes -- the reason several multi-panel figures came out unreadable. Draw
+    each panel at the width it is actually placed at instead, so the scale
+    stays 1:1 and the point sizes hold.
+
+    `wide=True` spreads the row across both columns, which is what makes a
+    three-panel row viable at all: across one column each panel would be
+    1.0 inch.
+    """
+    # The fractions match the subfigure widths declared in the .tex exactly,
+    # so the panel is drawn at the width it is placed at and nothing rescales.
+    # The shortfall from 1/n is the inter-panel gap \hfill introduces.
+    frac = {2: 0.49, 3: 0.32, 4: 0.24}[n]
+    w = (TEXT_IN if wide else COLUMN_IN) * frac
+    return (w, w * ratio)
+
+
 def figsize_wide(ratio=0.38):
     """(width, height) for a figure spanning both columns.
 

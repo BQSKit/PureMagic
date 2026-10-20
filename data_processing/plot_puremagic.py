@@ -413,6 +413,10 @@ _LABEL_FONTSIZE = 8
 _TICK_FONTSIZE = 7
 _LEGEND_FONTSIZE = 7
 _BAR_LABEL_FONTSIZE = 4.5
+# Eleven circuit names rotated 45 degrees across one column: at the normal
+# 7 pt tick size they dominate the figure, so the circuit axis gets its own
+# smaller size. The names are short and all-caps, so they stay legible.
+_CIRCUIT_TICK_FONTSIZE = 5.5
 
 
 def _label_bars(ax, container, fmt="%.3g"):
@@ -1062,8 +1066,8 @@ def main():
                         marker=marker,
                         color=colour,
                         edgecolors="black",
-                        linewidths=0.5,
-                        s=60,
+                        linewidths=0.3,
+                        s=9,
                         zorder=3,
                     )
                 ax.plot(
@@ -1088,8 +1092,8 @@ def main():
                     marker=marker,
                     color=colour,
                     edgecolors="black",
-                    linewidths=0.5,
-                    s=60,
+                    linewidths=0.3,
+                    s=9,
                     zorder=3,
                 )
 
@@ -1635,7 +1639,8 @@ def main():
             # X-axis: use the actual x values as tick labels.
             ax.set_xticks(np.arange(n_x))
             x_tick_labels = [str(xv) for xv in all_x_vals]
-            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right", fontsize=_TICK_FONTSIZE)
+            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right",
+                               fontsize=_CIRCUIT_TICK_FONTSIZE)
             ax.set_xlim(-0.6, n_x - 0.4)
             ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
             if args.hline:
@@ -1882,8 +1887,8 @@ def main():
                                     marker=marker,
                                     color=colour,
                                     edgecolors="black",
-                                    linewidths=0.5,
-                                    s=60,
+                                    linewidths=0.3,
+                                    s=9,
                                     zorder=3,
                                 )
 
@@ -1993,8 +1998,8 @@ def main():
                             marker=wisq_marker,
                             color=wisq_colour,
                             edgecolors="black",
-                            linewidths=0.5,
-                            s=60,
+                            linewidths=0.3,
+                            s=9,
                             zorder=3,
                         )
                     ax.set_ylabel(

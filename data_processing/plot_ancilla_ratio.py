@@ -86,7 +86,7 @@ def main():
 
     hdr = f"{'circuit':<26} {'rows':>4} {'anc/data':>8} {'volume':>14}"
     print(hdr)
-    for ax, lam in zip(axes[0], lambdas):
+    for j, (ax, lam) in enumerate(zip(axes[0], lambdas)):
         for i, c in enumerate(circuits):
             pts = sorted((r for r in rows if r["circuit"] == c and r["lam"] == lam),
                          key=lambda r: r["rows"])
@@ -101,8 +101,14 @@ def main():
                 vol = [v / best for v in vol]
             ax.plot(ratio, vol, styles[i % len(styles)],
                     color=_COLOURS[i % len(_COLOURS)], label=prettify_circuit_name(c))
+        # Panels are identified by an (a)/(b) marker inside the axes, with
+        # what each one means left to the caption -- a title above the axes
+        # duplicates caption text and competes with it for the reader.
         # 1/lambda is the mean cultivation time in lcycles.
-        ax.set_title(f"mean cultivation {1.0 / lam:.0f} lcycles", fontsize=9)
+        ax.text(0.03, 0.95, f"({chr(ord('a') + j)})", transform=ax.transAxes,
+                va="top", ha="left", fontweight="bold")
+        print(f"  panel ({chr(ord('a') + j)}): mean cultivation "
+              f"{1.0 / lam:.0f} lcycles")
         ax.set_xlabel("Ancilla / data patches")
         ax.grid(alpha=0.3)
         if not args.normalize:
