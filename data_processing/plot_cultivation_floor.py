@@ -80,6 +80,9 @@ def main():
         "operating point (see derive_cultivation_floor.py). Everything to the "
         "right of it is hypothetical.",
     )
+    ap.add_argument("--panel", choices=["both", "advantage", "observed"], default="both",
+                    help="draw one panel only, for placing the two as separately "
+                    "captioned subfigures")
     args = ap.parse_args()
 
     bus, pm = parse(args.bus), parse(args.pm)
@@ -88,7 +91,15 @@ def main():
         sys.exit("no circuits common to both logs")
 
     w, h = (float(x) for x in args.figsize.split(","))
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(w, h))
+    if args.panel == "both":
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(w, h))
+    else:
+        fig, ax = plt.subplots(figsize=(w, h))
+        ax1 = ax2 = ax
+        if args.panel == "advantage":
+            ax2 = fig.add_axes([0, 0, 0.001, 0.001]); ax2.set_visible(False)
+        else:
+            ax1 = fig.add_axes([0, 0, 0.001, 0.001]); ax1.set_visible(False)
 
     print(f"{'circuit':<26} {'floor':>5} {'bus vol':>12} {'pm vol':>12} {'impr %':>8} {'obs avg':>8}")
     for i, c in enumerate(sorted(circuits)):
@@ -110,8 +121,11 @@ def main():
     ax1.axhline(0, color="grey", lw=0.8, ls=":")
     ax2.set_xlabel("Cultivation floor (lcycles)")
     ax2.set_ylabel("Observed cultivation time (lcycles)")
-    ax2.legend(fontsize=7)
+    if args.panel != "advantage":
+        ax2.legend(fontsize=7)
     for ax in (ax1, ax2):
+        if not ax.get_visible():
+            continue
         ax.grid(alpha=0.3)
         if args.mark_floor is not None:
             ax.axvline(args.mark_floor, color="black", lw=1.2, ls="--")
