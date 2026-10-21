@@ -71,6 +71,10 @@ def main():
                     default="{:.3f},{:.3f}".format(*figsize_wide()))
     ap.add_argument("--normalize", action="store_true",
                     help="plot volume relative to each circuit's own best, not absolute")
+    ap.add_argument("--panel", type=int, default=None, metavar="N",
+                    help="draw only cultivation rate N (0 = fastest), without the "
+                    "in-axes (a)/(b) marker, for placing each as a separately "
+                    "captioned subfigure")
     args = ap.parse_args()
 
     rows = parse(args.file)
@@ -81,6 +85,9 @@ def main():
     circuits = sorted({r["circuit"] for r in rows})
     styles = ["o-", "s--", "^:", "d-."]
 
+    n_total = len(lambdas)
+    if args.panel is not None:
+        lambdas = [lambdas[args.panel]]
     w, h = (float(x) for x in args.figsize.split(","))
     fig, axes = plt.subplots(1, len(lambdas), figsize=(w, h), squeeze=False)
 
@@ -105,16 +112,18 @@ def main():
         # what each one means left to the caption -- a title above the axes
         # duplicates caption text and competes with it for the reader.
         # 1/lambda is the mean cultivation time in lcycles.
-        ax.text(0.03, 0.95, f"({chr(ord('a') + j)})", transform=ax.transAxes,
-                va="top", ha="left", fontweight="bold")
-        print(f"  panel ({chr(ord('a') + j)}): mean cultivation "
+        if args.panel is None:
+            ax.text(0.03, 0.95, f"({chr(ord('a') + j)})", transform=ax.transAxes,
+                    va="top", ha="left", fontweight="bold")
+        print(f"  panel {j if args.panel is None else args.panel}: mean cultivation "
               f"{1.0 / lam:.0f} lcycles")
         ax.set_xlabel("Ancilla / data patches")
         ax.grid(alpha=0.3)
         if not args.normalize:
             ax.set_yscale("log")
     axes[0][0].set_ylabel("Volume relative to best" if args.normalize else "Volume")
-    axes[0][-1].legend(fontsize=7)
+    if args.panel is None or args.panel == n_total - 1:
+        axes[0][-1].legend(fontsize=7)
     fig.savefig(args.output)
     print(f"\nwrote {args.output}")
 
