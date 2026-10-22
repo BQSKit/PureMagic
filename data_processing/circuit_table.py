@@ -40,13 +40,26 @@ def parse_qasm(filepath):
     """
     Parse a QASM file and return (num_qubits, circuit_length).
 
-    num_qubits     - extracted from the 'qreg' declaration
-    circuit_length - number of non-empty, non-comment lines that are gate
-                     instructions (i.e. excluding OPENQASM, include, qreg,
-                     creg declarations)
+    Handles both OpenQASM 2 (`qreg q[n];`) and OpenQASM 3 (`qubit[n] name;`,
+    `x = measure y;`). MQT Bench emits ADD as OpenQASM 3 with four separate
+    qubit registers, so the qubit count is the sum over every register.
+
+    num_qubits     - total over all quantum register declarations
+    circuit_length - number of lines that are unitary gate instructions.
+                     Excluded: version/include lines, qubit and bit/creg
+                     declarations, measurements in either syntax, resets,
+                     barriers, identity gates, and the bodies of `gate ... { }`
+                     definitions (their lines are definitions, not instructions).
+
+    Raises ValueError if no quantum register is found. Returning None here
+    used to be coerced to 0 downstream, turning a parse failure into a
+    plausible-looking wrong number in the benchmark table.
     """
-    num_qubits = None
+    num_qubits = 0
+    found_register = False
     circuit_length = 0
+    gate_depth = 0
+    gate_seen = False
 
     # Lines that are not unitary gate instructions (excluded from count)
     header_patterns = [
@@ -54,35 +67,48 @@ def parse_qasm(filepath):
         re.compile(r"^\s*include\b"),
         re.compile(r"^\s*qreg\b"),
         re.compile(r"^\s*creg\b"),
+        re.compile(r"^\s*qubit\b"),
+        re.compile(r"^\s*bit\b"),
         re.compile(r"^\s*measure\b"),
+        re.compile(r"^\s*\w+(\[\d+\])?\s*=\s*measure\b"),
         re.compile(r"^\s*reset\b"),
         re.compile(r"^\s*barrier\b"),
         re.compile(r"^\s*id\b"),
     ]
-    qreg_pattern = re.compile(r"^\s*qreg\s+\w+\[(\d+)\]")
+    qreg_patterns = [
+        re.compile(r"^\s*qreg\s+\w+\[(\d+)\]"),   # OpenQASM 2
+        re.compile(r"^\s*qubit\[(\d+)\]\s+\w+"),  # OpenQASM 3, sized
+        re.compile(r"^\s*qubit\s+(\w+)\s*;"),      # OpenQASM 3, single qubit
+    ]
 
     with open(filepath, "r") as f:
         for line in f:
-            stripped = line.strip()
-
-            if not stripped:
-                continue
-
-            if stripped.startswith("//"):
-                continue
-
-            code_part = stripped.split("//")[0].strip()
+            code_part = line.split("//")[0].strip()
             if not code_part:
                 continue
 
-            m = qreg_pattern.match(code_part)
-            if m:
-                num_qubits = int(m.group(1))
+            # A `gate` definition runs from its header to the matching close
+            # brace, and the opening brace may sit on the header line (QASM 3
+            # from MQT Bench) or on a line of its own (QASM 2 from Qiskit).
+            if gate_seen or re.match(r"^gate\b", code_part):
+                gate_seen = True
+                gate_depth += code_part.count("{") - code_part.count("}")
+                if gate_depth == 0 and "}" in code_part:
+                    gate_seen = False
+                continue
 
-            is_header = any(p.match(code_part) for p in header_patterns)
-            if not is_header:
+            for k, pat in enumerate(qreg_patterns):
+                m = pat.match(code_part)
+                if m:
+                    num_qubits += int(m.group(1)) if k < 2 else 1
+                    found_register = True
+                    break
+
+            if not any(p.match(code_part) for p in header_patterns):
                 circuit_length += 1
 
+    if not found_register:
+        raise ValueError(f"{filepath}: no qreg/qubit declaration found; refusing to guess")
     return num_qubits, circuit_length
 
 
@@ -307,7 +333,7 @@ def main():
         pm_depths,
     ) in rows:
         t_gates = (
-            (transpiled_total - cliffords - (num_qubits or 0))
+            (transpiled_total - cliffords - num_qubits)
             if (transpiled_total is not None and cliffords is not None)
             else None
         )
