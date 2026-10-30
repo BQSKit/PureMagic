@@ -107,6 +107,16 @@ fn synthesize_rz_word(theta: f64, epsilon: f64, cache: &SynthCache) -> Vec<Gate>
     word
 }
 
+/// T gates in the independent-axis synthesis of `Rz(theta)` -- the cost one
+/// Euler axis pays when synthesized on its own, as a back end that lowers
+/// rotations one Pauli at a time synthesizes it.
+pub fn rz_t_count(theta: f64, epsilon: f64, cache: &SynthCache) -> usize {
+    synthesize_rz_word(theta, epsilon, cache)
+        .iter()
+        .filter(|g| matches!(g, Gate::T | Gate::Tdg))
+        .count()
+}
+
 /// Approximate `Ry(theta)` via a fixed Clifford change of basis around an
 /// Rz synthesis: `S*H` conjugates Z to Y (established directly: H maps
 /// Z->X, then S maps X->Y), so `Ry(theta) = (S*H) * Rz(theta) * (S*H)^dagger`.

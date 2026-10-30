@@ -9,9 +9,10 @@ mod cliffordt;
 mod utils;
 
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 
 use clap::Parser;
+use rayon::prelude::*;
 
 use cyclosynth::synthesis::diag;
 
@@ -19,7 +20,9 @@ use cliffordt::matrix::distance;
 use cliffordt::pipeline::{PipelineConfig, compile, total_gate_count, total_rz_count};
 use cliffordt::qasm::load_qasm;
 use cliffordt::qasm_write::write_qasm;
+use cliffordt::qgate_circuit::{Circuit, Gate};
 use cliffordt::stats::{Stats, compute_stats, non_basis_ops};
+use cliffordt::synthesize::{SynthCache, rz_t_count};
 use utils::Timer;
 
 #[derive(Parser, Debug)]
@@ -66,6 +69,79 @@ struct Args {
     /// contribution to the result.
     #[arg(long)]
     skip_clifford_simplify: bool,
+
+    /// Also write the Clifford+Rz circuit Stage 3 receives -- the program
+    /// after every rotation-level optimization, before T synthesis -- as
+    /// <stem>.rotations.qasm beside the Clifford+T output, for back ends that
+    /// take rotations rather than T gates; and <stem>.rotations.tcount, one
+    /// "angle T-count" line per distinct non-Clifford Rz angle, from the same
+    /// independent-axis synthesis `--skip-cyclosynth` uses, so such a back end
+    /// pays exactly this synthesizer's cost per axis.
+    #[arg(long)]
+    emit_rotations: bool,
+}
+
+/// Distinct Rz angles that need synthesis (not multiples of pi/4), in first
+/// appearance order.
+fn costly_rz_angles(circuit: &Circuit) -> Vec<f64> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for op in &circuit.ops {
+        if let Gate::Rz(theta) = op.gate {
+            let quarter = theta / std::f64::consts::FRAC_PI_4;
+            if (quarter - quarter.round()).abs() > 1e-12 && seen.insert(theta.to_bits()) {
+                out.push(theta);
+            }
+        }
+    }
+    out
+}
+
+/// Where `--emit-rotations` writes, given the Clifford+T destination.
+fn rotations_path(destination: &str) -> String {
+    match destination.strip_suffix(".cliffordt.qasm") {
+        Some(stem) => format!("{stem}.rotations.qasm"),
+        None => format!("{destination}.rotations.qasm"),
+    }
+}
+
+#[cfg(test)]
+mod costly_rz_angles_tests {
+    use super::{Circuit, Gate, costly_rz_angles};
+    use crate::cliffordt::synthesize::{SynthCache, rz_t_count};
+
+    #[test]
+    fn keeps_each_non_clifford_angle_once_in_order() {
+        let mut c = Circuit::new(2);
+        c.push(Gate::Rz(0.3), vec![0]);
+        c.push(Gate::Rz(std::f64::consts::FRAC_PI_2), vec![1]); // Clifford
+        c.push(Gate::Rz(std::f64::consts::FRAC_PI_4), vec![1]); // a T gate
+        c.push(Gate::Rz(-0.7), vec![1]);
+        c.push(Gate::Rz(0.3), vec![1]); // repeat
+        assert_eq!(costly_rz_angles(&c), vec![0.3, -0.7]);
+    }
+
+    #[test]
+    fn a_generic_axis_costs_tens_of_t_gates() {
+        // ~3 log2(1/eps) for Ross-Selinger at 1e-8.
+        let t = rz_t_count(0.123456789, 1e-8, &SynthCache::new());
+        assert!((60..=100).contains(&t), "{t}");
+    }
+}
+
+#[cfg(test)]
+mod rotations_path_tests {
+    use super::rotations_path;
+
+    #[test]
+    fn replaces_the_cliffordt_suffix() {
+        assert_eq!(rotations_path("data/dnn_n8.cliffordt.qasm"), "data/dnn_n8.rotations.qasm");
+    }
+
+    #[test]
+    fn appends_to_an_explicit_output_name() {
+        assert_eq!(rotations_path("out.qasm"), "out.qasm.rotations.qasm");
+    }
 }
 
 fn output_path(input: &str, output: &Option<String>, multiple_inputs: bool) -> String {
@@ -187,7 +263,16 @@ fn main() {
         let compile_timer = Timer::new("compile");
         let mut prev_gates = total_gate_count(&circuit);
         let mut prev_rz = total_rz_count(&circuit);
+        // The last circuit reported before Stage 3 is the one it synthesizes;
+        // with every earlier stage skipped, that is the input itself.
+        let mut pre_synthesis = None;
         let (compiled, error_bound) = compile(&circuit, &config, |report| {
+            if args.emit_rotations
+                && !report.name.starts_with("stage 3")
+                && !report.name.starts_with("stage 4")
+            {
+                pre_synthesis = Some(report.circuit.clone());
+            }
             let gates = total_gate_count(report.circuit);
             let rz = total_rz_count(report.circuit);
             match &report.detail {
@@ -295,6 +380,53 @@ fn main() {
         drop(write_timer);
 
         println!("  wrote {destination}");
+
+        if args.emit_rotations {
+            let rotations = pre_synthesis.take().unwrap_or_else(|| circuit.clone()).unfold();
+            let path = rotations_path(&destination);
+            let write_result = File::create(&path).and_then(|f| {
+                let mut writer = BufWriter::new(f);
+                write_qasm(&rotations, &mut writer)
+            });
+            if let Err(e) = write_result {
+                eprintln!("ERROR {input}: failed to write {path}: {e}");
+                failures += 1;
+                continue;
+            }
+            println!("  wrote {path} (Rz={})", total_rz_count(&rotations));
+
+            let angles = costly_rz_angles(&rotations);
+            let cache = SynthCache::new();
+            let counts: Vec<usize> =
+                angles.par_iter().map(|&a| rz_t_count(a, args.epsilon, &cache)).collect();
+            let tcount_path = format!("{}.tcount", path);
+            let write_result = File::create(&tcount_path).and_then(|f| {
+                let mut writer = BufWriter::new(f);
+                for (angle, t) in angles.iter().zip(&counts) {
+                    writeln!(writer, "{angle} {t}")?;
+                }
+                writer.flush()
+            });
+            if let Err(e) = write_result {
+                eprintln!("ERROR {input}: failed to write {tcount_path}: {e}");
+                failures += 1;
+                continue;
+            }
+            let by_angle: std::collections::HashMap<u64, usize> =
+                angles.iter().map(|a| a.to_bits()).zip(counts.iter().copied()).collect();
+            let per_axis_total: usize = rotations
+                .ops
+                .iter()
+                .filter_map(|op| match op.gate {
+                    Gate::Rz(t) => by_angle.get(&t.to_bits()).copied(),
+                    _ => None,
+                })
+                .sum();
+            println!(
+                "  wrote {tcount_path} ({} distinct angles, {per_axis_total} T if each Rz is synthesized alone)",
+                angles.len()
+            );
+        }
     }
 
     if failures > 0 {
