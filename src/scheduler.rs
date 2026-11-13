@@ -178,7 +178,7 @@ const HELPER_MAX_WAIT: usize = 2;
 /// independent one-qubit S corrections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum TCorrection {
-    /// Auto-corrected pi/8 rotation (Litinski, Game of Surface Codes), the default. In the
+    /// Auto-corrected pi/8 rotation (Litinski, Game of Surface Codes). In the
     /// injection lcycle a free neighbour of the magic patch is borrowed as a |0> helper;
     /// Z_m (x) Y_helper is measured alongside P (x) Z_m, then the magic patch in X, which frees
     /// it. Once the injection outcome is decoded the helper is measured in X or Z, which applies
@@ -192,7 +192,9 @@ pub(crate) enum TCorrection {
     LitinskiReady,
     /// As `litinski-ready`, but a ready magic state is never borrowed as the helper. Injections
     /// whose free neighbours are all ready states wait for a helper, and after `HELPER_MAX_WAIT`
-    /// lcycles fall back to measuring the magic patch in place in X or Y (Gidney).
+    /// lcycles fall back to measuring the magic patch in place in X or Y (Gidney). The default:
+    /// it never wastes a magic state, and is cheaper overall on the benchmarks
+    /// (docs/t-gate-corrections.md).
     LitinskiY,
     /// Exact Clifford frame (src/frame.rs): a failed T's correction R_P(pi/4) is never applied.
     /// It is folded into a frame W, and every later T and measurement about Q runs about
@@ -382,7 +384,7 @@ impl Scheduler {
             pp_paths: Vec::new(),
             current_lcycle: 0,
             reaction_latency: 0,
-            t_correction: TCorrection::LitinskiReady,
+            t_correction: TCorrection::LitinskiY,
             held: Vec::new(),
             helper_wanted: Vec::new(),
             inplace_pending: HashMap::new(),
@@ -2238,6 +2240,7 @@ mod tests {
     #[test]
     fn litinski_helper_rank_prefers_bus_then_cultivating_then_ready() {
         let mut sched = build_scheduler(T_HEAVY_LINES, 0);
+        sched.set_t_correction(TCorrection::LitinskiReady);
         sched.sched_circuit().expect("sched_circuit failed");
         let topo = &mut sched.input.topo;
         let magic: Vec<u16> = (0..topo.n_nodes as u16)
@@ -2274,6 +2277,7 @@ mod tests {
                 assert_eq!(st.inplace, st.helpers_missing);
                 any_inplace_or_wait |= st.helpers_missing + st.helpers_deferred > 0;
                 let mut r = build_scheduler(T_HEAVY_LINES, rseed);
+                r.set_t_correction(TCorrection::LitinskiReady);
                 r.set_reaction_latency(latency);
                 r.sched_circuit().expect("sched_circuit failed");
                 wasted_ready += r.t_stats.helpers_ready;

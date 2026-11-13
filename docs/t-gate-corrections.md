@@ -14,15 +14,15 @@ that differ only in which patch may serve as the helper, and an exact Clifford f
 
 | `--t-correction` | Model | Helper when no bus or cultivating neighbour is free |
 |---|---|---|
-| `litinski-ready` (default) | auto-corrected $\pi/8$ rotation (§2) | a ready magic state, which is wasted (§2.1) |
-| `litinski-y` | auto-corrected $\pi/8$ rotation (§2) | none: wait, then measure the magic patch in place in $X$ or $Y$ (Gidney; §2.2) |
+| `litinski-y` (default) | auto-corrected $\pi/8$ rotation (§2) | none: wait, then measure the magic patch in place in $X$ or $Y$ (Gidney; §2.1) |
+| `litinski-ready` | auto-corrected $\pi/8$ rotation (§2) | a ready magic state, which is wasted (§2.2) |
 | `frame` | exact Clifford frame (§3) | no helper is used |
 
 | Flag | Values | Default |
 |---|---|---|
-| `--t-correction` | `litinski-ready`, `litinski-y`, `frame` | `litinski-ready` |
+| `--t-correction` | `litinski-y`, `litinski-ready`, `frame` | `litinski-y` |
 | `--reaction-latency` | $L$: lcycles from a $T$ injection until its outcome is decoded and acted on | $0$ |
-| `--y-meas-lcycles` | extra lcycles for an in-place $Y$ measurement (the fallback in §2.2) | $1$ |
+| `--y-meas-lcycles` | extra lcycles for an in-place $Y$ measurement (the fallback in §2.1) | $1$ |
 
 `-F` (no $T$ failures) skips all of this: nothing is ever owed.
 
@@ -59,7 +59,7 @@ combine into a non-Pauli Clifford, and no correction gate is emitted for it.
 The old model also charged no time for decoding an injection outcome before its correction is
 decided.
 
-## 2. Auto-corrected $\pi/8$ rotation (`litinski-ready`, default, and `litinski-y`)
+## 2. Auto-corrected $\pi/8$ rotation (`litinski-y`, default, and `litinski-ready`)
 
 Litinski, *A Game of Surface Codes* (Quantum 3, 128, 2019), auto-corrected $\pi/8$ rotations.
 With a $|0\rangle$ helper patch $h$ next to the magic patch $m$:
@@ -93,15 +93,7 @@ The two variants differ when no bus or cultivating neighbour is free. Usually th
 neighbours left are then ready magic states (they are on most failed searches in the benchmarks
 below).
 
-### 2.1 `--t-correction litinski-ready` (default): waste a ready state
-
-A ready magic state is borrowed as the helper, last in the order above. Its state is lost and
-the patch starts cultivating again. On the benchmarks below, 16.5% of helpers are ready states,
-6.1% of injections wait for a free neighbour, and no injection ever needs the in-place fallback
-of §2.2 (it is kept as a safety net, for a magic patch with no free neighbour at all for
-2 lcycles).
-
-### 2.2 `--t-correction litinski-y`: never waste a ready state; in-place $Y$ fallback
+### 2.1 `--t-correction litinski-y` (default): never waste a ready state; in-place $Y$ fallback
 
 A ready magic state is never a helper. An injection with no other free neighbour waits for one
 (28% of injections on the benchmarks below), holding its magic patch. After 2 lcycles, or at once
@@ -121,6 +113,17 @@ measured in $X$ (no correction) or $Y$ (applies it):
 The wait is bounded because waiting longer could deadlock two magic patches that each occupy the
 other's only free neighbour: without the 2-lcycle limit, 4 of 20 benchmark runs took 1–4 million
 lcycles instead of 1,500–14,000.
+
+### 2.2 `--t-correction litinski-ready`: waste a ready state
+
+A ready magic state is borrowed as the helper, last in the order above. Its state is lost and
+the patch starts cultivating again. On the benchmarks below, 16.5% of helpers are ready states,
+6.1% of injections wait for a free neighbour, and no injection ever needs the in-place fallback
+of §2.1 (it is kept as a safety net, for a magic patch with no free neighbour at all for
+2 lcycles).
+
+It is not the default: it saves waiting but spends magic states, and on magic-limited circuits
+that costs more (§6).
 
 ### When is the correction decided?
 
@@ -196,7 +199,7 @@ sensitivity range for today's decoders.
 
 - **Correction needed = injection failed.** The true condition is
   $(\text{injection outcome}) \oplus (\text{frame parity})$, which is also a fair coin. The
-  scheduler uses the failure coin. This matters only for the in-place fallback (§2.2), where it
+  scheduler uses the failure coin. This matters only for the in-place fallback (§2.1), where it
   decides which patches pay the $Y$ time.
 - **$Z_m \otimes Y_h$ takes one lcycle**, in parallel with $P \otimes Z_m$. The helper's $X$/$Z$
   measurement and the magic patch's $X$ measurement are instantaneous (transversal).
@@ -209,41 +212,45 @@ knn_n129, qugan_n111), each transpiled at `-m 0` and `-m 1`, scheduled with `-u`
 1. Lcycles are relative to the old model (`main` before this change) at the same seed. Volume
 changes exactly as lcycles do (the patch count is fixed).
 
-| circuit | litinski-ready $L=0$ | litinski-ready $L=1$ | litinski-y $L=0$ | litinski-y $L=1$ | frame $L=0$ | frame $L=1$ |
+| circuit | litinski-y $L=0$ | litinski-y $L=1$ | litinski-ready $L=0$ | litinski-ready $L=1$ | frame $L=0$ | frame $L=1$ |
 |---|---|---|---|---|---|---|
-| cdkm_ripple_carry_adder `-m 0` | +6.1% | +5.9% | +5.9% | +7.4% | +10.4% | +10.8% |
-| cdkm_ripple_carry_adder `-m 1` | +3.2% | +5.3% | +4.8% | +6.3% | +4.2% | +4.2% |
-| dnn_n51 `-m 0` | +2.8% | +5.9% | +3.4% | +6.3% | +8.4% | +58.9% |
-| dnn_n51 `-m 1` | +1.3% | +3.4% | +1.7% | +3.7% | +32.4% | +73.6% |
-| ising_n98 `-m 0` | +2.9% | +6.4% | +1.5% | +4.8% | +0.3% | +0.0% |
-| ising_n98 `-m 1` | +3.9% | +6.2% | +2.1% | +5.0% | +2.9% | +5.5% |
-| knn_n129 `-m 0` | +5.0% | +9.0% | +8.5% | +11.4% | +2.4% | +2.6% |
-| knn_n129 `-m 1` | +0.6% | +5.1% | −0.4% | +4.2% | +1.2% | +1.2% |
-| qugan_n111 `-m 0` | +1.4% | +2.9% | +2.3% | +3.7% | +0.8% | +97.4% |
-| qugan_n111 `-m 1` | −0.2% | +1.2% | +0.3% | +1.6% | +3.7% | +76.5% |
-| **geomean** | **+2.7%** | **+5.1%** | **+3.0%** | **+5.4%** | **+6.3%** | **+28.4%** |
+| cdkm_ripple_carry_adder `-m 0` | +5.9% | +7.4% | +6.1% | +5.9% | +10.4% | +10.8% |
+| cdkm_ripple_carry_adder `-m 1` | +4.8% | +6.3% | +3.2% | +5.3% | +4.2% | +4.2% |
+| dnn_n51 `-m 0` | +3.4% | +6.3% | +2.8% | +5.9% | +8.4% | +58.9% |
+| dnn_n51 `-m 1` | +1.7% | +3.7% | +1.3% | +3.4% | +32.4% | +73.6% |
+| ising_n98 `-m 0` | +1.5% | +4.8% | +2.9% | +6.4% | +0.3% | +0.0% |
+| ising_n98 `-m 1` | +2.1% | +5.0% | +3.9% | +6.2% | +2.9% | +5.5% |
+| knn_n129 `-m 0` | +8.5% | +11.4% | +5.0% | +9.0% | +2.4% | +2.6% |
+| knn_n129 `-m 1` | −0.4% | +4.2% | +0.6% | +5.1% | +1.2% | +1.2% |
+| qugan_n111 `-m 0` | +2.3% | +3.7% | +1.4% | +2.9% | +0.8% | +97.4% |
+| qugan_n111 `-m 1` | +0.3% | +1.6% | −0.2% | +1.2% | +3.7% | +76.5% |
+| **geomean** | **+3.0%** | **+5.4%** | **+2.7%** | **+5.1%** | **+6.3%** | **+28.4%** |
 
 Helper statistics over all Litinski runs above (545,528 injections per variant):
 
 | | waited for a helper | in-place fallback | helper was a ready state |
 |---|---|---|---|
-| `litinski-ready` | 6.1% | 0 | 16.5% |
 | `litinski-y` | 28.3% | 0.47% | 0 |
+| `litinski-ready` | 6.1% | 0 | 16.5% |
 
-- **The helper itself is cheap.** At $L = 0$ Litinski costs +2.7% (`litinski-ready`) or +3.0%
-  (`litinski-y`): it borrows a neighbour for one lcycle, which restarts that patch's
+- **The helper itself is cheap.** At $L = 0$ Litinski costs +3.0% (`litinski-y`) or +2.7%
+  (`litinski-ready`): it borrows a neighbour for one lcycle, which restarts that patch's
   cultivation. Its cost grows slowly with $L$ because only the helper waits; the data path never
   does.
-- **Wasting a ready state is usually cheaper than waiting for a helper.** `litinski-ready` is
-  ahead on geomean at both latencies, and on 6 of 10 circuits at both. It is about 1–2 points
-  behind on ising_n98 (`-m 0` and `-m 1`) and knn_n129 `-m 1`, where the wasted states are
-  missed, and mixed on cdkm_ripple_carry_adder `-m 0`.
+- **Wasting a ready state saves waiting but spends magic states.** On these 10 circuits
+  `litinski-ready` is 0.3 points ahead on geomean at both latencies (ahead on 6 circuits, behind
+  by about 1–2 points on ising_n98 and knn_n129 `-m 1`, mixed on cdkm_ripple_carry_adder
+  `-m 0`). On 14 T-dense, magic-limited dcsynth circuits (7 benchmarks, Orig and DC-opt,
+  ancillas hosted; measured on the `mcm-support` branch with the same two variants) it is
+  +1.6% behind at both latencies and behind on 10–11 of 14: it halves the waits but wastes
+  214,889 ready states. Over all 24 circuits `litinski-ready` costs +0.8% more than
+  `litinski-y` at both $L = 0$ and $L = 1$, and is behind on 13–15 of them.
 - **Physical Cliffords spread the frame.** Every $S$/$SX$/$CX$ line conjugates $W$, so circuits
   with many of them see the frame's products grow. On cdkm_ripple_carry_adder `-m 1`, $T$ gates
   and measurements written with weight $1.00$ run with mean weight $17.9$ (max $143$).
 - **Without physical Cliffords the frame can win at low latency.** There is no helper, and folding
-  $P$ into an overlapping $Q$ can lower the weight (knn_n129 `-m 0`: +2.4% against +5.0% for
-  `litinski-ready`).
+  $P$ into an overlapping $Q$ can lower the weight (knn_n129 `-m 0`: +2.4% against +8.5% for
+  `litinski-y`).
 - **Data-side waits dominate from $L = 1$.** Long runs of anticommuting $T$ gates stall the data
   in frame mode: dnn_n51 and qugan_n111 cost +59% to +97% at $L = 1$, against +1% to +6% with
   either Litinski variant.
@@ -253,9 +260,9 @@ Helper statistics over all Litinski runs above (545,528 injections per variant):
   to this branch) `litinski-y` costs +4.1%, +6.7%, +25% and +74% over the old model at
   $L = 0, 1, 2, 4$, and frame +9.6%, +23%, +40% and +80%.
 
-`litinski-ready` is the default: it is the cheapest model on geomean at every latency measured.
-`litinski-y` never wastes a magic state, at the cost of more waiting. `frame` is the exact
-reference, and can be cheaper at $L = 0$ on circuits with few physical Cliffords (ising_n98,
+`litinski-y` is the default: over all 24 circuits it is the cheapest model at $L = 0$ and
+$L = 1$, and it never wastes a magic state. `litinski-ready` trades waiting for wasted magic states
+and is slightly cheaper on circuits that are not magic-limited. `frame` is the exact reference, and can be cheaper at $L = 0$ on circuits with few physical Cliffords (ising_n98,
 knn_n129 `-m 0`, qugan_n111 `-m 0`).
 
 ## 7. Verification

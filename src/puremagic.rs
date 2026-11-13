@@ -67,14 +67,14 @@ struct Args {
     /// the correction can be decided. 0 = ideal; see docs/t-gate-corrections.md for values.
     #[arg(long = "reaction-latency", default_value_t = 0)]
     reaction_latency: usize,
-    /// How a failed T injection is corrected: `litinski-ready` (auto-corrected pi/8 rotation: a
-    /// borrowed |0> helper next to the magic patch, held until the correction is decided; nothing
-    /// owed on the data; a ready magic state may be wasted as the helper when no other neighbour
-    /// is free), `litinski-y` (the same, but never wasting a ready state: an injection with no
-    /// helper waits, then has its magic patch measured in place in X or Y), or `frame` (no
+    /// How a failed T injection is corrected: `litinski-y` (auto-corrected pi/8 rotation: a borrowed
+    /// |0> helper next to the magic patch, held until the correction is decided; nothing owed on
+    /// the data; a ready magic state is never wasted as the helper: an injection with no helper
+    /// waits, then has its magic patch measured in place in X or Y), `litinski-ready` (the same,
+    /// but a ready magic state may be wasted as the helper when no other neighbour is free), or `frame` (no
     /// correction: an exact Clifford frame rewrites every later T and measurement; they wait for
     /// undecoded outcomes they depend on).
-    #[arg(long = "t-correction", value_enum, default_value_t = scheduler::TCorrection::LitinskiReady)]
+    #[arg(long = "t-correction", value_enum, default_value_t = scheduler::TCorrection::LitinskiY)]
     t_correction: scheduler::TCorrection,
     /// Extra lcycles an in-place Y measurement of a magic patch takes (Litinski injections that
     /// found no helper; mostly `litinski-y`). Gidney's in-place Y measurement takes floor(d/2)+2 rounds, about half an
