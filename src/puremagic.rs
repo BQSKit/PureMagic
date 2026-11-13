@@ -5,6 +5,7 @@ use rand::rngs::StdRng;
 mod astar;
 mod circuit;
 mod cultivation;
+mod frame;
 mod node;
 mod pauliproduct;
 mod scheduler;
@@ -62,6 +63,21 @@ struct Args {
     /// Record normalized cultivation-time distribution to <CIRCUIT_FNAME>.cultivation_dist
     #[arg(short = 'C', long)]
     record_cultivation_dist: bool,
+    /// Reaction latency in lcycles: the time from a T injection until its outcome is decoded and
+    /// the correction can be decided. 0 = ideal; see docs/t-gate-corrections.md for values.
+    #[arg(long = "reaction-latency", default_value_t = 0)]
+    reaction_latency: usize,
+    /// How a failed T injection is corrected: `litinski` (auto-corrected pi/8 rotation: a borrowed
+    /// |0> helper next to the magic patch, held until the correction is decided; nothing owed on
+    /// the data) or `frame` (no correction: an exact Clifford frame rewrites every later T and
+    /// measurement; they wait for undecoded outcomes they depend on).
+    #[arg(long = "t-correction", value_enum, default_value_t = scheduler::TCorrection::Litinski)]
+    t_correction: scheduler::TCorrection,
+    /// Extra lcycles an in-place Y measurement of a magic patch takes (`litinski` injections that
+    /// found no helper). Gidney's in-place Y measurement takes floor(d/2)+2 rounds, about half an
+    /// lcycle; the default rounds it up to 1.
+    #[arg(long = "y-meas-lcycles", default_value_t = 1)]
+    y_meas_lcycles: usize,
     #[arg(
         short,
         long,
@@ -95,8 +111,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut circuit = Circuit::new(&circuit_fname);
     circuit.load_circuit()?;
     let n_products = circuit.n_products();
-    let n_sx_cliffords =
-        circuit.pps.iter().filter(|pp| pp.gate_type.is_s() || pp.gate_type.is_sx()).count();
     let _n_layers = circuit.print_statistics();
     #[cfg(debug_assertions)]
     circuit.print()?;
@@ -137,20 +151,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.common.no_t_failures,
         args.record_cultivation_dist,
     );
+    sched.set_reaction_latency(args.reaction_latency);
+    sched.set_t_correction(args.t_correction);
+    sched.set_y_meas_lcycles(args.y_meas_lcycles);
 
     let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
-    if !args.common.no_t_failures && n_sx_cliffords > 0 {
-        let corrections = sched.correction_gates_emitted;
-        println!(
-            "S correction gates: {} / {} S/SX Cliffords ({:.1}%)",
-            corrections,
-            n_sx_cliffords,
-            corrections as f64 * 100.0 / n_sx_cliffords as f64
-        );
-    }
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
     let mut rng = StdRng::seed_from_u64(args.common.rseed);

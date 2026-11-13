@@ -28,6 +28,9 @@ pub(crate) struct AStar {
     buckets: Vec<Vec<u16>>,
     bucket_min: usize,
     pub n_calls: usize,
+    /// The magic node the last successful search ended at (the T gate's injection patch). Set in
+    /// plotting and non-plotting mode alike; the scheduler needs it to hold the patch afterwards.
+    pub(crate) last_goal: u16,
 }
 
 impl AStar {
@@ -41,6 +44,7 @@ impl AStar {
             buckets: vec![Vec::new(); BUCKET_COUNT],
             bucket_min: 0,
             n_calls: 0,
+            last_goal: u16::MAX,
         }
     }
 
@@ -161,9 +165,10 @@ impl AStar {
 
     /// Walks the parent chain to mark used nodes (non-plotting) or build a TreeGraph (plotting).
     fn finish_path(
-        &self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
+        &mut self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
         used: &mut Vec<bool>, plotting: bool,
     ) -> PathResult {
+        self.last_goal = magic_id;
         if !plotting {
             used[magic_id as usize] = true;
             let mut curr = magic_id;
