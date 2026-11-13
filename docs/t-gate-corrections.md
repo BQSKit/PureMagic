@@ -2,9 +2,9 @@
 
 A $T$ gate in the Pauli-based circuit is a $\pi/8$ rotation about a Pauli product $P$,
 
-```math
+$$
 R_P(\pi/8) = e^{-i\pi P/8}.
-```
+$$
 
 It is injected by measuring $P \otimes Z_m$ jointly with a magic-state patch $m$. Half the time
 the rotation comes out as $R_P(-\pi/8)$, and the circuit then owes the Clifford correction
@@ -30,9 +30,9 @@ wrong in two independent ways.
 
 1. **Multi-qubit $P$.** The correction is entangling,
 
-   ```math
+   $$
    R_{Z \otimes Z}(\pi/4) = e^{i\pi/4}\,\mathrm{CZ}\,(S \otimes S),
-   ```
+   $$
 
    so no product of one-qubit corrections equals it. Deferred past a later operation $Q$ that
    anticommutes with $P$, it turns $Q$ into $\propto QP$, which can add qubits: $P = Z_0 Z_1$ and
@@ -92,9 +92,9 @@ anticommutes with this $P$, it flips this rotation's sign. That byproduct comes 
 $T$'s final ancilla measurement, made at that $T$'s decision and decoded $L$ later. So decisions
 chain. For the $k$-th $T$ gate $T_k$,
 
-```math
+$$
 \mathrm{dec}(T_k) = \max\Big( \mathrm{inj}(T_k) + L,\; \max_{j \in A_k} \big( \mathrm{dec}(T_j) + L \big) \Big),
-```
+$$
 
 where $\mathrm{inj}$ is the injection lcycle and $A_k$ is the set of earlier $T$ gates that share
 a qubit with $T_k$ and whose Paulis anticommute with $P_k$. When $T_j$'s patch was measured in
@@ -110,11 +110,11 @@ Never apply the correction at all. $R_P(\pi/4)$ is a Clifford, so it can be fold
 $W$ (`src/frame.rs`): the hardware state is $W$ applied to the ideal state, and every later $T$ or
 measurement about $Q$ runs about $W Q W^\dagger$. The frame is updated by
 
-```math
+$$
 \text{failed } T \text{ about } P:\quad W \leftarrow W\, R_P(-\pi/4),
 \qquad\qquad
 \text{physical Clifford } G:\quad W \leftarrow G\, W\, G^\dagger .
-```
+$$
 
 Physical $S$, $SX$ and $CX$ lines in the `.trans` run unchanged. The frame merges into
 measurements for free (they stay Pauli measurements), but not into $T$ gates:
@@ -138,9 +138,9 @@ costs $O(w \cdot n/64)$ word operations.
 $L$ is the time to decode an outcome and act on it, in logical cycles, rounded up. A logical
 cycle is about $d$ syndrome-extraction rounds, so
 
-```math
+$$
 L = \left\lceil \frac{t_{\text{reaction}}}{d \cdot t_{\text{round}}} \right\rceil .
-```
+$$
 
 | Setting | $t_{\text{round}}$ | $t_{\text{reaction}}$ | $L$ at $d = 25$ | Source |
 |---|---|---|---|---|
