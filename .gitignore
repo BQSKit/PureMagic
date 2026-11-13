@@ -35,3 +35,4 @@ data/circuits/qft/*out*
 
 data_processing/*out
 data_processing/out_dir
+notebooks/.ipynb_checkpoints/

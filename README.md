@@ -61,6 +61,9 @@ Run with `-h` to see all options.
 | `-u, --use-magic-routing` | off | Use magic qubits for routing in addition to bus qubits |
 | `-S, --sides_only` | off | Use only side edges of data patches (not top/bottom) |
 | `-F, --no-t-failures` | off | Disable T gate failures (every T gate succeeds on first attempt) |
+| `--t-correction <MODEL>` | `litinski-y` | How a failed T injection is corrected: `litinski-y` (auto-corrected π/8 rotation on a borrowed helper patch, later products unchanged; never wastes a ready magic state: an injection without a helper falls back to measuring its magic patch in place in X or Y), `litinski-ready` (the same, but wasting a ready magic state as the helper if nothing else is free), or `frame` (exact Clifford frame that rewrites later T gates and measurements). See [docs/t-gate-corrections.md](docs/t-gate-corrections.md) |
+| `--reaction-latency <N>` | `0` | Lcycles from a T injection until its outcome is decoded and the correction decided (L = 1 is the standard fault-tolerance assumption) |
+| `--y-meas-lcycles <N>` | `1` | Extra lcycles for an in-place Y measurement of a magic patch (Litinski injections that found no helper; mostly `litinski-y`) |
 | `-C, --record-cultivation-dist` | off | Record normalized cultivation-time distribution to `<name>.cultivation_dist` |
 | `-a, --ancilla-rows <N>` | `1` | Number of ancilla rows between data patches (magic routing only) |
 | `-l, --log-scheduler <LEVEL>` | `none` | Scheduler trace log level: `none`, `info`, or `debug`; only populated in debug builds |
