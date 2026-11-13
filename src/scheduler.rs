@@ -1166,19 +1166,12 @@ impl Scheduler {
                     self.input.topo.label(nb_id)
                 );
                 if !self.used[nb_id as usize] {
-                    if !plotting {
-                        self.used[node_id as usize] = true;
-                        self.used[nb_id as usize] = true;
-                        self.stats.inc_with_cultivation(
-                            node.node_type,
-                            self.input.topo.cultivation_times[node_id as usize],
-                        );
-                        self.stats.inc_with_cultivation(
-                            nb.node_type,
-                            self.input.topo.cultivation_times[nb_id as usize],
-                        );
-                        return PathResult::PathFound(None);
-                    }
+                    // Always return the two-node tree, plotting or not: an S/SX holds its
+                    // data node and this ancilla for all 3 of its lcycles, and
+                    // advance_clifford_state takes the nodes to hold from this tree. (A
+                    // single-qubit S/SX has no precomputed tree, so returning None here left
+                    // its nodes free in lcycles 2-3 whenever paths were not being plotted.)
+                    let _ = plotting;
                     let mut g = TreeGraph::new(self.input.topo.n_nodes);
                     g.add_node(node, self.input.topo.label(node_id));
                     g.add_node(nb, self.input.topo.label(nb_id));
