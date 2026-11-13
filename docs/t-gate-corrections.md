@@ -68,18 +68,33 @@ waits.
 
 What the scheduler does:
 
-- **Helper.** A free neighbour of the magic patch, borrowed in the injection lcycle. A bus
-  patch comes first, then the cultivating magic patch with the least progress (its cultivation
-  restarts). Never a data patch or a ready magic state. With magic routing (`-u`) there are no
-  bus patches, so the helper is always a cultivating magic patch. No patch is dedicated to
-  helpers, so injection stays single-patch.
-- **No free neighbour yet.** The injection waits up to 2 lcycles for one, holding the magic
-  patch. After that, or if no neighbour could ever be a helper, the magic patch is measured in
-  place instead: Gidney, *Inplace Access to the Surface Code Y Basis* (Quantum 8, 1310, 2024).
-  The patch waits for the decision and is measured in $X$ (no correction) or $Y$ (applies it).
-  The $Y$ measurement takes $\lfloor d/2 \rfloor + 2$ rounds, modelled as `--y-meas-lcycles`
-  extra lcycles. Waiting longer for a helper could deadlock two magic patches that wait on each
-  other.
+- **Helper.** A free neighbour of the magic patch, borrowed in the injection lcycle, in order of
+  preference:
+  1. a bus patch;
+  2. the cultivating magic patch with the least progress (its cultivation restarts);
+  3. a ready magic state, which is wasted.
+
+  Never a data patch. With magic routing (`-u`) there are no bus patches, so the helper is
+  always a magic patch. No patch is dedicated to helpers, so injection stays single-patch.
+- **Why waste a ready state.** Without option 3, the free neighbours of a magic patch are often
+  all ready states, and the injection has to wait for a helper (28% of injections on the
+  benchmarks below) or fall back to the in-place measurement (0.47%). Wasting a ready state
+  costs less: waits drop to 6.1% of injections, the fallback never fires, and the geomean
+  overhead falls from +3.0% to +2.7% at $L = 0$ and from +5.4% to +5.1% at $L = 1$. It is worse
+  by 1–2 points on ising_n98 and knn_n129 `-m 1`, where the wasted states are missed.
+- **The helper need not be adjacent in principle.** $Z_m \otimes Y_h$ could be routed through
+  free tiles to a patch farther away. In this tile model that never helps: any free tile a route
+  could start through can host the helper itself (a free bus tile, or a magic tile that is
+  cultivating or ready), so the nearest free candidate is always adjacent. A routed search was
+  implemented and found no non-adjacent helper on any benchmark.
+- **No free neighbour at all.** The injection waits up to 2 lcycles for one, holding the magic
+  patch. After that, the magic patch is measured in place instead: Gidney, *Inplace Access to
+  the Surface Code Y Basis* (Quantum 8, 1310, 2024). The patch waits for the decision and is
+  measured in $X$ (no correction) or $Y$ (applies it). The $Y$ measurement takes
+  $\lfloor d/2 \rfloor + 2$ syndrome rounds, about half an lcycle, modelled as
+  `--y-meas-lcycles` extra lcycles (default 1). Waiting longer for a helper could deadlock two
+  magic patches that each occupy the other's only free neighbour. This is a safety net: it did
+  not fire on any benchmark below.
 - **Hold.** The helper stays occupied until the correction is decided (the decision lcycle below).
   Data-side products are never delayed: the helper's measurement acts on a different patch, so
   it commutes with everything that follows on the data.
@@ -173,39 +188,41 @@ changes exactly as lcycles do (the patch count is fixed).
 
 | circuit | litinski $L=0$ | litinski $L=1$ | frame $L=0$ | frame $L=1$ |
 |---|---|---|---|---|
-| cdkm_ripple_carry_adder `-m 0` | +5.9% | +7.4% | +10.4% | +10.8% |
-| cdkm_ripple_carry_adder `-m 1` | +4.8% | +6.3% | +4.2% | +4.2% |
-| dnn_n51 `-m 0` | +3.4% | +6.3% | +8.4% | +58.9% |
-| dnn_n51 `-m 1` | +1.7% | +3.7% | +32.4% | +73.6% |
-| ising_n98 `-m 0` | +1.5% | +4.8% | +0.3% | +0.0% |
-| ising_n98 `-m 1` | +2.1% | +5.0% | +2.9% | +5.5% |
-| knn_n129 `-m 0` | +8.5% | +11.4% | +2.4% | +2.6% |
-| knn_n129 `-m 1` | −0.4% | +4.2% | +1.2% | +1.2% |
-| qugan_n111 `-m 0` | +2.3% | +3.7% | +0.8% | +97.4% |
-| qugan_n111 `-m 1` | +0.3% | +1.6% | +3.7% | +76.5% |
-| **geomean** | **+3.0%** | **+5.4%** | **+6.3%** | **+28.4%** |
+| cdkm_ripple_carry_adder `-m 0` | +6.1% | +5.9% | +10.4% | +10.8% |
+| cdkm_ripple_carry_adder `-m 1` | +3.2% | +5.3% | +4.2% | +4.2% |
+| dnn_n51 `-m 0` | +2.8% | +5.9% | +8.4% | +58.9% |
+| dnn_n51 `-m 1` | +1.3% | +3.4% | +32.4% | +73.6% |
+| ising_n98 `-m 0` | +2.9% | +6.4% | +0.3% | +0.0% |
+| ising_n98 `-m 1` | +3.9% | +6.2% | +2.9% | +5.5% |
+| knn_n129 `-m 0` | +5.0% | +9.0% | +2.4% | +2.6% |
+| knn_n129 `-m 1` | +0.6% | +5.1% | +1.2% | +1.2% |
+| qugan_n111 `-m 0` | +1.4% | +2.9% | +0.8% | +97.4% |
+| qugan_n111 `-m 1` | −0.2% | +1.2% | +3.7% | +76.5% |
+| **geomean** | **+2.7%** | **+5.1%** | **+6.3%** | **+28.4%** |
 
-- **The helper itself is cheap.** At $L = 0$ Litinski costs +3%: it borrows a cultivating
-  neighbour for one lcycle, which restarts that patch's cultivation. Its cost grows slowly with
-  $L$ because only the helper waits; the data path never does.
+- **The helper itself is cheap.** At $L = 0$ Litinski costs +2.7%: it borrows a neighbour for
+  one lcycle, which restarts that patch's cultivation (16.5% of helpers were ready states, whose
+  state is wasted). 6.1% of injections waited for a free neighbour, and none fell back to the
+  in-place measurement. Its cost grows slowly with $L$ because only the helper waits; the data
+  path never does.
 - **Physical Cliffords spread the frame.** Every $S$/$SX$/$CX$ line conjugates $W$, so circuits
   with many of them see the frame's products grow. On cdkm_ripple_carry_adder `-m 1`, $T$ gates
   and measurements written with weight $1.00$ run with mean weight $17.9$ (max $143$).
 - **Without physical Cliffords the frame can win at low latency.** There is no helper, and folding
   $P$ into an overlapping $Q$ can lower the weight (knn_n129 `-m 0`: +2.4% against Litinski's
-  +8.5%).
+  +5.0%).
 - **Data-side waits dominate from $L = 1$.** Long runs of anticommuting $T$ gates stall the data
-  in frame mode: dnn_n51 and qugan_n111 cost +59% to +97% at $L = 1$, against +2% to +6% with
+  in frame mode: dnn_n51 and qugan_n111 cost +59% to +97% at $L = 1$, against +1% to +6% with
   Litinski.
 - **At larger $L$ the reaction limit dominates both models.** Runs of anticommuting $T$ gates
   need about $L$ lcycles per $T$, which the old model never charged. On a wider set of 24
   circuits (including dcsynth benchmarks; measured with the same models before they were ported
-  to this branch) Litinski costs +4.1%, +6.7%, +25% and +74% over the old model at
+  to this branch, and before ready states could be helpers) Litinski costs +4.1%, +6.7%, +25% and +74% over the old model at
   $L = 0, 1, 2, 4$, and frame +9.6%, +23%, +40% and +80%.
 
-`litinski` is the default: it is the cheaper model at every latency from $L = 1$ up and close to
-the best at $L = 0$. `frame` is the exact reference, and the better choice at $L = 0$ on circuits
-with few physical Cliffords.
+`litinski` is the default: it is the cheaper model on geomean at every latency. `frame` is the
+exact reference, and can be cheaper at $L = 0$ on circuits with few physical Cliffords (ising_n98,
+knn_n129 `-m 0`, qugan_n111 `-m 0`).
 
 ## 7. Verification
 

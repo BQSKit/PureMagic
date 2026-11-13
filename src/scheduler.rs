@@ -184,7 +184,9 @@ pub(crate) enum TCorrection {
     /// is decoded the helper is measured in X or Z, which applies the correction or not. No
     /// Clifford ever reaches the data: later products are never changed and no S gate is
     /// emitted. The helper is held until that decision (reaction latency, chained through
-    /// earlier T gates whose Paulis anticommute). An injection that finds no helper within
+    /// earlier T gates whose Paulis anticommute). The helper is a free neighbour: a bus patch,
+    /// else a cultivating magic patch, else (wasting it) a ready magic state. An injection that
+    /// finds no helper within
     /// `HELPER_MAX_WAIT` lcycles has its magic patch measured in place instead (in X, or in Y
     /// for a failed T; Gidney, "Inplace Access to the Surface Code Y Basis", Quantum 2024).
     Litinski,
@@ -226,6 +228,8 @@ pub(crate) struct TCorrectionStats {
     /// |0> helper patches borrowed, and how many had to wait for a free neighbour.
     pub(crate) helpers: usize,
     pub(crate) helpers_deferred: usize,
+    /// Helpers that were ready magic states (the state is wasted).
+    pub(crate) helpers_ready: usize,
     /// Injections that found no helper within `HELPER_MAX_WAIT` lcycles (or whose magic patch
     /// has no neighbour that could ever be one). Their magic patch is measured in place (the
     /// in-place Y measurement) instead; see docs/t-gate-corrections.md.
@@ -599,11 +603,12 @@ impl Scheduler {
     }
 
     /// Rank of node `nb` as a |0> helper for a T injection, lower is better, or None if it can
-    /// never be one (a data patch, or a ready magic state). A free routing (bus) patch comes
-    /// first, then the cultivating magic patch with the least progress (its cultivation
-    /// restarts). With magic routing (-u) there are no bus patches, so the helper is always a
-    /// cultivating magic patch. A ready magic state is never borrowed: it would waste the state,
-    /// and a T waiting for it could find none left.
+    /// never be one (a data patch). A free routing (bus) patch comes first, then the cultivating
+    /// magic patch with the least progress (its cultivation restarts), and last a ready magic
+    /// state, which is wasted. With magic routing (-u) there are no bus patches, so the helper is
+    /// always a magic patch. Without the last resort, the free neighbours of a magic patch are
+    /// often all ready states, and injections wait for a helper or fall back to measuring the
+    /// magic patch in place; wasting a ready state is cheaper (docs/t-gate-corrections.md).
     fn helper_rank(&self, nb: u16) -> Option<(u8, i32)> {
         let topo = &self.input.topo;
         match topo.node(nb).node_type {
@@ -611,7 +616,8 @@ impl Scheduler {
             NodeType::Magic if topo.cultivation_times[nb as usize] > 0 => {
                 Some((1, topo.busy_counts[nb as usize]))
             }
-            _ => None,
+            NodeType::Magic => Some((2, 0)),
+            NodeType::Data => None,
         }
     }
 
@@ -629,6 +635,18 @@ impl Scheduler {
             }
         }
         best.map(|(_, nb)| nb)
+    }
+
+    /// Occupies helper `h` (a neighbour of `magic`) until `decision` and logs it.
+    fn take_helper(&mut self, magic: u16, h: u16, decision: usize) {
+        info_sched!("    helper |0> patch {}", self.input.topo.label(h));
+        if self.helper_rank(h).map_or(false, |r| r.0 == 2) {
+            self.t_stats.helpers_ready += 1;
+        }
+        self.t_stats.helper_log.push((self.current_lcycle, magic, h));
+        self.t_stats.helpers += 1;
+        self.mark_nodes_used(&[h]);
+        self.hold(h, decision);
     }
 
     /// True if some neighbour of `magic` could ever serve as its helper.
@@ -698,13 +716,7 @@ impl Scheduler {
             decision
         );
         match self.pick_helper(magic) {
-            Some(h) => {
-                info_sched!("    helper |0> patch {}", self.input.topo.label(h));
-                self.t_stats.helper_log.push((now, magic, h));
-                self.t_stats.helpers += 1;
-                self.mark_nodes_used(&[h]);
-                self.hold(h, decision);
-            }
+            Some(h) => self.take_helper(magic, h, decision),
             None if self.helper_possible(magic) => {
                 // The magic patch keeps its state until a helper is free (hold_t_patches).
                 info_sched!("    no free neighbour for the helper yet");
@@ -748,10 +760,7 @@ impl Scheduler {
             match self.pick_helper(magic) {
                 Some(h) => {
                     // Z_m (x) Y_h and X_m now; the magic patch is free from the next lcycle.
-                    self.t_stats.helper_log.push((now, magic, h));
-                    self.t_stats.helpers += 1;
-                    self.mark_nodes_used(&[h]);
-                    self.hold(h, decision);
+                    self.take_helper(magic, h, decision);
                     self.failed_waiting.remove(&pp_id);
                 }
                 None if now < give_up => self.helper_wanted.push((pp_id, magic, decision, give_up)),
@@ -1701,11 +1710,12 @@ impl Scheduler {
                 );
             }
             TCorrection::Litinski => println!(
-                "T correction: Litinski; {} injections, {} helper patches ({} waited for one, {} \
-                 found none), {} patch-lcycles held, max decision delay {} lcycles, {} measured \
-                 in place ({} in Y)",
+                "T correction: Litinski; {} injections, {} helper patches ({} ready states \
+                 wasted, {} waited for one, {} found none), {} patch-lcycles held, max decision \
+                 delay {} lcycles, {} measured in place ({} in Y)",
                 self.t_stats.injections,
                 self.t_stats.helpers,
+                self.t_stats.helpers_ready,
                 self.t_stats.helpers_deferred,
                 self.t_stats.helpers_missing,
                 self.t_stats.hold_patch_lcycles,
@@ -2217,6 +2227,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn litinski_helper_rank_prefers_bus_then_cultivating_then_ready() {
+        let mut sched = build_scheduler(T_HEAVY_LINES, 0);
+        sched.sched_circuit().expect("sched_circuit failed");
+        let topo = &mut sched.input.topo;
+        let magic: Vec<u16> = (0..topo.n_nodes as u16)
+            .filter(|&n| topo.node(n).node_type == NodeType::Magic)
+            .collect();
+        let data =
+            (0..topo.n_nodes as u16).find(|&n| topo.node(n).node_type == NodeType::Data).unwrap();
+        let (a, b) = (magic[0], magic[1]);
+        topo.cultivation_times[a as usize] = 0; // ready
+        topo.cultivation_times[b as usize] = 7; // cultivating
+        topo.busy_counts[b as usize] = 3;
+        assert_eq!(sched.helper_rank(data), None, "a data patch is never a helper");
+        let (ra, rb) = (sched.helper_rank(a).unwrap(), sched.helper_rank(b).unwrap());
+        assert!(rb < ra, "a cultivating patch is preferred to wasting a ready state");
     }
 
     #[test]
