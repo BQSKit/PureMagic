@@ -584,7 +584,9 @@ impl Scheduler {
                         continue;
                     }
                     if (is_x && nb.pos.1 < node.pos.1) || (!is_x && nb.pos.1 > node.pos.1) {
-                        preferred.push(nb_id);
+                        if Self::joins_routing(topo, nb_id) {
+                            preferred.push(nb_id);
+                        }
                     } else if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
                         side.push(nb_id);
                     }
@@ -663,6 +665,18 @@ impl Scheduler {
         swapped
     }
 
+    /// Whether a candidate shared root links to at least one other routing node.
+    ///
+    /// A shared root that does not is a dead end: in the compact bus layout, the
+    /// node above a top-row patch's Z pair is a border cell between two
+    /// cultivators. A product rooted there could reach only those two, so with
+    /// neither ready the scheduler found no path and reported a deadlock, though
+    /// the side bus columns route it. Such a root is left out, and the pair falls
+    /// back to side roots.
+    fn joins_routing(topo: &TopoGraph, root_id: u16) -> bool {
+        topo.node(root_id).nbs_slice().iter().any(|&id| topo.node(id).is_routing())
+    }
+
     /// Precomputes terminal node IDs and root candidates for every product.
     ///
     /// For each terminal data node the root candidates are split into:
@@ -696,7 +710,9 @@ impl Scheduler {
                             continue;
                         }
                         if (is_x && nb.pos.1 < node.pos.1) || (!is_x && nb.pos.1 > node.pos.1) {
-                            preferred.push(nb_id);
+                            if Self::joins_routing(&self.input.topo, nb_id) {
+                                preferred.push(nb_id);
+                            }
                         } else if nb.pos.0 != node.pos.0 && nb.pos.1 == node.pos.1 {
                             side.push(nb_id);
                         }
@@ -1845,6 +1861,34 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
         Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), rseed, false, false)
+    }
+
+    #[test]
+    fn compact_bus_routes_a_z_pair_on_one_patch() {
+        // Z on both qubits of the patch d2/3. The node above the pair's Z faces is a
+        // border bus cell between two cultivators with no other routing link. Rooted
+        // there, the product could never be routed, and the scheduler panicked with
+        // "Cannot schedule products". It must fall back to the side bus columns.
+        Node::set_magic_routing(false);
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "+__ZZ<T>").unwrap();
+        let fname = f.path().to_string_lossy().to_string();
+        let mut circuit = Circuit::new(&fname);
+        circuit.load_circuit().expect("circuit load failed");
+        let mut topo = TopoGraph::new();
+        topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
+        let mut sched =
+            Scheduler::new(circuit, topo, 0.0387396, 0.0, "none", String::new(), 1, false, false);
+        sched.precompute_terminals_and_roots();
+        for (_, preferred, _) in &sched.precomputed_root_info[0] {
+            for &root in preferred {
+                assert!(Scheduler::joins_routing(&sched.input.topo, root));
+            }
+        }
+        let result = sched.sched_circuit();
+        Node::set_magic_routing(true);
+        result.expect("sched_circuit failed");
+        assert!(sched.scheduled_products.contains(&0));
     }
 
     #[test]
