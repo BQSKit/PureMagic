@@ -1151,3 +1151,28 @@ fn puremagic_all_products_scheduled_despite_t_gate_failures() {
         stdout
     );
 }
+
+#[test]
+fn plotting_paths_does_not_change_the_schedule() {
+    // A single-qubit S/SX holds its data node and an ancilla for 3 lcycles. Without plotting,
+    // those nodes used to be held only in the first lcycle (the S/SX tree was not kept), so
+    // the schedule depended on --plot paths. The fixture is a 201-line slice of dnn_n51
+    // transpiled at -m 1, which has physical S/SX lines; before the fix seeds 1 and 2 gave
+    // 37 vs 38 and 42 vs 41 lcycles.
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("static_s_sx.trans");
+    for seed in ["1", "2", "3", "4"] {
+        let run = |extra: &[&str]| {
+            let mut args = vec!["--circuit", circuit.to_str().unwrap(), "-u", "-F", "-r", seed];
+            args.extend_from_slice(extra);
+            let (ok, stdout, stderr) = run_puremagic(&args, tmp.path());
+            assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+            stdout
+                .lines()
+                .find(|l| l.starts_with("Scheduled "))
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("no Scheduled line:\n{}", stdout))
+        };
+        assert_eq!(run(&[]), run(&["--plot", "paths"]), "seed {}", seed);
+    }
+}
