@@ -12,7 +12,7 @@ that reading was actually good: ticks 3-13 reproduce the simulated curve to
 within a percent. But the whole series sits one tick late, and the final two
 entries -- a 6% plateau and a 1.8% last cycle -- have no counterpart in the
 figure at all. The 1.8% is the expensive one: it is what put the conference
-paper's mean cultivation time at 26 logical cycles instead of 36.7.
+paper's mean cultivation time at 26 logical cycles instead of 37.2.
 
 Two separate things cull a cultivation attempt, and conflating them is easy:
 
@@ -29,8 +29,8 @@ the last cycle, which is neither of the two numbers above.)
 """
 
 import csv
-import json
 import os
+import sys
 import numpy as np
 import matplotlib
 
@@ -134,13 +134,13 @@ def cumulative_to_conditional(cumulative):
 
 
 
-def load_survival_curve(which, stats_path=None):
+def load_survival_curve(which):
     """Cumulative per-cycle survival for `which` in {"d3","d5"}.
 
     Prefers the extracted curve, falling back to the transcribed arrays with a
-    warning. The final entry is replaced by the gap-cutoff acceptance from
-    stats.csv when available, since surviving post-selection is necessary but
-    not sufficient for a state to be used.
+    warning. The final entry is replaced by the gap-cutoff acceptance for an
+    attempt of the curve's length when one is available, since surviving
+    post-selection is necessary but not sufficient for a state to be used.
     """
     # globals()["__file__"] rather than __file__: derive_cultivation_floor.py
     # and cultivation_params.py exec this module's prelude to lift the arrays,
@@ -156,31 +156,22 @@ def load_survival_curve(which, stats_path=None):
     with open(csv_path) as f:
         cum = [float(r["survival"]) for r in csv.DictReader(f)]
 
-    stats_path = stats_path or os.path.join(
-        here, os.pardir, "data", "cultivation", "stats.csv")
-    if os.path.exists(stats_path):
-        d1 = int(which[1:])
-        with open(stats_path) as f:
-            for r in csv.DictReader(f):
-                r = {k.strip(): v for k, v in r.items()}
-                m = json.loads(r["json_metadata"])
-                if (m.get("c") == "end2end-inplace-distillation"
-                        and m.get("d1") == d1 and m.get("p") == 0.001):
-                    cc = json.loads(r["custom_counts"])
-                    shots = int(r["shots"])
-                    accepted = sum(v for k, v in cc.items()
-                                   if k.startswith("C") and int(k[1:]) >= GAP_CUTOFF)
-                    if accepted:
-                        cum[-1] = accepted / shots
-                    else:
-                        # The gap scale depends on the protocol: d1=3 produces
-                        # no states at or above the d1=5 cutoff, so applying it
-                        # there would zero the curve. Leave post-selection
-                        # survival as-is and say so.
-                        print(f"note: no d1={d1} states at gap >= {GAP_CUTOFF}; "
-                              f"leaving its curve at post-selection survival "
-                              f"({cum[-1]:.4f}) with no cutoff applied")
-                    break
+    # The acceptance must belong to a protocol of the curve's own length, so
+    # it comes from cultivation_model's lookup rather than the first matching
+    # stats.csv row (which is the 20-round r2=5 protocol).
+    sys.path.insert(0, here)
+    import cultivation_model
+    d1 = int(which[1:])
+    found = cultivation_model.acceptance(len(cum), GAP_CUTOFF, d1, required=False)
+    if found and found[0] > 0:
+        cum[-1] = found[0]
+    else:
+        # No acceptance for this length, or, at d1=3, no states at all at the
+        # d1=5 cutoff, whose gap scale is protocol-specific. Leave the curve
+        # at post-selection survival and say so.
+        print(f"note: no d1={d1} acceptance at gap >= {GAP_CUTOFF} for a "
+              f"{len(cum)}-round attempt; leaving its curve at post-selection "
+              f"survival ({cum[-1]:.4f}) with no cutoff applied")
     return cum
 
 
@@ -308,15 +299,15 @@ if __name__ == "__main__":
 
     # Compare to the conference paper's value, which this analysis supersedes.
     # It was derived from the transcribed arrays above, whose 1.8% final entry
-    # is the single biggest error in the chain; the corrected figure is 36.70
-    # lcycles, i.e. --magic-state-lambda 0.0272498 per lcycle.
+    # is the single biggest error in the chain; the data-derived figure is
+    # 37.24 lcycles, i.e. --magic-state-lambda 0.0268536 (cultivation_model.py).
     paper_lam = 0.00227
     paper_mean_cycles = 1.0 / paper_lam
     paper_d = 17
     paper_mean_logical = paper_mean_cycles / paper_d
     print(f"\nConference paper's λ={paper_lam} per round (SUPERSEDED),"
           f" mean={paper_mean_cycles:.1f} circuit cycles")
-    print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d}); corrected value 36.70")
+    print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d}); data-derived value 37.24")
 
     print(f"\nAnalytic estimate (N_cycles / end-to-end survival):")
     print(

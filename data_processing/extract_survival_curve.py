@@ -4,13 +4,15 @@
 Reuses the cultivation release's own circuit construction and its
 `sample_times` sampler (src/cultiv/make_lifetime_plot.py), so the curve is
 theirs rather than a transcription of their plot. Writes a CSV of
-tick -> survival fraction, which data_processing/mcmc_cultivation.py can
-consume in place of its hand-typed arrays.
+tick -> survival fraction, which data_processing/cultivation_model.py and
+mcmc_cultivation.py read.
 
-Note `sample_times` returns raw survivor counts per tick, where a tick is one
-layer of the flattened circuit, not one of Figure 15's labelled cycles. The
-mapping between the two is recovered here by reporting the tick count
-alongside the construction's own round parameters.
+`sample_times` returns survivor counts after each tick, where a tick is one
+round as `circuit_to_layers` groups them (resets, two-qubit gate layers,
+measurements), one of Figure 15's labelled cycles. Each row also records the
+round's length in circuit timesteps (TICKs), mostly 10 against a surface
+code round's 6. The circuit is Figure 15's 25-round protocol (r2=10), whose
+last ten rounds hold the patch while the complementary gap is computed.
 """
 
 import argparse
@@ -23,7 +25,7 @@ import stim  # noqa: E402
 
 import cultiv  # noqa: E402
 import gen  # noqa: E402
-from cultiv.make_lifetime_plot import sample_times  # noqa: E402
+from cultiv.make_lifetime_plot import circuit_to_layers, sample_times  # noqa: E402
 
 
 def main():
@@ -48,6 +50,10 @@ def main():
         args.noise
     ).noisy_circuit_skipping_mpp_boundaries(circuit)
     print(f"circuit: {circuit.num_qubits} qubits, {circuit.num_detectors} detectors")
+    # Each tick's length in circuit timesteps, for cultivation_model.py's
+    # "timesteps" convention. The noise model adds no TICKs.
+    timesteps = [sum(1 for i in layer.flattened() if i.name == "TICK")
+                 for layer in circuit_to_layers(circuit)]
 
     counts, qubit_counts = sample_times(circuit, args.shots)
     ticks = sorted(t for t in counts if t > 0)
@@ -56,10 +62,10 @@ def main():
 
     with open(args.out, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["tick", "survivors", "survival", "active_qubits"])
+        w.writerow(["tick", "survivors", "survival", "active_qubits", "timesteps"])
         for t in ticks:
             q = qubit_counts[t - 1] if t - 1 < len(qubit_counts) else qubit_counts[-1]
-            w.writerow([t, counts[t], counts[t] / total, q])
+            w.writerow([t, counts[t], counts[t] / total, q, timesteps[t - 1]])
     print(f"wrote {args.out}")
 
     final = counts[ticks[-1]] / total

@@ -9,7 +9,7 @@ The exact distribution needs no simulation. Cultivation is a renewal process:
 an attempt runs round by round, a postselected detector failure discards it,
 and a fresh attempt starts from zero. Writing S_k for the probability of
 surviving through tick k (`data/cultivation/survival_d5.csv`, with the final
-entry replaced by the complementary-gap acceptance from `stats.csv`), an
+entry replaced by the complementary-gap acceptance from `stats_r2.csv`), an
 attempt dies during tick k with probability S_{k-1} - S_k and costs exactly k
 rounds, while a surviving attempt costs the full N. The total time to deliver
 one state is therefore compound geometric, and its PMF satisfies
@@ -84,8 +84,10 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--curve", default=DEFAULT_CURVE)
-    ap.add_argument("-p", "--p-accept", type=float, default=0.011304,
-                    help="complementary-gap acceptance at the operating cutoff")
+    ap.add_argument("-p", "--p-accept", type=float, default=None,
+                    help="complementary-gap acceptance at the operating cutoff; "
+                         "default: cultivation_model.py's, for an attempt of "
+                         "the curve's length")
     ap.add_argument("-d", "--distance", type=int, default=17,
                     help="code distance: one logical cycle is d rounds")
     ap.add_argument("--tmax-rounds", type=int, default=20000,
@@ -98,6 +100,10 @@ def main():
 
     with open(args.curve) as fh:
         survival = [float(r["survival"]) for r in csv.DictReader(fh)]
+    if args.p_accept is None:
+        sys.path.insert(0, HERE)
+        import cultivation_model
+        args.p_accept = cultivation_model.acceptance(len(survival))[0]
 
     f, n_attempt = exact_pmf(survival, args.p_accept, args.tmax_rounds)
     F = cdf_from_pmf(f)

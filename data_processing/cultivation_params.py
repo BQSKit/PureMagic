@@ -11,12 +11,12 @@ which is standard Sinter output:
 
 Three things come out of it directly.
 
-*The acceptance and error rates*, below. Note that `json_metadata`'s `r` is
-NOT the attempt length: for the end-to-end construction it runs five short of
-the cycle count the release's own sampler produces (13 vs 18 at d1=3, 20 vs 25
-at d1=5), so it cannot be used for the floor. The attempt length comes from
-`survival_curve.csv`, extracted by re-running their sampler -- see
-mcmc_cultivation.py.
+*The acceptance and error rates*, below. These are for the circuit stats.csv
+simulated, `json_metadata`'s `r` rounds long (20 at d1=5, with r2=5). An
+attempt in operation also holds its patch for the rounds spent waiting for
+the complementary gap, which Figure 15 draws as r2=10, 25 rounds. The
+scheduler's parameters come from that protocol, with its acceptance sampled
+separately into stats_r2.csv; see cultivation_model.py.
 
 *The gap/fidelity curve.* `custom_counts` holds `C<g>` and `E<g>`: the number
 of accepted shots whose complementary gap landed in bin `g`, and how many of
@@ -99,7 +99,7 @@ def main():
                          "used to anchor the 1/p_accept scaling. Defaults to "
                          "the superseded 26.0 so the published-column "
                          "comparison stays interpretable; the value the paper "
-                         "now uses is 36.698")
+                         "now uses is 37.239")
     ap.add_argument("--construction", default="end2end-inplace-distillation")
     ap.add_argument("--check-shape", action="store_true",
                     help="also report what mcmc_cultivation.py's transcribed "
@@ -134,9 +134,9 @@ def main():
     print(f"  logical error rate   {ler(G):>12.3e}")
     print(f"  attempts per state   {1 / p_accept(G):>12.1f}")
     print()
-    print(f"  metadata r           {R:>12} (NOT the attempt length -- see the")
-    print(f"                       {'':>12}  module docstring; use the survival")
-    print(f"                       {'':>12}  curve's cycle count instead)")
+    print(f"  metadata r           {R:>12} rounds simulated (r2={meta['r2']}); an")
+    print(f"                       {'':>12}  attempt in operation is 25, with the")
+    print(f"                       {'':>12}  gap wait, see cultivation_model.py")
     print()
 
     print("rate/fidelity trade, mean scaled as 1/p_accept(G) and anchored at "
@@ -164,12 +164,19 @@ def main():
     print("  as the cutoff 'used by PureMagic', so it may trace back to the")
     print("  very number it appears to corroborate.")
     print()
-    print("  The absolute anchor is settled elsewhere, and 26 is not it:")
-    print("  running the full-restart retry model over survival_d5.csv, with")
-    print("  its last entry replaced by the G=104 acceptance above, gives")
-    print("  36.70 lcycles at d=17. That is what src/utils.rs now defaults to")
-    print("  (--magic-state-lambda 0.0272498). Pass --anchor-cycles 36.698 to")
-    print("  read the mean column in the units the paper actually uses.")
+    print("  The absolute anchor is settled elsewhere, and 26 is not it. The")
+    print("  full-restart retry model over the 25-round survival_d5.csv, with")
+    print("  that protocol's G=104 acceptance from stats_r2.csv, gives (see")
+    print("  cultivation_model.py):")
+    sys.path.insert(0, HERE)
+    import cultivation_model
+    for conv in cultivation_model.CONVENTIONS:
+        r = cultivation_model.derive(d, G, conv)
+        print(f"    {conv:<10} {r['mean_lcycles']:.3f} lcycles at d={d}, "
+              f"--magic-state-lambda {r['magic_state_lambda']:.7f}, "
+              f"--cultivation-floor {r['cultivation_floor']:.4f}")
+    print("  src/utils.rs defaults to the 'rounds' line. Pass --anchor-cycles")
+    print("  37.239 to read the mean column in those units.")
 
     if args.check_shape:
         print()

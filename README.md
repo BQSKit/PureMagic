@@ -13,8 +13,8 @@ tagged [`QCE`](https://github.com/BQSKit/PureMagic/tree/QCE) in this repository.
 
 Since that paper, the cultivation rate is derived from the survival curve in the data release
 of [Gidney et al.](https://arxiv.org/abs/2409.17595) rather than read off their Figure 15. This
-gives a mean cultivation time of 36.7 logical cycles instead of 26, so the default
-`--magic-state-lambda` is now 0.0272498 rather than 0.0387396. Every delivered state also costs at
+gives a mean cultivation time of 37.2 logical cycles instead of 26, so the default
+`--magic-state-lambda` is now 0.0268536 rather than 0.0387396. Every delivered state also costs at
 least one full 25-round attempt, including the rounds spent waiting for the gap decision, which
 the default `--cultivation-floor` of 25/17 logical cycles models. As in Gidney et al., a
 cultivation round is counted as one surface code round. The QCE paper's results used the earlier,
@@ -64,7 +64,7 @@ Run with `-h` to see all options.
 |------|---------|-------------|
 | `-c, --circuit <FILE>` | *(required)* | Input circuit file (`.trans` format) |
 | `-t, --topo <FILE>` | *(auto-generated)* | Topology file; generated from qubit count if omitted |
-| `-m, --magic-state-lambda <F>` | `0.0272498` | λ parameter for exponential cultivation time distribution (1/λ = 36.70 lcycles at d=17, for G=104 cultivation) |
+| `-m, --magic-state-lambda <F>` | `0.0268536` | Magic states per magic patch per lcycle; 1/λ is the mean cultivation time (37.24 lcycles at d=17, for G=104 cultivation). `data_processing/cultivation_model.py` derives it for other distances, cutoffs and round conventions |
 | `--cultivation-floor <F>` | `1.4706` | Minimum cultivation time in lcycles (one 25-round attempt at d=17), added to every draw with the exponential part rescaled to keep the mean at 1/λ. Must be below 1/λ, so pass `0` (the memoryless model) with a λ above 0.68 |
 | `-r, --rseed <N>` | `29` | Random seed for reproducible results |
 | `-R, --randomize-data-qubits` | off | Randomize data qubit numbering |

@@ -117,7 +117,7 @@ def main():
     print("  Curve from data/cultivation/survival_<curve>.csv, produced by")
     print("  re-running the cultivation paper's own sampler, with the final")
     print("  entry replaced by the G=104 gap acceptance from stats.csv. The")
-    print("  mean above should agree with cultivation_params.py's 36.70")
+    print("  mean above should agree with cultivation_model.py's 37.24")
     print("  lcycles; what this script adds is the distribution's shape")
     print("  between the floor and the mean, which the published data does")
     print("  not contain.")
