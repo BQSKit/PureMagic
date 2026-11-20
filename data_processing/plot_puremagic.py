@@ -25,20 +25,18 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 import puremagic_log
+from paper_style import PALETTE, figsize as paper_figsize, use_paper_style
+
+use_paper_style()
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-_COLOURS = [
-    "steelblue",
-    "darkorange",
-    "forestgreen",
-    "crimson",
-    "mediumpurple",
-    "saddlebrown",
-    "deeppink",
-    "teal",
-]
+# The paper's validated categorical sequence, extended with two further hues
+# for the handful of plots that need more than six series. Those two are not
+# part of the validated set -- anything relying on them must also carry a
+# direct label, which in practice the circuit-axis plots do.
+_COLOURS = PALETTE + ["#88ccee", "#aa4499"]
 
 _MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
 
@@ -408,10 +406,18 @@ def _ordered_union_xs(series_list):
     return list(seen.keys())
 
 
-_LABEL_FONTSIZE = 15  # ~50 % larger than the default 10 pt
-_TICK_FONTSIZE = 15  # ~50 % larger than the default 10 pt
-_LEGEND_FONTSIZE = 15  # ~50 % larger than the default 10 pt
-_BAR_LABEL_FONTSIZE = 9
+# Sized for a figure drawn at exactly one column and included 1:1, so these
+# are the point sizes that reach the page. They were 15/15/15/9, which only
+# looked right because the figure was then shrunk 5x from 16 inches.
+_LABEL_FONTSIZE = 8
+_TICK_FONTSIZE = 7
+_LEGEND_FONTSIZE = 7
+_BAR_LABEL_FONTSIZE = 4.5
+# Eleven circuit names rotated 45 degrees are far longer than a numeric tick,
+# so the circuit axis sits one step below the 7 pt used for ticks elsewhere
+# rather than matching it exactly. It was a hardcoded 12 pt, larger than the
+# body text, which is what made these labels dominate their figures.
+_CIRCUIT_TICK_FONTSIZE = 6
 
 
 def _label_bars(ax, container, fmt="%.3g"):
@@ -1061,19 +1067,19 @@ def main():
                         marker=marker,
                         color=colour,
                         edgecolors="black",
-                        linewidths=0.5,
-                        s=60,
+                        linewidths=0.3,
+                        s=9,
                         zorder=3,
                     )
                 ax.plot(
                     xs_plot,
                     ys_plot,
                     color=colour,
-                    linewidth=2.7 if not show_markers else 1.8,
+                    linewidth=1.4 if not show_markers else 1.0,
                     alpha=0.8,
                     linestyle="-",
                     marker=marker if show_markers else None,
-                    markersize=6,
+                    markersize=3,
                     markeredgecolor="black",
                     markeredgewidth=0.5,
                     zorder=2,
@@ -1087,8 +1093,8 @@ def main():
                     marker=marker,
                     color=colour,
                     edgecolors="black",
-                    linewidths=0.5,
-                    s=60,
+                    linewidths=0.3,
+                    s=9,
                     zorder=3,
                 )
 
@@ -1100,7 +1106,7 @@ def main():
                             (xv, yv),
                             textcoords="offset points",
                             xytext=(4, 4),
-                            fontsize=12,
+                            fontsize=_TICK_FONTSIZE,
                             color=colour,
                         )
 
@@ -1142,7 +1148,7 @@ def main():
                         xf,
                         np.exp(b) * xf**a,
                         color=colour,
-                        linewidth=1.2,
+                        linewidth=0.9,
                         linestyle="--",
                         alpha=0.7,
                         zorder=2,
@@ -1199,7 +1205,7 @@ def main():
                         xf,
                         A / np.sqrt(xf),
                         color="black",
-                        linewidth=2.0,
+                        linewidth=1.0,
                         linestyle="--",
                         alpha=0.8,
                         zorder=2,
@@ -1235,7 +1241,7 @@ def main():
                         xf,
                         c / np.sqrt(xf) + 1,
                         color="black",
-                        linewidth=1.2,
+                        linewidth=0.9,
                         linestyle="--",
                         alpha=0.8,
                         zorder=2,
@@ -1279,7 +1285,7 @@ def main():
                     xf,
                     a * xf + b,
                     color="black",
-                    linewidth=1.8,
+                    linewidth=1.0,
                     linestyle="--",
                     alpha=0.8,
                     zorder=2,
@@ -1327,7 +1333,7 @@ def main():
                     xf,
                     a * np.sqrt(xf) + b,
                     color="black",
-                    linewidth=1.8,
+                    linewidth=1.0,
                     linestyle="--",
                     alpha=0.8,
                     zorder=2,
@@ -1412,15 +1418,24 @@ def main():
         print(df_display.to_string(index=False))
         print()
 
-    # _figsize = (8, 4.5)
-    _figsize = (16, 9)
+    # One column wide, so `width=\columnwidth` scales the result 1:1 and the
+    # 8/7 pt labels set in paper_style reach the page at those sizes. The old
+    # default was 16x9 inches, which the column then shrank 5x.
+    #
+    # Circuit-axis charts get a taller canvas: eleven circuit names rotated
+    # 45 degrees consume most of the height, and constrained layout responds
+    # by shrinking the axes until the y-label is longer than the axes are
+    # tall and overruns the figure. Width is what must stay fixed for the
+    # fonts to land correctly; height is free to follow the content.
+    _figsize = paper_figsize(1.15) if is_circuit_x else paper_figsize()
     if args.figsize:
         try:
             _fw, _fh = args.figsize.split(",", 1)
             _figsize = (float(_fw), float(_fh))
         except ValueError:
             print(
-                f"Warning: invalid --figsize '{args.figsize}', using default 8,4.5.",
+                f"Warning: invalid --figsize '{args.figsize}', using the "
+                f"one-column default.",
                 file=sys.stderr,
             )
     fig, ax = plt.subplots(figsize=_figsize)
@@ -1510,7 +1525,7 @@ def main():
                             [xi - half_w, xi + half_w],
                             [mv_val, mv_val],
                             color=colour,
-                            linewidth=2.0,
+                            linewidth=1.0,
                             linestyle="--",
                             zorder=4,
                             label="_nolegend_",
@@ -1625,7 +1640,8 @@ def main():
             # X-axis: use the actual x values as tick labels.
             ax.set_xticks(np.arange(n_x))
             x_tick_labels = [str(xv) for xv in all_x_vals]
-            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right", fontsize=_TICK_FONTSIZE)
+            ax.set_xticklabels(x_tick_labels, rotation=45, ha="right",
+                               fontsize=_TICK_FONTSIZE)
             ax.set_xlim(-0.6, n_x - 0.4)
             ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
             if args.hline:
@@ -1666,7 +1682,7 @@ def main():
                         xs_mv,
                         ys_mv,
                         color=colour,
-                        linewidth=1.8,
+                        linewidth=1.0,
                         alpha=0.8,
                         linestyle="--",
                         zorder=2,
@@ -1854,11 +1870,11 @@ def main():
                                     xp_r,
                                     yp_r,
                                     color=colour,
-                                    linewidth=2.7 if not args.lines_with_markers else 1.8,
+                                    linewidth=1.4 if not args.lines_with_markers else 1.0,
                                     alpha=0.8,
                                     linestyle="-",
                                     marker=marker if args.lines_with_markers else None,
-                                    markersize=6,
+                                    markersize=3,
                                     markeredgecolor="black",
                                     markeredgewidth=0.5,
                                     zorder=2,
@@ -1872,8 +1888,8 @@ def main():
                                     marker=marker,
                                     color=colour,
                                     edgecolors="black",
-                                    linewidths=0.5,
-                                    s=60,
+                                    linewidths=0.3,
+                                    s=9,
                                     zorder=3,
                                 )
 
@@ -1965,11 +1981,11 @@ def main():
                             xp_w,
                             yp_w,
                             color=wisq_colour,
-                            linewidth=2.7,
+                            linewidth=1.4,
                             alpha=0.8,
                             linestyle="-",
                             marker=wisq_marker if args.lines_with_markers else None,
-                            markersize=6,
+                            markersize=3,
                             markeredgecolor="black",
                             markeredgewidth=0.5,
                             zorder=2,
@@ -1983,8 +1999,8 @@ def main():
                             marker=wisq_marker,
                             color=wisq_colour,
                             edgecolors="black",
-                            linewidths=0.5,
-                            s=60,
+                            linewidths=0.3,
+                            s=9,
                             zorder=3,
                         )
                     ax.set_ylabel(
@@ -2007,7 +2023,8 @@ def main():
         ax.set_xlim(x_pos[0] - 0.6, x_pos[-1] + 0.6)
         ax.set_xticks(x_pos)
         ax.set_xticklabels(
-            [prettify_circuit_name(c) for c in all_circuits], rotation=45, ha="right", fontsize=12
+            [prettify_circuit_name(c) for c in all_circuits],
+            rotation=45, ha="right", fontsize=_CIRCUIT_TICK_FONTSIZE,
         )
         ax.set_xlabel(x_label, fontsize=_LABEL_FONTSIZE)
         if args.logy:
@@ -2056,7 +2073,7 @@ def main():
                 xp,
                 yp,
                 color=colour,
-                linewidth=3.5,
+                linewidth=1.6,
                 alpha=0.85,
                 linestyle="-",
                 zorder=3,
@@ -2108,8 +2125,11 @@ def main():
     if ax2 is not None and args.y2lim:
         ax2.set_ylim(*map(float, args.y2lim.split(",", 1)))
 
-    plt.tight_layout()
-    plt.savefig(args.output, dpi=150)
+    # No tight_layout and no bbox_inches="tight": both change the output's
+    # width, so the figure would stop being exactly one column and
+    # \columnwidth would rescale it -- shrinking the fonts again. Constrained
+    # layout (set in paper_style) fits content to the fixed canvas instead.
+    plt.savefig(args.output)
     print(f"Plot saved to {args.output}")
     # Only pop up a window when explicitly asked; the figure is already saved.
     if os.environ.get("PUREMAGIC_SHOW_PLOTS"):

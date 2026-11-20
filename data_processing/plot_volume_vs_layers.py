@@ -13,23 +13,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_style import PALETTE, figsize, use_paper_style  # noqa: E402
+
+use_paper_style()
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from plot_puremagic import parse_output_file, prettify_circuit_name  # noqa: E402
 
 # 11 visually-distinct (colour, marker) pairs -- assigned in a fixed order per
 # circuit, never cycled, so no two circuits ever share the same combination.
-_STYLES = [
-    ("steelblue", "o"),
-    ("darkorange", "s"),
-    ("forestgreen", "^"),
-    ("crimson", "D"),
-    ("mediumpurple", "v"),
-    ("saddlebrown", "P"),
-    ("deeppink", "X"),
-    ("teal", "*"),
-    ("gray", "o"),
-    ("olive", "s"),
-    ("royalblue", "^"),
-]
+# Eleven circuits exceed any colourblind-safe categorical set, so marker
+# shape carries identity alongside hue and the palette is reused across the
+# two halves. The figure's claim is the single trend all of them follow, so
+# per-circuit identity is secondary -- hence the compact in-axes legend.
+_STYLES = [(c, m) for m, c in zip("osD^vPX*os^", PALETTE + PALETTE[:5])]
 
 
 def load_sweep(directory, max_weight):
@@ -67,7 +64,7 @@ def main():
     slope, intercept = np.polyfit(log_x, log_y, 1)
     r = np.corrcoef(log_x, log_y)[0, 1]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=figsize())
 
     circuits = sorted(df["circuit_pretty"].unique())
     for i, name in enumerate(circuits):
@@ -86,7 +83,7 @@ def main():
             sub["volume"],
             color=colour,
             marker=marker,
-            s=28,
+            s=8,
             label=name,
             zorder=2,
         )
@@ -106,10 +103,10 @@ def main():
     ax.set_yscale("log")
     ax.set_xlabel("Layers (pre-scheduling DAG depth)")
     ax.set_ylabel("Volume (lcycles $\\times$ total qubits)")
-    ax.set_title(f"Volume vs. Layers across weight 0-{args.max_weight}")
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=False)
-    fig.tight_layout()
-    fig.savefig(args.output, dpi=150, bbox_inches="tight")
+    ax.legend(loc="lower right", ncol=2, fontsize=4.5, frameon=False,
+              handletextpad=0.3, columnspacing=0.8, labelspacing=0.25,
+              borderaxespad=0.2)
+    fig.savefig(args.output)
     print(f"Wrote {args.output}")
     print(f"Pooled log-log correlation: r={r:.3f}, slope={slope:.3f}")
 

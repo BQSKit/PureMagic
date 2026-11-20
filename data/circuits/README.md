@@ -33,6 +33,14 @@ and `transpile-all.sh` drive `compile_cliffordt`/`transpile` over that list (the
 `transpile`'s `-m`/`--auto` weight options for scheduler-side ablation studies). `.trans*` and
 `out*` files these scripts produce are gitignored scratch output, not part of the repo.
 
+The ten circuits other than `fermi_hubbard_1d_128q` also have a `<name>.rotations.qasm`, the
+Clifford+Rz circuit `compile_cliffordt --emit-rotations` writes just before synthesis, and its
+`<name>.rotations.qasm.tcount` sidecar (the T count of each distinct Rz angle, synthesized on its
+own). They are the input to the bicycle-architecture comparison, which synthesizes rotations one
+Euler axis at a time. They come from a 10-thread run, and `compile_cliffordt`'s parallel search
+makes its output depend on the run: their Clifford+T counterparts differ from the checked-in
+`.cliffordt.qasm` files by at most 0.6% in T count.
+
 Two subdirectories hold size-scaling families used for ablation studies rather than the main
 eleven-circuit comparison, each with its own `compile-all.sh`:
 

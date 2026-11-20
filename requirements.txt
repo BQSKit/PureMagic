@@ -51,3 +51,21 @@ pandas-stubs
 # For GPU support, replace with a CUDA-enabled build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121
 # torch --index-url https://download.pytorch.org/whl/cpu
+# Cultivation survival-curve extraction (data_processing/extract_survival_curve.py),
+# which re-runs the sampler from Gidney et al.'s code release to produce
+# data/cultivation/survival_d{3,5}.csv. Those CSVs are committed, so nothing in
+# the normal pipeline needs this stack -- it is only needed to regenerate them.
+# stim and chromobius are compiled extensions and lengthen a rebuild noticeably.
+#
+# The upstream release pins stim/sinter ~=1.14, which has no wheels for this
+# container's Python (3.14); 1.16 is API-compatible for the FlipSimulator path
+# the sampler uses.
+stim>=1.16
+sinter>=1.16
+pymatching
+chromobius
+# gen (vendored inside the release's code.zip) imports pygltflib at module
+# scope for its 3D circuit viz, so the sampler will not import without it.
+pygltflib
+networkx
+scipy
