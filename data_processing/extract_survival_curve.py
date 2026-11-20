@@ -33,15 +33,21 @@ def main():
     ap.add_argument("--noise", type=float, default=1e-3)
     ap.add_argument("--shots", type=int, default=1024 * 100)
     ap.add_argument("-o", "--out", default="survival.csv")
+    ap.add_argument("--r-end", type=int, default=5,
+                    help="rounds after the escape; 5 is the protocol stats.csv "
+                         "measured (r1=5, r2=5, 20 rounds in all), and so the "
+                         "one its gap acceptance applies to. Figure 15 uses 10")
     args = ap.parse_args()
 
-    # Same parameters make_lifetime_plot.main() uses for its d1=5 panel.
+    # The construction stats.csv measured: r_growing=r1=d1 and r_end=r2.
+    # make_lifetime_plot.main() draws Figure 15 with r_end=10 instead, which
+    # adds five post-escape rounds with no post-selection in them.
     circuit = cultiv.make_end2end_cultivation_circuit(
         dcolor=args.dcolor,
         dsurface=args.dsurface,
         basis="Y",
         r_growing=args.dcolor,
-        r_end=10,
+        r_end=args.r_end,
         inject_style="unitary",
     )
     circuit = gen.NoiseModel.uniform_depolarizing(

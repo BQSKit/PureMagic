@@ -58,7 +58,8 @@ impl CultivationManager {
             return Err("cultivation floor must be non-negative");
         }
         if floor >= total_mean {
-            return Err("cultivation floor must be below the total mean 1/lambda");
+            return Err("cultivation floor must be below the total mean 1/lambda \
+                        (pass --cultivation-floor 0 for a mean shorter than one attempt)");
         }
         self.floor = floor;
         self.rng_exp.try_set_params(total_mean - floor)

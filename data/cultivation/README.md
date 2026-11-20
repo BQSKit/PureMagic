@@ -19,12 +19,20 @@ Standard Sinter output. Two parts of it are paper inputs, both read by
   at that cutoff. At `G=104` (the value Gidney et al. use, and this paper's
   operating point) that is 1.13% acceptance at a 1.06e-9 error rate.
 
-What it does *not* contain is the per-round survival curve behind the paper's
-Figure 15, which only has end-to-end aggregates here. `make_lifetime_plot.py`
-in the release's `code.zip` regenerates that curve by re-running the Stim
-simulation; `data_processing/mcmc_cultivation.py` instead approximates it from
-values transcribed off the figure by hand, which is adequate for the
-distribution's *shape* but is not a citable source.
+What it does *not* contain is the per-round survival curve. `survival_d3.csv`
+and `survival_d5.csv` supply it. They were produced by
+[`data_processing/extract_survival_curve.py`](../../data_processing/extract_survival_curve.py),
+which runs the release's own `sample_times` sampler (from `code.zip`) for
+409,600 shots on the same circuits `stats.csv` measured: `r1=d1`, `r2=5`, so
+13 rounds at `d1=3` and 20 at `d1=5`. One tick is one round of syndrome
+extraction. The paper's Figure 15 draws a longer variant with `r2=10`, whose
+five extra post-escape rounds have no post-selection in them and no
+acceptance data in the release, so it is not used.
 
-The release's `code.zip` and `circuits.zip` are gitignored -- nothing here
-reads them. Re-fetch from the DOI if needed.
+At `d1=5` and `d=17` this gives a mean of 35.18 logical cycles per delivered
+state and a floor of 20/17 = 1.1765, the defaults of `puremagic
+--magic-state-lambda` (0.0284238) and `--cultivation-floor`.
+
+The release's `code.zip` and `circuits.zip` are gitignored. Only
+`extract_survival_curve.py` needs `code.zip`, run from inside the unpacked
+release. Re-fetch it from the DOI if needed.
