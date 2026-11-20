@@ -1878,7 +1878,7 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
         let mut sched =
-            Scheduler::new(circuit, topo, 0.0387396, 0.0, "none", String::new(), 1, false, false);
+            Scheduler::new(circuit, topo, 0.0387396, "none", String::new(), 1, false, false);
         sched.precompute_terminals_and_roots();
         for (_, preferred, _) in &sched.precomputed_root_info[0] {
             for &root in preferred {
