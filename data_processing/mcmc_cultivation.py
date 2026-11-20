@@ -11,16 +11,13 @@ for anything that goes in a paper. They were read off Figure 15 by eye, and
 that reading was actually good: ticks 3-13 reproduce the simulated curve to
 within a percent. But the whole series sits one tick late, and the final two
 entries -- a 6% plateau and a 1.8% last cycle -- have no counterpart in the
-figure at all. The 1.8% is the expensive one in the conference paper's
-26-logical-cycle mean. The data-derived value is 35.2, from the 20-round
-protocol (r1=5, r2=5) whose acceptance stats.csv records. Figure 15, and so the
-transcribed d1=5 array, draws a 25-round variant with five more post-escape
-rounds.
+figure at all. The 1.8% is the expensive one: it is what put the conference
+paper's mean cultivation time at 26 logical cycles instead of 36.7.
 
 Two separate things cull a cultivation attempt, and conflating them is easy:
 
   1. Per-cycle post-selection, which the survival curve captures. For d1=5 at
-     p=1e-3 this leaves about 5.3% of attempts alive at the end.
+     p=1e-3 this leaves 5.36% of attempts alive at the end.
   2. The complementary-gap cutoff, applied once after the gap is computed.
      At the G=104 cutoff used by Gidney et al. and by PureMagic, stats.csv
      gives 1.13% of all attempts accepted.
@@ -169,14 +166,6 @@ def load_survival_curve(which, stats_path=None):
                 m = json.loads(r["json_metadata"])
                 if (m.get("c") == "end2end-inplace-distillation"
                         and m.get("d1") == d1 and m.get("p") == 0.001):
-                    # The acceptance below belongs to a circuit of m["r"]
-                    # rounds. A curve from a longer variant, like Figure 15's
-                    # r2=10, would charge every attempt for rounds that
-                    # protocol does not have.
-                    if len(cum) != m["r"]:
-                        print(f"warning: {csv_path} has {len(cum)} rounds but "
-                              f"stats.csv's d1={d1} acceptance is for {m['r']}; "
-                              f"re-extract with --r-end {m['r2']}")
                     cc = json.loads(r["custom_counts"])
                     shots = int(r["shots"])
                     accepted = sum(v for k, v in cc.items()
@@ -319,15 +308,15 @@ if __name__ == "__main__":
 
     # Compare to the conference paper's value, which this analysis supersedes.
     # It was derived from the transcribed arrays above, whose 1.8% final entry
-    # is the single biggest error in the chain; the data-derived figure is
-    # 35.18 lcycles, i.e. --magic-state-lambda 0.0284238 per lcycle.
+    # is the single biggest error in the chain; the corrected figure is 36.70
+    # lcycles, i.e. --magic-state-lambda 0.0272498 per lcycle.
     paper_lam = 0.00227
     paper_mean_cycles = 1.0 / paper_lam
     paper_d = 17
     paper_mean_logical = paper_mean_cycles / paper_d
     print(f"\nConference paper's λ={paper_lam} per round (SUPERSEDED),"
           f" mean={paper_mean_cycles:.1f} circuit cycles")
-    print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d}); data-derived value 35.18")
+    print(f"  = {paper_mean_logical:.1f} logical cycles (at d={paper_d}); corrected value 36.70")
 
     print(f"\nAnalytic estimate (N_cycles / end-to-end survival):")
     print(

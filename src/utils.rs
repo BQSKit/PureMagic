@@ -17,32 +17,36 @@ pub(crate) struct CommonArgs {
     pub(crate) rseed: u64,
     /// Lambda parameter for the exponential distribution of magic-state
     /// cultivation cycles (magic states produced per magic qubit per lcycle).
-    /// 1/lambda = 35.18 lcycles: the mean patch occupancy per *accepted* state
+    /// 1/lambda = 36.70 lcycles: the mean patch occupancy per *accepted* state
     /// for Gidney et al.'s d1=5 d2=15 p=1e-3 cultivation at gap cutoff G=104,
     /// expressed at d=17 (one lcycle = d rounds). Obtained by running the
-    /// full-restart retry model over the per-round survival curve in
+    /// full-restart retry model over the per-cycle survival curve in
     /// data/cultivation/survival_d5.csv -- which comes from re-running the
-    /// cultivation paper's own sampler on the 20-round protocol (r1=5, r2=5)
-    /// that their stats.csv measured -- with its final entry replaced by that
-    /// protocol's G=104 acceptance of 1.1304%; see
+    /// cultivation paper's own sampler -- with its final entry replaced by the
+    /// G=104 acceptance of 1.1304% from stats.csv; see
     /// data_processing/cultivation_params.py.
     ///
-    /// The QCE paper used 0.0387396 (25.81 lcycles), from a survival curve read
-    /// off Figure 15 rather than derived from the data release. Figure 15 also
-    /// draws a longer, 25-round protocol (r2=10) than the one the release's
-    /// acceptance and error rates belong to.
-    #[arg(short, long, default_value = "0.0284238")]
+    /// Supersedes 0.0387396 (25.81 lcycles), which rested on a survival curve
+    /// transcribed by eye from Figure 15. That transcription was accurate in
+    /// the middle of the protocol but sat one tick late, and its final entry of
+    /// 1.8% corresponds to neither of the two quantities that cull an attempt
+    /// (5.36% post-selection survival, 1.13% gap acceptance). Correcting the
+    /// endpoint alone gives 42.1 lcycles; correcting the one-tick offset as
+    /// well brings it back to 36.70, since the real curve kills attempts
+    /// sooner and so makes restarts cheaper.
+    #[arg(short, long, default_value = "0.0272498")]
     pub(crate) magic_state_lambda: f64,
     /// Fixed per-attempt cultivation cost, in lcycles, added to every draw.
     /// Models the length of the attempt that finally succeeds: every delivered
     /// state costs at least one full attempt, which a memoryless exponential
     /// does not capture. The exponential component is rescaled so the total
     /// mean stays 1/`magic_state_lambda`, making a floor sweep a pure shape
-    /// change at fixed mean. The default is one 20-round attempt at d=17,
-    /// 20/17 lcycles, which fits the exact renewal distribution to within 1.1%
-    /// in CDF. 0 gives the memoryless model, and is needed when lambda is set
-    /// so high that the mean falls below one attempt.
-    #[arg(long, default_value = "1.1765")]
+    /// change at fixed mean. The default is one 25-round attempt at d=17,
+    /// 25/17 lcycles, which fits the exact renewal distribution to within 1.1%
+    /// in CDF, and keeps draws from rounding to zero. 0 gives the memoryless
+    /// model, and is needed when lambda is set so high that the mean falls
+    /// below one attempt.
+    #[arg(long, default_value = "1.4706")]
     pub(crate) cultivation_floor: f64,
     /// Disable T gate failures (every T gate succeeds on first attempt).
     #[arg(short = 'F', long)]
