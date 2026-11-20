@@ -85,21 +85,36 @@ def acceptance(rounds, gap_cutoff=GAP_CUTOFF, d1=5, p=0.001, required=True):
 
 
 def derive(d=17, gap_cutoff=GAP_CUTOFF, convention="rounds", d1=5,
-           surface_round_timesteps=SURFACE_ROUND_TIMESTEPS):
-    """Mean cultivation time, lambda and floor at code distance d."""
+           surface_round_timesteps=SURFACE_ROUND_TIMESTEPS, attempt_rounds=None):
+    """Mean cultivation time, lambda and floor at code distance d.
+
+    `attempt_rounds` shortens the attempt to its first rounds, e.g. 20 for
+    the r2=5 circuit stats.csv simulated and Tour de Gross time (199
+    timesteps), which ends five rounds before the gap decision. That is
+    exact only where no post-selection happens in the rounds cut, which is
+    checked, and it takes that protocol's own acceptance.
+    """
     if convention not in CONVENTIONS:
         raise ValueError(f"convention must be one of {CONVENTIONS}")
     survival, timesteps = load_curve(d1)
+    if attempt_rounds is not None:
+        if survival[attempt_rounds - 1:] != [survival[-1]] * (len(survival) - attempt_rounds + 1):
+            raise ValueError(f"post-selection continues past round {attempt_rounds}; "
+                             f"a {attempt_rounds}-round attempt is not a prefix of this curve")
+        survival, timesteps = survival[:attempt_rounds], timesteps[:attempt_rounds]
     weights = ([1.0] * len(survival) if convention == "rounds"
                else [t / surface_round_timesteps for t in timesteps])
     reach = [1.0] + survival[:-1]
     per_attempt = sum(r * w for r, w in zip(reach, weights))
+    per_attempt_timesteps = sum(r * t for r, t in zip(reach, timesteps))
     p_accept, ler, source = acceptance(len(survival), gap_cutoff, d1)
     mean = per_attempt / p_accept / d
     return {
         "convention": convention, "d": d, "gap_cutoff": gap_cutoff, "d1": d1,
         "attempt_rounds": len(survival), "attempt_timesteps": sum(timesteps),
         "per_attempt_surface_rounds": per_attempt,
+        "per_attempt_timesteps": per_attempt_timesteps,
+        "timesteps_per_state": per_attempt_timesteps / p_accept,
         "acceptance": p_accept, "ler_per_accepted": ler, "acceptance_source": source,
         "mean_lcycles": mean, "magic_state_lambda": 1 / mean,
         "cultivation_floor": sum(weights) / d,
@@ -112,10 +127,14 @@ def main():
     ap.add_argument("-d", "--distance", type=int, default=17)
     ap.add_argument("-G", "--cutoff", type=int, default=GAP_CUTOFF)
     ap.add_argument("--convention", choices=CONVENTIONS + ("both",), default="both")
+    ap.add_argument("--attempt-rounds", type=int, default=None,
+                    help="shorten the attempt, e.g. 20 for the r2=5 protocol "
+                         "without the gap wait; default: the whole 25 rounds")
     ap.add_argument("--json", action="store_true", help="print JSON only")
     args = ap.parse_args()
     convs = CONVENTIONS if args.convention == "both" else (args.convention,)
-    res = [derive(args.distance, args.cutoff, c) for c in convs]
+    res = [derive(args.distance, args.cutoff, c, attempt_rounds=args.attempt_rounds)
+           for c in convs]
     if args.json:
         print(json.dumps(res if len(res) > 1 else res[0], indent=1))
         return
