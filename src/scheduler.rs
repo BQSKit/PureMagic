@@ -41,6 +41,11 @@ pub(crate) struct ScheduleStats {
     /// Ready magic nodes used in any path this lcycle (routing or T-terminal).
     magic_ready_used: usize,
     tot_magic_unused: usize,
+    /// Non-data patch-lcycles reserved by any path (routing, injection, held Clifford).
+    tot_ancilla_reserved: usize,
+    /// Lcycles that magic states consumed by T gates spent ready before consumption.
+    /// States routed over or never used are not counted: they carry no error forward.
+    tot_consumed_wait: usize,
     plot_info: String,
 }
 
@@ -59,6 +64,8 @@ impl ScheduleStats {
             t_scheduled: 0,
             magic_ready_used: 0,
             tot_magic_unused: 0,
+            tot_ancilla_reserved: 0,
+            tot_consumed_wait: 0,
             plot_info: String::new(),
         }
     }
@@ -74,6 +81,16 @@ impl ScheduleStats {
         println!("  bus:         {:.3}", bus_frac);
         println!("  magic:       {:.3}", magic_frac);
         println!("Magic unused {:.3}", magic_unused_frac);
+        // Patch-lcycles in which an ancilla carries logical information: reserved by a
+        // path, or holding a magic state a T gate later consumes. The remainder are idle
+        // or cultivating, where an error is discarded with the state.
+        println!(
+            "Ancilla patch-lcycles: reserved {} consumed-wait {} held-ready {} of {}",
+            self.tot_ancilla_reserved,
+            self.tot_consumed_wait,
+            self.tot_magic_unused,
+            (self.bus_qubits + self.magic_qubits) * n_lcycles
+        );
     }
 
     pub(crate) fn update(
@@ -179,6 +196,9 @@ pub(crate) struct Scheduler {
     pub(crate) scheduled_products: IndexSet<i32>,
     /// Per-node occupancy bitmap for the current lcycle; reset to all-false each lcycle.
     used: Vec<bool>,
+    /// Per-node lcycle at which its current magic state became ready; `usize::MAX`
+    /// while the node is cultivating or is not a magic node.
+    ready_since: Vec<usize>,
     /// In-progress multi-lcycle Clifford gates: maps product_id →
     /// (remaining_lcycles, product, node_ids, opt_tree).
     /// CX occupies 2 lcycles; S/SX occupy 3.
@@ -268,6 +288,7 @@ impl Scheduler {
             lcycle_scheduled: Vec::new(),
             scheduled_products: IndexSet::new(),
             used: vec![false; n_nodes],
+            ready_since: vec![usize::MAX; n_nodes],
             clifford_paths: IndexMap::new(),
             t_gate_failures: 0,
             correction_gates_emitted: 0,
@@ -761,6 +782,7 @@ impl Scheduler {
         let _timer = accum_start!(self.timers);
         self.timers.start(self.other_timer);
         let mut n_avail_magic = self.update_cultivators();
+        self.update_ready_since();
         let initial_magic = n_avail_magic;
         self.pp_paths.clear();
         self.used.fill(false);
@@ -781,6 +803,10 @@ impl Scheduler {
         self.sched_precomputed(plotting);
         self.timers.stop(self.other_timer);
         self.sched_remaining(&mut n_avail_magic, plotting);
+        let topo = &self.input.topo;
+        self.stats.tot_ancilla_reserved += (0..topo.n_nodes)
+            .filter(|&i| self.used[i] && topo.node(i as u16).node_type != NodeType::Data)
+            .count();
         self.stats.update(
             self.current_lcycle,
             self.pp_paths.len(),
@@ -814,6 +840,30 @@ impl Scheduler {
             false
         } else {
             true
+        }
+    }
+
+    /// Stamps each magic node with the lcycle its state became ready, and clears the
+    /// stamp of every node that is cultivating again (consumed, routed over or reset).
+    fn update_ready_since(&mut self) {
+        let topo = &self.input.topo;
+        for i in 0..topo.n_nodes {
+            let ready = topo.node(i as u16).node_type == NodeType::Magic
+                && topo.cultivation_times[i] == 0;
+            if !ready {
+                self.ready_since[i] = usize::MAX;
+            } else if self.ready_since[i] == usize::MAX {
+                self.ready_since[i] = self.current_lcycle;
+            }
+        }
+    }
+
+    /// Charges a consumed magic state the lcycles it waited ready, excluding the
+    /// consuming lcycle, which the path reservation already counts.
+    fn record_consumed_wait(&mut self, magic_id: u16) {
+        let since = self.ready_since[magic_id as usize];
+        if since != usize::MAX {
+            self.stats.tot_consumed_wait += self.current_lcycle - since;
         }
     }
 
@@ -1117,6 +1167,17 @@ impl Scheduler {
                 };
                 if let PathResult::PathFound(opt_graph) = result {
                     info_sched!("  Scheduled product {}", self.input.circuit.product(pp_id));
+                    if gate_type.is_t() {
+                        // A Steiner tree names its cultivator as the root; a single-qubit
+                        // T found by A* in non-plotting mode returns no tree.
+                        let magic_id = match opt_graph {
+                            Some(ref g) => g.root_node_id,
+                            None => Some(self.astar.last_magic_id),
+                        };
+                        if let Some(id) = magic_id {
+                            self.record_consumed_wait(id);
+                        }
+                    }
                     if let Some(ref pp_graph) = opt_graph {
                         let node_ids: Vec<u16> = pp_graph.iter_nodes().collect();
                         self.mark_nodes_used(&node_ids);

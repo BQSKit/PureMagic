@@ -28,6 +28,8 @@ pub(crate) struct AStar {
     buckets: Vec<Vec<u16>>,
     bucket_min: usize,
     pub n_calls: usize,
+    /// The ready magic node the last successful search consumed.
+    pub(crate) last_magic_id: u16,
 }
 
 impl AStar {
@@ -41,6 +43,7 @@ impl AStar {
             buckets: vec![Vec::new(); BUCKET_COUNT],
             bucket_min: 0,
             n_calls: 0,
+            last_magic_id: u16::MAX,
         }
     }
 
@@ -114,6 +117,7 @@ impl AStar {
             };
 
             if node_type == NodeType::Magic && cultivation_time == 0 && !used[node_id as usize] {
+                self.last_magic_id = node_id;
                 return self.finish_path(node_id, root_ids, terminal_ids, topo, used, plotting);
             }
 
@@ -138,6 +142,7 @@ impl AStar {
                 if nb_type == NodeType::Magic && nb_cultivation == 0 {
                     self.parent[nb_id as usize] = node_id;
                     self.open_epochs[nb_id as usize] = epoch;
+                    self.last_magic_id = nb_id;
                     return self.finish_path(nb_id, root_ids, terminal_ids, topo, used, plotting);
                 }
                 let new_g = g + 1;
