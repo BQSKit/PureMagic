@@ -731,6 +731,20 @@ def main():
     )
     parser.add_argument("--hline", action="store_true", default=False)
     parser.add_argument(
+        "--hline-at",
+        dest="hline_at",
+        type=float,
+        default=None,
+        metavar="Y",
+        help="Draw a dashed reference line at y=Y, e.g. a real-time budget (scatter plots).",
+    )
+    parser.add_argument(
+        "--hline-label",
+        dest="hline_label",
+        default=None,
+        help="Legend label for the --hline-at line.",
+    )
+    parser.add_argument(
         "--logx", action="store_true", default=False, help="Use a log scale on the x-axis."
     )
     parser.add_argument(
@@ -1773,6 +1787,14 @@ def main():
                 hline_y = 0.0 if args.percent_improvement else 1.0
                 ax.axhline(
                     y=hline_y, color="grey", linestyle=":", linewidth=1.0, label="_nolegend_"
+                )
+            if args.hline_at is not None:
+                ax.axhline(
+                    y=args.hline_at,
+                    color="black",
+                    linestyle="--",
+                    linewidth=1.0,
+                    label=args.hline_label or "_nolegend_",
                 )
             _combine_legend(ax, ax2, no_legend=args.no_legend)
         _deferred_circuit_x_setup = False
