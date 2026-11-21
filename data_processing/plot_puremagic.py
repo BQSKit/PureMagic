@@ -472,12 +472,56 @@ def _dascot_square_sparse_total(n: int) -> int:
 _WISQ_MAGIC_COST = 121  # logical qubits per magic state slot in the alternative area model
 
 
-def parse_wisq_dir(directory: str, magic_cost: int = 1) -> list:
+def _wisq_gate_depth(gates) -> int:
+    """Depth of a WISQ gate list (each entry the qubits one gate acts on): the
+    longest chain of gates sharing qubits. A qubit takes part in at most one
+    gate per step, so no schedule of these gates has fewer steps."""
+    last, depth = {}, 0
+    for qubits in gates:
+        level = 1 + max((last.get(q, 0) for q in qubits), default=0)
+        for q in qubits:
+            last[q] = level
+        depth = max(depth, level)
+    return depth
+
+
+def _wisq_steps(data: dict, partial: str, fname: str):
+    """-> (steps, estimated) for one WISQ result, or None to skip it.
+
+    A run whose routing timed out writes a partial schedule ("fully_routed?"
+    false) covering only the first gates, so its step count is not the
+    circuit's. partial="skip" drops such runs. partial="depth" stands in the
+    gate list's depth, the fewest steps any schedule could take, which WISQ
+    itself reaches on most circuits it completes, so the estimate is the one
+    most favourable to WISQ.
+    """
+    n_steps = len(data["steps"])
+    if data.get("fully_routed?", True):
+        return n_steps, False
+    routed = sum(len(s) for s in data["steps"])
+    total = len(data.get("gates", []))
+    if partial == "depth" and total:
+        print(
+            f"Note: {fname} routed {routed}/{total} gates before timing out; "
+            f"using its depth bound as the step count.",
+            file=sys.stderr,
+        )
+        return _wisq_gate_depth(data["gates"]), True
+    print(
+        f"Warning: skipping {fname}: routing timed out after {routed}/{total} gates "
+        f"(pass --wisq-partial depth to estimate it).",
+        file=sys.stderr,
+    )
+    return None
+
+
+def parse_wisq_dir(directory: str, magic_cost: int = 1, partial: str = "skip") -> list:
     """
     Read all *.json files in *directory* and return a list of
-    (circuit_name, volume) tuples, where:
+    (circuit_name, volume, estimated) tuples, where:
       circuit_name = filename stem stripped of '-wisq' suffix
-      volume       = ((total_area - magic) + magic * magic_cost) * len(steps)
+      volume       = ((total_area - magic) + magic * magic_cost) * steps
+      estimated    = True when steps is the depth bound of a partial run
 
     magic_cost=1 gives the standard square-sparse area.
     magic_cost=121 weights each magic slot as 121 logical qubits.
@@ -490,14 +534,17 @@ def parse_wisq_dir(directory: str, magic_cost: int = 1) -> list:
         try:
             with open(fpath) as f:
                 data = json.load(f)
+            got = _wisq_steps(data, partial, fname)
+            if got is None:
+                continue
+            n_steps, estimated = got
             n_data = len(data["map"])
-            n_steps = len(data["steps"])
             total, magic = _dascot_square_sparse_counts(n_data)
             area = (total - magic) + magic * magic_cost
             stem = fname[: -len(".json")]
             # Strip trailing "-wisq" or "_wisq" suffix if present
             stem = re.sub(r"[-_]wisq$", "", stem, flags=re.IGNORECASE)
-            entries.append((stem, area * n_steps))
+            entries.append((stem, area * n_steps, estimated))
         except Exception as exc:
             print(f"Warning: could not parse WISQ file {fpath}: {exc}", file=sys.stderr)
     return entries
@@ -619,6 +666,17 @@ def main():
             "Number of logical qubits per magic-state slot when computing the WISQ volume. "
             "Default: 1 (standard square-sparse area). "
             "Use e.g. 121 to account for the overhead of a magic-state factory."
+        ),
+    )
+    parser.add_argument(
+        "--wisq-partial",
+        dest="wisq_partial",
+        choices=["skip", "depth"],
+        default="skip",
+        help=(
+            "What to do with WISQ runs whose routing timed out and left a partial schedule. "
+            "'skip' (default) leaves them out. 'depth' estimates their step count by the gate "
+            "list's depth, the fewest steps possible, and hatches their bars."
         ),
     )
     parser.add_argument("-x", "--xaxis", dest="x_axis", choices=list(_X_AXES))
@@ -1723,7 +1781,9 @@ def main():
     # WISQ overlay / ratio mode
     # -----------------------------------------------------------------------
     if args.wisq_dir is not None:
-        wisq_entries = parse_wisq_dir(args.wisq_dir, magic_cost=args.wisq_magic_q)
+        wisq_entries = parse_wisq_dir(
+            args.wisq_dir, magic_cost=args.wisq_magic_q, partial=args.wisq_partial
+        )
 
         # Filter by allowed circuits
         def _wisq_canonical(stem):
@@ -1739,6 +1799,7 @@ def main():
             print("Warning: no WISQ entries matched the allowed circuits.", file=sys.stderr)
         else:
             wisq_map = {_wisq_canonical(e[0]): e[1] for e in wisq_entries}
+            wisq_estimated = {_wisq_canonical(e[0]) for e in wisq_entries if e[2]}
 
             has_f_series = any(len(sl) > 0 for sl, _, _ in all_series)
 
@@ -1805,6 +1866,8 @@ def main():
                                 row += "  " + f"{value_fmt.format(v):>{col_w}}"
                             else:
                                 row += "  " + f"{'N/A':>{col_w}}"
+                        if c in wisq_estimated:
+                            row += "  (WISQ estimated: depth bound)"
                         print(row)
                     print()
 
@@ -1828,6 +1891,13 @@ def main():
                             edgecolor="black",
                             linewidth=0.4,
                         )
+                        # Hatch the circuits whose WISQ volume is a depth-bound
+                        # estimate rather than a completed schedule.
+                        for bar, c in zip(bars_r, ratio_circuits):
+                            if c in wisq_estimated:
+                                bar.set_hatch("///")
+                                bar.set_facecolor("white")
+                                bar.set_edgecolor(colour)
                         _label_bars(ax, bars_r)
 
                     ax.set_ylabel(ratio_y_label, fontsize=_LABEL_FONTSIZE)
@@ -1958,8 +2028,11 @@ def main():
                                 continue
                             if args.select and args.select not in _wisq_canonical(stem):
                                 continue
+                            got = _wisq_steps(data, args.wisq_partial, fname)
+                            if got is None:
+                                continue
+                            n_steps = got[0]
                             n_data = len(data["map"])
-                            n_steps = len(data["steps"])
                             area = _dascot_square_sparse_total(n_data)
                             volume = area * n_steps
                             wisq_entries_full.append((stem, n_data, volume))
