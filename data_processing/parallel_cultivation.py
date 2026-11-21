@@ -35,7 +35,8 @@ simulation started four attempts in a patch, took the per-round survival from
 a transcription of the paper's figure that sat one round late, and used an
 acceptance of about 1% (the "99% discard" of Figure 2) in place of the
 release's 1.11%. The single-start script that came with QCE then used the same
-curve with an acceptance of 1.8%, which gives the same mean as one start.
+curve with its acceptance tuned to 1.8%, so that one start reproduced that
+four-start mean, and that is the value the QCE tag shipped.
 """
 
 import argparse
