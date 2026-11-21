@@ -1496,7 +1496,7 @@ def main():
                     args.ylabel
                     if (axis_idx == 0 and args.ylabel)
                     else (
-                        f"{_axis_label(yk_list, any_ratio, args.percent_improvement)} / FLASQ Conservative Bound"
+                        f"{_axis_label(yk_list, any_ratio, args.percent_improvement)} / FLASQ Conservative Estimate"
                         if args.flasq_file is not None
                         else _axis_label(yk_list, any_ratio, args.percent_improvement)
                     )
