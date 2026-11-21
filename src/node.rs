@@ -41,7 +41,10 @@ impl Node {
         if self.nbs_slice().contains(&other) {
             return;
         }
-        debug_assert!(
+        // A full assert, not debug-only: add_nb runs while the layout is built,
+        // not in the A* loop, and a release build would otherwise panic on the
+        // array bound with no hint of which node overflowed.
+        assert!(
             (self.n_nbs as usize) < MAX_NBS,
             "Node {} exceeded MAX_NBS={} neighbours",
             self.id,
@@ -202,13 +205,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(debug_assertions))]
-    fn add_nb_beyond_max_is_noop_in_release() {
+    #[should_panic(expected = "exceeded MAX_NBS")]
+    fn add_nb_beyond_max_panics() {
+        // Dropping a neighbour silently would corrupt the routing graph, so an
+        // overflow stops the run in debug and release builds alike.
         let mut node = Node::new(0, None, 0.0, 0.0, NodeType::Magic);
-        for i in 1..=(MAX_NBS as u16 + 2) {
+        for i in 1..=(MAX_NBS as u16 + 1) {
             node.add_nb(i);
         }
-        assert!(node.n_nbs as usize <= MAX_NBS);
     }
 
     #[test]
