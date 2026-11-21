@@ -30,11 +30,11 @@ pub(crate) struct CommonArgs {
     /// derives it, and the value for other distances, cutoffs and for
     /// uniform-timestep accounting.
     ///
-    /// Supersedes 0.0387396 (25.81 lcycles), which rested on a survival curve
-    /// transcribed by eye from Figure 15. That transcription sat one tick late,
-    /// and its final entry of 1.8% corresponds to neither of the two
-    /// quantities that cull an attempt (5.2% post-selection survival, 1.1% gap
-    /// acceptance).
+    /// Supersedes 0.0387396 (25.81 lcycles), which modelled four parallel
+    /// cultivation starts in a patch, on a survival curve transcribed by eye
+    /// from Figure 15 and an acceptance of about 1%. This default models one
+    /// start per patch. data_processing/parallel_cultivation.py gives the
+    /// parallel-start alternatives.
     #[arg(short, long, default_value = "0.0268536")]
     pub(crate) magic_state_lambda: f64,
     /// Fixed per-attempt cultivation cost, in lcycles, added to every draw.
