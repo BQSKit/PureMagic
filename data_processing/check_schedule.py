@@ -11,9 +11,9 @@ itself. It checks:
   1. exclusivity: no patch serves two products in one logical cycle
   2. terminals: every product touches exactly the data-patch edges its
      operators name (X edge for X, Z edge for Z, both for Y) and no other
-     data edge. A T gate's basis may have been conjugated by a pending S
-     correction about any axis, so for T gates only the qubits are checked,
-     each with a single Pauli
+     data edge. A T gate's or single-qubit measurement's basis may have been
+     conjugated by a pending S correction about any axis, so for those only
+     the qubits are checked, each with a single Pauli
   3. connectivity: each product's patches form one connected piece of the
      layout
   4. duration: T and M take one cycle, CX two consecutive cycles, S and SX
@@ -158,9 +158,10 @@ def main():
         allowed = []
         for q, b in ops:
             alts = {b}
-            if gate == "T":
+            if gate == "T" or (gate == "M" and len(ops) == 1):
                 # A pending S correction about the failed T's own axis (X, Y
-                # or Z) conjugates the basis, so any Pauli may stand here.
+                # or Z) conjugates a T gate's or a single-qubit measurement's
+                # basis, so any Pauli may stand here.
                 alts = {"X", "Y", "Z"}
             allowed.append(alts)
         for lc, g, magic, length, terms, nodes in rs:

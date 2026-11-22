@@ -23,6 +23,29 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::rc::Rc;
 
+/// How the S corrections that failed T gates leave on their qubits are resolved.
+/// A correction is S about the failed T gate's axis, tracked per qubit as a power
+/// and an axis until an operation on that qubit has to deal with it.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CorrectionStats {
+    /// T gates scheduled with their basis conjugated through a pending correction.
+    pub(crate) t_conjugated: usize,
+    /// Corrections folded into a same-axis S/SX with even net power: the gate vanishes.
+    pub(crate) merged_free: usize,
+    /// Corrections folded into a same-axis S/SX with odd net power: still one gate.
+    pub(crate) merged_gate: usize,
+    /// Net power two when a Clifford needed the qubit: a Pauli, tracked classically.
+    pub(crate) classical: usize,
+    /// Standalone correction gates emitted, by axis X, Y, Z.
+    pub(crate) emitted: [usize; 3],
+    /// Single-qubit measurements scheduled in a basis conjugated through a pending
+    /// correction, as T gates are.
+    pub(crate) m_conjugated: usize,
+    /// Of `emitted`, those placed ahead of a CX or multi-qubit measurement whose
+    /// operator on that qubit does not commute with the pending correction.
+    pub(crate) before_multi: usize,
+}
+
 /// Per-lcycle and cumulative qubit utilisation counters.
 pub(crate) struct ScheduleStats {
     data_qubits: usize,
@@ -218,6 +241,8 @@ pub(crate) struct Scheduler {
     /// CX occupies 2 lcycles; S/SX occupy 3.
     clifford_paths: IndexMap<i32, (usize, PauliProduct, Vec<u16>, Option<Rc<TreeGraph>>)>,
     pub(crate) t_gate_failures: usize,
+    /// How T-injection corrections were resolved; see `CorrectionStats`.
+    pub(crate) corr: CorrectionStats,
     pub(crate) correction_gates_emitted: usize,
     pub(crate) stree_computation: SteinerTree,
     pub(crate) astar: AStar,
@@ -312,6 +337,7 @@ impl Scheduler {
             s_sx_nodes: HashMap::new(),
             clifford_paths: IndexMap::new(),
             t_gate_failures: 0,
+            corr: CorrectionStats::default(),
             correction_gates_emitted: 0,
             stree_computation: SteinerTree::new(n_nodes),
             astar: AStar::new(n_nodes),
@@ -916,9 +942,36 @@ impl Scheduler {
             let Some(tree) = self.precomputed_clifford_trees.get(&pp_id).map(Rc::clone) else {
                 continue;
             };
+            // A pending correction that does not commute with this product's operator
+            // on some qubit must be applied first: a CX or a multi-qubit measurement
+            // cannot absorb a Clifford the way a T gate's basis can be conjugated.
+            // Emit it and hold the product until it completes.
+            if self.has_unhandled_correction(pp_id) {
+                let qubits: Vec<u16> = self
+                    .input
+                    .circuit
+                    .product(pp_id)
+                    .operators
+                    .iter()
+                    .filter(|op| {
+                        let q = op.qubit as usize;
+                        self.correction_power[q] % 2 == 1 && self.correction_basis[q] != op.basis
+                    })
+                    .map(|op| op.qubit)
+                    .collect();
+                for q in qubits {
+                    if self.try_emit_s_correction(q, plotting) {
+                        self.corr.before_multi += 1;
+                    }
+                }
+                let pp = self.input.circuit.product(pp_id);
+                Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
+                continue;
+            }
             let all_free = tree.iter_nodes().all(|nid| !self.used[nid as usize]);
             if all_free {
                 to_remove.push(pp_id);
+                debug_assert!(!self.has_unhandled_correction(pp_id));
                 let node_ids: Vec<u16> = tree.iter_nodes().collect();
                 let (_tree_n_nodes, _tree_n_edges) = (tree.n_nodes, tree.n_edges);
                 let opt_tree: Option<Rc<TreeGraph>> =
@@ -975,6 +1028,7 @@ impl Scheduler {
             return true;
         }
         if power == 2 {
+            self.corr.classical += 1;
             // Z correction: tracked classically — no physical gate needed.
             info_sched!("  Qubit {}: Z correction (classical), clearing power", qubit);
             self.correction_power[q] = 0;
@@ -1022,6 +1076,11 @@ impl Scheduler {
                 );
                 self.next_correction_id += 1;
                 self.correction_gates_emitted += 1;
+                self.corr.emitted[match basis {
+                    'X' => 0,
+                    'Y' => 1,
+                    _ => 2,
+                }] += 1;
                 if let Some(ref g) = opt_graph {
                     let node_ids: Vec<u16> = g.iter_nodes().collect();
                     self.mark_nodes_used(&node_ids);
@@ -1068,6 +1127,7 @@ impl Scheduler {
             merged_power
         );
         if merged_power == 0 || merged_power == 2 {
+            self.corr.merged_free += 1;
             // Combined effect is classical only (identity or Z/X) - no physical gate needed.
             info_sched!(
                 "  Product {} fully absorbed classically (merged power={}), clearing correction",
@@ -1088,6 +1148,7 @@ impl Scheduler {
         }
         match self.sched_s_sx(pp_id, plotting) {
             PathResult::PathFound(opt_graph) => {
+                self.corr.merged_gate += 1;
                 info_sched!(
                     "  Merge-scheduled {:?} product {} (qubit {}, merged power={}), clearing correction",
                     gate_type,
@@ -1164,7 +1225,9 @@ impl Scheduler {
             }
             // Apply just-in-time S^k conjugation (X<->Y swap for odd power) only when needed;
             // skipping the common case avoids Vec allocations and topology lookups every lcycle.
-            if gate_type.is_t() {
+            // A measurement absorbs a pending correction the same way, by measuring
+            // the conjugated basis.
+            if gate_type.is_t() || gate_type.is_m() {
                 let any_odd_correction = self
                     .input
                     .circuit
@@ -1200,6 +1263,12 @@ impl Scheduler {
                 };
                 if let PathResult::PathFound(opt_graph) = result {
                     info_sched!("  Scheduled product {}", self.input.circuit.product(pp_id));
+                    if gate_type.is_t() && self.t_conjugated_bases.contains_key(&pp_id) {
+                        self.corr.t_conjugated += 1;
+                    }
+                    if gate_type.is_m() && self.t_conjugated_bases.contains_key(&pp_id) {
+                        self.corr.m_conjugated += 1;
+                    }
                     if gate_type.is_t() {
                         // A Steiner tree names its cultivator as the root; a single-qubit
                         // T found by A* in non-plotting mode returns no tree.
@@ -1557,6 +1626,16 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Whether a qubit of `pp_id` carries an odd pending correction about an axis
+    /// other than the product's own operator there, which conjugating a T gate or
+    /// merging into an S/SX would handle but nothing does for CX or M.
+    fn has_unhandled_correction(&self, pp_id: i32) -> bool {
+        self.input.circuit.product(pp_id).operators.iter().any(|op| {
+            let q = op.qubit as usize;
+            self.correction_power[q] % 2 == 1 && self.correction_basis[q] != op.basis
+        })
+    }
+
     #[inline]
     fn trace_footprint(&mut self, pp_id: i32, nodes: &[u16]) {
         if self.trace.is_some() {
@@ -1619,6 +1698,22 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
+        let c = &self.corr;
+        let open = self.correction_power.iter().filter(|&&p| p != 0).count();
+        println!(
+            "Corrections: t-conjugated {} merged-free {} merged-gate {} classical {} \
+             emitted-x {} emitted-y {} emitted-z {} m-conjugated {} before-multi {} open-at-end {}",
+            c.t_conjugated,
+            c.merged_free,
+            c.merged_gate,
+            c.classical,
+            c.emitted[0],
+            c.emitted[1],
+            c.emitted[2],
+            c.m_conjugated,
+            c.before_multi,
+            open
+        );
         if let Some(w) = self.trace.as_mut() {
             w.flush().expect("flushing the schedule trace");
         }
@@ -2198,6 +2293,59 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn noncommuting_correction_is_applied_before_a_cx() {
+        // A correction about Y on the CX control, whose operator there is Z, does not
+        // commute with the CX. It must be emitted first and complete before the CX.
+        let mut sched = build_scheduler(&["+ZX__<CX>"], 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'Y';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 1);
+        assert_eq!(sched.corr.before_multi, 1);
+        let cycles = |id: i32| -> Vec<usize> {
+            sched
+                .lcycle_scheduled
+                .iter()
+                .filter(|(_, ids)| ids.contains(&id))
+                .map(|(l, _)| *l)
+                .collect()
+        };
+        let corr = cycles(1);
+        let cx = cycles(0);
+        assert_eq!(corr.len(), 3, "correction takes three lcycles");
+        assert!(cx[0] > *corr.last().unwrap(), "CX {:?} after correction {:?}", cx, corr);
+    }
+
+    #[test]
+    fn commuting_correction_passes_through_a_cx() {
+        // A correction about Z on the control commutes with the CX's Z there.
+        let mut sched = build_scheduler(&["+ZX__<CX>"], 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'Z';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0);
+    }
+
+    #[test]
+    fn measurement_basis_is_conjugated_by_a_pending_correction() {
+        // S about X turns a Z measurement into a Y measurement, on both edges, with no
+        // correction gate.
+        let mut sched = build_scheduler(&["+Z___<M>"], 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'X';
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.corr.m_conjugated, 1);
+        let x = sched.input.topo.get_data_node_id(0, 'X');
+        let z = sched.input.topo.get_data_node_id(0, 'Z');
+        let mut t = sched.precomputed_terminals[0].clone();
+        t.sort_unstable();
+        let mut want = vec![x, z];
+        want.sort_unstable();
+        assert_eq!(t, want);
     }
 
     #[test]
