@@ -46,6 +46,10 @@ struct Args {
     /// fit a column and stops being legible.
     #[arg(long, value_name = "START:END", value_parser = parse_layer_range)]
     plot_qubits: Option<(usize, usize)>,
+    /// Write <CIRCUIT_STEM>.trace: the layout and every product's patches per
+    /// lcycle, for independent checking by data_processing/check_schedule.py.
+    #[arg(long)]
+    trace: bool,
     /// Log scheduler actions to <CIRCUIT_FNAME>.sched_trace. Only populated in debug
     /// builds: the debug_sched!/info_sched! call sites are compiled out entirely in
     /// release builds, so a release build still creates the file but leaves it empty.
@@ -162,6 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.record_cultivation_dist,
     );
 
+    if args.trace {
+        sched.enable_trace(&format!(
+            "{}.trace",
+            std::path::Path::new(&circuit_fname).file_stem().unwrap().to_string_lossy()
+        ))?;
+    }
     let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;

@@ -137,6 +137,11 @@ impl CultivationManager {
         }
     }
 
+    /// Length of the attempt that produced `id`'s current ready state.
+    pub(crate) fn done_len(&self, id: u16) -> i32 {
+        self.done_len.get(id as usize).copied().unwrap_or(0)
+    }
+
     /// Charges the yield of the nodes used in the final lcycle, which no later
     /// `update_cultivators` call sees. Changes no cultivation state.
     pub(crate) fn settle(&mut self, topo: &TopoGraph, used: &[bool], consumed: &[bool]) {

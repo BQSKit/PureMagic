@@ -30,6 +30,8 @@ pub(crate) struct AStar {
     pub n_calls: usize,
     /// The ready magic node the last successful search consumed.
     pub(crate) last_magic_id: u16,
+    /// Nodes the last non-plotting `finish_path` marked used, for the schedule trace.
+    pub(crate) last_path: Vec<u16>,
 }
 
 impl AStar {
@@ -44,6 +46,7 @@ impl AStar {
             bucket_min: 0,
             n_calls: 0,
             last_magic_id: u16::MAX,
+            last_path: Vec::new(),
         }
     }
 
@@ -166,11 +169,13 @@ impl AStar {
 
     /// Walks the parent chain to mark used nodes (non-plotting) or build a TreeGraph (plotting).
     fn finish_path(
-        &self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
+        &mut self, magic_id: u16, root_ids: &[u16], terminal_ids: &[u16], topo: &TopoGraph,
         used: &mut Vec<bool>, plotting: bool,
     ) -> PathResult {
         if !plotting {
+            self.last_path.clear();
             used[magic_id as usize] = true;
+            self.last_path.push(magic_id);
             let mut curr = magic_id;
             loop {
                 let prev_id = self.parent[curr as usize];
@@ -178,14 +183,19 @@ impl AStar {
                     break;
                 }
                 used[prev_id as usize] = true;
+                self.last_path.push(prev_id);
                 curr = prev_id;
             }
             for &root_id in root_ids {
                 used[root_id as usize] = true;
+                self.last_path.push(root_id);
             }
             for &tid in terminal_ids {
                 used[tid as usize] = true;
+                self.last_path.push(tid);
             }
+            self.last_path.sort_unstable();
+            self.last_path.dedup();
             return PathResult::PathFound(None);
         }
         let mut tree = TreeGraph::new(topo.n_nodes);

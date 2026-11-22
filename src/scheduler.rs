@@ -202,6 +202,17 @@ pub(crate) struct Scheduler {
     /// Magic nodes a T gate took its state from this lcycle, for the yield
     /// accounting in `CultivationManager::update_cultivators`.
     consumed: Vec<bool>,
+    /// Schedule trace for independent validation (`--trace`), see `enable_trace`.
+    trace: Option<BufWriter<File>>,
+    /// Footprint and magic node of this lcycle's T gates routed by A* without a
+    /// tree, which `pp_paths` cannot carry; only filled while tracing.
+    trace_untreed: HashMap<i32, (Vec<u16>, u16)>,
+    /// Footprint of this lcycle's other products scheduled without a tree
+    /// (precomputed, carried forward, S/SX, M); only filled while tracing.
+    trace_fp: HashMap<i32, Vec<u16>>,
+    /// Patches of S/SX products scheduled without a tree, by product id, so
+    /// that `advance_clifford_state` can hold them for the gate's later lcycles.
+    s_sx_nodes: HashMap<i32, Vec<u16>>,
     /// In-progress multi-lcycle Clifford gates: maps product_id →
     /// (remaining_lcycles, product, node_ids, opt_tree).
     /// CX occupies 2 lcycles; S/SX occupy 3.
@@ -238,6 +249,8 @@ pub(crate) struct Scheduler {
     correction_basis: Vec<char>,
     /// Next ID to assign when creating a dynamic S correction product.
     next_correction_id: i32,
+    /// Products in the circuit file; ids from here on are injected corrections.
+    n_circuit_products: usize,
     /// Maps product_id → (qubit, new_basis) pairs for T gates whose operators were
     /// conjugated this lcycle. Populated in sched_remaining; consumed in process_t_gate_outcomes.
     t_conjugated_bases: HashMap<i32, Vec<(u16, char)>>,
@@ -293,6 +306,10 @@ impl Scheduler {
             used: vec![false; n_nodes],
             ready_since: vec![usize::MAX; n_nodes],
             consumed: vec![false; n_nodes],
+            trace: None,
+            trace_untreed: HashMap::new(),
+            trace_fp: HashMap::new(),
+            s_sx_nodes: HashMap::new(),
             clifford_paths: IndexMap::new(),
             t_gate_failures: 0,
             correction_gates_emitted: 0,
@@ -317,6 +334,7 @@ impl Scheduler {
             correction_power: vec![0u8; n_qubits],
             correction_basis: vec!['X'; n_qubits],
             next_correction_id: n_initial_products,
+            n_circuit_products: n_initial_products as usize,
             t_conjugated_bases: HashMap::new(),
             conjugated_t_products: HashSet::new(),
             free_merged_products: HashSet::new(),
@@ -777,6 +795,7 @@ impl Scheduler {
     fn carry_forward_path(
         &mut self, pp_id: i32, node_ids: &[u16], opt_tree: Option<Rc<TreeGraph>>,
     ) {
+        self.trace_footprint(pp_id, node_ids);
         self.mark_nodes_used(node_ids);
         self.pp_paths.push((pp_id, opt_tree));
     }
@@ -852,8 +871,8 @@ impl Scheduler {
     fn update_ready_since(&mut self) {
         let topo = &self.input.topo;
         for i in 0..topo.n_nodes {
-            let ready = topo.node(i as u16).node_type == NodeType::Magic
-                && topo.cultivation_times[i] == 0;
+            let ready =
+                topo.node(i as u16).node_type == NodeType::Magic && topo.cultivation_times[i] == 0;
             if !ready {
                 self.ready_since[i] = usize::MAX;
             } else if self.ready_since[i] == usize::MAX {
@@ -906,6 +925,7 @@ impl Scheduler {
                     if plotting { Some(Rc::clone(&tree)) } else { None };
                 // Drop `tree` before the `&mut self` call to `mark_nodes_used`.
                 drop(tree);
+                self.trace_footprint(pp_id, &node_ids);
                 self.mark_nodes_used(&node_ids);
                 info_sched!(
                     "  Scheduled product {} (precomputed) with {} nodes and {} edges",
@@ -984,7 +1004,14 @@ impl Scheduler {
             self.precomputed_root_info.pop();
             return false;
         }
-        let result = self.sched_s_sx(s_id, plotting);
+        // An S about Y needs both of the data patch's edges, like any Y
+        // operator, so it is routed as a two-terminal product. About X or Z it
+        // needs one edge and its neighbouring ancilla.
+        let result = if basis == 'Y' {
+            self.sched_t_or_multi(s_id, plotting)
+        } else {
+            self.sched_s_sx(s_id, plotting)
+        };
         match result {
             PathResult::PathFound(opt_graph) => {
                 info_sched!(
@@ -1183,6 +1210,10 @@ impl Scheduler {
                         if let Some(id) = magic_id {
                             self.record_consumed_wait(id);
                             self.consumed[id as usize] = true;
+                            if self.trace.is_some() && opt_graph.is_none() {
+                                self.trace_untreed
+                                    .insert(pp_id, (self.astar.last_path.clone(), id));
+                            }
                         }
                     }
                     if let Some(ref pp_graph) = opt_graph {
@@ -1220,6 +1251,7 @@ impl Scheduler {
                 node.node_type,
                 self.input.topo.cultivation_times[node_id as usize],
             );
+            self.trace_footprint(_pp_id, &[node_id]);
             return PathResult::PathFound(None);
         }
         let mut g = TreeGraph::new(self.input.topo.n_nodes);
@@ -1264,6 +1296,8 @@ impl Scheduler {
                             nb.node_type,
                             self.input.topo.cultivation_times[nb_id as usize],
                         );
+                        self.trace_footprint(pp_id, &[node_id, nb_id]);
+                        self.s_sx_nodes.insert(pp_id, vec![node_id, nb_id]);
                         return PathResult::PathFound(None);
                     }
                     let mut g = TreeGraph::new(self.input.topo.n_nodes);
@@ -1325,6 +1359,9 @@ impl Scheduler {
     /// advance Clifford state, and process T-gate coin-flip outcomes.
     fn complete_lcycle(&mut self) -> io::Result<()> {
         let _timer = accum_start!(self.timers);
+        // Before T outcomes are processed, while each product's terminals still
+        // reflect the basis it was routed with.
+        self.write_trace_lcycle()?;
         self.scheduled_ids_buf.clear();
         self.scheduled_ids_buf.extend(self.pp_paths.iter().map(|(id, _)| *id));
         self.pps_pending.retain(|pp| !self.scheduled_ids_buf.contains(&pp.id));
@@ -1462,14 +1499,22 @@ impl Scheduler {
             } else {
                 // First lcycle for this Clifford: insert with remaining count.
                 let count = if gate_type.is_cx() { 1 } else { 2 };
+                // Without a tree the patches come from the precomputed tree or,
+                // for an S/SX placed by `sched_s_sx`, from what it recorded.
+                // Falling through to no patches would leave the gate's later
+                // lcycles unreserved.
                 let node_ids: Vec<u16> = if let Some(tree) = opt_pp_path {
                     tree.iter_nodes().collect()
+                } else if let Some(t) = self.precomputed_clifford_trees.get(&pp_id) {
+                    t.iter_nodes().collect()
                 } else {
-                    self.precomputed_clifford_trees
-                        .get(&pp_id)
-                        .map(|t| t.iter_nodes().collect())
-                        .unwrap_or_default()
+                    self.s_sx_nodes.remove(&pp_id).unwrap_or_default()
                 };
+                debug_assert!(
+                    !node_ids.is_empty(),
+                    "multi-lcycle product {} holds no patches",
+                    pp_id
+                );
                 let pp_owned = self.input.circuit.product(pp_id).clone();
                 self.clifford_paths.insert(
                     pp_id,
@@ -1477,6 +1522,86 @@ impl Scheduler {
                 );
             }
         }
+    }
+
+    /// Writes `<stem>.trace`: the layout, then one line per product per lcycle
+    /// with the patches it occupied, so that `data_processing/check_schedule.py`
+    /// can check the schedule against the circuit without trusting the
+    /// scheduler. Line formats:
+    ///   node <id> <D|B|M> <label>
+    ///   adj <id> <neighbour ids, comma-separated>
+    ///   s <lcycle> <product id> <gate> <magic id|-> <attempt length|-> <terminal ids> <footprint ids>
+    /// A product id at or past the circuit's product count is an injected S
+    /// correction, whose qubit and basis follow as `c <id> <qubit> <basis>`.
+    /// The attempt length is the cultivation attempt that produced the
+    /// consumed state, so the checker can confirm the patch was free for it.
+    pub(crate) fn enable_trace(&mut self, fname: &str) -> io::Result<()> {
+        let mut w = BufWriter::new(File::create(fname)?);
+        let topo = &self.input.topo;
+        writeln!(w, "circuit {}", self.input.circuit.circuit_fname)?;
+        writeln!(w, "products {}", self.n_circuit_products)?;
+        for id in 0..topo.n_nodes as u16 {
+            let t = match topo.node(id).node_type {
+                NodeType::Data => 'D',
+                NodeType::Bus => 'B',
+                NodeType::Magic => 'M',
+            };
+            writeln!(w, "node {} {} {}", id, t, topo.label(id))?;
+        }
+        for id in 0..topo.n_nodes as u16 {
+            let nbs: Vec<String> =
+                topo.node(id).nbs_slice().iter().map(|n| n.to_string()).collect();
+            writeln!(w, "adj {} {}", id, nbs.join(","))?;
+        }
+        self.trace = Some(w);
+        Ok(())
+    }
+
+    #[inline]
+    fn trace_footprint(&mut self, pp_id: i32, nodes: &[u16]) {
+        if self.trace.is_some() {
+            self.trace_fp.insert(pp_id, nodes.to_vec());
+        }
+    }
+
+    fn write_trace_lcycle(&mut self) -> io::Result<()> {
+        let Some(w) = self.trace.as_mut() else { return Ok(()) };
+        let n_circuit = self.n_circuit_products;
+        let join = |v: &[u16]| v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+        for (pp_id, opt_tree) in &self.pp_paths {
+            let pp = self.input.circuit.product(*pp_id);
+            let (mut nodes, magic): (Vec<u16>, Option<u16>) = match opt_tree {
+                Some(t) => (t.iter_nodes().collect(), t.root_node_id),
+                None => match self.trace_untreed.get(pp_id) {
+                    Some((n, m)) => (n.clone(), Some(*m)),
+                    None => (self.trace_fp.get(pp_id).cloned().unwrap_or_default(), None),
+                },
+            };
+            nodes.sort_unstable();
+            let (magic_s, len_s) = match (pp.gate_type.is_t(), magic) {
+                (true, Some(m)) => (m.to_string(), self.cultivation.done_len(m).to_string()),
+                _ => ("-".to_string(), "-".to_string()),
+            };
+            let terms = &self.precomputed_terminals[*pp_id as usize];
+            writeln!(
+                w,
+                "s {} {} {:?} {} {} {} {}",
+                self.current_lcycle,
+                pp_id,
+                pp.gate_type,
+                magic_s,
+                len_s,
+                if terms.is_empty() { "-".to_string() } else { join(terms) },
+                if nodes.is_empty() { "-".to_string() } else { join(&nodes) },
+            )?;
+            if *pp_id as usize >= n_circuit {
+                let op = &pp.operators[0];
+                writeln!(w, "c {} {} {}", pp_id, op.qubit, op.basis)?;
+            }
+        }
+        self.trace_untreed.clear();
+        self.trace_fp.clear();
+        Ok(())
     }
 
     fn print_sched_stats(&mut self, n_lcycles: usize) {
@@ -1494,6 +1619,9 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
+        if let Some(w) = self.trace.as_mut() {
+            w.flush().expect("flushing the schedule trace");
+        }
         self.cultivation.settle(&self.input.topo, &self.used, &self.consumed);
         let unfinished = self.cultivation.unfinished_cycles(&self.input.topo, &self.used);
         let y = &self.cultivation.yield_stats;
@@ -2053,6 +2181,60 @@ mod tests {
         assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
         let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
         assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the S gate");
+    }
+
+    /// Footprint per lcycle of product `pp_id` in a schedule trace.
+    fn traced_footprints(trace: &str, pp_id: i32) -> Vec<Vec<u16>> {
+        trace
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (f.first() == Some(&"s") && f[2] == pp_id.to_string()).then(|| {
+                    if f[7] == "-" {
+                        Vec::new()
+                    } else {
+                        f[7].split(',').map(|x| x.parse().unwrap()).collect()
+                    }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn s_gate_holds_its_patches_for_all_three_lcycles() {
+        // An S placed without a tree used to reserve its data and ancilla patches
+        // only in its first lcycle, leaving the next two free for other paths.
+        let mut sched = build_scheduler(&["+Z___<S>"], 0);
+        let trace = NamedTempFile::new().unwrap();
+        sched.enable_trace(&trace.path().to_string_lossy()).unwrap();
+        sched.sched_circuit().expect("sched_circuit failed");
+        sched.trace.as_mut().unwrap().flush().unwrap();
+        let fps = traced_footprints(&std::fs::read_to_string(trace.path()).unwrap(), 0);
+        assert_eq!(fps.len(), 3, "S takes three lcycles");
+        assert_eq!(fps[0].len(), 2, "data edge and one ancilla");
+        assert!(fps.iter().all(|fp| fp == &fps[0]), "same patches every lcycle: {:?}", fps);
+    }
+
+    #[test]
+    fn y_axis_correction_uses_both_edges_of_the_data_patch() {
+        // A correction about Y (left by a failed T gate on Y) is an S about Y,
+        // which needs both the X and the Z edge, like any Y operator. It used to
+        // be placed on the X edge alone.
+        let mut sched = build_scheduler(&["+Z___<S>"], 0);
+        sched.correction_power[0] = 1;
+        sched.correction_basis[0] = 'Y';
+        let trace = NamedTempFile::new().unwrap();
+        sched.enable_trace(&trace.path().to_string_lossy()).unwrap();
+        sched.sched_circuit().expect("sched_circuit failed");
+        sched.trace.as_mut().unwrap().flush().unwrap();
+        assert_eq!(sched.correction_gates_emitted, 1);
+        let x = sched.input.topo.get_data_node_id(0, 'X');
+        let z = sched.input.topo.get_data_node_id(0, 'Z');
+        let fps = traced_footprints(&std::fs::read_to_string(trace.path()).unwrap(), 1);
+        assert_eq!(fps.len(), 3, "the correction takes three lcycles");
+        for fp in &fps {
+            assert!(fp.contains(&x) && fp.contains(&z), "both edges held: {:?}", fp);
+        }
     }
 
     #[test]
