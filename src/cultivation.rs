@@ -26,6 +26,28 @@ pub(crate) struct CultivationManager {
     pub(crate) magic_node_positions: Vec<(f32, f32)>,
     /// Sorted by x for binary-search pruning in A* heuristic.
     pub(crate) ready_magic_positions: Vec<(f32, f32)>,
+    /// Length of the attempt that produced each node's ready state, indexed by
+    /// topology node id; charged to `yield_stats` when the state is used.
+    done_len: Vec<i32>,
+    pub(crate) yield_stats: YieldStats,
+}
+
+/// Where cultivation patch-lcycles went. Every attempt ends one of three ways:
+/// it delivers its state to a T gate, a path is routed through the patch
+/// before it finishes (interrupted), or it finishes and a path is routed
+/// through the ready patch before a T gate takes the state (lost). The lcycles
+/// each attempt spent cultivating are charged to its outcome, so the discarded
+/// fraction is (interrupted + lost) over all cultivating lcycles. Only
+/// PureMagic routes through cultivators, so in bus routing every finished
+/// attempt is delivered or still waiting at the end.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct YieldStats {
+    pub(crate) n_delivered: usize,
+    pub(crate) n_interrupted: usize,
+    pub(crate) n_lost: usize,
+    pub(crate) cycles_delivered: usize,
+    pub(crate) cycles_interrupted: usize,
+    pub(crate) cycles_lost: usize,
 }
 
 impl CultivationManager {
@@ -41,6 +63,8 @@ impl CultivationManager {
             magic_node_ids: Vec::new(),
             magic_node_positions: Vec::new(),
             ready_magic_positions: Vec::new(),
+            done_len: Vec::new(),
+            yield_stats: YieldStats::default(),
         }
     }
 
@@ -105,6 +129,7 @@ impl CultivationManager {
         self.magic_node_positions =
             self.magic_node_ids.iter().map(|&id| topo.node(id).pos).collect();
         let n_topo_nodes = topo.n_nodes;
+        self.done_len = vec![0; n_topo_nodes];
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
             topo.cultivation_times[id as usize] = self.draw(n_topo_nodes);
@@ -112,11 +137,59 @@ impl CultivationManager {
         }
     }
 
+    /// Charges the yield of the nodes used in the final lcycle, which no later
+    /// `update_cultivators` call sees. Changes no cultivation state.
+    pub(crate) fn settle(&mut self, topo: &TopoGraph, used: &[bool], consumed: &[bool]) {
+        for &id in &self.magic_node_ids {
+            let id = id as usize;
+            if !used[id] {
+                continue;
+            }
+            let y = &mut self.yield_stats;
+            if topo.cultivation_times[id] == 0 {
+                if consumed[id] {
+                    y.n_delivered += 1;
+                    y.cycles_delivered += self.done_len[id] as usize;
+                } else {
+                    y.n_lost += 1;
+                    y.cycles_lost += self.done_len[id] as usize;
+                }
+            } else {
+                y.n_interrupted += 1;
+                y.cycles_interrupted += topo.busy_counts[id] as usize;
+            }
+        }
+    }
+
+    /// Cultivating lcycles of attempts still open when the schedule ends: those
+    /// in progress, and finished states no T gate took.
+    pub(crate) fn unfinished_cycles(&self, topo: &TopoGraph, used: &[bool]) -> usize {
+        self.magic_node_ids
+            .iter()
+            .filter(|&&id| !used[id as usize])
+            .map(|&id| {
+                let id = id as usize;
+                if topo.cultivation_times[id] == 0 {
+                    self.done_len[id] as usize
+                } else {
+                    topo.busy_counts[id] as usize
+                }
+            })
+            .sum()
+    }
+
     /// Returns the number of available (ready) magic nodes.
     /// New cultivation times are drawn before the update loop to avoid
     /// interleaving RNG calls with the state mutation.
-    pub(crate) fn update_cultivators(&mut self, topo: &mut TopoGraph, used: &[bool]) -> usize {
+    /// `used` marks the nodes any path occupied last lcycle and `consumed` the
+    /// magic nodes a T gate took its state from, which `used` also marks.
+    pub(crate) fn update_cultivators(
+        &mut self, topo: &mut TopoGraph, used: &[bool], consumed: &[bool],
+    ) -> usize {
         let n_topo_nodes = topo.n_nodes;
+        if self.done_len.len() < n_topo_nodes {
+            self.done_len.resize(n_topo_nodes, 0);
+        }
         self.new_cultivation_times.clear();
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
@@ -131,7 +204,21 @@ impl CultivationManager {
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
             if used[id as usize] {
-                // Node was consumed this lcycle: assign a fresh cultivation time.
+                let y = &mut self.yield_stats;
+                if topo.cultivation_times[id as usize] == 0 {
+                    let len = self.done_len[id as usize] as usize;
+                    if consumed[id as usize] {
+                        y.n_delivered += 1;
+                        y.cycles_delivered += len;
+                    } else {
+                        y.n_lost += 1;
+                        y.cycles_lost += len;
+                    }
+                } else {
+                    y.n_interrupted += 1;
+                    y.cycles_interrupted += topo.busy_counts[id as usize] as usize;
+                }
+                // Node was used this lcycle: assign a fresh cultivation time.
                 topo.cultivation_times[id as usize] =
                     self.new_cultivation_times[cultivation_time_index];
                 topo.busy_counts[id as usize] = 0;
@@ -140,6 +227,7 @@ impl CultivationManager {
                 topo.busy_counts[id as usize] += 1;
                 if topo.busy_counts[id as usize] == topo.cultivation_times[id as usize] {
                     self.cultivation_times_log.push(topo.cultivation_times[id as usize]);
+                    self.done_len[id as usize] = topo.cultivation_times[id as usize];
                     topo.cultivation_times[id as usize] = 0;
                     topo.busy_counts[id as usize] = 0;
                 }
@@ -354,7 +442,7 @@ mod tests {
         }
 
         let used = vec![false; topo.n_nodes];
-        let n_ready = mgr.update_cultivators(&mut topo, &used);
+        let n_ready = mgr.update_cultivators(&mut topo, &used, &vec![false; used.len()]);
         assert_eq!(n_ready, mgr.magic_node_ids.len());
     }
 
@@ -381,7 +469,7 @@ mod tests {
 
         topo.cultivation_times[first_id as usize] = 0;
 
-        mgr.update_cultivators(&mut topo, &used);
+        mgr.update_cultivators(&mut topo, &used, &vec![false; used.len()]);
 
         assert_eq!(topo.busy_counts[first_id as usize], 0);
     }
@@ -408,9 +496,94 @@ mod tests {
         topo.busy_counts[first_id as usize] = 0;
 
         let used = vec![false; topo.n_nodes];
-        mgr.update_cultivators(&mut topo, &used);
+        mgr.update_cultivators(&mut topo, &used, &vec![false; used.len()]);
 
         assert_eq!(topo.busy_counts[first_id as usize], 1);
+    }
+
+    #[test]
+    fn yield_charges_each_attempt_to_how_it_ended() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(29);
+        mgr.set_lambda(1.0, 0.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        mgr.init_magic_nodes(&mut topo);
+        let id = mgr.magic_node_ids[0] as usize;
+        // Isolate one node: every other cultivator is used each lcycle, so it never
+        // finishes, and its charges are subtracted out below.
+        let n = topo.n_nodes;
+        let idle = vec![false; n];
+        let none = vec![false; n];
+        let mut used_only = vec![false; n];
+        used_only[id] = true;
+        let mut consumed_only = vec![false; n];
+        consumed_only[id] = true;
+
+        // An attempt of 3 interrupted after 2 lcycles.
+        topo.cultivation_times[id] = 3;
+        topo.busy_counts[id] = 0;
+        let before = mgr.yield_stats.clone();
+        mgr.update_cultivators(&mut topo, &idle, &none);
+        mgr.update_cultivators(&mut topo, &idle, &none);
+        let other_mid = mgr.yield_stats.clone();
+        mgr.update_cultivators(&mut topo, &used_only, &none);
+        assert_eq!(mgr.yield_stats.n_interrupted, other_mid.n_interrupted + 1);
+        assert_eq!(mgr.yield_stats.cycles_interrupted, other_mid.cycles_interrupted + 2);
+        assert_eq!(mgr.yield_stats.n_delivered, before.n_delivered);
+
+        // An attempt of 2 that finishes and is consumed by a T gate.
+        topo.cultivation_times[id] = 2;
+        topo.busy_counts[id] = 0;
+        mgr.update_cultivators(&mut topo, &idle, &none);
+        mgr.update_cultivators(&mut topo, &idle, &none);
+        assert_eq!(topo.cultivation_times[id], 0);
+        let pre = mgr.yield_stats.clone();
+        mgr.update_cultivators(&mut topo, &used_only, &consumed_only);
+        assert_eq!(mgr.yield_stats.n_delivered, pre.n_delivered + 1);
+        assert_eq!(mgr.yield_stats.cycles_delivered, pre.cycles_delivered + 2);
+
+        // An attempt of 1 that finishes and is then routed over: lost.
+        topo.cultivation_times[id] = 1;
+        topo.busy_counts[id] = 0;
+        mgr.update_cultivators(&mut topo, &idle, &none);
+        assert_eq!(topo.cultivation_times[id], 0);
+        let pre = mgr.yield_stats.clone();
+        mgr.update_cultivators(&mut topo, &used_only, &none);
+        assert_eq!(mgr.yield_stats.n_lost, pre.n_lost + 1);
+        assert_eq!(mgr.yield_stats.cycles_lost, pre.cycles_lost + 1);
+    }
+
+    #[test]
+    fn settle_charges_the_final_lcycle_without_changing_state() {
+        Node::set_magic_routing(true);
+        let mut mgr = CultivationManager::new(29);
+        mgr.set_lambda(1.0, 0.0).unwrap();
+        mgr.t_products_remaining = 20;
+        mgr.fill_pool(200);
+        let mut topo = TopoGraph::new();
+        topo.set_topo(2, &"dummy".to_string(), &"".to_string(), &0, true, 1, false);
+        mgr.init_magic_nodes(&mut topo);
+        let id = mgr.magic_node_ids[0] as usize;
+        let n = topo.n_nodes;
+        topo.cultivation_times[id] = 2;
+        topo.busy_counts[id] = 0;
+        mgr.update_cultivators(&mut topo, &vec![false; n], &vec![false; n]);
+        mgr.update_cultivators(&mut topo, &vec![false; n], &vec![false; n]);
+        let mut used = vec![false; n];
+        used[id] = true;
+        let pre = mgr.yield_stats.clone();
+        let times = topo.cultivation_times.clone();
+        mgr.settle(&topo, &used, &used);
+        assert_eq!(mgr.yield_stats.n_delivered, pre.n_delivered + 1);
+        assert_eq!(mgr.yield_stats.cycles_delivered, pre.cycles_delivered + 2);
+        assert_eq!(topo.cultivation_times, times);
+        // The settled node is not also counted as unfinished.
+        let with = mgr.unfinished_cycles(&topo, &vec![false; n]);
+        let without = mgr.unfinished_cycles(&topo, &used);
+        assert_eq!(with - without, 2);
     }
 
     #[test]
@@ -435,7 +608,7 @@ mod tests {
         topo.busy_counts[first_id as usize] = 2;
 
         let used = vec![false; topo.n_nodes];
-        mgr.update_cultivators(&mut topo, &used);
+        mgr.update_cultivators(&mut topo, &used, &vec![false; used.len()]);
 
         assert!(mgr.cultivation_times_log.contains(&3));
         assert_eq!(topo.cultivation_times[first_id as usize], 0);
@@ -460,7 +633,7 @@ mod tests {
         }
 
         let used = vec![false; topo.n_nodes];
-        mgr.update_cultivators(&mut topo, &used);
+        mgr.update_cultivators(&mut topo, &used, &vec![false; used.len()]);
 
         let xs: Vec<f32> = mgr.ready_magic_positions.iter().map(|p| p.0).collect();
         for w in xs.windows(2) {

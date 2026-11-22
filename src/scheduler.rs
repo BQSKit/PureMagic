@@ -199,6 +199,9 @@ pub(crate) struct Scheduler {
     /// Per-node lcycle at which its current magic state became ready; `usize::MAX`
     /// while the node is cultivating or is not a magic node.
     ready_since: Vec<usize>,
+    /// Magic nodes a T gate took its state from this lcycle, for the yield
+    /// accounting in `CultivationManager::update_cultivators`.
+    consumed: Vec<bool>,
     /// In-progress multi-lcycle Clifford gates: maps product_id →
     /// (remaining_lcycles, product, node_ids, opt_tree).
     /// CX occupies 2 lcycles; S/SX occupy 3.
@@ -289,6 +292,7 @@ impl Scheduler {
             scheduled_products: IndexSet::new(),
             used: vec![false; n_nodes],
             ready_since: vec![usize::MAX; n_nodes],
+            consumed: vec![false; n_nodes],
             clifford_paths: IndexMap::new(),
             t_gate_failures: 0,
             correction_gates_emitted: 0,
@@ -869,7 +873,9 @@ impl Scheduler {
 
     pub(crate) fn update_cultivators(&mut self) -> usize {
         let _timer = accum_start!(self.timers);
-        let n_avail_magic = self.cultivation.update_cultivators(&mut self.input.topo, &self.used);
+        let n_avail_magic =
+            self.cultivation.update_cultivators(&mut self.input.topo, &self.used, &self.consumed);
+        self.consumed.fill(false);
         info_sched!("  Available magic {}", n_avail_magic);
         n_avail_magic
     }
@@ -1176,6 +1182,7 @@ impl Scheduler {
                         };
                         if let Some(id) = magic_id {
                             self.record_consumed_wait(id);
+                            self.consumed[id as usize] = true;
                         }
                     }
                     if let Some(ref pp_graph) = opt_graph {
@@ -1487,6 +1494,21 @@ impl Scheduler {
         println!("  min:     {}", min);
         println!("  max:     {}", max);
         println!("T gate failures: {}/{} ({:.1}%)", self.t_gate_failures, tot_t, fail_pct);
+        self.cultivation.settle(&self.input.topo, &self.used, &self.consumed);
+        let unfinished = self.cultivation.unfinished_cycles(&self.input.topo, &self.used);
+        let y = &self.cultivation.yield_stats;
+        println!(
+            "Cultivation yield: delivered {} ({} lcycles) interrupted {} ({} lcycles) \
+             lost {} ({} lcycles) unfinished {} lcycles, {} cultivators",
+            y.n_delivered,
+            y.cycles_delivered,
+            y.n_interrupted,
+            y.cycles_interrupted,
+            y.n_lost,
+            y.cycles_lost,
+            unfinished,
+            self.cultivation.magic_node_ids.len()
+        );
         println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
         println!("A* computation called {} times", self.astar.n_calls);
 
