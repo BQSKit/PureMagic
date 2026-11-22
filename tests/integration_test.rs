@@ -1151,3 +1151,44 @@ fn puremagic_all_products_scheduled_despite_t_gate_failures() {
         stdout
     );
 }
+
+// ── schedule validity: independent checker over the trace ─────────────────────
+
+/// Schedules a mixed fixture (T gates on X, Y and Z, S, SX, CX and measurements)
+/// with `--trace` in both layouts and several seeds, and requires
+/// `data_processing/check_schedule.py` to pass. The seeds vary which T gates
+/// fail, so the corrections they inject, including those about Y, are covered.
+/// The debug binary runs, so the scheduler's own debug assertions are on too.
+/// Skipped when python3 is not available.
+#[test]
+fn traced_schedules_pass_the_independent_checker() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("python3 not found; skipping");
+        return;
+    }
+    let checker =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("data_processing").join("check_schedule.py");
+    let circuit = fixture("mixed_8q.trans");
+    for layout in [&[][..], &["-u"][..]] {
+        for seed in ["1", "2", "3", "4", "5"] {
+            let tmp = TempDir::new().unwrap();
+            let mut args = vec!["--circuit", circuit.to_str().unwrap(), "--trace", "-r", seed];
+            args.extend_from_slice(layout);
+            let (ok, _stdout, stderr) = run_puremagic(&args, tmp.path());
+            assert!(ok, "puremagic failed ({:?} seed {}); stderr:\n{}", layout, seed, stderr);
+            let out = Command::new("python3")
+                .arg(&checker)
+                .arg(tmp.path().join("mixed_8q.trace"))
+                .output()
+                .expect("failed to run check_schedule.py");
+            assert!(
+                out.status.success(),
+                "checker failed ({:?} seed {}):\n{}{}",
+                layout,
+                seed,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}
