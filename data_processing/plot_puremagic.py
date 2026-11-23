@@ -271,6 +271,34 @@ def parse_output_file(filepath):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def parse_estimates_file(filepath):
+    """{(circuit stem, lambda): volume estimate} from circuit_stats output."""
+    out, stem, lam = {}, None, None
+    with open(filepath) as f:
+        for line in f:
+            s = line.strip()
+            if m := re.match(r'circuit_fname: "(.*)"', s):
+                stem, lam = os.path.basename(m.group(1)).split(".")[0], None
+            elif m := puremagic_log.MAGIC_STATE_LAMBDA.match(s):
+                lam = float(m.group(1))
+            elif m := re.match(r"Volume estimate:\s+(\d+)", s):
+                out[(stem, lam)] = int(m.group(1))
+    return out
+
+
+def _with_estimates(df, est_path):
+    """Replace df's min_volume with the circuit_stats estimates in est_path."""
+    est = parse_estimates_file(est_path)
+    keys = list(zip(df["circuit"].map(lambda c: os.path.basename(str(c)).split(".")[0]),
+                    df["magic_state_lambda"]))
+    missing = [k for k in keys if k not in est]
+    if missing:
+        sys.exit(f"{est_path}: no estimate for {missing[:3]}")
+    df = df.copy()
+    df["min_volume"] = [est[k] for k in keys]
+    return df
+
+
 def split_file_arg(arg, default_label):
     """
     Parse a -f argument.  Returns (path1, path2_or_None, series_label, ratio_label_or_None).
@@ -806,6 +834,17 @@ def main():
             "Read the 'Volume estimate' line from each data file and plot it as "
             "an additional dashed series alongside each regular volume series. "
             "Only meaningful when -y is 'volume'."
+        ),
+    )
+    parser.add_argument(
+        "--minvol-from",
+        action="append",
+        default=None,
+        metavar="FILE",
+        help=(
+            "With --minvol, take the estimate from this circuit_stats output instead "
+            "of the 'Volume estimate' line of the data file. Give one per -f, in the "
+            "same order. Estimates are matched to runs by circuit and lambda."
         ),
     )
     args = parser.parse_args()
@@ -1434,6 +1473,8 @@ def main():
         for file_arg in args.files:
             path1, path2, file_label, _ = split_file_arg(file_arg, "")
             df1 = _load_df(path1)
+            if df1 is not None and args.minvol_from:
+                df1 = _with_estimates(df1, args.minvol_from[len(minvol_series)])
             if df1 is None or "min_volume" not in df1.columns:
                 minvol_series.append(None)
                 continue
