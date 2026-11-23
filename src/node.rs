@@ -1,3 +1,4 @@
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Classification of nodes in the topological graph.
@@ -24,7 +25,23 @@ pub(crate) struct Node {
 
 /// Global flag controlling whether magic nodes act as routing intermediaries.
 /// Set once at startup via `Node::set_magic_routing`; read on every A* expansion.
+#[cfg(not(test))]
 static USE_MAGIC_ROUTING: AtomicBool = AtomicBool::new(true);
+
+// Unit tests run in parallel threads and many set this flag for their own
+// layouts, so under test it is per thread: one test cannot flip it under another.
+#[cfg(test)]
+thread_local! {
+    static USE_MAGIC_ROUTING_TL: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+#[inline]
+fn magic_routing() -> bool {
+    #[cfg(not(test))]
+    return USE_MAGIC_ROUTING.load(Ordering::Relaxed);
+    #[cfg(test)]
+    return USE_MAGIC_ROUTING_TL.with(|c| c.get());
+}
 
 impl Node {
     pub(crate) fn new(
@@ -34,7 +51,10 @@ impl Node {
     }
 
     pub(crate) fn set_magic_routing(enabled: bool) {
+        #[cfg(not(test))]
         USE_MAGIC_ROUTING.store(enabled, Ordering::Relaxed);
+        #[cfg(test)]
+        USE_MAGIC_ROUTING_TL.with(|c| c.set(enabled));
     }
 
     pub(crate) fn add_nb(&mut self, other: u16) {
@@ -63,7 +83,7 @@ impl Node {
     /// In magic-routing mode only Magic nodes route; Bus nodes must not exist.
     /// In bus-routing mode only Bus nodes route.
     pub(crate) fn is_routing(&self) -> bool {
-        if USE_MAGIC_ROUTING.load(Ordering::Relaxed) {
+        if magic_routing() {
             assert_ne!(self.node_type, NodeType::Bus);
             self.node_type == NodeType::Magic
         } else {
