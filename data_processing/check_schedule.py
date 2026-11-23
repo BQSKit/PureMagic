@@ -11,9 +11,9 @@ itself. It checks:
   1. exclusivity: no patch serves two products in one logical cycle
   2. terminals: every product touches exactly the data-patch edges its
      operators name (X edge for X, Z edge for Z, both for Y) and no other
-     data edge. A T gate's or single-qubit measurement's basis may have been
-     conjugated by a pending S correction about any axis, so for those only
-     the qubits are checked, each with a single Pauli
+     data edge. T gates and measurements run about their operators
+     conjugated by owed corrections, possibly widened onto other qubits up to
+     the weight limit, which check 9 verifies
   3. connectivity: each product's patches form one connected piece of the
      layout
   4. duration: T and M take one cycle, CX two consecutive cycles, S and SX
@@ -27,6 +27,19 @@ itself. It checks:
      cultivation attempt that produced the state, so no state is consumed
      twice or produced while the patch was busy
   7. completeness: every product in the circuit is scheduled, T gates once
+  8. qubits: no two products that touch a qubit overlap in time. Circuit
+     products are ordered by check 5, but injected corrections and products
+     the frame widened have no place in the circuit's dependencies there, and
+     hold only the patch edges they route through
+  9. frame: replaying the corrections failed T gates owe (the trace's f
+     lines), each S about all of the failed gate's operators, independently
+     of the scheduler: every T gate and measurement runs about its operators
+     conjugated by the owed corrections, widened no further than the weight
+     limit the trace records, every Clifford
+     runs only when no owed correction it moves is left on its qubits (a
+     single-qubit correction about an S's own axis merges into it), and every
+     injected correction is an owed one, emitted only past newer ones that
+     commute with it
 
 Exit status is 0 when every check passes.
 """
@@ -36,7 +49,8 @@ import os
 import sys
 from collections import defaultdict
 
-DURATION = {"T": 1, "M": 1, "CX": 2, "S": 3, "SX": 3}
+DURATION = {"T": 1, "M": 1, "CX": 2, "S": 3, "Sdg": 3, "SX": 3, "SXdg": 3}
+S_AXIS = {"S": "Z", "Sdg": "Z", "SX": "X", "SXdg": "X"}  # the axis each fixes
 
 
 def load_circuit(path):
@@ -47,7 +61,7 @@ def load_circuit(path):
     prods = []
     for line in open(path):
         s = line.strip()
-        if not s:
+        if not s or s.startswith("#"):
             continue
         lt = s.index("<")
         gate = s[lt + 1 : s.index(">", lt)]
@@ -57,6 +71,173 @@ def load_circuit(path):
         ops = [(q, c) for q, c in enumerate(body) if c != "_"]
         prods.append((gate, ops))
     return prods
+
+
+def parse_ops(text):
+    """'3:Z,5:X' -> [(3, 'Z'), (5, 'X')], sorted by qubit."""
+    return sorted((int(q), b) for q, b in (t.split(":") for t in text.split(",")))
+
+
+def executed_ops(terms, node_qubit):
+    """The Pauli a product's terminal edges name: X edge X, Z edge Z, both Y."""
+    edges = defaultdict(set)
+    for n in terms:
+        if n not in node_qubit:
+            return None
+        q, e = node_qubit[n]
+        edges[q].add(e)
+    return sorted((q, "Y" if len(e) == 2 else next(iter(e))) for q, e in edges.items())
+
+
+# --- the correction frame, reimplemented from its definition -----------------
+# W, the product of owed S_P, satisfies U = W V for the ideal circuit U and the
+# executed one V. A rotation about Q then runs about W^dag Q W, so Q is
+# conjugated by the oldest owed correction first. Signs are dropped.
+
+
+def commutes(a, b):
+    db = dict(b)
+    return sum(1 for q, x in a if q in db and db[q] != x) % 2 == 0
+
+
+def mul(a, b):
+    """P Q over the union of their qubits, sign dropped, sorted by qubit."""
+    prod = {("X", "Y"): "Z", ("Y", "X"): "Z", ("Y", "Z"): "X",
+            ("Z", "Y"): "X", ("Z", "X"): "Y", ("X", "Z"): "Y"}
+    da, db = dict(a), dict(b)
+    out = []
+    for q in sorted(set(da) | set(db)):
+        x, y = da.get(q), db.get(q)
+        c = x if y is None else y if x is None else (None if x == y else prod[(x, y)])
+        if c:
+            out.append((q, c))
+    return out
+
+
+class Frame:
+    def __init__(self):
+        self.owed = []  # [ops, power, seq], oldest first
+        self.seq = 0
+
+    def on(self, qs):
+        return [c for c in self.owed if any(q in qs for q, _ in c[0])]
+
+    def fail(self, ops):
+        if len(ops) == 1:
+            return self.fail_single(*ops[0])
+        on = self.on({q for q, _ in ops})
+        if on and on[-1][0] == ops:
+            on[-1][1] = (on[-1][1] + 1) % 4
+            if on[-1][1] % 2 == 0:
+                self.owed.remove(on[-1])
+            return
+        self.owed.append([ops, 1, self.seq])
+        self.seq += 1
+
+    # Single-qubit Cliffords on one qubit compose. Modulo Paulis each is a
+    # permutation of the labels X, Y, Z (conjugation, signs dropped), and is at
+    # most two S gates. The newest single-qubit corrections on a qubit, those
+    # after any multi-qubit one there, are kept composed in that form.
+    TAU = {"X": "XZY", "Y": "ZYX", "Z": "YXZ"}  # image of X, Y, Z under S_axis
+
+    @staticmethod
+    def act(perm, label):
+        return perm["XYZ".index(label)]
+
+    def fail_single(self, q, axis):
+        suffix = []
+        for c in reversed(self.on({q})):
+            if len(c[0]) != 1:
+                break
+            suffix.insert(0, c)
+        perm = "XYZ"
+        for c in suffix + [[[(q, axis)], 1, None]]:
+            t = self.TAU[c[0][0][1]]
+            perm = "".join(self.act(t, x) for x in perm)  # this factor after the earlier ones
+        for c in suffix:
+            self.owed.remove(c)
+        for a in self.factors(perm):
+            self.owed.append([[(q, a)], 1, self.seq])
+            self.seq += 1
+
+    def factors(self, perm):
+        if perm == "XYZ":
+            return []
+        for a in "ZXY":
+            if perm == self.TAU[a]:
+                return [a]
+        for a, b in (("X", "Z"), ("Z", "X"), ("X", "Y"), ("Y", "X"), ("Z", "Y"), ("Y", "Z")):
+            if "".join(self.act(self.TAU[b], self.act(self.TAU[a], x)) for x in "XYZ") == perm:
+                return [a, b]
+        raise AssertionError(perm)
+
+    def rotation(self, ops, max_weight):
+        """-> operators to run about: W^dag Q W, applying every owed correction
+        oldest first. None if that passes the weight limit (0: none), when a
+        correction must go first."""
+        q = list(ops)
+        for c in self.owed:
+            if commutes(c[0], q):
+                continue
+            q = mul(c[0], q)
+            if max_weight and len(q) > max_weight:
+                return None
+        return q
+
+    def moved_by_clifford(self, fixed):
+        """Owed corrections on these qubits that the Clifford fixing `fixed` moves."""
+        d = dict(fixed)
+        return [c for c in self.on(set(d)) if any(q in d and b != d[q] for q, b in c[0])]
+
+
+def replay_frame(runs, start, circuit, n_circ, corr, fails, node_qubit, err, max_weight):
+    frame = Frame()
+    by_cycle = defaultdict(list)
+    for pid, rs in runs.items():
+        by_cycle[start[pid]].append(pid)
+    for lc in sorted(set(by_cycle) | set(fails)):
+        starts = by_cycle.get(lc, [])
+        # Corrections first: none overlaps a product starting in the same cycle
+        # (check 8), so the order among disjoint events does not matter.
+        for pid in sorted(starts, key=lambda p: p < n_circ):
+            if pid >= n_circ:
+                ops = corr[pid]
+                match = [c for c in frame.owed if c[0] == ops]
+                if not match:
+                    err("frame", f"cycle {lc}: correction {pid} {ops} is not owed")
+                    continue
+                c = match[-1]
+                for d in frame.on({q for q, _ in ops}):
+                    if d[2] > c[2] and not commutes(d[0], ops):
+                        err("frame", f"cycle {lc}: correction {pid} emitted past newer {d[0]}")
+                frame.owed.remove(c)
+                continue
+            gate, ops = circuit[pid]
+            if gate in ("T", "M"):
+                # a product may run as wide as written: the transpiler's limit
+                # does not bound measurements
+                want = frame.rotation(sorted(ops), max_weight and max(max_weight, len(ops)))
+                ran = executed_ops(runs[pid][0][4], node_qubit)
+                if want is None:
+                    err("frame", f"cycle {lc}: {gate} {pid} ran while the owed corrections "
+                        f"would take it past weight {max_weight}")
+                elif ran != sorted(want):
+                    err("frame", f"cycle {lc}: {gate} {pid} ran about {ran}, frame says {want}")
+            elif gate in S_AXIS:
+                q, axis = ops[0][0], S_AXIS[gate]
+                on = frame.on({q})
+                if len(on) == 1 and on[0][0] == [(q, axis)]:
+                    frame.owed.remove(on[0])  # merged
+                elif frame.moved_by_clifford([(q, axis)]):
+                    err("frame", f"cycle {lc}: {gate} {pid} ran with a correction it moves owed")
+            elif gate == "CX":
+                if frame.moved_by_clifford(sorted(ops)):
+                    err("frame", f"cycle {lc}: CX {pid} ran with a correction it moves owed")
+        for pid, ops in fails.get(lc, []):
+            ran = executed_ops(runs[pid][0][4], node_qubit) if pid in runs else None
+            if ran != ops:
+                err("frame", f"cycle {lc}: failed T {pid} recorded {ops}, ran about {ran}")
+            frame.fail(ops)
 
 
 def main():
@@ -73,7 +254,9 @@ def main():
     occ = defaultdict(dict)  # lcycle -> node -> product
     runs = defaultdict(list)  # product -> [(lcycle, gate, magic, length, terms, nodes)]
     corr = {}
+    fails = defaultdict(list)  # lcycle -> [(T product, operators it ran about)]
     circuit_path = n_circ = None
+    max_weight = 0
     for line in open(args.trace):
         f = line.split()
         if not f:
@@ -82,6 +265,8 @@ def main():
             circuit_path = f[1]
         elif f[0] == "products":
             n_circ = int(f[1])
+        elif f[0] == "max-weight":
+            max_weight = int(f[1])
         elif f[0] == "node":
             i = int(f[1])
             ntype[i], label[i] = f[2], f[3]
@@ -99,7 +284,9 @@ def main():
             nodes = () if f[7] == "-" else tuple(int(x) for x in f[7].split(","))
             runs[pid].append((lc, gate, magic, length, terms, nodes))
         elif f[0] == "c":
-            corr[int(f[1])] = (int(f[2]), f[3])
+            corr[int(f[1])] = parse_ops(f[2])
+        elif f[0] == "f":
+            fails[int(f[1])].append((int(f[2]), parse_ops(f[3])))
 
     circuit = load_circuit(args.circuit or circuit_path)
     if len(circuit) != n_circ:
@@ -125,6 +312,7 @@ def main():
                 used_at[n].append(lc)
     for n in used_at:
         used_at[n] = sorted(set(used_at[n]))
+    node_qubit = {i: qe for qe, i in data_node.items()}
 
     start, end = {}, {}
     for pid, rs in runs.items():
@@ -136,7 +324,7 @@ def main():
         # 4. duration and consistent footprint
         want = DURATION.get(gate)
         # an S or SX that a same-axis correction cancelled: one cycle, no patches
-        merged = gate in ("S", "SX") and len(rs) == 1 and empty
+        merged = gate in S_AXIS and len(rs) == 1 and empty
         if want is not None and not merged:
             if lcs != list(range(lcs[0], lcs[0] + want)):
                 err(
@@ -153,17 +341,18 @@ def main():
         if pid < n_circ:
             ops = circuit[pid][1]
         else:
-            q, b = corr[pid]
-            ops = [(q, b)]
-        allowed = []
-        for q, b in ops:
-            alts = {b}
-            if gate == "T" or (gate == "M" and len(ops) == 1):
-                # A pending S correction about the failed T's own axis (X, Y
-                # or Z) conjugates a T gate's or a single-qubit measurement's
-                # basis, so any Pauli may stand here.
-                alts = {"X", "Y", "Z"}
-            allowed.append(alts)
+            ops = corr[pid]
+        if gate in ("T", "M"):
+            # Run about frame-conjugated operators, possibly widened onto other
+            # qubits, checked in 9: here only that its edges name one Pauli
+            # per qubit, within the weight limit.
+            ops = executed_ops(rs[0][4], node_qubit)
+            limit = max_weight and max(max_weight, len(circuit[pid][1]))
+            if ops is None or (limit and len(ops) > limit):
+                err("terminals", f"product {pid}: terminals off the layout or past "
+                    f"weight {max_weight}")
+                ops = circuit[pid][1]
+        allowed = [{b} for _, b in ops]
         for lc, g, magic, length, terms, nodes in rs:
             if not nodes:
                 continue
@@ -249,6 +438,26 @@ def main():
                     )
             last[q] = pid
 
+    # 8. qubits: per qubit, the products touching it never overlap in time
+    on_qubit = defaultdict(list)
+    for pid in runs:
+        if pid >= n_circ:
+            qs = corr[pid]
+        elif circuit[pid][0] in ("T", "M"):
+            qs = executed_ops(runs[pid][0][4], node_qubit) or circuit[pid][1]
+        else:
+            qs = circuit[pid][1]
+        for q, _ in qs:
+            on_qubit[q].append((start[pid], end[pid], pid))
+    for q, iv in on_qubit.items():
+        iv.sort()
+        for (s0, e0, p0), (s1, e1, p1) in zip(iv, iv[1:]):
+            if s1 <= e0:
+                err("qubits", f"qubit {q}: products {p0} ({s0}-{e0}) and {p1} ({s1}-{e1}) overlap")
+
+    # 9. frame
+    replay_frame(runs, start, circuit, n_circ, corr, fails, node_qubit, err, max_weight)
+
     # 7. completeness
     missing = [p for p in range(n_circ) if p not in runs]
     if missing:
@@ -274,6 +483,8 @@ def main():
         "dependencies",
         "magic",
         "completeness",
+        "qubits",
+        "frame",
     ]
     for k in kinds:
         e = errors.get(k, [])

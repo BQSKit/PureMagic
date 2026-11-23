@@ -3,6 +3,8 @@ use clap::Parser;
 mod astar;
 mod circuit;
 mod cultivation;
+#[allow(dead_code)]
+mod frame;
 mod node;
 mod pauliproduct;
 mod scheduler;
@@ -80,6 +82,12 @@ struct Args {
     /// Record normalized cultivation-time distribution to <CIRCUIT_FNAME>.cultivation_dist
     #[arg(short = 'C', long)]
     record_cultivation_dist: bool,
+    /// The weight limit the circuit was transpiled with (0: none). A T gate or
+    /// measurement absorbs T-failure corrections, widening onto other qubits, up to
+    /// this weight. Default: the circuit's `# max-weight N` header, else N from a
+    /// `.transN` file name, else none
+    #[arg(long)]
+    max_weight: Option<usize>,
     #[arg(
         short,
         long,
@@ -170,6 +178,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.common.no_t_failures,
         args.record_cultivation_dist,
     );
+
+    let ext = std::path::Path::new(&circuit_fname).extension().and_then(|e| e.to_str());
+    let (max_weight, source) = match (args.max_weight, sched.input.circuit.max_weight) {
+        (Some(w), _) => (w, "--max-weight"),
+        (None, Some(w)) => (w, "circuit header"),
+        (None, None) => match ext.and_then(|e| e.strip_prefix("trans")?.parse().ok()) {
+            Some(w) => (w, "file name"),
+            None => (0, "default"),
+        },
+    };
+    sched.max_weight = max_weight;
+    println!("Max weight: {} (from {})", max_weight, source);
 
     if args.trace {
         sched.enable_trace(&format!(

@@ -24,6 +24,8 @@ pub(crate) struct Circuit {
     layers: RefCell<Option<Vec<Vec<usize>>>>,
     pub(crate) circuit_fname: String,
     pub(crate) n_qubits: usize,
+    /// The weight limit from a `# max-weight N` header line, if the file has one.
+    pub(crate) max_weight: Option<usize>,
 }
 
 /// Result of [`Circuit::estimate_layer_volume`]'s combined layer/volume estimate.
@@ -48,6 +50,7 @@ impl Circuit {
             pps: Vec::new(),
             circuit_fname: fname.to_string(),
             n_qubits: 0,
+            max_weight: None,
             layers: RefCell::new(None),
         }
     }
@@ -62,6 +65,15 @@ impl Circuit {
         let mut product_id: i32 = 0;
         for line in reader.lines() {
             let product_string = line?.trim().to_string();
+            if product_string.is_empty() {
+                continue;
+            }
+            if let Some(rest) = product_string.strip_prefix('#') {
+                if let Some(w) = rest.trim().strip_prefix("max-weight") {
+                    self.max_weight = w.trim().parse().ok();
+                }
+                continue;
+            }
             let mut product = PauliProduct::new();
             product
                 .set_from_str(product_id, &product_string)

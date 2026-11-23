@@ -636,8 +636,9 @@ fn transpile_output_file_is_non_empty() {
     assert!(meta.len() > 0, "transpile produced an empty output file");
 }
 
-/// Every non-empty line in the `.trans` output must start with `+` or `-`
-/// and end with a gate-type marker like `<T>`, `<M>`, `<CX>`, etc.
+/// The `.trans` output opens with a `# max-weight N` header, and every other
+/// non-empty line starts with `+` or `-` and ends with a gate-type marker like
+/// `<T>`, `<M>`, `<CX>`, etc.
 #[test]
 fn transpile_output_lines_have_trans_format() {
     let tmp = TempDir::new().unwrap();
@@ -649,7 +650,8 @@ fn transpile_output_lines_have_trans_format() {
     );
     assert!(ok, "transpile failed; stderr:\n{}", stderr);
     let contents = std::fs::read_to_string(&out).unwrap();
-    for line in contents.lines().filter(|l| !l.trim().is_empty()) {
+    assert_eq!(contents.lines().next(), Some("# max-weight 0"), "header names the weight limit");
+    for line in contents.lines().skip(1).filter(|l| !l.trim().is_empty()) {
         assert!(
             line.starts_with('+') || line.starts_with('-'),
             "trans line does not start with +/-: {:?}",

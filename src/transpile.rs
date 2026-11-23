@@ -839,9 +839,14 @@ fn transpile_best(n_qubits: usize, gates: &[QasmGate]) -> (Vec<TransItem>, i32) 
     (items, weight)
 }
 
-fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usize)> {
+/// Writes the products, after a `# max-weight N` header (0: no limit) that tells the
+/// scheduler how far T-failure corrections may widen a product.
+fn write_trans(
+    output_path: &str, items: &[TransItem], max_weight: i32,
+) -> io::Result<(usize, usize)> {
     let file = File::create(output_path)?;
     let mut writer = BufWriter::new(file);
+    writeln!(writer, "# max-weight {}", max_weight)?;
     let mut n_ts = 0usize;
     let mut n_cliffords = 0usize;
 
@@ -934,10 +939,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let _tableau_timer = Timer::new("tableau");
-    let items = if args.auto {
-        transpile_best(n_qubits, &gates).0
+    let (items, weight) = if args.auto {
+        transpile_best(n_qubits, &gates)
     } else {
-        transpile_full(n_qubits, &gates, args.max_width, args.defer_trailing)
+        (transpile_full(n_qubits, &gates, args.max_width, args.defer_trailing), args.max_width)
     };
     drop(_tableau_timer);
 
@@ -994,7 +999,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.output_file
     };
 
-    let (n_ts, n_cliffords_written) = write_trans(&output_path, &items)?;
+    let (n_ts, n_cliffords_written) = write_trans(&output_path, &items, weight)?;
     println!("Wrote transpiled circuit to {}", output_path);
     println!("Wrote {} T gates and {} Cliffords", n_ts, n_cliffords_written);
 
