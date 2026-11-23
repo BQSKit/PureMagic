@@ -47,6 +47,7 @@ pub(crate) struct CorrectionStats {
 }
 
 /// Per-lcycle and cumulative qubit utilisation counters.
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
 pub(crate) struct ScheduleStats {
     data_qubits: usize,
     bus_qubits: usize,
@@ -93,6 +94,7 @@ impl ScheduleStats {
         }
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables, dead_code))]
     pub(crate) fn summarize(&self, n_lcycles: usize) {
         let data_frac = self.tot_data_used as f64 / (self.data_qubits * n_lcycles) as f64;
         let bus_frac = self.tot_bus_used as f64 / (self.bus_qubits * n_lcycles) as f64;
@@ -116,71 +118,86 @@ impl ScheduleStats {
         );
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables, dead_code))]
     pub(crate) fn update(
         &mut self, lcycle_i: usize, pp_paths_len: usize, tot_available: usize, magic_ready: usize,
         magic_unused: usize, plotting: bool,
     ) {
-        self.tot_data_used += self.data_used;
-        self.tot_bus_used += self.bus_used;
-        self.tot_magic_used += self.magic_used;
-        self.tot_magic_unused += magic_unused;
+        #[cfg(feature = "diagnostics")]
+        {
+            self.tot_data_used += self.data_used;
+            self.tot_bus_used += self.bus_used;
+            self.tot_magic_used += self.magic_used;
+            self.tot_magic_unused += magic_unused;
 
-        let tot_qubits = self.data_qubits + self.bus_qubits + self.magic_qubits;
-        let tot_qubits_used = self.data_used + self.bus_used + self.magic_used;
+            let tot_qubits = self.data_qubits + self.bus_qubits + self.magic_qubits;
+            let tot_qubits_used = self.data_used + self.bus_used + self.magic_used;
 
-        info_sched!("Scheduling results:");
-        let frac_paths =
-            if tot_available == 0 { 1.0 } else { pp_paths_len as f64 / tot_available as f64 };
-        let frac_qubits =
-            if tot_qubits == 0 { 0.0 } else { tot_qubits_used as f64 / tot_qubits as f64 };
-        // magic_denom excludes nodes consumed purely as routing intermediaries (magic-routing mode).
-        let magic_ready_routing = self.magic_ready_used.saturating_sub(self.t_scheduled);
-        let magic_denom = magic_ready.saturating_sub(magic_ready_routing);
-        let frac_magic =
-            if magic_denom == 0 { 0.0 } else { self.t_scheduled as f64 / magic_denom as f64 };
-        info_sched!("  products:    {}/{} ({:.2})", pp_paths_len, tot_available, frac_paths);
-        info_sched!("  qubits:      {}/{} ({:.2})", tot_qubits_used, tot_qubits, frac_qubits);
-        info_sched!("  magic:       {}/{} ({:.2})", self.t_scheduled, magic_denom, frac_magic);
-        if plotting {
-            self.plot_info = format!(
-                "lcycle {}: products scheduled {}/{} ({:.2}), qubits {}/{} ({:.2}), magic {}/{} ({:.2})",
-                lcycle_i,
-                pp_paths_len,
-                tot_available,
-                frac_paths,
-                tot_qubits_used,
-                tot_qubits,
-                frac_qubits,
-                self.t_scheduled,
-                magic_denom,
-                frac_magic,
-            );
+            info_sched!("Scheduling results:");
+            let frac_paths =
+                if tot_available == 0 { 1.0 } else { pp_paths_len as f64 / tot_available as f64 };
+            let frac_qubits =
+                if tot_qubits == 0 { 0.0 } else { tot_qubits_used as f64 / tot_qubits as f64 };
+            // magic_denom excludes nodes consumed purely as routing intermediaries (magic-routing mode).
+            let magic_ready_routing = self.magic_ready_used.saturating_sub(self.t_scheduled);
+            let magic_denom = magic_ready.saturating_sub(magic_ready_routing);
+            let frac_magic =
+                if magic_denom == 0 { 0.0 } else { self.t_scheduled as f64 / magic_denom as f64 };
+            info_sched!("  products:    {}/{} ({:.2})", pp_paths_len, tot_available, frac_paths);
+            info_sched!("  qubits:      {}/{} ({:.2})", tot_qubits_used, tot_qubits, frac_qubits);
+            info_sched!("  magic:       {}/{} ({:.2})", self.t_scheduled, magic_denom, frac_magic);
+            if plotting {
+                self.plot_info = format!(
+                    "lcycle {}: products scheduled {}/{} ({:.2}), qubits {}/{} ({:.2}), magic {}/{} ({:.2})",
+                    lcycle_i,
+                    pp_paths_len,
+                    tot_available,
+                    frac_paths,
+                    tot_qubits_used,
+                    tot_qubits,
+                    frac_qubits,
+                    self.t_scheduled,
+                    magic_denom,
+                    frac_magic,
+                );
+            }
+
+            self.data_used = 0;
+            self.bus_used = 0;
+            self.magic_used = 0;
+            self.t_scheduled = 0;
+            self.magic_ready_used = 0;
         }
-
-        self.data_used = 0;
-        self.bus_used = 0;
-        self.magic_used = 0;
-        self.t_scheduled = 0;
-        self.magic_ready_used = 0;
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables, dead_code))]
     pub(crate) fn inc(&mut self, node_type: NodeType) {
-        match node_type {
-            NodeType::Bus => self.bus_used += 1,
-            NodeType::Magic => self.magic_used += 1,
-            NodeType::Data => self.data_used += 1,
+        #[cfg(feature = "diagnostics")]
+        {
+            match node_type {
+                NodeType::Bus => self.bus_used += 1,
+                NodeType::Magic => self.magic_used += 1,
+                NodeType::Data => self.data_used += 1,
+            }
         }
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables, dead_code))]
     pub(crate) fn inc_with_cultivation(&mut self, node_type: NodeType, cultivation_time: i32) {
-        self.inc(node_type);
-        if node_type == NodeType::Magic && cultivation_time == 0 {
-            self.magic_ready_used += 1;
+        #[cfg(feature = "diagnostics")]
+        {
+            self.inc(node_type);
+            if node_type == NodeType::Magic && cultivation_time == 0 {
+                self.magic_ready_used += 1;
+            }
         }
     }
 
     pub(crate) fn inc_t(&mut self) {
-        self.t_scheduled += 1;
+        #[cfg(feature = "diagnostics")]
+        {
+            self.t_scheduled += 1;
+        }
     }
 
     pub(crate) fn plot_info_str(&self) -> &str {
@@ -1754,7 +1771,9 @@ impl Scheduler {
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables))]
     fn print_sched_stats(&mut self, n_lcycles: usize) {
+        #[cfg(feature = "diagnostics")]
         self.stats.summarize(n_lcycles);
         let tot_t = self.count_t_products();
         let fail_pct =
