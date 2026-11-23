@@ -1010,6 +1010,42 @@ fn puremagic_scheduling_efficiency_value_is_in_range() {
     assert!(value <= 1.0, "normalized scheduling efficiency must be <= 1.0, got {}", value);
 }
 
+/// The volume estimate's depth term -- the circuit's dependency depth without T
+/// failures -- is a hard lower bound on the scheduled cycles. (The estimate's
+/// other term, the Clifford-only layers plus the magic-supply time, is an
+/// approximation: on this small circuit bus routing overlaps the two and beats
+/// it.) Checked for both routings and several seeds.
+#[test]
+fn puremagic_cycles_are_never_below_the_depth_bound() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("mixed_8q.trans");
+    let after = |stdout: &str, prefix: &str| -> u64 {
+        let line = stdout.lines().find(|l| l.contains(prefix)).expect(prefix);
+        let tail = &line[line.find(prefix).unwrap() + prefix.len()..];
+        tail.split_whitespace().next().unwrap().parse().unwrap()
+    };
+    build_binaries();
+    let stats = Command::new(bin_path("circuit_stats"))
+        .args(["--circuit", circuit.to_str().unwrap()])
+        .output()
+        .expect("failed to spawn circuit_stats");
+    assert!(stats.status.success());
+    let depth = after(&String::from_utf8_lossy(&stats.stdout), "no T failures): ");
+    assert!(depth > 0);
+    for routing in [&[][..], &["-u"][..]] {
+        for seed in ["1", "2", "3", "4"] {
+            let mut args = vec!["--circuit", circuit.to_str().unwrap(), "-r", seed];
+            args.extend_from_slice(routing);
+            let (ok, stdout, stderr) = run_puremagic(&args, tmp.path());
+            assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+            // "Scheduled <n> in <cycles> logical cycles, volume <v>"
+            let line = stdout.lines().find(|l| l.starts_with("Scheduled ")).expect("Scheduled");
+            let cycles: u64 = line.split_whitespace().nth(3).unwrap().parse().unwrap();
+            assert!(cycles >= depth, "{:?} seed {}: {} cycles, depth {}", routing, seed, cycles, depth);
+        }
+    }
+}
+
 // ── puremagic: seed variation ─────────────────────────────────────────────────
 
 /// Different rseeds must (with overwhelming probability) produce different total

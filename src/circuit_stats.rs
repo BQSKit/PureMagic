@@ -2,12 +2,7 @@
 //! Estimate circuit statistics and layer/volume bounds from a `.trans` circuit file,
 //! using the same methodology as the main `puremagic` scheduler but without running it.
 
-// SeedableRng must stay in scope for StdRng::seed_from_u64, though it looks unused.
-#![allow(unused_imports)]
-
 use clap::Parser;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
 
 #[allow(dead_code)]
 mod circuit;
@@ -48,6 +43,9 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     utils::print_banner("circuit_stats");
+    // Same form as the scheduler's Args dump, so the same parsers pick it up.
+    println!("circuit_fname: {:?}", args.common.circuit_fname);
+    println!("magic_state_lambda: {}", args.common.magic_state_lambda);
 
     let mut circuit = Circuit::new(&args.common.circuit_fname);
     circuit.load_circuit()?;
@@ -76,14 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_qubits = topo.n_qubits;
     let n_magic_qubits = topo.n_magic_qubits;
 
-    let mut rng = StdRng::seed_from_u64(args.common.rseed);
-    let est = circuit.estimate_layer_volume(
-        n_magic_qubits,
-        n_qubits,
-        args.common.magic_state_lambda,
-        args.common.no_t_failures,
-        &mut rng,
-    );
+    let est = circuit.estimate_layer_volume(n_magic_qubits, n_qubits, args.common.magic_state_lambda);
 
     println!("Routing mode: {}", routing_label);
     println!("Layer estimates:");
@@ -91,16 +82,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  T gates:                       {}", est.n_t_gates);
     println!("  T layers:                      {}", est.n_t_layers);
     println!("  Clifford layers (est.):        {}", est.n_clifford_layers);
-    println!(
-        "  Estimated min layers (circuit depth, T-failures={}): {}",
-        !args.common.no_t_failures, est.min_layers
-    );
+    println!("  Estimated min layers (circuit depth, no T failures): {}", est.min_layers);
     println!(
         "  Magic-state throughput min layers (λ={:.7}, {} magic qubits): {}",
         args.common.magic_state_lambda, n_magic_qubits, est.magic_min_layers
     );
     println!("  Combined min layers (lmin):    {}", est.lmin);
-    println!("Volume estimate:");
+    println!("Volume estimate: {}", est.vmin);
     println!("  lmin × total_qubits = {} × {} = {}", est.lmin, n_qubits, est.vmin);
 
     Ok(())

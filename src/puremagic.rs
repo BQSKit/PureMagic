@@ -1,6 +1,4 @@
 use clap::Parser;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
 
 mod astar;
 mod circuit;
@@ -158,6 +156,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let n_qubits = topo_graph.n_qubits;
     let n_magic_qubits = topo_graph.n_magic_qubits;
+    // Taken from the input circuit, before scheduling adds correction gates to it,
+    // so it is the same bound circuit_stats reports and doesn't vary with the seed.
+    let est = circuit.estimate_layer_volume(n_magic_qubits, n_qubits, args.common.magic_state_lambda);
     let mut sched = Scheduler::new(
         circuit,
         topo_graph,
@@ -201,14 +202,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
-    let mut rng = StdRng::seed_from_u64(args.common.rseed);
-    let est = sched.input.circuit.estimate_layer_volume(
-        n_magic_qubits,
-        n_qubits,
-        args.common.magic_state_lambda,
-        args.common.no_t_failures,
-        &mut rng,
-    );
     let max_parallelism_estimate = (n_products + est.n_t_gates / 2) as f64 / est.lmin as f64;
     println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
     println!("Volume estimate: {}", est.vmin);

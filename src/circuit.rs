@@ -3,7 +3,6 @@ use crate::pauliproduct::{GateType, Operator, PauliProduct};
 use plotters::coord::types::{RangedCoordf64, RangedCoordusize};
 use plotters::prelude::*;
 use rand::Rng;
-#[cfg(test)]
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::HashMap;
@@ -27,7 +26,7 @@ pub(crate) struct Circuit {
     pub(crate) n_qubits: usize,
 }
 
-/// Result of [`Circuit::estimate_layer_volume`]'s combined layer/volume lower bound.
+/// Result of [`Circuit::estimate_layer_volume`]'s combined layer/volume estimate.
 ///
 /// Not every field is read by every caller (`puremagic` only prints the summary
 /// fields, `circuit_stats` prints the full breakdown), so this allows dead code
@@ -572,20 +571,30 @@ impl Circuit {
         (n_t_gates, n_t_layers)
     }
 
-    /// Estimates a lower bound on the number of scheduled layers/volume needed to
+    /// Estimates the number of scheduled layers/volume needed to
     /// execute this circuit, given `n_magic_qubits` magic-state factories each
     /// producing states at rate `magic_state_lambda` per lcycle.
     ///
-    /// Combines two independent lower bounds: the circuit's own dependency-depth
-    /// estimate from `estimate_num_layers` (Clifford layers, including T-failure
-    /// corrections) plus the magic-state throughput bound (how many lcycles it
-    /// takes the factories alone to supply enough T gates) -- the true schedule
-    /// can't beat whichever bound is larger.
+    /// Takes the larger of two limits. The circuit's own dependency depth from
+    /// `estimate_num_layers` is a hard bound. The other is the Clifford-only layers
+    /// plus the magic-state throughput time (how many lcycles it takes the
+    /// factories alone to supply enough T gates, a bound only in expectation).
+    /// Adding the two assumes Clifford-only layers can't run while the schedule
+    /// waits on magic states, so a schedule that overlaps them can beat it (bus
+    /// routing does on the `mixed_8q` test fixture). It is an estimate there, not
+    /// a bound.
+    ///
+    /// The depth is taken without T-gate failures. A failure costs no extra magic
+    /// state, and the scheduler absorbs most of the S corrections it leaves by
+    /// conjugating later T gates and measurements or merging them into Cliffords,
+    /// so charging a correction gate for each one (as `estimate_num_layers` does
+    /// with failures on) overestimates the depth and stops this being a bound.
+    /// Without failures the estimate is deterministic, so it takes no RNG.
     pub(crate) fn estimate_layer_volume(
         &self, n_magic_qubits: usize, n_qubits: usize, magic_state_lambda: f64,
-        no_t_failures: bool, rng: &mut StdRng,
     ) -> LayerVolumeEstimate {
-        let min_layers = self.estimate_num_layers(rng, no_t_failures);
+        // The RNG only draws T failures, which are off here.
+        let min_layers = self.estimate_num_layers(&mut StdRng::seed_from_u64(0), true);
         let (n_t_gates, n_t_layers) = self.count_t_stats();
         let n_clifford_layers = min_layers.saturating_sub(n_t_layers);
         let max_t_parallelism = n_magic_qubits as f64 * magic_state_lambda;
@@ -980,8 +989,7 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>", "+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let mut rng = StdRng::seed_from_u64(42);
-        let est = c.estimate_layer_volume(4, 2, 0.5, false, &mut rng);
+        let est = c.estimate_layer_volume(4, 2, 0.5);
         assert_eq!(est.n_t_gates, 2);
         assert_eq!(est.n_t_layers, 1);
         assert!(est.lmin >= est.min_layers);
@@ -993,9 +1001,8 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>", "+_X<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let mut rng = StdRng::seed_from_u64(42);
         // n_magic_qubits = 0 -> max_t_parallelism = 0.0; must not panic or produce NaN/inf.
-        let est = c.estimate_layer_volume(0, 2, 0.5, false, &mut rng);
+        let est = c.estimate_layer_volume(0, 2, 0.5);
         assert_eq!(est.magic_min_layers, 0);
         assert_eq!(est.lmin, est.min_layers.max(est.n_clifford_layers));
     }
@@ -1005,8 +1012,7 @@ mod tests {
         let f = make_circuit_file(&["+XZ<CX>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let mut rng = StdRng::seed_from_u64(42);
-        let est = c.estimate_layer_volume(4, 2, 0.5, false, &mut rng);
+        let est = c.estimate_layer_volume(4, 2, 0.5);
         assert_eq!(est.n_t_gates, 0);
         assert_eq!(est.magic_min_layers, 0);
     }
@@ -1021,9 +1027,25 @@ mod tests {
         let f = make_circuit_file(&["+X_<T>"]);
         let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
         c.load_circuit().unwrap();
-        let mut rng = StdRng::seed_from_u64(42);
-        let est = c.estimate_layer_volume(4, 1, 0.5, true, &mut rng);
+        let est = c.estimate_layer_volume(4, 1, 0.5);
         assert_eq!(est.n_clifford_layers, est.min_layers.saturating_sub(est.n_t_layers));
+    }
+
+    #[test]
+    fn estimate_layer_volume_charges_no_t_failure_corrections() {
+        // T then S on one qubit: with failures modelled, a failed T would put a
+        // 3-cycle S correction ahead of the S. The bound must not charge it, so
+        // its depth is the failure-free one whatever the seed.
+        let f = make_circuit_file(&["+X_<T>", "+X_<S>", "+_X<T>", "+XZ<CX>", "+X_<T>", "+X_<S>"]);
+        let mut c = Circuit::new(&f.path().to_string_lossy().to_string());
+        c.load_circuit().unwrap();
+        let free = c.estimate_num_layers(&mut make_rng(), true);
+        let with_failures = (0..64)
+            .map(|seed| c.estimate_num_layers(&mut StdRng::seed_from_u64(seed), false))
+            .max()
+            .unwrap();
+        assert!(with_failures > free, "fixture must be able to charge a correction");
+        assert_eq!(c.estimate_layer_volume(4, 2, 0.5).min_layers, free);
     }
 
     #[test]
