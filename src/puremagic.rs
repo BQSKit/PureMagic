@@ -184,6 +184,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stem =
             std::path::Path::new(&circuit_fname).file_stem().unwrap().to_string_lossy().to_string();
         sched.write_cycle_times(&format!("{}.cycle_times", stem))?;
+        #[cfg(not(feature = "diagnostics"))]
+        sched.print_cycle_time_summary();
     }
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;

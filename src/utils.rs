@@ -133,6 +133,7 @@ macro_rules! info_sched {
     };
 }
 
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
 struct AccumTimer {
     start_time: Option<Instant>,
     tot_elapsed: Duration,
@@ -140,6 +141,7 @@ struct AccumTimer {
     n_intervals: usize,
 }
 
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
 impl AccumTimer {
     fn new() -> Self {
         AccumTimer {
@@ -186,14 +188,20 @@ impl AccumTimers {
         }
     }
 
-    pub(crate) fn start(&mut self, idx: usize) {
-        if let Some((_, t)) = self.timers.get_index_mut(idx) {
+    /// A no-op without the `diagnostics` feature, so a timing build reads no
+    /// clock here.
+    #[inline]
+    pub(crate) fn start(&mut self, _idx: usize) {
+        #[cfg(feature = "diagnostics")]
+        if let Some((_, t)) = self.timers.get_index_mut(_idx) {
             t.start();
         }
     }
 
-    pub(crate) fn stop(&mut self, idx: usize) {
-        if let Some((_, t)) = self.timers.get_index_mut(idx) {
+    #[inline]
+    pub(crate) fn stop(&mut self, _idx: usize) {
+        #[cfg(feature = "diagnostics")]
+        if let Some((_, t)) = self.timers.get_index_mut(_idx) {
             t.stop();
         }
     }
@@ -322,6 +330,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "diagnostics")]
     fn start_stop_does_not_panic() {
         let mut timers = AccumTimers::new();
         let idx = timers.add_or_get("t");
@@ -350,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "diagnostics")]
     fn multiple_start_stop_accumulates() {
         let mut timers = AccumTimers::new();
         let idx = timers.add_or_get("multi");

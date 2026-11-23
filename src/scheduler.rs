@@ -221,6 +221,7 @@ pub(crate) struct Scheduler {
     used: Vec<bool>,
     /// Per-node lcycle at which its current magic state became ready; `usize::MAX`
     /// while the node is cultivating or is not a magic node.
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     ready_since: Vec<usize>,
     /// Magic nodes a T gate took its state from this lcycle, for the yield
     /// accounting in `CultivationManager::update_cultivators`.
@@ -843,6 +844,7 @@ impl Scheduler {
     fn schedule_lcycle_body(&mut self, plotting: bool) -> bool {
         self.timers.start(self.other_timer);
         let mut n_avail_magic = self.update_cultivators();
+        #[cfg(feature = "diagnostics")]
         self.update_ready_since();
         let initial_magic = n_avail_magic;
         self.pp_paths.clear();
@@ -864,10 +866,13 @@ impl Scheduler {
         self.sched_precomputed(plotting);
         self.timers.stop(self.other_timer);
         self.sched_remaining(&mut n_avail_magic, plotting);
-        let topo = &self.input.topo;
-        self.stats.tot_ancilla_reserved += (0..topo.n_nodes)
-            .filter(|&i| self.used[i] && topo.node(i as u16).node_type != NodeType::Data)
-            .count();
+        #[cfg(feature = "diagnostics")]
+        {
+            let topo = &self.input.topo;
+            self.stats.tot_ancilla_reserved += (0..topo.n_nodes)
+                .filter(|&i| self.used[i] && topo.node(i as u16).node_type != NodeType::Data)
+                .count();
+        }
         self.stats.update(
             self.current_lcycle,
             self.pp_paths.len(),
@@ -906,6 +911,7 @@ impl Scheduler {
 
     /// Stamps each magic node with the lcycle its state became ready, and clears the
     /// stamp of every node that is cultivating again (consumed, routed over or reset).
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     fn update_ready_since(&mut self) {
         let topo = &self.input.topo;
         for i in 0..topo.n_nodes {
@@ -921,6 +927,7 @@ impl Scheduler {
 
     /// Charges a consumed magic state the lcycles it waited ready, excluding the
     /// consuming lcycle, which the path reservation already counts.
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     fn record_consumed_wait(&mut self, magic_id: u16) {
         let since = self.ready_since[magic_id as usize];
         if since != usize::MAX {
@@ -932,6 +939,7 @@ impl Scheduler {
         let _timer = accum_start!(self.timers);
         let n_avail_magic =
             self.cultivation.update_cultivators(&mut self.input.topo, &self.used, &self.consumed);
+        #[cfg(feature = "diagnostics")]
         self.consumed.fill(false);
         info_sched!("  Available magic {}", n_avail_magic);
         n_avail_magic
@@ -1289,8 +1297,11 @@ impl Scheduler {
                             None => Some(self.astar.last_magic_id),
                         };
                         if let Some(id) = magic_id {
-                            self.record_consumed_wait(id);
-                            self.consumed[id as usize] = true;
+                            #[cfg(feature = "diagnostics")]
+                            {
+                                self.record_consumed_wait(id);
+                                self.consumed[id as usize] = true;
+                            }
                             if self.trace.is_some() && opt_graph.is_none() {
                                 self.trace_untreed
                                     .insert(pp_id, (self.astar.last_path.clone(), id));
@@ -1633,6 +1644,36 @@ impl Scheduler {
         w.flush()
     }
 
+    /// Prints the per-cycle times in the format of the accumulated
+    /// "schedule_lcycle" timer, which a build without diagnostics does not
+    /// keep, so the analysis scripts read either build's logs the same way.
+    #[cfg(not(feature = "diagnostics"))]
+    pub(crate) fn print_cycle_time_summary(&self) {
+        let Some(times) = &self.cycle_times else { return };
+        if times.is_empty() {
+            return;
+        }
+        let fmt = |ns: f64| -> String {
+            if ns >= 1e9 {
+                format!("{:.2} s", ns / 1e9)
+            } else if ns >= 1e6 {
+                format!("{:.1} ms", ns / 1e6)
+            } else {
+                format!("{:.2} μs", ns / 1e3)
+            }
+        };
+        let total: u64 = times.iter().sum();
+        let max = *times.iter().max().unwrap();
+        println!(
+            "  {:<25} total: {:>10}  avg: {:>10}  max: {:>10}  calls: {}",
+            "schedule_lcycle",
+            fmt(total as f64),
+            fmt(total as f64 / times.len() as f64),
+            fmt(max as f64),
+            times.len()
+        );
+    }
+
     pub(crate) fn enable_trace(&mut self, fname: &str) -> io::Result<()> {
         let mut w = BufWriter::new(File::create(fname)?);
         let topo = &self.input.topo;
@@ -1652,6 +1693,7 @@ impl Scheduler {
             writeln!(w, "adj {} {}", id, nbs.join(","))?;
         }
         self.trace = Some(w);
+        self.astar.record_path = true;
         Ok(())
     }
 
@@ -1746,6 +1788,24 @@ impl Scheduler {
         if let Some(w) = self.trace.as_mut() {
             w.flush().expect("flushing the schedule trace");
         }
+        #[cfg(feature = "diagnostics")]
+        self.print_yield();
+        println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
+        println!("A* computation called {} times", self.astar.n_calls);
+
+        if self.record_cultivation_dist {
+            let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
+            match self.write_cultivation_dist(&dist_fname, min, max) {
+                Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
+                Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
+            }
+        }
+    }
+
+    /// Prints the cultivation yield (see `YieldStats`), after charging the
+    /// final lcycle's uses, which no later update sees.
+    #[cfg(feature = "diagnostics")]
+    fn print_yield(&mut self) {
         self.cultivation.settle(&self.input.topo, &self.used, &self.consumed);
         let unfinished = self.cultivation.unfinished_cycles(&self.input.topo, &self.used);
         let y = &self.cultivation.yield_stats;
@@ -1761,16 +1821,6 @@ impl Scheduler {
             unfinished,
             self.cultivation.magic_node_ids.len()
         );
-        println!("Steiner tree computation called {} times", self.stree_computation.n_calls);
-        println!("A* computation called {} times", self.astar.n_calls);
-
-        if self.record_cultivation_dist {
-            let dist_fname = format!("{}.cultivation_dist", self.input.circuit_stem());
-            match self.write_cultivation_dist(&dist_fname, min, max) {
-                Ok(()) => println!("Cultivation time distribution written to {}", dist_fname),
-                Err(e) => eprintln!("Warning: could not write cultivation dist: {}", e),
-            }
-        }
     }
 
     /// Writes the normalized distribution of cultivation times to `fname`.

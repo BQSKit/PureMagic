@@ -98,7 +98,14 @@ lto = true
 #unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pythonapi)'] }
 
 [features]
-default = []
+# Run-time diagnostics: the accumulated per-function timers, and the
+# per-cycle statistics (held-ready and reserved ancilla counts, cultivation
+# yield) that loop over every node. On by default. Timing runs build without
+# them (cargo build --release --no-default-features) so that the measured
+# per-cycle time is the scheduler's alone, with --cycle-times reading the
+# clock once per cycle. Schedules are identical either way.
+default = ["diagnostics"]
+diagnostics = []
 # to enable a feature. Use #[cfg(feature = "somefeature")] in the code before the function or line to enable
 #default = ["somefeature"]
 #somefeature = []

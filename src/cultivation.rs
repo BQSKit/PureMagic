@@ -29,6 +29,7 @@ pub(crate) struct CultivationManager {
     /// Length of the attempt that produced each node's ready state, indexed by
     /// topology node id; charged to `yield_stats` when the state is used.
     done_len: Vec<i32>,
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) yield_stats: YieldStats,
 }
 
@@ -144,6 +145,7 @@ impl CultivationManager {
 
     /// Charges the yield of the nodes used in the final lcycle, which no later
     /// `update_cultivators` call sees. Changes no cultivation state.
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) fn settle(&mut self, topo: &TopoGraph, used: &[bool], consumed: &[bool]) {
         for &id in &self.magic_node_ids {
             let id = id as usize;
@@ -168,6 +170,7 @@ impl CultivationManager {
 
     /// Cultivating lcycles of attempts still open when the schedule ends: those
     /// in progress, and finished states no T gate took.
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) fn unfinished_cycles(&self, topo: &TopoGraph, used: &[bool]) -> usize {
         self.magic_node_ids
             .iter()
@@ -188,6 +191,7 @@ impl CultivationManager {
     /// interleaving RNG calls with the state mutation.
     /// `used` marks the nodes any path occupied last lcycle and `consumed` the
     /// magic nodes a T gate took its state from, which `used` also marks.
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables))]
     pub(crate) fn update_cultivators(
         &mut self, topo: &mut TopoGraph, used: &[bool], consumed: &[bool],
     ) -> usize {
@@ -209,19 +213,22 @@ impl CultivationManager {
         for i in 0..self.magic_node_ids.len() {
             let id = self.magic_node_ids[i];
             if used[id as usize] {
-                let y = &mut self.yield_stats;
-                if topo.cultivation_times[id as usize] == 0 {
-                    let len = self.done_len[id as usize] as usize;
-                    if consumed[id as usize] {
-                        y.n_delivered += 1;
-                        y.cycles_delivered += len;
+                #[cfg(feature = "diagnostics")]
+                {
+                    let y = &mut self.yield_stats;
+                    if topo.cultivation_times[id as usize] == 0 {
+                        let len = self.done_len[id as usize] as usize;
+                        if consumed[id as usize] {
+                            y.n_delivered += 1;
+                            y.cycles_delivered += len;
+                        } else {
+                            y.n_lost += 1;
+                            y.cycles_lost += len;
+                        }
                     } else {
-                        y.n_lost += 1;
-                        y.cycles_lost += len;
+                        y.n_interrupted += 1;
+                        y.cycles_interrupted += topo.busy_counts[id as usize] as usize;
                     }
-                } else {
-                    y.n_interrupted += 1;
-                    y.cycles_interrupted += topo.busy_counts[id as usize] as usize;
                 }
                 // Node was used this lcycle: assign a fresh cultivation time.
                 topo.cultivation_times[id as usize] =
@@ -507,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "diagnostics")]
     fn yield_charges_each_attempt_to_how_it_ended() {
         Node::set_magic_routing(true);
         let mut mgr = CultivationManager::new(29);
