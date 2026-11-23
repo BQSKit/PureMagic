@@ -50,6 +50,10 @@ struct Args {
     /// lcycle, for independent checking by data_processing/check_schedule.py.
     #[arg(long)]
     trace: bool,
+    /// Write <CIRCUIT_STEM>.cycle_times: the wall-clock time of each logical
+    /// cycle's scheduling in ns, one per line, for worst-cycle analysis.
+    #[arg(long)]
+    cycle_times: bool,
     /// Log scheduler actions to <CIRCUIT_FNAME>.sched_trace. Only populated in debug
     /// builds: the debug_sched!/info_sched! call sites are compiled out entirely in
     /// release builds, so a release build still creates the file but leaves it empty.
@@ -172,7 +176,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::path::Path::new(&circuit_fname).file_stem().unwrap().to_string_lossy()
         ))?;
     }
+    if args.cycle_times {
+        sched.enable_cycle_times();
+    }
     let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
+    if args.cycle_times {
+        let stem =
+            std::path::Path::new(&circuit_fname).file_stem().unwrap().to_string_lossy().to_string();
+        sched.write_cycle_times(&format!("{}.cycle_times", stem))?;
+    }
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);

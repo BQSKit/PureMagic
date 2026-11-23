@@ -230,6 +230,8 @@ pub(crate) struct Scheduler {
     /// Footprint and magic node of this lcycle's T gates routed by A* without a
     /// tree, which `pp_paths` cannot carry; only filled while tracing.
     trace_untreed: HashMap<i32, (Vec<u16>, u16)>,
+    /// Wall-clock time of each `schedule_lcycle` call in ns (`--cycle-times`).
+    cycle_times: Option<Vec<u64>>,
     /// Footprint of this lcycle's other products scheduled without a tree
     /// (precomputed, carried forward, S/SX, M); only filled while tracing.
     trace_fp: HashMap<i32, Vec<u16>>,
@@ -334,6 +336,7 @@ impl Scheduler {
             trace: None,
             trace_untreed: HashMap::new(),
             trace_fp: HashMap::new(),
+            cycle_times: None,
             s_sx_nodes: HashMap::new(),
             clifford_paths: IndexMap::new(),
             t_gate_failures: 0,
@@ -829,6 +832,15 @@ impl Scheduler {
     /// Schedules as many products as possible in one lcycle; returns false if nothing scheduled.
     fn schedule_lcycle(&mut self, plotting: bool) -> bool {
         let _timer = accum_start!(self.timers);
+        let start = self.cycle_times.is_some().then(std::time::Instant::now);
+        let scheduled = self.schedule_lcycle_body(plotting);
+        if let (Some(t0), Some(times)) = (start, self.cycle_times.as_mut()) {
+            times.push(t0.elapsed().as_nanos() as u64);
+        }
+        scheduled
+    }
+
+    fn schedule_lcycle_body(&mut self, plotting: bool) -> bool {
         self.timers.start(self.other_timer);
         let mut n_avail_magic = self.update_cultivators();
         self.update_ready_since();
@@ -1604,6 +1616,23 @@ impl Scheduler {
     /// correction, whose qubit and basis follow as `c <id> <qubit> <basis>`.
     /// The attempt length is the cultivation attempt that produced the
     /// consumed state, so the checker can confirm the patch was free for it.
+    /// Records the wall-clock time of every logical cycle's scheduling, the span
+    /// the "schedule_lcycle" timer accumulates, for `write_cycle_times`.
+    pub(crate) fn enable_cycle_times(&mut self) {
+        self.cycle_times = Some(Vec::new());
+    }
+
+    /// Writes the recorded per-cycle times, one per line in nanoseconds, in
+    /// cycle order. The average of these is the "schedule_lcycle" avg.
+    pub(crate) fn write_cycle_times(&self, fname: &str) -> io::Result<()> {
+        let Some(times) = &self.cycle_times else { return Ok(()) };
+        let mut w = BufWriter::new(File::create(fname)?);
+        for t in times {
+            writeln!(w, "{}", t)?;
+        }
+        w.flush()
+    }
+
     pub(crate) fn enable_trace(&mut self, fname: &str) -> io::Result<()> {
         let mut w = BufWriter::new(File::create(fname)?);
         let topo = &self.input.topo;
