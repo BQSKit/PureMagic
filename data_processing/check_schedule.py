@@ -35,11 +35,12 @@ itself. It checks:
      lines), each S about all of the failed gate's operators, independently
      of the scheduler: every T gate and measurement runs about its operators
      conjugated by the owed corrections, widened no further than the weight
-     limit the trace records, every Clifford
-     runs only when no owed correction it moves is left on its qubits (a
-     single-qubit correction about an S's own axis merges into it), and every
-     injected correction is an owed one, emitted only past newer ones that
-     commute with it
+     limit the trace records, every Clifford is pushed through the owed
+     corrections, turning each S_P into S_(C P C^dag) (a lone single-qubit
+     correction about an S's own axis merges into it instead) without a CX
+     spreading any onto its other qubit, and every injected correction is an S
+     about some owed correction conjugated past the newer ones, which removes
+     that one exactly, and no wider than the weight limit or that correction
 
 Exit status is 0 when every check passes.
 """
@@ -173,24 +174,48 @@ class Frame:
 
     def rotation(self, ops, max_weight):
         """-> operators to run about: W^dag Q W, applying every owed correction
-        oldest first. None if that passes the weight limit (0: none), when a
-        correction must go first."""
+        oldest first. None if the result passes the weight limit (0: none), when
+        a correction must go first."""
         q = list(ops)
         for c in self.owed:
-            if commutes(c[0], q):
-                continue
-            q = mul(c[0], q)
-            if max_weight and len(q) > max_weight:
-                return None
+            if not commutes(c[0], q):
+                q = mul(c[0], q)
+        if max_weight and len(q) > max_weight:
+            return None
         return q
 
-    def moved_by_clifford(self, fixed):
-        """Owed corrections on these qubits that the Clifford fixing `fixed` moves."""
-        d = dict(fixed)
-        return [c for c in self.on(set(d)) if any(q in d and b != d[q] for q, b in c[0])]
+    def conjugate_past_newer(self, i):
+        """R^dag E R for E the i-th owed correction and R the newer ones."""
+        q = self.owed[i][0]
+        for d in self.owed[i + 1:]:
+            if not commutes(d[0], q):
+                q = mul(d[0], q)
+        return q
+
+    def push_clifford(self, gate, ops):
+        """A Clifford runs as it is and W becomes C W C^dag: each owed S_P
+        becomes S_(C P C^dag). On one qubit an S about the axis A takes P to
+        P A if they anticommute. On two, exp(i pi/4 (I - A)(I - B)), a CX for
+        A = Z on its control and B = X on its target, takes P to P B if it
+        anticommutes with A and to P A if it anticommutes with B."""
+        axes = [[(q, b)] for q, b in ops]
+        for c in self.on({q for q, _ in ops}):
+            p = c[0]
+            if len(axes) == 1:
+                if not commutes(p, axes[0]):
+                    p = mul(axes[0], p)
+            else:
+                a, b = axes
+                anti_a, anti_b = not commutes(p, a), not commutes(p, b)
+                if anti_a:
+                    p = mul(b, p)
+                if anti_b:
+                    p = mul(a, p)
+            c[0] = p
 
 
-def replay_frame(runs, start, circuit, n_circ, corr, fails, node_qubit, err, max_weight):
+def replay_frame(runs, start, circuit, n_circ, corr, corr_seq, fails, node_qubit, err,
+                 max_weight):
     frame = Frame()
     by_cycle = defaultdict(list)
     for pid, rs in runs.items():
@@ -201,16 +226,24 @@ def replay_frame(runs, start, circuit, n_circ, corr, fails, node_qubit, err, max
         # (check 8), so the order among disjoint events does not matter.
         for pid in sorted(starts, key=lambda p: p < n_circ):
             if pid >= n_circ:
+                # An S about E' = R^dag E R removes the owed E, R being the newer
+                # ones: W = A S_E R = A R S_E'. It is never wider than the weight
+                # limit or E itself.
                 ops = corr[pid]
-                match = [c for c in frame.owed if c[0] == ops]
-                if not match:
-                    err("frame", f"cycle {lc}: correction {pid} {ops} is not owed")
+                seq = corr_seq.get(pid)
+                hit = next((i for i, c in enumerate(frame.owed) if c[2] == seq), None)
+                if hit is None:
+                    err("frame", f"cycle {lc}: correction {pid} names no owed correction")
                     continue
-                c = match[-1]
-                for d in frame.on({q for q, _ in ops}):
-                    if d[2] > c[2] and not commutes(d[0], ops):
-                        err("frame", f"cycle {lc}: correction {pid} emitted past newer {d[0]}")
-                frame.owed.remove(c)
+                if frame.conjugate_past_newer(hit) != ops:
+                    err("frame", f"cycle {lc}: correction {pid} {ops} is not owed correction "
+                        f"{seq} {frame.owed[hit][0]} past the newer ones, "
+                        f"{frame.conjugate_past_newer(hit)}")
+                    continue
+                cap = max(max_weight, len(frame.owed[hit][0])) if max_weight else None
+                if cap is not None and len(ops) > cap:
+                    err("frame", f"cycle {lc}: correction {pid} {ops} is wider than {cap}")
+                del frame.owed[hit]
                 continue
             gate, ops = circuit[pid]
             if gate in ("T", "M"):
@@ -228,11 +261,15 @@ def replay_frame(runs, start, circuit, n_circ, corr, fails, node_qubit, err, max
                 on = frame.on({q})
                 if len(on) == 1 and on[0][0] == [(q, axis)]:
                     frame.owed.remove(on[0])  # merged
-                elif frame.moved_by_clifford([(q, axis)]):
-                    err("frame", f"cycle {lc}: {gate} {pid} ran with a correction it moves owed")
+                else:
+                    frame.push_clifford(gate, [(q, axis)])
             elif gate == "CX":
-                if frame.moved_by_clifford(sorted(ops)):
-                    err("frame", f"cycle {lc}: CX {pid} ran with a correction it moves owed")
+                qs = {q for q, _ in ops}
+                before = {id(c): {q for q, _ in c[0]} for c in frame.on(qs)}
+                frame.push_clifford(gate, sorted(ops))
+                for c in frame.on(qs):
+                    if id(c) in before and not {q for q, _ in c[0]} <= before[id(c)]:
+                        err("frame", f"cycle {lc}: CX {pid} spread an owed correction to {c[0]}")
         for pid, ops in fails.get(lc, []):
             ran = executed_ops(runs[pid][0][4], node_qubit) if pid in runs else None
             if ran != ops:
@@ -254,6 +291,7 @@ def main():
     occ = defaultdict(dict)  # lcycle -> node -> product
     runs = defaultdict(list)  # product -> [(lcycle, gate, magic, length, terms, nodes)]
     corr = {}
+    corr_seq = {}  # injected correction -> creation number of the owed one it removed
     fails = defaultdict(list)  # lcycle -> [(T product, operators it ran about)]
     circuit_path = n_circ = None
     max_weight = 0
@@ -285,6 +323,8 @@ def main():
             runs[pid].append((lc, gate, magic, length, terms, nodes))
         elif f[0] == "c":
             corr[int(f[1])] = parse_ops(f[2])
+            if len(f) > 3:
+                corr_seq[int(f[1])] = int(f[3])
         elif f[0] == "f":
             fails[int(f[1])].append((int(f[2]), parse_ops(f[3])))
 
@@ -456,7 +496,8 @@ def main():
                 err("qubits", f"qubit {q}: products {p0} ({s0}-{e0}) and {p1} ({s1}-{e1}) overlap")
 
     # 9. frame
-    replay_frame(runs, start, circuit, n_circ, corr, fails, node_qubit, err, max_weight)
+    replay_frame(runs, start, circuit, n_circ, corr, corr_seq, fails, node_qubit, err,
+                 max_weight)
 
     # 7. completeness
     missing = [p for p in range(n_circ) if p not in runs]

@@ -179,15 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.record_cultivation_dist,
     );
 
-    let ext = std::path::Path::new(&circuit_fname).extension().and_then(|e| e.to_str());
-    let (max_weight, source) = match (args.max_weight, sched.input.circuit.max_weight) {
-        (Some(w), _) => (w, "--max-weight"),
-        (None, Some(w)) => (w, "circuit header"),
-        (None, None) => match ext.and_then(|e| e.strip_prefix("trans")?.parse().ok()) {
-            Some(w) => (w, "file name"),
-            None => (0, "default"),
-        },
-    };
+    let (max_weight, source) = sched.input.circuit.resolve_max_weight(args.max_weight);
     sched.max_weight = max_weight;
     println!("Max weight: {} (from {})", max_weight, source);
 

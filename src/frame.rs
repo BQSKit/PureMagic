@@ -6,30 +6,51 @@
 //! scheduler carries it and lets later operations deal with it.
 //!
 //! Write the circuit executed so far as `V` and the owed corrections as a
-//! product `W`, so that the ideal circuit is `U = W V`. Then:
+//! product `W`, so that the ideal state is `W` times the physical one and the
+//! ideal circuit is `U = W V`. Each factor is labelled by the operator the
+//! failed injection physically ran about, and new factors go on the right, so
+//! `W = S_oldest ... S_newest`. (Labelling factors in ideal coordinates instead
+//! puts new ones on the left and reverses every order below.) Then:
 //!
 //! - the next ideal rotation about `Q` is executed about `Q' = W^dag Q W`,
-//!   which leaves `W` unchanged. `W = S_oldest ... S_newest`, so `Q` is
-//!   conjugated by the oldest owed correction first;
-//! - a failure of that rotation appends `S_Q'` as the newest factor, the
-//!   first in time;
-//! - emitting `S_E` as a gate removes it from `W`, which is valid only if
-//!   every newer factor commutes with it;
-//! - a Clifford `C` can run once every owed factor on its qubits commutes
-//!   with it.
+//!   which leaves `W` unchanged. `Q` is conjugated by the oldest owed
+//!   correction first, since it is innermost;
+//! - a failure of that rotation, which ran `T_Q'^dag = S_Q'^dag T_Q'`, makes
+//!   `W` into `W S_Q'`: `S_Q'`, about the physical `Q'`, is the newest factor;
+//! - to apply the corrections physically, the rightmost goes first: emitting
+//!   `S_E` as a gate removes it from `W` only if every newer factor commutes
+//!   with it, so newer ones that do not are emitted before it. For example, a
+//!   T about Z fails (W = S_Z), the next T about X runs about Y and fails
+//!   (W = S_Z S_Y): S_Y is applied, then S_Z;
+//! - a Clifford `C` runs as it is and is pushed through the frame: the ideal
+//!   state after it is `C W` times the physical one before it, which is
+//!   `(C W C^dag)` times the physical one after it, so `W` becomes `C W C^dag`
+//!   and every owed `S_P` becomes `S_{C P C^dag}`. An S or SX keeps every
+//!   correction on the same qubits, so it always runs at once. A CX could
+//!   spread a correction onto its other qubit; such corrections are emitted
+//!   first, so corrections never grow through Cliffords, and at weight 1 every
+//!   correction stays on one qubit.
 //!
-//! Conjugating `Q` by an `S_P` it anticommutes with gives `i P Q`, whose
-//! support is the union of both. Widening is always valid: conjugation keeps
+//! Conjugating `Q` by an `S_P` it anticommutes with gives the Hermitian Pauli
+//! `i P Q`, whose weight is that of the product, at most the size of the union
+//! of both supports (labels that agree cancel). Widening is always valid: conjugation keeps
 //! commutation, so products on disjoint qubits still commute and may run in
 //! any order. It only costs a wider product, which must not share a qubit with
 //! anything else running in its cycle. So a correction is absorbed, widening
 //! the product as needed, as long as the result stays within the weight limit
 //! the circuit was transpiled with. A correction that would take it past the
-//! limit is emitted first instead. Signs are dropped throughout, as elsewhere in
-//! the scheduler: a sign only decides which injection outcome counts as a
-//! failure.
+//! limit is emitted first instead.
+//!
+//! Signs are dropped throughout, so the frame is tracked modulo Paulis. That is
+//! exact for the cost model, not for a controller: a sign turns a T into a T
+//! dagger, an S into an S dagger, or flips a measurement outcome, each of which
+//! costs the same as the unsigned operation. A real controller must also track
+//! the signs, a Pauli frame alongside this one.
 
 use crate::pauliproduct::Operator;
+
+/// The most corrections [`CorrectionFrame::emission_order`] returns at once.
+const EMISSION_PREFIX: usize = 32;
 
 /// One owed correction `S_P^power`, with `P`'s operators sorted by qubit.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +58,8 @@ pub(crate) struct Correction {
     pub(crate) ops: Vec<Operator>,
     /// 1 for S, 3 for S-dagger. A net power of 2 is the Pauli `P` and leaves.
     pub(crate) power: u8,
-    seq: u64,
+    /// Creation order, counting every correction the frame has made.
+    pub(crate) seq: u64,
 }
 
 /// What a failed T gate did to the frame.
@@ -55,8 +77,9 @@ pub(crate) enum Added {
 pub(crate) enum Pass {
     /// It runs as given, possibly about conjugated operators.
     Run(Vec<Operator>),
-    /// These corrections must be emitted first, in this order.
-    Blocked(Vec<usize>),
+    /// This correction must be emitted first (see
+    /// [`CorrectionFrame::emission_plan`]).
+    Blocked(usize),
 }
 
 /// The owed corrections, in creation order, indexed by qubit.
@@ -67,6 +90,192 @@ pub(crate) struct CorrectionFrame {
     on_qubit: Vec<Vec<usize>>,
     next_seq: u64,
     open: usize,
+    /// `W` itself, modulo Paulis, so that conjugating by it costs the same however
+    /// many corrections are owed. The list above is kept for choosing which to emit.
+    tab: Tableau,
+    /// For each qubit, a count bumped whenever its list or a label on it changes.
+    ver: Vec<u64>,
+    /// [`CorrectionFrame::cx_blockers`]'s last answer for a CX, by its qubits and axes,
+    /// with both qubits' versions then: a pending CX asks every cycle, and the
+    /// answer changes only with those lists.
+    cx_cache: std::collections::HashMap<(u16, char, u16, char), (u64, u64, Option<usize>)>,
+}
+
+/// A Clifford modulo Paulis, as the images of the generators under conjugation:
+/// row `q` is `W^dag X_q W` and row `n + q` is `W^dag Z_q W`, each a Pauli as bits,
+/// X part in the first `words` words and Z part in the next `words`.
+struct Tableau {
+    n: usize,
+    words: usize,
+    rows: Vec<u64>,
+}
+
+impl Tableau {
+    fn new(n: usize) -> Self {
+        let words = n.div_ceil(64).max(1);
+        let mut t = Tableau { n, words, rows: vec![0; 2 * n * 2 * words] };
+        for q in 0..n {
+            t.row_mut(q)[q / 64] |= 1 << (q % 64);
+            t.row_mut(n + q)[words + q / 64] |= 1 << (q % 64);
+        }
+        t
+    }
+
+    fn row_mut(&mut self, r: usize) -> &mut [u64] {
+        let w = 2 * self.words;
+        &mut self.rows[r * w..(r + 1) * w]
+    }
+
+    fn bits(&self, ops: &[Operator]) -> Vec<u64> {
+        let mut v = vec![0u64; 2 * self.words];
+        for o in ops {
+            let (i, b) = (o.qubit as usize / 64, 1u64 << (o.qubit % 64));
+            if o.basis != 'Z' {
+                v[i] |= b;
+            }
+            if o.basis != 'X' {
+                v[self.words + i] |= b;
+            }
+        }
+        v
+    }
+
+    /// `W <- W S_L` (or `W S_L^dag`, the same modulo Paulis): every image `v`
+    /// that anticommutes with `L` becomes `v L`.
+    fn apply_s(&mut self, ops: &[Operator]) {
+        let l = self.bits(ops);
+        let w = self.words;
+        for r in 0..2 * self.n {
+            let row = self.row_mut(r);
+            let mut par = 0u32;
+            for i in 0..w {
+                par ^= ((row[i] & l[w + i]) ^ (row[w + i] & l[i])).count_ones();
+            }
+            if par & 1 == 1 {
+                for (x, y) in row.iter_mut().zip(&l) {
+                    *x ^= y;
+                }
+            }
+        }
+    }
+
+    /// `v -> C v C^dag` on one Pauli's bits, signs dropped, for the Clifford
+    /// fixing `axes` (see [`CorrectionFrame::push_clifford`]). On one qubit, an S
+    /// about the axis `A`: `v` becomes `v A` if it anticommutes with `A`. On two,
+    /// `exp(i pi/4 (I - A)(I - B))`, a CX for `A = Z` on its control and `B = X`
+    /// on its target: `v` picks up `B` if it anticommutes with `A`, and `A` if it
+    /// anticommutes with `B`. Each is its own inverse modulo Paulis, so this is
+    /// also `C^dag v C`.
+    fn clifford_bits(words: usize, axes: &[Operator], v: &mut [u64]) {
+        let one = |o: &Operator| {
+            let mut a = vec![0u64; 2 * words];
+            let (i, b) = (o.qubit as usize / 64, 1u64 << (o.qubit % 64));
+            if o.basis != 'Z' {
+                a[i] |= b;
+            }
+            if o.basis != 'X' {
+                a[words + i] |= b;
+            }
+            a
+        };
+        let anti = |v: &[u64], a: &[u64]| {
+            (0..words).map(|i| ((v[i] & a[words + i]) ^ (v[words + i] & a[i])).count_ones()).sum::<u32>()
+                & 1
+                == 1
+        };
+        let xor = |v: &mut [u64], a: &[u64]| v.iter_mut().zip(a).for_each(|(x, y)| *x ^= y);
+        match axes {
+            [o] => {
+                let a = one(o);
+                if anti(v, &a) {
+                    xor(v, &a);
+                }
+            }
+            [o, p] => {
+                let (a, b) = (one(o), one(p));
+                let (va, vb) = (anti(v, &a), anti(v, &b));
+                if va {
+                    xor(v, &b);
+                }
+                if vb {
+                    xor(v, &a);
+                }
+            }
+            _ => unreachable!("a Clifford acts on one or two qubits"),
+        }
+    }
+
+    /// `W <- C W C^dag`: the images become `G(W^dag G(g) W)` with `G` the
+    /// conjugation by `C`.
+    fn push_clifford(&mut self, axes: &[Operator]) {
+        let (w, n) = (2 * self.words, self.n);
+        let old = self.rows.clone();
+        let mut g = vec![0u64; w];
+        for r in 0..2 * n {
+            g.iter_mut().for_each(|x| *x = 0);
+            let (z, q) = (r >= n, (r % n) as u16);
+            g[(z as usize) * self.words + q as usize / 64] |= 1 << (q % 64);
+            Self::clifford_bits(self.words, axes, &mut g);
+            // W^dag G(g) W, from the old images
+            let mut acc = vec![0u64; w];
+            for gz in [false, true] {
+                for i in 0..self.words {
+                    let mut m = g[(gz as usize) * self.words + i];
+                    while m != 0 {
+                        let b = m.trailing_zeros() as usize;
+                        m &= m - 1;
+                        let src = (gz as usize) * n + i * 64 + b;
+                        for (a, x) in acc.iter_mut().zip(&old[src * w..(src + 1) * w]) {
+                            *a ^= x;
+                        }
+                    }
+                }
+            }
+            Self::clifford_bits(self.words, axes, &mut acc);
+            self.rows[r * w..(r + 1) * w].copy_from_slice(&acc);
+        }
+    }
+
+    /// `W^dag Q W` with the sign dropped, sorted by qubit.
+    fn conjugate(&self, ops: &[Operator]) -> Vec<Operator> {
+        let w = 2 * self.words;
+        let mut acc = vec![0u64; w];
+        let mut add = |r: usize| {
+            for (a, b) in acc.iter_mut().zip(&self.rows[r * w..(r + 1) * w]) {
+                *a ^= b;
+            }
+        };
+        for o in ops {
+            let q = o.qubit as usize;
+            if o.basis != 'Z' {
+                add(q);
+            }
+            if o.basis != 'X' {
+                add(self.n + q);
+            }
+        }
+        self.decode(&acc)
+    }
+
+    /// A Pauli's bits as operators sorted by qubit.
+    fn decode(&self, acc: &[u64]) -> Vec<Operator> {
+        let mut out = Vec::new();
+        for i in 0..self.words {
+            let mut m = acc[i] | acc[self.words + i];
+            while m != 0 {
+                let b = m.trailing_zeros();
+                m &= m - 1;
+                let (x, z) = ((acc[i] >> b) & 1, (acc[self.words + i] >> b) & 1);
+                let basis = match (x, z) {
+                    (1, 1) => 'Y',
+                    (1, 0) => 'X',
+                    _ => 'Z',
+                };
+                out.push(Operator { qubit: (i * 64 + b as usize) as u16, basis });
+            }
+        }
+        out
+    }
 }
 
 /// Label of `ops` on `q`, or 'I'.
@@ -196,6 +405,9 @@ impl CorrectionFrame {
             on_qubit: vec![Vec::new(); n_qubits],
             next_seq: 0,
             open: 0,
+            tab: Tableau::new(n_qubits),
+            ver: vec![0; n_qubits],
+            cx_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -226,7 +438,14 @@ impl CorrectionFrame {
     fn remove(&mut self, slot: usize) {
         let c = self.slots[slot].take().expect("live correction slot");
         for o in &c.ops {
-            self.on_qubit[o.qubit as usize].retain(|&s| s != slot);
+            self.ver[o.qubit as usize] += 1;
+            let list = &mut self.on_qubit[o.qubit as usize];
+            // Usually the newest there, so this is cheap however long the list.
+            if list.last() == Some(&slot) {
+                list.pop();
+            } else {
+                list.retain(|&s| s != slot);
+            }
         }
         self.free.push(slot);
         self.open -= 1;
@@ -237,10 +456,19 @@ impl CorrectionFrame {
     /// the same Pauli, which is the newest factor of `W`, so the two are adjacent.
     pub(crate) fn add_failure(&mut self, ops: &[Operator]) -> Added {
         let p = sorted(ops);
+        // The list below may recombine factors, but always to the same W modulo
+        // Paulis, which is W S_P.
+        self.tab.apply_s(&p);
         if p.len() == 1 {
             return self.add_single(p[0].qubit, p[0].basis);
         }
-        if let Some(&newest) = self.on(&p).last() {
+        // Each qubit's list is oldest first, so the newest on P's qubits is the
+        // newest of their last entries.
+        let newest =
+            p.iter().filter_map(|o| self.on_qubit[o.qubit as usize].last().copied()).max_by_key(
+                |&s| self.get(s).seq,
+            );
+        if let Some(newest) = newest {
             if self.get(newest).ops == p {
                 let c = self.slots[newest].as_mut().unwrap();
                 c.power = (c.power + 1) % 4;
@@ -271,6 +499,7 @@ impl CorrectionFrame {
         };
         for o in &self.get(slot).ops.clone() {
             self.on_qubit[o.qubit as usize].push(slot);
+            self.ver[o.qubit as usize] += 1;
         }
         self.open += 1;
     }
@@ -283,11 +512,9 @@ impl CorrectionFrame {
     /// one S, or two. Without this, a qubit's corrections would pile up and each
     /// later cost a gate.
     fn add_single(&mut self, qubit: u16, axis: char) -> Added {
-        let on = &self.on_qubit[qubit as usize];
         let mut suffix: Vec<usize> = Vec::new();
-        let mut by_seq = on.clone();
-        by_seq.sort_by_key(|&s| self.get(s).seq);
-        for &s in by_seq.iter().rev() {
+        // The qubit's list is oldest first.
+        for &s in self.on_qubit[qubit as usize].iter().rev() {
             if self.get(s).ops.len() != 1 {
                 break;
             }
@@ -316,29 +543,69 @@ impl CorrectionFrame {
     /// The corrections that must be emitted, in order, before `slot` can be:
     /// every newer one on its qubits that does not commute with it, each
     /// preceded by its own, and then `slot` itself.
+    ///
+    /// Only the first [`EMISSION_PREFIX`] are returned. Any prefix is a valid
+    /// order, since each correction's prerequisites come before it, and a cycle
+    /// places far fewer: each emission holds its qubits, which the next in the
+    /// order shares. Corrections can pile up into chains thousands long, and
+    /// computing all of them every cycle was most of the scheduling time.
     pub(crate) fn emission_order(&self, slot: usize) -> Vec<usize> {
         let mut out = Vec::new();
-        self.push_emission(slot, &mut out);
+        let mut seen = vec![false; self.slots.len()];
+        self.push_emission(slot, &mut out, &mut seen);
         out
     }
 
-    fn push_emission(&self, slot: usize, out: &mut Vec<usize>) {
-        if out.contains(&slot) {
+    /// Emits the newer corrections `slot` does not commute with first, newest
+    /// first, then `slot`. Newer only, so the recursion cannot come back to a
+    /// slot still being processed, and `seen` keeps each to one visit.
+    fn push_emission(&self, slot: usize, out: &mut Vec<usize>, seen: &mut [bool]) {
+        if seen[slot] || out.len() >= EMISSION_PREFIX {
             return;
         }
+        seen[slot] = true;
         let c = self.get(slot);
-        // Newest first: the newest factor is the first in time.
-        for &s in self.on(&c.ops).iter().rev() {
-            let d = self.get(s);
-            if d.seq > c.seq && !commutes(&d.ops, &c.ops) {
-                self.push_emission(s, out);
+        // The newer corrections on its qubits it does not commute with. Each
+        // qubit's list is oldest first, so only its tail is read.
+        let mut newer: Vec<usize> = Vec::new();
+        for o in &c.ops {
+            for &s in self.on_qubit[o.qubit as usize].iter().rev() {
+                let d = self.get(s);
+                if d.seq <= c.seq {
+                    break;
+                }
+                if !seen[s] && !commutes(&d.ops, &c.ops) {
+                    newer.push(s);
+                }
             }
         }
-        out.push(slot);
+        // Newest first: the newest factor is the first in time.
+        newer.sort_by_key(|&s| std::cmp::Reverse(self.get(s).seq));
+        newer.dedup();
+        for s in newer {
+            self.push_emission(s, out, seen);
+        }
+        // A prerequisite may have been cut off by the prefix; then so is this.
+        if out.len() < EMISSION_PREFIX {
+            out.push(slot);
+        }
     }
 
     fn blocked(&self, first: usize) -> Pass {
-        Pass::Blocked(self.emission_order(first))
+        Pass::Blocked(first)
+    }
+
+    /// How to take the owed correction in `slot` out of `W`: the corrections to
+    /// emit, in order, each with the operators to emit it about. Every newer one
+    /// it does not commute with goes first, each about its own operators (see
+    /// [`CorrectionFrame::emission_order`]), so no emitted gate is wider than a
+    /// correction already owed.
+    ///
+    /// A single gate about `E' = R^dag E R`, `R` the newer corrections, would
+    /// remove `E` too, but computing `E'` walks most of the frame when many are
+    /// owed, and at intermediate weights it is usually past the limit anyway.
+    pub(crate) fn emission_plan(&self, slot: usize) -> Vec<(usize, Vec<Operator>)> {
+        self.emission_order(slot).into_iter().map(|s| (s, self.get(s).ops.clone())).collect()
     }
 
     /// A T gate or measurement about `ops`: the operators to run it about, or
@@ -348,6 +615,61 @@ impl CorrectionFrame {
     /// A correction that would take it past `max_weight` (0: no limit) is
     /// emitted instead.
     pub(crate) fn pass_rotation(&self, ops: &[Operator], max_weight: usize) -> Pass {
+        let q = self.tab.conjugate(ops);
+        debug_assert_eq!(q, self.conjugate_by_list(ops));
+        if max_weight == 0 || q.len() <= max_weight {
+            return Pass::Run(q);
+        }
+        // Only the operator it runs about counts against the limit. Emitting a
+        // correction E changes that operator only if E anticommutes with it, to
+        // E Q'. So emit the one that shrinks it most.
+        let mut best: Option<(usize, u64, usize)> = None; // (weight after, seq, slot)
+        for (k, o) in q.iter().enumerate() {
+            for &s in &self.on_qubit[o.qubit as usize] {
+                let e = &self.get(s).ops;
+                // Count each correction once, on its first qubit within Q'.
+                if q[..k].iter().any(|x| e.binary_search_by_key(&x.qubit, |y| y.qubit).is_ok()) {
+                    continue;
+                }
+                if commutes(e, &q) {
+                    continue;
+                }
+                let w = mul(e, &q).len();
+                let key = (w, u64::MAX - self.get(s).seq, s);
+                if best.is_none_or(|b| key < b) {
+                    best = Some(key);
+                }
+            }
+        }
+        let (_, _, s) = best.expect("a correction widened it, so one anticommutes with it");
+        self.blocked(s)
+    }
+
+    /// Adds the corrections newer than `s` on qubits `r` gained over `q`.
+    fn extend_candidates(
+        &self, q: &[Operator], r: &[Operator], s: usize, cand: &mut Vec<usize>, i: usize,
+    ) {
+        let seq = self.get(s).seq;
+        let mut grew = false;
+        for o in r {
+            if q.binary_search_by_key(&o.qubit, |x| x.qubit).is_err() {
+                for &t in &self.on_qubit[o.qubit as usize] {
+                    if self.get(t).seq > seq && !cand[i..].contains(&t) {
+                        cand.push(t);
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if grew {
+            cand[i..].sort_by_key(|&t| self.get(t).seq);
+        }
+    }
+
+    /// `W^dag Q W` from the list of owed corrections, applied oldest first, each
+    /// only if it overlaps the product as it stands by then. Slow: the tableau
+    /// gives the same, and this checks it.
+    fn conjugate_by_list(&self, ops: &[Operator]) -> Vec<Operator> {
         let mut q = sorted(ops);
         let mut cand = self.on(&q);
         let mut i = 0;
@@ -359,46 +681,97 @@ impl CorrectionFrame {
                 continue;
             }
             let r = mul(p, &q);
-            if max_weight > 0 && r.len() > max_weight {
-                return self.blocked(s);
-            }
-            let seq = self.get(s).seq;
-            let mut grew = false;
-            for o in &r {
-                if q.binary_search_by_key(&o.qubit, |x| x.qubit).is_err() {
-                    for &t in &self.on_qubit[o.qubit as usize] {
-                        if self.get(t).seq > seq && !cand[i..].contains(&t) {
-                            cand.push(t);
-                            grew = true;
-                        }
-                    }
-                }
-            }
-            if grew {
-                cand[i..].sort_by_key(|&t| self.get(t).seq);
-            }
+            self.extend_candidates(&q, &r, s, &mut cand, i);
             q = r;
         }
-        Pass::Run(q)
+        q
     }
 
-    /// A Clifford whose operators are `ops`, one per qubit, each naming the
-    /// axis the Clifford fixes on that qubit: Z for S, X for SX, and for a CX
-    /// Z on its control and X on its target. `S_P` commutes with it exactly
-    /// when, on each of its qubits, `P` is the identity or that axis. Returns
-    /// the corrections to emit first, or none.
-    pub(crate) fn pass_clifford(&self, ops: &[Operator]) -> Option<Vec<usize>> {
-        let ops = sorted(ops);
-        self.on(&ops)
-            .into_iter()
-            .find(|&s| {
-                let p = &self.get(s).ops;
-                ops.iter().any(|o| {
-                    let l = label(p, o.qubit);
-                    l != 'I' && l != o.basis
-                })
-            })
-            .map(|s| self.emission_order(s))
+    /// A Clifford `C` runs as it is, its operators `axes` naming the axis it
+    /// fixes on each qubit: Z for S, X for SX, and for a CX Z on its control and
+    /// X on its target. It is pushed through the frame instead of waiting for
+    /// corrections: `W <- C W C^dag`, every owed `S_P` becoming `S_{C P C^dag}`.
+    /// A CX can move a correction onto its other qubit, or off one. Returns how
+    /// many owed corrections it changed.
+    pub(crate) fn push_clifford(&mut self, axes: &[Operator]) -> usize {
+        let axes = sorted(axes);
+        let mut on: Vec<usize> = Vec::new();
+        for o in &axes {
+            on.extend(self.on_qubit[o.qubit as usize].iter().copied());
+        }
+        if on.is_empty() {
+            return 0;
+        }
+        on.sort_unstable();
+        on.dedup();
+        self.tab.push_clifford(&axes);
+        let words = self.tab.words;
+        let mut changed = 0;
+        for s in on {
+            let old = self.get(s).ops.clone();
+            let mut v = self.tab_bits(&old);
+            Tableau::clifford_bits(words, &axes, &mut v);
+            let new = self.tab.decode(&v);
+            if new == old {
+                continue;
+            }
+            changed += 1;
+            for o in old.iter().chain(&new) {
+                self.ver[o.qubit as usize] += 1;
+            }
+            // Qubits it left or gained, keeping each qubit's list oldest first.
+            let seq = self.get(s).seq;
+            for o in &old {
+                if new.binary_search_by_key(&o.qubit, |x| x.qubit).is_err() {
+                    self.on_qubit[o.qubit as usize].retain(|&t| t != s);
+                }
+            }
+            for o in &new {
+                if old.binary_search_by_key(&o.qubit, |x| x.qubit).is_err() {
+                    let list = &self.on_qubit[o.qubit as usize];
+                    let at = list.partition_point(|&t| self.get(t).seq < seq);
+                    self.on_qubit[o.qubit as usize].insert(at, s);
+                }
+            }
+            self.slots[s].as_mut().unwrap().ops = new;
+        }
+        changed
+    }
+
+    /// A CX pushes through the owed corrections it leaves on the same qubits,
+    /// but one it would spread onto its other qubit must be emitted first, so
+    /// that corrections never grow through Cliffords. Returns the oldest such
+    /// correction, or none.
+    pub(crate) fn cx_blockers(&mut self, axes: &[Operator]) -> Option<usize> {
+        let axes = sorted(axes);
+        let (a, b) = (&axes[0], &axes[1]);
+        let key = (a.qubit, a.basis, b.qubit, b.basis);
+        let vers = (self.ver[a.qubit as usize], self.ver[b.qubit as usize]);
+        if let Some(&(va, vb, hit)) = self.cx_cache.get(&key) {
+            if (va, vb) == vers {
+                return hit;
+            }
+        }
+        // It picks up b's qubit if it anticommutes with a there, and a's if it
+        // anticommutes with b: it spreads exactly when it is on one of the two
+        // qubits only, and anticommutes with that one's axis.
+        let spreads = |s: usize| {
+            let p = &self.get(s).ops;
+            let (la, lb) = (label(p, a.qubit), label(p, b.qubit));
+            (lb == 'I' && la != 'I' && la != a.basis) || (la == 'I' && lb != 'I' && lb != b.basis)
+        };
+        // Each qubit's list is oldest first: the first that spreads on each,
+        // then the oldest of those.
+        let hit = axes
+            .iter()
+            .filter_map(|o| self.on_qubit[o.qubit as usize].iter().copied().find(|&s| spreads(s)))
+            .min_by_key(|&s| self.get(s).seq);
+        self.cx_cache.insert(key, (vers.0, vers.1, hit));
+        hit
+    }
+
+    fn tab_bits(&self, ops: &[Operator]) -> Vec<u64> {
+        self.tab.bits(ops)
     }
 
     /// An S or SX on one qubit about `axis` meets owed corrections there. If the
@@ -418,10 +791,110 @@ impl CorrectionFrame {
         Some((s, (c.power + 1) % 4))
     }
 
-    /// Takes a correction out of the frame once its gate has been placed.
+    /// Takes a correction out of the frame once its gate has been placed about
+    /// its own operators: after a merge, or when every newer one commutes with it.
     pub(crate) fn emitted(&mut self, slot: usize) {
+        let ops = self.get(slot).ops.clone();
+        self.emitted_as(slot, &ops);
+    }
+
+    /// Takes the correction in `slot` out of the frame once an S about `ops`,
+    /// from [`CorrectionFrame::emission_plan`], has been placed: `W <- W S^dag`.
+    pub(crate) fn emitted_as(&mut self, slot: usize, ops: &[Operator]) {
+        self.tab.apply_s(ops);
         self.remove(slot);
     }
+}
+
+/// One operation of a circuit, for [`predicted_depth_with_failures`]. Cliffords
+/// carry the axes they fix: Z for S, X for SX, Z on a CX's control and X on its
+/// target, as in the circuit files.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Kind {
+    T,
+    M,
+    S,
+    SX,
+    CX,
+}
+
+/// Logical cycles each operation holds its qubits, as the scheduler charges them.
+fn cost(kind: Kind) -> usize {
+    match kind {
+        Kind::T | Kind::M => 1,
+        Kind::CX => 2,
+        Kind::S | Kind::SX => 3,
+    }
+}
+
+/// Predicted depth of a circuit run with T-injection failures: each product is
+/// placed at once after the last one on each of its qubits, as in the layering
+/// downstream, but T gates fail with probability `p_fail` (seeded), and every operation goes
+/// through the correction frame exactly as the scheduler does it: Cliffords
+/// push through it, absorbed corrections widen products up to `max_weight`
+/// (0: none), and corrections that would widen one past that are emitted first,
+/// holding their qubits three cycles. Routing and magic
+/// supply are left out, so this is a depth, not a schedule.
+pub(crate) fn predicted_depth_with_failures<'a>(
+    ops: impl Iterator<Item = (Kind, &'a [Operator])>, n_qubits: usize, max_weight: usize,
+    p_fail: f64, seed: u64,
+) -> usize {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut frame = CorrectionFrame::new(n_qubits);
+    let mut depth = vec![0usize; n_qubits];
+    let place = |depth: &mut Vec<usize>, ops: &[Operator], cycles: usize| {
+        let start = ops.iter().map(|o| depth[o.qubit as usize]).max().unwrap_or(0);
+        for o in ops {
+            depth[o.qubit as usize] = start + cycles;
+        }
+    };
+    let emit = |frame: &mut CorrectionFrame, depth: &mut Vec<usize>, slot: usize| {
+        for (s, ops) in frame.emission_plan(slot) {
+            place(depth, &ops, 3);
+            frame.emitted_as(s, &ops);
+        }
+    };
+    for (kind, ops) in ops {
+        match kind {
+            Kind::T | Kind::M => {
+                let orig = sorted(ops);
+                let limit = if max_weight == 0 { 0 } else { max_weight.max(orig.len()) };
+                loop {
+                    match frame.pass_rotation(&orig, limit) {
+                        Pass::Run(q) => {
+                            place(&mut depth, &q, cost(kind));
+                            if kind == Kind::T && p_fail > 0.0 && rng.gen_bool(p_fail) {
+                                frame.add_failure(&q);
+                            }
+                            break;
+                        }
+                        Pass::Blocked(slot) => emit(&mut frame, &mut depth, slot),
+                    }
+                }
+            }
+            Kind::S | Kind::SX | Kind::CX => {
+                if kind != Kind::CX && !frame.clear_on(ops) {
+                    if let Some((slot, net)) = frame.merge_candidate(ops[0].qubit, ops[0].basis) {
+                        frame.emitted(slot);
+                        if net % 2 == 1 {
+                            place(&mut depth, ops, cost(kind));
+                        }
+                        continue;
+                    }
+                }
+                if kind == Kind::CX {
+                    while let Some(slot) = frame.cx_blockers(ops) {
+                        emit(&mut frame, &mut depth, slot);
+                    }
+                }
+                frame.push_clifford(ops);
+                place(&mut depth, ops, cost(kind));
+            }
+        }
+    }
+    depth.into_iter().max().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -470,7 +943,7 @@ mod tests {
         let mut f = CorrectionFrame::new(3);
         f.add_failure(&ops("ZZ_"));
         match f.pass_rotation(&ops("X__"), 1) {
-            Pass::Blocked(v) => assert_eq!(f.get(v[0]).ops, ops("ZZ_")),
+            Pass::Blocked(s) => assert_eq!(f.get(s).ops, ops("ZZ_")),
             p => panic!("expected a block, got {:?}", p),
         }
     }
@@ -492,15 +965,10 @@ mod tests {
         assert_eq!(f.add_failure(&ops("X")), Added::New);
         assert_eq!(f.add_failure(&ops("Y")), Added::New);
         assert_eq!(f.open(), 2);
-        // S_X then S_Y acts as a three-cycle on the labels. It is kept as the
-        // equivalent S_Z then S_X, avoiding Y. An S (fixes Z) needs the newer,
-        // S_X, emitted. The older S_Z commutes with it and then merges into it.
-        let order = f.pass_clifford(&ops("Z")).unwrap();
-        assert_eq!(order.len(), 1);
-        assert_eq!(f.get(order[0]).ops, ops("X"));
-        f.emitted(order[0]);
-        assert_eq!(f.pass_clifford(&ops("Z")), None);
-        assert!(f.merge_candidate(0, 'Z').is_some());
+        // S_X then S_Y acts as a three-cycle on the labels: Z goes to Y under S_X
+        // and stays there under S_Y; X stays under S_X and goes to Z under S_Y.
+        assert_eq!(f.pass_rotation(&ops("Z"), 0), Pass::Run(ops("Y")));
+        assert_eq!(f.pass_rotation(&ops("X"), 0), Pass::Run(ops("Z")));
     }
 
     #[test]
@@ -512,13 +980,23 @@ mod tests {
     }
 
     #[test]
-    fn a_cx_passes_corrections_it_fixes() {
-        let mut f = CorrectionFrame::new(2);
-        f.add_failure(&ops("Z_"));
-        f.add_failure(&ops("_X"));
-        assert_eq!(f.pass_clifford(&ops("ZX")), None);
-        f.add_failure(&ops("XX"));
-        assert!(f.pass_clifford(&ops("ZX")).is_some());
+    fn a_cx_pushes_corrections_through_it() {
+        let mut f = CorrectionFrame::new(3);
+        f.add_failure(&ops("Z__"));
+        f.add_failure(&ops("_X_"));
+        // Z on the control and X on the target commute with the CX.
+        assert_eq!(f.push_clifford(&ops("ZX_")), 0);
+        f.add_failure(&ops("X_Z"));
+        // X on the control picks up X on the target: X_Z becomes XXZ.
+        assert_eq!(f.push_clifford(&ops("ZX_")), 1);
+        assert!(f.slots.iter().flatten().any(|c| c.ops == ops("XXZ")));
+        // Qubit 1 now carries it, oldest first in its list.
+        let on1: Vec<Vec<Operator>> =
+            f.on_qubit[1].iter().map(|&s| f.get(s).ops.clone()).collect();
+        assert_eq!(on1, vec![ops("_X_"), ops("XXZ")]);
+        // And conjugation follows: Z on the target becomes Y under _X_, then
+        // XXZ times _Y_ is XZZ.
+        assert_eq!(f.pass_rotation(&ops("_Z_"), 0), Pass::Run(ops("XZZ")));
     }
 
     #[test]
@@ -655,7 +1133,7 @@ mod tests {
     /// changes an axis up to sign or whether two operators commute up to sign,
     /// which is all the scheduler's cost model uses.
     ///   1. every executed axis is +/- W^dag P W;
-    ///   2. a Clifford is let through only if it commutes with W;
+    ///   2. a Clifford pushed through turns W into C W C^dag;
     ///   3. a correction is emitted only when every newer one commutes with it,
     ///      so it can be moved to the front of W.
     #[test]
@@ -673,24 +1151,15 @@ mod tests {
             let mut hist: M = (0..dim)
                 .map(|i| (0..dim).map(|j| if i == j { (1.0, 0.0) } else { (0.0, 0.0) }).collect())
                 .collect();
-            let emit = |f: &mut CorrectionFrame, hist: &mut M, order: Vec<usize>| {
-                for s in order {
-                    *hist = mm(hist, &dag(&rot(n, &f.get(s).ops, quarter)));
-                    // 3. every newer correction commutes with this one.
-                    let c = f.get(s).clone();
-                    let cm = rot(n, &c.ops, quarter);
-                    for d in f.slots.iter().flatten() {
-                        if d.seq > c.seq {
-                            assert!(
-                                commute_up_to_phase(&cm, &rot(n, &d.ops, quarter)),
-                                "seed {}: emitted {:?} past a newer {:?}",
-                                seed,
-                                c.ops,
-                                d.ops
-                            );
-                        }
-                    }
-                    f.emitted(s);
+            let emit = |f: &mut CorrectionFrame, hist: &mut M, slot: usize| {
+                let cap = if limit == 0 { usize::MAX } else { limit.max(f.get(slot).ops.len()) };
+                for (s, e) in f.emission_plan(slot) {
+                    // 3. no emitted gate is wider than the limit, and taking it
+                    // off leaves the remaining corrections equal to the history.
+                    assert!(e.len() <= cap, "seed {}: emitted {:?} past the limit", seed, e);
+                    *hist = mm(hist, &dag(&rot(n, &e, quarter)));
+                    f.emitted_as(s, &e);
+                    assert!(pauli_ratio(&owed(f, n), hist, n), "seed {}: emitting {:?} broke W", seed, e);
                 }
             };
             for _ in 0..16 {
@@ -713,27 +1182,23 @@ mod tests {
                         let xt: Vec<Operator> = g.iter().filter(|o| o.basis == 'X').cloned().collect();
                         mm(&mm(&rot(n, &g, quarter), &rot(n, &zc, -quarter)), &rot(n, &xt, -quarter))
                     };
-                    while let Some(order) = f.pass_clifford(&g) {
-                        emit(&mut f, &mut hist, order);
-                    }
                     if g.len() == 1 {
                         if let Some((slot, _)) = f.merge_candidate(g[0].qubit, g[0].basis) {
+                            // The S runs merged with the correction: W loses it.
                             hist = mm(&hist, &dag(&rot(n, &f.get(slot).ops, quarter)));
                             f.emitted(slot);
                             continue;
                         }
                     }
-                    // 2. it now commutes with every owed correction.
-                    assert!(f.pass_clifford(&g).is_none());
-                    let w = hist.clone();
-                    assert!(
-                        commute_up_to_phase(&cliff, &w)
-                            || same_up_to_phase(&mm(&mm(&cliff, &w), &dag(&cliff)), &w)
-                            || pauli_ratio(&mm(&mm(&cliff, &w), &dag(&cliff)), &w, n),
-                        "seed {}: Clifford {:?} let through a correction it moves",
-                        seed,
-                        g
-                    );
+                    // A CX first sheds what it would spread, then pushes through.
+                    if g.len() == 2 {
+                        while let Some(slot) = f.cx_blockers(&g) {
+                            emit(&mut f, &mut hist, slot);
+                        }
+                    }
+                    // 2. pushed through: W becomes C W C^dag.
+                    f.push_clifford(&g);
+                    hist = mm(&mm(&cliff, &hist), &dag(&cliff));
                     continue;
                 }
                 let p = loop {
@@ -745,7 +1210,7 @@ mod tests {
                 let q = loop {
                     match f.pass_rotation(&p, limit) {
                         Pass::Run(q) => break q,
-                        Pass::Blocked(order) => emit(&mut f, &mut hist, order),
+                        Pass::Blocked(slot) => emit(&mut f, &mut hist, slot),
                     }
                 };
                 // 1. the executed axis is +/- W^dag P W, within the weight limit,

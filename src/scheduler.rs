@@ -30,7 +30,7 @@ enum Rotation {
     /// Run, about its operators conjugated by the owed corrections.
     Run,
     /// Emit these corrections first: absorbing them would pass the weight limit.
-    Emit(Vec<usize>),
+    Emit(usize),
     /// It widened onto a qubit something else holds this lcycle.
     Wait,
 }
@@ -62,8 +62,11 @@ pub(crate) struct CorrectionStats {
     /// Measurements scheduled about operators conjugated through owed
     /// corrections, as T gates are.
     pub(crate) m_conjugated: usize,
-    /// Of `emitted`, those placed ahead of a CX that does not commute with them.
-    pub(crate) before_multi: usize,
+    /// Owed corrections a Clifford changed as it was pushed through the frame.
+    pub(crate) pushed: usize,
+    /// Corrections emitted before a CX that would have spread them onto its other
+    /// qubit.
+    pub(crate) before_cx: usize,
 }
 
 /// Per-lcycle and cumulative qubit utilisation counters.
@@ -273,6 +276,9 @@ pub(crate) struct Scheduler {
     /// Footprint of this lcycle's other products scheduled without a tree
     /// (precomputed, carried forward, S/SX, M); only filled while tracing.
     trace_fp: HashMap<i32, Vec<u16>>,
+    /// For each injected correction, the creation number of the owed correction
+    /// it removed, so a trace says which one; only filled while tracing.
+    trace_corr_seq: HashMap<i32, u64>,
     /// Patches of S/SX products scheduled without a tree, by product id, so
     /// that `advance_clifford_state` can hold them for the gate's later lcycles.
     s_sx_nodes: HashMap<i32, Vec<u16>>,
@@ -389,6 +395,7 @@ impl Scheduler {
             trace: None,
             trace_untreed: HashMap::new(),
             trace_fp: HashMap::new(),
+            trace_corr_seq: HashMap::new(),
             cycle_times: None,
             s_sx_nodes: HashMap::new(),
             clifford_paths: IndexMap::new(),
@@ -783,7 +790,7 @@ impl Scheduler {
         // written wider than it. It may always run as wide as written.
         let limit = if self.max_weight == 0 { 0 } else { self.max_weight.max(orig.len()) };
         let ops = match self.frame.pass_rotation(&orig, limit) {
-            Pass::Blocked(order) => return Rotation::Emit(order),
+            Pass::Blocked(slot) => return Rotation::Emit(slot),
             Pass::Run(ops) => ops,
         };
         // Qubits it widened onto must be free this lcycle.
@@ -1059,16 +1066,26 @@ impl Scheduler {
                 self.dynamic_m.insert(pp_id);
                 continue;
             }
-            if let Some(order) = self.clifford_blockers(pp_id) {
-                self.corr.before_multi += self.emit_corrections(order, plotting);
-                let pp = self.input.circuit.product(pp_id);
-                Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
-                continue;
+            // A CX waits for any owed correction it would spread onto its other
+            // qubit to be emitted; the rest it pushes through once placed.
+            let ops = &self.input.circuit.product(pp_id).operators;
+            if !self.frame.clear_on(ops) {
+                if let Some(slot) = self.frame.cx_blockers(&ops.clone()) {
+                    self.corr.before_cx += self.emit_corrections(slot, plotting);
+                    let pp = self.input.circuit.product(pp_id);
+                    Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
+                    continue;
+                }
             }
             let all_free = tree.iter_nodes().all(|nid| !self.used[nid as usize]);
             if all_free {
                 to_remove.push(pp_id);
-                debug_assert!(self.clifford_blockers(pp_id).is_none());
+                // A CX runs as it is and is pushed through the owed corrections.
+                let ops = &self.input.circuit.product(pp_id).operators;
+                if !self.frame.clear_on(ops) {
+                    let ops = ops.clone();
+                    self.corr.pushed += self.frame.push_clifford(&ops);
+                }
                 let node_ids: Vec<u16> = tree.iter_nodes().collect();
                 let (_tree_n_nodes, _tree_n_edges) = (tree.n_nodes, tree.n_edges);
                 let opt_tree: Option<Rc<TreeGraph>> =
@@ -1101,13 +1118,14 @@ impl Scheduler {
         }
     }
 
-    /// Emits the owed corrections in `order` as S gates, stopping at the first that
-    /// cannot be placed this lcycle (an emission later in the order may need it
-    /// done first). Returns how many were placed.
-    fn emit_corrections(&mut self, order: Vec<usize>, plotting: bool) -> usize {
+    /// Takes the owed correction in `slot` out of the frame by emitting S gates as
+    /// the frame's plan says: the newer ones it does not commute with, then it.
+    /// Stops at the first that cannot be placed this lcycle (a later one may need
+    /// it done first). Returns how many were placed.
+    fn emit_corrections(&mut self, slot: usize, plotting: bool) -> usize {
         let mut n = 0;
-        for slot in order {
-            if !self.try_emit_correction(slot, plotting) {
+        for (s, ops) in self.frame.emission_plan(slot) {
+            if !self.try_emit_correction(s, ops, plotting) {
                 break;
             }
             n += 1;
@@ -1120,8 +1138,7 @@ impl Scheduler {
     /// qubits, it is routed as a tree over P's patch edges. Either way it holds its
     /// patches for three lcycles, like every S. The correction leaves the frame
     /// only once placed.
-    fn try_emit_correction(&mut self, slot: usize, plotting: bool) -> bool {
-        let ops = self.frame.get(slot).ops.clone();
+    fn try_emit_correction(&mut self, slot: usize, ops: Vec<Operator>, plotting: bool) -> bool {
         if self.locked(&ops) {
             return false;
         }
@@ -1173,7 +1190,10 @@ impl Scheduler {
                     self.mark_nodes_used(&node_ids);
                 }
                 self.pp_paths.push((s_id, opt_graph.map(Rc::new)));
-                self.frame.emitted(slot);
+                if self.trace.is_some() {
+                    self.trace_corr_seq.insert(s_id, self.frame.get(slot).seq);
+                }
+                self.frame.emitted_as(slot, &ops);
                 for o in &ops {
                     self.qubit_locked_until[o.qubit as usize] = self.current_lcycle + 3;
                 }
@@ -1243,8 +1263,8 @@ impl Scheduler {
                 continue;
             }
             // An S or SX meets owed corrections on its qubit. A lone single-qubit
-            // one about the same axis shares its generator and merges. One it does
-            // not commute with must be emitted first. The rest commute and stay owed.
+            // one about the same axis shares its generator and merges. Otherwise
+            // it runs as it is and, once placed, is pushed through the frame.
             if gate_type.is_s() || gate_type.is_sx() {
                 let qubit = self.input.circuit.product(pp_id).operators[0].qubit;
                 let axis = if gate_type.is_s() { 'Z' } else { 'X' };
@@ -1252,16 +1272,6 @@ impl Scheduler {
                 if !self.frame.clear_on(&g) {
                     if let Some((slot, net)) = self.frame.merge_candidate(qubit, axis) {
                         if !self.try_merge_clifford_correction(pp_id, slot, net, plotting) {
-                            let pp = self.input.circuit.product(pp_id);
-                            Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
-                        }
-                        continue;
-                    }
-                    if let Some(order) = self.frame.pass_clifford(&g) {
-                        info_sched!("  Clifford {:?} {} waits for corrections", gate_type, pp_id);
-                        // Block the qubit only if a correction was placed. Otherwise leave
-                        // it free so T gates can still route through it (avoids deadlock).
-                        if self.emit_corrections(order, plotting) > 0 {
                             let pp = self.input.circuit.product(pp_id);
                             Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
                         }
@@ -1276,8 +1286,8 @@ impl Scheduler {
                 match self.conjugate_rotation(pp_id) {
                     Rotation::Run => {}
                     r => {
-                        if let Rotation::Emit(order) = r {
-                            self.corr.over_limit += self.emit_corrections(order, plotting);
+                        if let Rotation::Emit(slot) = r {
+                            self.corr.over_limit += self.emit_corrections(slot, plotting);
                         }
                         let pp = self.input.circuit.product(pp_id);
                         Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
@@ -1302,6 +1312,13 @@ impl Scheduler {
                 };
                 if let PathResult::PathFound(opt_graph) = result {
                     info_sched!("  Scheduled product {}", self.input.circuit.product(pp_id));
+                    if gate_type.is_s() || gate_type.is_sx() {
+                        let q = self.input.circuit.product(pp_id).operators[0].qubit;
+                        let g = [Operator { qubit: q, basis: if gate_type.is_s() { 'Z' } else { 'X' } }];
+                        if !self.frame.clear_on(&g) {
+                            self.corr.pushed += self.frame.push_clifford(&g);
+                        }
+                    }
                     if gate_type.is_t() && self.t_conjugated_bases.contains_key(&pp_id) {
                         self.corr.t_conjugated += 1;
                     }
@@ -1726,17 +1743,6 @@ impl Scheduler {
         Ok(())
     }
 
-    /// The owed corrections a CX must wait for, in emission order: those it does
-    /// not commute with. A multi-qubit measurement never gets here with any owed
-    /// on its qubits: it is conjugated instead.
-    fn clifford_blockers(&self, pp_id: i32) -> Option<Vec<usize>> {
-        let pp = self.input.circuit.product(pp_id);
-        if self.frame.clear_on(&pp.operators) {
-            return None;
-        }
-        self.frame.pass_clifford(&pp.operators)
-    }
-
     #[inline]
     fn trace_footprint(&mut self, pp_id: i32, nodes: &[u16]) {
         if self.trace.is_some() {
@@ -1777,7 +1783,8 @@ impl Scheduler {
             if *pp_id as usize >= n_circuit {
                 let ops: Vec<String> =
                     pp.operators.iter().map(|o| format!("{}:{}", o.qubit, o.basis)).collect();
-                writeln!(w, "c {} {}", pp_id, ops.join(","))?;
+                let seq = self.trace_corr_seq.get(pp_id).copied().unwrap_or(u64::MAX);
+                writeln!(w, "c {} {} {}", pp_id, ops.join(","), seq)?;
             }
         }
         self.trace_untreed.clear();
@@ -1805,7 +1812,7 @@ impl Scheduler {
         let c = &self.corr;
         println!(
             "Corrections: t-conjugated {} merged-free {} merged-gate {} classical {} \
-             emitted-x {} emitted-y {} emitted-z {} m-conjugated {} before-multi {} open-at-end {} \
+             emitted-x {} emitted-y {} emitted-z {} m-conjugated {} pushed {} before-cx {} open-at-end {} \
              emitted-multi {} over-limit {} widened {}",
             c.t_conjugated,
             c.merged_free,
@@ -1815,7 +1822,8 @@ impl Scheduler {
             c.emitted[1],
             c.emitted[2],
             c.m_conjugated,
-            c.before_multi,
+            c.pushed,
+            c.before_cx,
             self.frame.open(),
             c.emitted_multi,
             c.over_limit,
@@ -2410,17 +2418,17 @@ mod tests {
     #[test]
     fn mixed_axis_corrections_are_not_dropped_as_a_pauli() {
         // S_X then S_Y on one qubit is not a Pauli. The per-qubit model counted it
-        // as power 2 and dropped it. The frame keeps it as S_Z then S_X: the S
-        // waits for S_X to be emitted, then absorbs S_Z, its own axis.
+        // as power 2 and dropped it. Two corrections are owed, so the S does not
+        // merge: it runs at once and is pushed through, W = S_X S_Y becoming
+        // S_Y S_X. A later Z then runs about X: Z to X under S_Y, kept by S_X.
         let mut sched = build_scheduler(&["+Z___<S>"], 0);
         sched.frame.add_failure(&[op(0, 'X')]);
         sched.frame.add_failure(&[op(0, 'Y')]);
         sched.sched_circuit().expect("sched_circuit failed");
-        assert_eq!(sched.correction_gates_emitted, 1);
-        assert_eq!(sched.corr.merged_free, 1);
-        assert_eq!(sched.frame.open(), 0);
-        let c = sched.n_circuit_products as i32;
-        assert_eq!(sched.input.circuit.product(c).operators, vec![op(0, 'X')]);
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.corr.merged_free, 0);
+        assert_eq!(sched.frame.open(), 2);
+        assert_eq!(sched.frame.pass_rotation(&[op(0, 'Z')], 0), Pass::Run(vec![op(0, 'X')]));
     }
 
     #[test]
@@ -2441,21 +2449,19 @@ mod tests {
     }
 
     #[test]
-    fn s_correction_falls_back_to_materializing_when_axis_does_not_match() {
-        // A pending correction about X (e.g. left over from a failed T gate that targeted
-        // X) is a different generator from S's fixed Z axis and can't be folded in -
-        // it must still be materialized as its own standalone gate first.
-        let lines = &["+Z___<S>"];
-        let mut sched = build_scheduler(lines, 0);
+    fn an_s_runs_at_once_past_a_correction_about_another_axis() {
+        // A correction about X is a different generator from S's Z axis, so it
+        // does not merge. The S runs at once and is pushed through: S_X becomes
+        // S_Y, under which a later Z runs about X.
+        let mut sched = build_scheduler(&["+Z___<S>"], 0);
         sched.frame.add_failure(&[Operator { qubit: 0, basis: 'X' }]);
         sched.sched_circuit().expect("sched_circuit failed");
-        assert_eq!(sched.correction_gates_emitted, 1, "standalone correction gate injected");
-        assert_eq!(sched.frame.open(), 0);
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.corr.pushed, 1);
         assert!(sched.free_merged_products.is_empty());
-        assert!(sched.scheduled_products.contains(&0), "original S product scheduled");
-        assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
         let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
-        assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the S gate");
+        assert_eq!(tot_entries, 3, "3 lcycles for the S gate and nothing else");
+        assert_eq!(sched.frame.pass_rotation(&[op(0, 'Z')], 0), Pass::Run(vec![op(0, 'X')]));
     }
 
     /// Footprint per lcycle of product `pp_id` in a schedule trace.
@@ -2476,14 +2482,14 @@ mod tests {
     }
 
     #[test]
-    fn noncommuting_correction_is_applied_before_a_cx() {
-        // A correction about Y on the CX control, whose operator there is Z, does not
-        // commute with the CX. It must be emitted first and complete before the CX.
+    fn a_correction_a_cx_would_spread_is_applied_before_it() {
+        // A correction about Y on the CX control would become Y0 X1, spreading to
+        // the target. It is emitted first and completes before the CX.
         let mut sched = build_scheduler(&["+ZX__<CX>"], 0);
         sched.frame.add_failure(&[Operator { qubit: 0, basis: 'Y' }]);
         sched.sched_circuit().expect("sched_circuit failed");
         assert_eq!(sched.correction_gates_emitted, 1);
-        assert_eq!(sched.corr.before_multi, 1);
+        assert_eq!(sched.corr.before_cx, 1);
         let cycles = |id: i32| -> Vec<usize> {
             sched
                 .lcycle_scheduled
@@ -2496,6 +2502,20 @@ mod tests {
         let cx = cycles(0);
         assert_eq!(corr.len(), 3, "correction takes three lcycles");
         assert!(cx[0] > *corr.last().unwrap(), "CX {:?} after correction {:?}", cx, corr);
+    }
+
+    #[test]
+    fn a_cx_pushes_through_a_correction_it_does_not_spread() {
+        // S about X0 X1 under a CX from 0 to 1 becomes S about X0: it shrinks, so
+        // the CX runs at once and a later X on qubit 1 meets nothing.
+        let mut sched = build_scheduler(&["+ZX__<CX>"], 0);
+        sched.frame.add_failure(&[op(0, 'X'), op(1, 'X')]);
+        sched.sched_circuit().expect("sched_circuit failed");
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.corr.pushed, 1);
+        assert_eq!(sched.lcycle_scheduled[0].1, vec![0], "the CX starts at once");
+        assert_eq!(sched.frame.pass_rotation(&[op(1, 'Z')], 0), Pass::Run(vec![op(1, 'Z')]));
+        assert_eq!(sched.frame.pass_rotation(&[op(0, 'Z')], 0), Pass::Run(vec![op(0, 'Y')]));
     }
 
     #[test]
@@ -2542,22 +2562,26 @@ mod tests {
 
     #[test]
     fn y_axis_correction_uses_both_edges_of_the_data_patch() {
-        // A correction about Y (left by a failed T gate on Y) is an S about Y,
-        // which needs both the X and the Z edge, like any Y operator. It used to
-        // be placed on the X edge alone.
-        let mut sched = build_scheduler(&["+Z___<S>"], 0);
-        sched.frame.add_failure(&[Operator { qubit: 0, basis: 'Y' }]);
+        // An emitted correction with Y on a qubit needs both its X and its Z edge,
+        // like any Y operator. With a weight limit of 1, X on qubit 1 cannot absorb
+        // the owed Y0 Z1 (it would run about Y0 Y1), so S_{Y0 Z1} is emitted first.
+        let mut sched = build_scheduler(&["+_X__<T>"], 0);
+        sched.max_weight = 1;
+        sched.frame.add_failure(&[op(0, 'Y'), op(1, 'Z')]);
         let trace = NamedTempFile::new().unwrap();
         sched.enable_trace(&trace.path().to_string_lossy()).unwrap();
         sched.sched_circuit().expect("sched_circuit failed");
         sched.trace.as_mut().unwrap().flush().unwrap();
         assert_eq!(sched.correction_gates_emitted, 1);
-        let x = sched.input.topo.get_data_node_id(0, 'X');
-        let z = sched.input.topo.get_data_node_id(0, 'Z');
-        let fps = traced_footprints(&std::fs::read_to_string(trace.path()).unwrap(), 1);
+        assert_eq!(sched.corr.over_limit, 1);
+        let x0 = sched.input.topo.get_data_node_id(0, 'X');
+        let z0 = sched.input.topo.get_data_node_id(0, 'Z');
+        let z1 = sched.input.topo.get_data_node_id(1, 'Z');
+        let c = sched.n_circuit_products as i32;
+        let fps = traced_footprints(&std::fs::read_to_string(trace.path()).unwrap(), c);
         assert_eq!(fps.len(), 3, "the correction takes three lcycles");
         for fp in &fps {
-            assert!(fp.contains(&x) && fp.contains(&z), "both edges held: {:?}", fp);
+            assert!(fp.contains(&x0) && fp.contains(&z0) && fp.contains(&z1), "edges: {:?}", fp);
         }
     }
 
@@ -2579,19 +2603,17 @@ mod tests {
     }
 
     #[test]
-    fn sx_correction_falls_back_to_materializing_when_axis_does_not_match() {
-        // A pending correction about Z is a different generator from SX's fixed X axis
-        // and can't be folded in - it must still be materialized as its own gate first.
-        let lines = &["+X___<SX>"];
-        let mut sched = build_scheduler(lines, 0);
+    fn an_sx_runs_at_once_past_a_correction_about_another_axis() {
+        // A correction about Z is a different generator from SX's X axis. The SX
+        // runs at once and is pushed through: S_Z becomes S_Y, under which a later
+        // X runs about Z.
+        let mut sched = build_scheduler(&["+X___<SX>"], 0);
         sched.frame.add_failure(&[Operator { qubit: 0, basis: 'Z' }]);
         sched.sched_circuit().expect("sched_circuit failed");
-        assert_eq!(sched.correction_gates_emitted, 1, "standalone correction gate injected");
-        assert_eq!(sched.frame.open(), 0);
-        assert!(sched.free_merged_products.is_empty());
-        assert!(sched.scheduled_products.contains(&0), "original SX product scheduled");
-        assert!(sched.scheduled_products.contains(&1), "injected correction (id=1) scheduled");
+        assert_eq!(sched.correction_gates_emitted, 0);
+        assert_eq!(sched.corr.pushed, 1);
         let tot_entries: usize = sched.lcycle_scheduled.iter().map(|(_, ids)| ids.len()).sum();
-        assert_eq!(tot_entries, 6, "3 lcycles for the injected correction + 3 for the SX gate");
+        assert_eq!(tot_entries, 3, "3 lcycles for the SX gate and nothing else");
+        assert_eq!(sched.frame.pass_rotation(&[op(0, 'X')], 0), Pass::Run(vec![op(0, 'Z')]));
     }
 }

@@ -92,6 +92,23 @@ impl Circuit {
         Ok(())
     }
 
+    /// The weight limit the circuit was transpiled with (0: none), and where it
+    /// came from: `arg` if given, else the `# max-weight N` header, else N in a
+    /// `.transN` file name, else none.
+    pub(crate) fn resolve_max_weight(&self, arg: Option<usize>) -> (usize, &'static str) {
+        if let Some(w) = arg {
+            return (w, "--max-weight");
+        }
+        if let Some(w) = self.max_weight {
+            return (w, "circuit header");
+        }
+        let ext = std::path::Path::new(&self.circuit_fname).extension().and_then(|e| e.to_str());
+        match ext.and_then(|e| e.strip_prefix("trans")?.parse().ok()) {
+            Some(w) => (w, "file name"),
+            None => (0, "default"),
+        }
+    }
+
     pub(crate) fn gen_deps(&mut self) {
         let mut deps = Vec::new();
         let mut current_pps = vec![-1; self.n_qubits];
