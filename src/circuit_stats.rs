@@ -7,6 +7,8 @@ use clap::Parser;
 #[allow(dead_code)]
 mod circuit;
 #[allow(dead_code)]
+mod frame;
+#[allow(dead_code)]
 mod node;
 #[allow(dead_code)]
 mod pauliproduct;
@@ -21,6 +23,7 @@ mod treegraph;
 mod utils;
 
 use circuit::Circuit;
+use frame::{predicted_depth_with_failures, Kind};
 use topograph::TopoGraph;
 use utils::CommonArgs;
 
@@ -38,6 +41,16 @@ struct Args {
     /// magic-state qubits (default: PureMagic / all-magic routing).
     #[arg(short = 'b', long)]
     bus_routing: bool,
+
+    /// Also predict the depth with T-injection failures, replaying the scheduler's
+    /// correction frame over this many seeds (0: skip). Printed as the mean.
+    #[arg(long, default_value_t = 0)]
+    failure_seeds: u64,
+
+    /// The weight limit corrections may widen products to (0: none). Default: the
+    /// circuit's header, else N from a `.transN` file name, else none.
+    #[arg(long)]
+    max_weight: Option<usize>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -90,6 +103,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Combined min layers (lmin):    {}", est.lmin);
     println!("Volume estimate: {}", est.vmin);
     println!("  lmin × total_qubits = {} × {} = {}", est.lmin, n_qubits, est.vmin);
+
+    if args.failure_seeds > 0 {
+        let (w, source) = circuit.resolve_max_weight(args.max_weight);
+        let steps: Vec<(Kind, Vec<pauliproduct::Operator>)> = circuit
+            .pps
+            .iter()
+            .map(|pp| {
+                let g = pp.gate_type;
+                let q0 = pp.operators[0].qubit;
+                let one = |b| vec![pauliproduct::Operator { qubit: q0, basis: b }];
+                if g.is_t() {
+                    (Kind::T, pp.operators.clone())
+                } else if g.is_m() {
+                    (Kind::M, pp.operators.clone())
+                } else if g.is_s() {
+                    (Kind::S, one('Z'))
+                } else if g.is_sx() {
+                    (Kind::SX, one('X'))
+                } else {
+                    (Kind::CX, pp.operators.clone())
+                }
+            })
+            .collect();
+        let run = |p: f64, seed: u64| {
+            predicted_depth_with_failures(
+                steps.iter().map(|(k, o)| (*k, &o[..])),
+                n_data_qubits,
+                w,
+                p,
+                seed,
+            )
+        };
+        let base = run(0.0, 0);
+        let mean = (0..args.failure_seeds).map(|s| run(0.5, s)).sum::<usize>() as f64
+            / args.failure_seeds as f64;
+        println!("Max weight: {} (from {})", w, source);
+        println!("Predicted depth: {} without failures, {:.1} with failures", base, mean);
+    }
 
     Ok(())
 }
