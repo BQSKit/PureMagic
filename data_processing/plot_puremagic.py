@@ -1465,6 +1465,17 @@ def main():
         # wisq-only mode: no -f series; create empty placeholders
         all_series = [([], False, []) for _ in multi_y_keys]
 
+    # Weight 0 means no limit. On a weight axis, put it one gap past the largest
+    # finite weight and label its tick "inf", rather than at x=0 to the left of w=1.
+    weight_inf_pos = None
+    if is_weight_x:
+        finite = [x for sl, _, _ in all_series for s in sl for x in s.xs if x]
+        if finite and any(x == 0 for sl, _, _ in all_series for s in sl for x in s.xs):
+            weight_inf_pos = max(finite) * 1.2
+            for sl, _, _ in all_series:
+                for s in sl:
+                    s.xs = [weight_inf_pos if x == 0 else x for x in s.xs]
+
     # --minvol: build one Series per -f file using the min_volume column.
     # Only meaningful when -y includes 'volume'; we build it regardless and let
     # the drawing code decide whether to use it.
@@ -2254,6 +2265,14 @@ def main():
                 file=sys.stderr,
             )
 
+    if weight_inf_pos is not None:
+        top = weight_inf_pos / 1.2
+        ticks = [t for t in ax.get_xticks() if 0 < t <= top * 1.001]
+        if not ticks or ticks[0] != 1:
+            ticks = [1] + ticks
+        ax.set_xticks(ticks + [weight_inf_pos])
+        ax.set_xticklabels([f"{t:g}" for t in ticks] + [r"$\infty$"])
+        ax.set_xlim(0, weight_inf_pos * 1.04)
     if args.xlim:
         ax.set_xlim(*map(float, args.xlim.split(",", 1)))
     if args.ylim:
