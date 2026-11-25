@@ -495,8 +495,7 @@ impl TopoGraph {
                         self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
                     }
                 }
-                let row = self.n_rows - 1;
-                self.node_grid[col][row] = Some(self.add_qubit(col, row, NodeType::Bus));
+                // The bottom cell is the border row's, added below.
             } else {
                 let node_type = self.routing_node_type();
                 for row in 1..self.n_rows - 1 {
@@ -794,6 +793,24 @@ mod tests {
         let mut topo = TopoGraph::new();
         topo.set_topo(4, &"dummy".to_string(), &"".to_string(), &0, false, 0, false);
         assert!(topo.n_data_qubits >= 4);
+        crate::node::Node::set_magic_routing(true);
+    }
+
+    /// Every layout fills its grid once: as many patches as cells (a data cell's
+    /// two nodes count as one patch), so no node is created twice.
+    #[test]
+    fn layouts_have_one_patch_per_grid_cell() {
+        for (magic, rows) in [(false, 0), (false, 1), (true, 0), (true, 1), (true, 2)] {
+            for n in [4, 10, 51, 100, 129] {
+                let mut topo = TopoGraph::new();
+                topo.set_topo(n, &"dummy".to_string(), &"".to_string(), &0, magic, rows, false);
+                assert_eq!(
+                    topo.n_qubits,
+                    topo.n_cols * topo.n_rows,
+                    "magic routing {magic}, {rows} rows, {n} qubits"
+                );
+            }
+        }
         crate::node::Node::set_magic_routing(true);
     }
 
