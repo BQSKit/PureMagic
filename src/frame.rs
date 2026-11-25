@@ -93,6 +93,11 @@ pub(crate) struct CorrectionFrame {
     /// `W` itself, modulo Paulis, so that conjugating by it costs the same however
     /// many corrections are owed. The list above is kept for choosing which to emit.
     tab: Tableau,
+    /// How many owed corrections act on more than one qubit. With none, `W` is a
+    /// product of single-qubit Cliffords, so the image of `X_q` or `Z_q` lies on
+    /// qubit `q` alone, and an update about some qubits changes only their rows.
+    /// At weight 1 that always holds: it keeps the tableau off the hot path.
+    n_multi: usize,
     /// For each qubit, a count bumped whenever its list or a label on it changes.
     ver: Vec<u64>,
     /// [`CorrectionFrame::cx_blockers`]'s last answer for a CX, by its qubits and axes,
@@ -121,6 +126,16 @@ impl Tableau {
         t
     }
 
+    /// The rows an update about these qubits can change: all of them, or with
+    /// `local` (`W` a product of single-qubit Cliffords) only the qubits' own.
+    fn rows_for(&self, ops: &[Operator], local: bool) -> Vec<usize> {
+        if local {
+            ops.iter().flat_map(|o| [o.qubit as usize, self.n + o.qubit as usize]).collect()
+        } else {
+            (0..2 * self.n).collect()
+        }
+    }
+
     fn row_mut(&mut self, r: usize) -> &mut [u64] {
         let w = 2 * self.words;
         &mut self.rows[r * w..(r + 1) * w]
@@ -142,10 +157,11 @@ impl Tableau {
 
     /// `W <- W S_L` (or `W S_L^dag`, the same modulo Paulis): every image `v`
     /// that anticommutes with `L` becomes `v L`.
-    fn apply_s(&mut self, ops: &[Operator]) {
+    /// With `local`, only rows on `L`'s qubits can anticommute with it.
+    fn apply_s(&mut self, ops: &[Operator], local: bool) {
         let l = self.bits(ops);
         let w = self.words;
-        for r in 0..2 * self.n {
+        for r in self.rows_for(ops, local) {
             let row = self.row_mut(r);
             let mut par = 0u32;
             for i in 0..w {
@@ -207,11 +223,22 @@ impl Tableau {
 
     /// `W <- C W C^dag`: the images become `G(W^dag G(g) W)` with `G` the
     /// conjugation by `C`.
-    fn push_clifford(&mut self, axes: &[Operator]) {
+    /// With `local`, a generator off `C`'s qubits has its image off them too, which
+    /// `C` fixes, so only `C`'s qubits' rows change, and only they are read.
+    fn push_clifford(&mut self, axes: &[Operator], local: bool) {
         let (w, n) = (2 * self.words, self.n);
-        let old = self.rows.clone();
+        let rows = self.rows_for(axes, local);
+        let old = if local {
+            let mut old = vec![0u64; self.rows.len()];
+            for &r in &rows {
+                old[r * w..(r + 1) * w].copy_from_slice(&self.rows[r * w..(r + 1) * w]);
+            }
+            old
+        } else {
+            self.rows.clone()
+        };
         let mut g = vec![0u64; w];
-        for r in 0..2 * n {
+        for r in rows {
             g.iter_mut().for_each(|x| *x = 0);
             let (z, q) = (r >= n, (r % n) as u16);
             g[(z as usize) * self.words + q as usize / 64] |= 1 << (q % 64);
@@ -406,6 +433,7 @@ impl CorrectionFrame {
             next_seq: 0,
             open: 0,
             tab: Tableau::new(n_qubits),
+            n_multi: 0,
             ver: vec![0; n_qubits],
             cx_cache: std::collections::HashMap::new(),
         }
@@ -418,6 +446,12 @@ impl CorrectionFrame {
     /// Corrections still owed.
     pub(crate) fn open(&self) -> usize {
         self.open
+    }
+
+    /// Whether any owed correction acts on more than one qubit. Without one, a
+    /// T gate or measurement conjugated by the frame stays on its own qubits.
+    pub(crate) fn has_multi(&self) -> bool {
+        self.n_multi > 0
     }
 
     /// Whether nothing is owed on any of these qubits: the common case, checked
@@ -437,6 +471,7 @@ impl CorrectionFrame {
 
     fn remove(&mut self, slot: usize) {
         let c = self.slots[slot].take().expect("live correction slot");
+        self.n_multi -= (c.ops.len() > 1) as usize;
         for o in &c.ops {
             self.ver[o.qubit as usize] += 1;
             let list = &mut self.on_qubit[o.qubit as usize];
@@ -458,7 +493,7 @@ impl CorrectionFrame {
         let p = sorted(ops);
         // The list below may recombine factors, but always to the same W modulo
         // Paulis, which is W S_P.
-        self.tab.apply_s(&p);
+        self.tab.apply_s(&p, self.n_multi == 0);
         if p.len() == 1 {
             return self.add_single(p[0].qubit, p[0].basis);
         }
@@ -485,6 +520,7 @@ impl CorrectionFrame {
 
     /// Adds `S_P` as the newest owed correction.
     fn push(&mut self, ops: Vec<Operator>) {
+        self.n_multi += (ops.len() > 1) as usize;
         let c = Correction { ops, power: 1, seq: self.next_seq };
         self.next_seq += 1;
         let slot = match self.free.pop() {
@@ -704,7 +740,7 @@ impl CorrectionFrame {
         }
         on.sort_unstable();
         on.dedup();
-        self.tab.push_clifford(&axes);
+        self.tab.push_clifford(&axes, self.n_multi == 0);
         let words = self.tab.words;
         let mut changed = 0;
         for s in on {
@@ -733,6 +769,7 @@ impl CorrectionFrame {
                     self.on_qubit[o.qubit as usize].insert(at, s);
                 }
             }
+            self.n_multi = self.n_multi + (new.len() > 1) as usize - (old.len() > 1) as usize;
             self.slots[s].as_mut().unwrap().ops = new;
         }
         changed
@@ -801,7 +838,7 @@ impl CorrectionFrame {
     /// Takes the correction in `slot` out of the frame once an S about `ops`,
     /// from [`CorrectionFrame::emission_plan`], has been placed: `W <- W S^dag`.
     pub(crate) fn emitted_as(&mut self, slot: usize, ops: &[Operator]) {
-        self.tab.apply_s(ops);
+        self.tab.apply_s(ops, self.n_multi == 0);
         self.remove(slot);
     }
 }
