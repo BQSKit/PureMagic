@@ -1282,6 +1282,17 @@ impl Scheduler {
             // A T gate or measurement runs about its operators conjugated by the owed
             // corrections, unless that would take it past the weight limit, when the
             // correction is emitted first, or it widened onto a busy qubit.
+            // A T gate with no magic state cannot run this lcycle, and conjugating
+            // it can only matter if that would emit a correction, which needs a
+            // weight limit and an owed multi-qubit correction to pass it.
+            if gate_type.is_t()
+                && *n_avail_magic == 0
+                && (self.max_weight == 0 || !self.frame.has_multi())
+            {
+                let pp = self.input.circuit.product(pp_id);
+                Self::mark_blocked_product_as_used(&mut self.used, &self.input.topo, pp);
+                continue;
+            }
             if gate_type.is_t() || gate_type.is_m() {
                 match self.conjugate_rotation(pp_id) {
                     Rotation::Run => {}
