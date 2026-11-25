@@ -50,6 +50,10 @@ import os
 import sys
 from collections import defaultdict
 
+# CHECK_FRAME_BOTH=1: conjugate every T gate and measurement both by the
+# tableau and by the owed list, and fail on any difference (slow).
+BOTH = os.environ.get("CHECK_FRAME_BOTH") == "1"
+
 DURATION = {"T": 1, "M": 1, "CX": 2, "S": 3, "Sdg": 3, "SX": 3, "SXdg": 3}
 S_AXIS = {"S": "Z", "Sdg": "Z", "SX": "X", "SXdg": "X"}  # the axis each fixes
 
@@ -115,25 +119,139 @@ def mul(a, b):
     return out
 
 
+class Tableau:
+    """W modulo Paulis as the images of the generators: img[q] = W^dag X_q W and
+    img[n + q] = W^dag Z_q W, each a Pauli as an int (bit q its X part, bit
+    n + q its Z part). Conjugating a Pauli by W is then an XOR of rows. The
+    owed list below defines W; this only answers W^dag Q W quickly, and
+    CHECK_FRAME_BOTH=1 checks every answer against the list.
+
+    While no owed correction acts on more than one qubit, W is a product of
+    single-qubit Cliffords, the image of X_q and Z_q lies on q alone, and an
+    update about some qubits changes only their rows (`local`)."""
+
+    def __init__(self, n):
+        self.n = n
+        self.img = [1 << g for g in range(2 * n)]
+
+    def enc(self, ops):
+        v = 0
+        for q, b in ops:
+            if b in "XY":
+                v |= 1 << q
+            if b in "ZY":
+                v |= 1 << (self.n + q)
+        return v
+
+    def dec(self, v):
+        n, out = self.n, []
+        for q in range(n):
+            x, z = (v >> q) & 1, (v >> (n + q)) & 1
+            if x or z:
+                out.append((q, "Y" if x and z else ("X" if x else "Z")))
+        return out
+
+    def swap(self, v):  # X and Z parts exchanged: symp(a, b) = parity(a & swap(b))
+        m = (1 << self.n) - 1
+        return ((v & m) << self.n) | (v >> self.n)
+
+    def rows(self, ops, local):
+        if local:
+            return [r for q, _ in ops for r in (q, self.n + q)]
+        return range(2 * self.n)
+
+    def conjugate(self, ops):  # W^dag Q W, sorted by qubit
+        v = 0
+        for q, b in ops:
+            if b in "XY":
+                v ^= self.img[q]
+            if b in "ZY":
+                v ^= self.img[self.n + q]
+        return self.dec(v)
+
+    def apply_s(self, ops, local):  # W <- W S_L (or S_L^dag, the same mod Paulis)
+        L = self.enc(ops)
+        Ls = self.swap(L)
+        img = self.img
+        for r in self.rows(ops, local):
+            if bin(img[r] & Ls).count("1") & 1:
+                img[r] ^= L
+
+    def g(self, axes, v):
+        """C^dag v C for the Clifford fixing `axes` (S about Z, SX about X, a CX
+        as Z on its control and X on its target), signs dropped; an involution."""
+        if len(axes) == 1:
+            a = self.enc(axes)
+            return v ^ a if bin(v & self.swap(a)).count("1") & 1 else v
+        a, b = self.enc(axes[:1]), self.enc(axes[1:])
+        out = v
+        if bin(v & self.swap(a)).count("1") & 1:
+            out ^= b
+        if bin(v & self.swap(b)).count("1") & 1:
+            out ^= a
+        return out
+
+    def push(self, axes, local):  # W <- C W C^dag: img'(g) = G(W^dag G(g) W)
+        n, img = self.n, self.img
+        on = {q for q, _ in axes}
+        old = {}
+        for q in on:
+            old[q], old[n + q] = img[q], img[n + q]
+        rows = [r for q in on for r in (q, n + q)] if local else range(2 * n)
+        new = {}
+        for r in rows:
+            if r % n in on:
+                gg, acc = self.g(axes, 1 << r), 0
+                for k in range(2 * n):
+                    if (gg >> k) & 1:
+                        acc ^= old[k] if k in old else img[k]
+                new[r] = self.g(axes, acc)
+            else:
+                new[r] = self.g(axes, img[r])
+        for r, v in new.items():
+            img[r] = v
+
+
 class Frame:
-    def __init__(self):
+    def __init__(self, n):
         self.owed = []  # [ops, power, seq], oldest first
         self.seq = 0
+        self.tab = Tableau(n)
+        self.n_multi = 0  # owed corrections on more than one qubit
+
+    def local(self):
+        return self.n_multi == 0
+
+    def _append(self, ops):
+        self.owed.append([ops, 1, self.seq])
+        self.seq += 1
+        self.n_multi += len(ops) > 1
+
+    def _remove(self, c):
+        self.owed.remove(c)
+        self.n_multi -= len(c[0]) > 1
 
     def on(self, qs):
         return [c for c in self.owed if any(q in qs for q, _ in c[0])]
 
+    def newest_on(self, qs):
+        """The newest owed correction on any of these qubits, or None."""
+        for c in reversed(self.owed):
+            if any(q in qs for q, _ in c[0]):
+                return c
+        return None
+
     def fail(self, ops):
+        self.tab.apply_s(ops, self.local())
         if len(ops) == 1:
             return self.fail_single(*ops[0])
-        on = self.on({q for q, _ in ops})
-        if on and on[-1][0] == ops:
-            on[-1][1] = (on[-1][1] + 1) % 4
-            if on[-1][1] % 2 == 0:
-                self.owed.remove(on[-1])
+        c = self.newest_on({q for q, _ in ops})
+        if c is not None and c[0] == ops:
+            c[1] = (c[1] + 1) % 4
+            if c[1] % 2 == 0:
+                self._remove(c)
             return
-        self.owed.append([ops, 1, self.seq])
-        self.seq += 1
+        self._append(ops)
 
     # Single-qubit Cliffords on one qubit compose. Modulo Paulis each is a
     # permutation of the labels X, Y, Z (conjugation, signs dropped), and is at
@@ -147,7 +265,9 @@ class Frame:
 
     def fail_single(self, q, axis):
         suffix = []
-        for c in reversed(self.on({q})):
+        for c in reversed(self.owed):
+            if all(x != q for x, _ in c[0]):
+                continue
             if len(c[0]) != 1:
                 break
             suffix.insert(0, c)
@@ -156,10 +276,9 @@ class Frame:
             t = self.TAU[c[0][0][1]]
             perm = "".join(self.act(t, x) for x in perm)  # this factor after the earlier ones
         for c in suffix:
-            self.owed.remove(c)
+            self._remove(c)
         for a in self.factors(perm):
-            self.owed.append([[(q, a)], 1, self.seq])
-            self.seq += 1
+            self._append([(q, a)])
 
     def factors(self, perm):
         if perm == "XYZ":
@@ -173,16 +292,32 @@ class Frame:
         raise AssertionError(perm)
 
     def rotation(self, ops, max_weight):
-        """-> operators to run about: W^dag Q W, applying every owed correction
-        oldest first. None if the result passes the weight limit (0: none), when
-        a correction must go first."""
+        """-> operators to run about: W^dag Q W. None if the result passes the
+        weight limit (0: none), when a correction must go first."""
+        q = self.tab.conjugate(ops)
+        if BOTH:
+            assert q == sorted(self.rotation_by_list(ops)), (ops, q, self.rotation_by_list(ops))
+        if max_weight and len(q) > max_weight:
+            return None
+        return q
+
+    def rotation_by_list(self, ops):
+        """W^dag Q W from its definition: every owed correction, oldest first."""
         q = list(ops)
         for c in self.owed:
             if not commutes(c[0], q):
                 q = mul(c[0], q)
-        if max_weight and len(q) > max_weight:
-            return None
         return q
+
+    def emitted(self, i, ops):
+        """An S about `ops` = R^dag E R removed the i-th owed correction E."""
+        self.tab.apply_s(ops, self.local())
+        self._remove(self.owed[i])
+
+    def merged(self, c):
+        """A lone single-qubit correction merged into an S or SX about its axis."""
+        self.tab.apply_s(c[0], self.local())
+        self._remove(c)
 
     def conjugate_past_newer(self, i):
         """R^dag E R for E the i-th owed correction and R the newer ones."""
@@ -198,6 +333,7 @@ class Frame:
         P A if they anticommute. On two, exp(i pi/4 (I - A)(I - B)), a CX for
         A = Z on its control and B = X on its target, takes P to P B if it
         anticommutes with A and to P A if it anticommutes with B."""
+        self.tab.push(sorted(ops), self.local())
         axes = [[(q, b)] for q, b in ops]
         for c in self.on({q for q, _ in ops}):
             p = c[0]
@@ -211,12 +347,15 @@ class Frame:
                     p = mul(b, p)
                 if anti_b:
                     p = mul(a, p)
+            self.n_multi += (len(p) > 1) - (len(c[0]) > 1)
             c[0] = p
 
 
 def replay_frame(runs, start, circuit, n_circ, corr, corr_seq, fails, node_qubit, err,
                  max_weight):
-    frame = Frame()
+    n = 1 + max([q for _, ops in circuit for q, _ in ops]
+                + [q for ops in corr.values() for q, _ in ops] + [0])
+    frame = Frame(n)
     by_cycle = defaultdict(list)
     for pid, rs in runs.items():
         by_cycle[start[pid]].append(pid)
@@ -243,7 +382,7 @@ def replay_frame(runs, start, circuit, n_circ, corr, corr_seq, fails, node_qubit
                 cap = max(max_weight, len(frame.owed[hit][0])) if max_weight else None
                 if cap is not None and len(ops) > cap:
                     err("frame", f"cycle {lc}: correction {pid} {ops} is wider than {cap}")
-                del frame.owed[hit]
+                frame.emitted(hit, ops)
                 continue
             gate, ops = circuit[pid]
             if gate in ("T", "M"):
@@ -260,7 +399,7 @@ def replay_frame(runs, start, circuit, n_circ, corr, corr_seq, fails, node_qubit
                 q, axis = ops[0][0], S_AXIS[gate]
                 on = frame.on({q})
                 if len(on) == 1 and on[0][0] == [(q, axis)]:
-                    frame.owed.remove(on[0])  # merged
+                    frame.merged(on[0])
                 else:
                     frame.push_clifford(gate, [(q, axis)])
             elif gate == "CX":
