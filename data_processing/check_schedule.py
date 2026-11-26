@@ -477,6 +477,13 @@ def main():
     def err(kind, msg):
         errors[kind].append(msg)
 
+    # The layout's edges in both directions, for the connectivity check.
+    both = defaultdict(set)
+    for u, vs in adj.items():
+        both[u] |= vs
+        for v in vs:
+            both[v].add(u)
+
     # 1. exclusivity, and per-node use cycles for the magic check
     used_at = defaultdict(list)
     for pid, rs in runs.items():
@@ -575,7 +582,7 @@ def main():
                 if u in seen:
                     continue
                 seen.add(u)
-                stack.extend((adj[u] | {v for v in ns if u in adj[v]}) & ns - seen)
+                stack.extend(both[u] & ns - seen)
             if seen != ns:
                 err(
                     "connectivity",
