@@ -46,6 +46,7 @@ Exit status is 0 when every check passes.
 """
 
 import argparse
+import bisect
 import os
 import sys
 from collections import defaultdict
@@ -592,12 +593,14 @@ def main():
                     f"T product {pid}: consumed a state with attempt length {length}",
                 )
             else:
-                prev = [u for u in used_at[magic] if u < lc]
-                if prev and prev[-1] >= lc - length:
+                # the last use before this cycle (the list is sorted)
+                uses = used_at[magic]
+                i = bisect.bisect_left(uses, lc)
+                if i and uses[i - 1] >= lc - length:
                     err(
                         "magic",
                         f"T product {pid} at cycle {lc}: {label[magic]} was used at cycle "
-                        f"{prev[-1]}, inside the {length}-cycle attempt that made its state",
+                        f"{uses[i - 1]}, inside the {length}-cycle attempt that made its state",
                     )
 
     # 5. dependencies, rebuilt from the circuit: each product depends on the
