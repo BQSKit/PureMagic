@@ -31,6 +31,14 @@ qubits the attempt holds in round k, in blocks of 2(d+1)^2 qubits for d
 rounds. That counts only the qubits in use, whereas the scheduler holds a
 whole patch for the full mean time, which is <t> blocks per state.
 
+With `starts` > 1 a patch runs that many attempts in parallel, one at each
+corner, and an escape discards the others (parallel_cultivation.py explains
+why the escape geometry allows four). That mean is simulated rather than
+closed-form, so it is read from data/cultivation/parallel_starts.csv, which
+`parallel_cultivation.py --write-table` writes. The floor is unchanged, one
+whole attempt, and the FLASQ volume stays that of a single attempt, which is
+FLASQ's definition. Only the rounds convention is supported there.
+
 The convention fixes w_k, in surface code rounds:
 
 - "rounds": every round counts as one surface code round, as Gidney et al.
@@ -107,6 +115,20 @@ def acceptance(rounds, gap_cutoff=GAP_CUTOFF, d1=5, p=0.001, required=True):
     return best[:3]
 
 
+def parallel_mean_rounds(gap_cutoff=GAP_CUTOFF, d1=5, starts=4):
+    """-> simulated mean rounds per delivered state for `starts` corner starts
+    with discard, from parallel_starts.csv."""
+    path = os.path.join(DATA, "parallel_starts.csv")
+    if os.path.exists(path):
+        with open(path) as f:
+            for r in csv.DictReader(f):
+                if (int(r["d1"]), int(r["gap_cutoff"]), int(r["starts"]), r["mode"]) == (
+                    d1, gap_cutoff, starts, "discard"):
+                    return float(r["mean_rounds"])
+    sys.exit(f"no {starts}-start d1={d1} G={gap_cutoff} row in {path}; run "
+             f"parallel_cultivation.py -k {starts} --write-table {gap_cutoff}")
+
+
 def derive(
     d=17,
     gap_cutoff=GAP_CUTOFF,
@@ -114,6 +136,7 @@ def derive(
     d1=5,
     surface_round_timesteps=SURFACE_ROUND_TIMESTEPS,
     attempt_rounds=None,
+    starts=1,
 ):
     """Mean cultivation time, lambda and floor at code distance d.
 
@@ -145,6 +168,11 @@ def derive(
     per_attempt_timesteps = sum(r * t for r, t in zip(reach, timesteps))
     p_accept, ler, source = acceptance(len(survival), gap_cutoff, d1)
     mean = per_attempt / p_accept / d
+    if starts > 1:
+        if convention != "rounds" or attempt_rounds is not None:
+            raise ValueError("parallel starts are simulated in the rounds convention "
+                             "on the full attempt only")
+        mean = parallel_mean_rounds(gap_cutoff, d1, starts) / d
     # Gidney et al.'s expected volume: the qubits the attempt actually holds,
     # integrated against survival, per accepted state. FLASQ's Vol(Cultivate).
     qubit_rounds = sum(r * q * w for r, q, w in zip(reach, active, weights)) / p_accept
@@ -153,6 +181,7 @@ def derive(
         "d": d,
         "gap_cutoff": gap_cutoff,
         "d1": d1,
+        "starts": starts,
         "attempt_rounds": len(survival),
         "attempt_timesteps": sum(timesteps),
         "per_attempt_surface_rounds": per_attempt,
@@ -184,10 +213,16 @@ def main():
         help="shorten the attempt, e.g. 20 for the r2=5 protocol "
         "without the gap wait; default: the whole 25 rounds",
     )
+    ap.add_argument("-k", "--starts", type=int, default=1,
+                    help="parallel starts per patch, one per corner, discarded when "
+                    "another escapes (rounds convention only; default 1)")
     ap.add_argument("--json", action="store_true", help="print JSON only")
     args = ap.parse_args()
     convs = CONVENTIONS if args.convention == "both" else (args.convention,)
-    res = [derive(args.distance, args.cutoff, c, attempt_rounds=args.attempt_rounds) for c in convs]
+    if args.starts > 1:
+        convs = ("rounds",)
+    res = [derive(args.distance, args.cutoff, c, attempt_rounds=args.attempt_rounds,
+                  starts=args.starts) for c in convs]
     if args.json:
         print(json.dumps(res if len(res) > 1 else res[0], indent=1))
         return
@@ -195,7 +230,8 @@ def main():
     print(
         f"d1={r0['d1']}, {r0['attempt_rounds']}-round attempt "
         f"({r0['attempt_timesteps']} timesteps), G={r0['gap_cutoff']}: acceptance "
-        f"{r0['acceptance']:.4%} from {r0['acceptance_source']}, d={r0['d']}"
+        f"{r0['acceptance']:.4%} from {r0['acceptance_source']}, d={r0['d']}, "
+        f"{r0['starts']} start(s) per patch"
     )
     for r in res:
         print(

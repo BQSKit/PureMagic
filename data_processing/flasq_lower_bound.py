@@ -703,7 +703,8 @@ def main():
             "(logical_qubit × logical_timestep). "
             "Default: FLASQ's definition, the expected volume of the qubits in use, from "
             "cultivation_model.py at --distance (5.63 at d=17 for the d1=5, G=104 protocol), "
-            "or with --whole-patch the mean cultivation time (37.24 at d=17). "
+            "or with --whole-patch the mean cultivation time (37.24 at d=17, "
+            "18.76 with --starts 4). "
             "Set to 0 to ignore cultivation overhead."
         ),
     )
@@ -712,6 +713,15 @@ def main():
         type=int,
         default=17,
         help="Code distance for the default --vcult (default: 17).",
+    )
+    parser.add_argument(
+        "--starts",
+        type=int,
+        default=1,
+        help=(
+            "Parallel cultivation starts per patch for --whole-patch, one per corner "
+            "(cultivation_model.py --starts). FLASQ's own volume is unaffected (default: 1)."
+        ),
     )
     parser.add_argument(
         "--whole-patch",
@@ -756,7 +766,9 @@ def main():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import cultivation_model
 
-        r = cultivation_model.derive(d=args.distance)
+        r = cultivation_model.derive(
+            d=args.distance, starts=args.starts if args.whole_patch else 1
+        )
         args.vcult = r["whole_patch_blocks"] if args.whole_patch else r["flasq_vcult_blocks"]
 
     with open(args.qasm_file) as f:

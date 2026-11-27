@@ -24,6 +24,13 @@ starts at the round where the activated qubit count jumps (round 10 at d1=5,
 - discard:   as freeze, but the others lose their progress when one enters
              escape and restart afterwards.
 
+Four starts with discard is the case the escape geometry allows. The escape
+grows the color code into a d2=15 grafted code with the color code at one of
+its corners (Figure 11), which fills most of a d=17 patch, so a start can
+escape only from near a patch corner: four starts, one per corner, and an
+escape covers the other three. --write-table simulates that case per gap
+cutoff into data/cultivation/parallel_starts.csv for cultivation_model.py.
+
 The reported time is from a cold start to the first accepted state, which is
 what the scheduler draws for every new cultivation. The result is still well
 described by floor + exponential (floor = one attempt), so the scheduler needs
@@ -125,6 +132,40 @@ def mean_rounds(cond, p_gap, esc, k, mode, samples, seed):
     return cold_start(cond, p_gap, esc, k, mode, samples, seed).mean()
 
 
+TABLE = os.path.join(cm.DATA, "parallel_starts.csv")
+TABLE_FIELDS = ("d1", "gap_cutoff", "starts", "mode", "samples", "seed",
+                "mean_rounds", "stderr_rounds", "median_rounds")
+
+
+def _table_row(args):
+    g, k, mode, samples, seed = args
+    survival, _ = cm.load_curve()
+    acc = cm.acceptance(len(survival), g)[0]
+    cond, p_gap, esc = conditional(survival), acc / survival[-1], escape_round()
+    t = cold_start(cond, p_gap, esc, k, mode, samples, seed)
+    return {"d1": 5, "gap_cutoff": g, "starts": k, "mode": mode, "samples": samples,
+            "seed": seed, "mean_rounds": f"{t.mean():.3f}",
+            "stderr_rounds": f"{t.std() / len(t) ** 0.5:.3f}",
+            "median_rounds": f"{np.median(t):.1f}"}
+
+
+def write_table(cutoffs, k, mode, samples, seed, jobs):
+    """Simulate each cutoff once and write TABLE, which cultivation_model.derive()
+    reads for starts > 1, so the scheduler's parameters need no simulation."""
+    from multiprocessing import Pool
+    tasks = [(g, k, mode, samples, seed) for g in cutoffs]
+    with Pool(min(jobs, len(tasks))) as pool:
+        rows = pool.map(_table_row, tasks)
+    with open(TABLE, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=TABLE_FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    for r in rows:
+        print(f"G={r['gap_cutoff']:>3}  {r['mean_rounds']:>9} rounds "
+              f"(+-{r['stderr_rounds']})")
+    print(f"wrote {TABLE}")
+
+
 def check_qce(samples, seed, distance):
     """Old curve at two acceptances, one start and four starts."""
     s = np.array(QCE_CURVE[:24])
@@ -151,8 +192,16 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--check-qce", action="store_true",
                     help="reproduce the QCE cultivation time from its own inputs")
+    ap.add_argument("--write-table", metavar="G", type=int, nargs="+",
+                    help="simulate --starts in discard mode at these gap cutoffs "
+                    "and write data/cultivation/parallel_starts.csv")
+    ap.add_argument("-j", "--jobs", type=int, default=6)
     args = ap.parse_args()
     d = args.distance
+    if args.write_table:
+        write_table(args.write_table, args.starts, "discard", args.samples,
+                    args.seed, args.jobs)
+        return
 
     survival, _ = cm.load_curve()
     acc, _, source = cm.acceptance(len(survival))
