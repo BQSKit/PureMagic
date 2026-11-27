@@ -50,6 +50,18 @@ circuit timestep counts and a surface code round is 6 of them.
   `--write-table`, and read by `cultivation_model.py --starts 4`: 18.76
   logical cycles at `d=17`, `G=104`, with the floor unchanged.
 
+- **`parallel_starts_timesteps.csv`**: the same four-start discard case on
+  the 20-round attempt in circuit timesteps, each round its own length (15,
+  10, 7, 7, then 10), simulated one timestep at a time, since starts that
+  die and restart drift out of step with rounds of unequal length. 4e5 cold
+  starts per gap cutoff, acceptance from `cultivation_model.acceptance(20,
+  G)`. Written by
+  [`parallel_cultivation_timesteps.py`](../../data_processing/parallel_cultivation_timesteps.py)
+  `--write-table`. Four starts are 2.07x faster than one at every cutoff,
+  2903 timesteps against 6007 at `G=104`. With one start the simulation
+  reproduces `cultivation_model.py --attempt-rounds 20 --convention
+  timesteps` (`--check`).
+
 The release's `code.zip` and `circuits.zip` are gitignored. The two scripts
 above run from inside the unpacked `code.zip`. Re-fetch it from the DOI if
 needed.
