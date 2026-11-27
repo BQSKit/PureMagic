@@ -22,10 +22,12 @@ they import. Generated `*.png`/`*.out` files in this directory are gitignored, n
 - **`remove_y_gates.py`** -- Rewrites `y` gates out of a Clifford+T circuit, needed because wisq's
   GUOQ optimizer backend can't process them.
 
-## Analysis and lower bounds
+## Analysis and cost models
 
-- **`flasq_lower_bound.py`** -- Computes the FLASQ lower bound on T-count/volume for a Clifford+T
-  circuit in OpenQASM 2 format.
+- **`flasq_lower_bound.py`** -- Computes the FLASQ conservative and optimistic spacetime-volume
+  estimates (Huggins et al., arXiv:2511.08508) for a Clifford+T circuit in OpenQASM 2 format. The
+  cultivation volume per T state comes from `cultivation_model.py`: FLASQ's own definition by
+  default, or a whole patch for the mean cultivation time with `--whole-patch`.
 - **`dascot_qubit_count.py`** -- Computes the total logical qubits required by the DASCOT Square
   Sparse and Compact architectures for a given number of data qubits.
 - **`mcmc_cultivation.py`** -- MCMC simulation of the magic-state cultivation time distribution

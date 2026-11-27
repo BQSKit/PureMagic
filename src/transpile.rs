@@ -11,6 +11,8 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 #[allow(dead_code)]
+mod frame;
+#[allow(dead_code)]
 mod pauliproduct;
 mod tableau;
 #[allow(dead_code)]
@@ -812,36 +814,94 @@ fn predicted_depth(items: &[TransItem], n_qubits: usize) -> usize {
     layers.max_depth()
 }
 
-/// Weight thresholds tried by [`transpile_best`].
-///
-/// With trailing deferral enabled these two reproduce the full 0..=10 sweep's best result exactly
-/// on 8 of 11 benchmark circuits and within 1.5% on the rest: flushes are cheap enough that the
-/// optimum collapses to either "never flush" or "keep every product weight 1".
-const CANDIDATE_WEIGHTS: [i32; 2] = [0, 1];
+/// Weight thresholds tried by [`transpile_best`]: 1, and 0 for no limit. With
+/// T-failure corrections tracked exactly, the best weight has been one of the two
+/// on every circuit measured: intermediate weights leave multi-qubit corrections
+/// that the Cliffords still in the circuit must then wait for.
+/// Weight 1 is first so that it wins a tie: it schedules faster, single-qubit
+/// products being routed by A* rather than Steiner trees.
+const CANDIDATE_WEIGHTS: [i32; 2] = [1, 0];
 
-/// Transpiles at each candidate weight and keeps the shallowest result.
-///
-/// Predicted depth is cheap to evaluate in-process and tracks scheduling well, so selecting
-/// between whole transpilations replaces the external `max_width` sweep and the hand-maintained
-/// table of per-circuit best weights.
+/// Seeds the failure-aware depth is averaged over.
+const FAILURE_SEEDS: u64 = 3;
+
+/// The operations of a transpiled circuit as the correction frame sees them.
+fn frame_steps(items: &[TransItem]) -> Vec<(frame::Kind, Vec<pauliproduct::Operator>)> {
+    use frame::Kind;
+    use pauliproduct::Operator;
+    let on = |ops: &[char]| -> Vec<Operator> {
+        ops.iter()
+            .enumerate()
+            .filter(|(_, c)| **c != 'I' && **c != '_')
+            .map(|(q, &c)| Operator { qubit: q as u16, basis: c })
+            .collect()
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            TransItem::Pauli(p) => (if p.label == "M" { Kind::M } else { Kind::T }, on(&p.ops)),
+            TransItem::Clifford(c) => {
+                let kind = match c.name.as_str() {
+                    "CX" => Kind::CX,
+                    "SX" | "SXdg" => Kind::SX,
+                    _ => Kind::S,
+                };
+                (kind, on(&c.ops))
+            }
+        })
+        .collect()
+}
+
+/// Predicted depth with T-injection failures, averaged over [`FAILURE_SEEDS`]: the
+/// layering of [`predicted_depth`], plus the corrections failures leave, which widen
+/// products up to `max_weight` or are emitted as gates (see `frame.rs`).
+fn failure_aware_depth(items: &[TransItem], n_qubits: usize, max_weight: i32) -> f64 {
+    let steps = frame_steps(items);
+    let total: usize = (0..FAILURE_SEEDS)
+        .map(|seed| {
+            frame::predicted_depth_with_failures(
+                steps.iter().map(|(k, o)| (*k, &o[..])),
+                n_qubits,
+                max_weight.max(0) as usize,
+                0.5,
+                seed,
+            )
+        })
+        .sum();
+    total as f64 / FAILURE_SEEDS as f64
+}
+
+/// Transpiles at each candidate weight and keeps the one with the lowest predicted depth
+/// once T-injection failures are accounted for. A failure owes an S over the failed
+/// product's qubits, and how much that costs depends on the weight: wide products
+/// leave wide corrections, which Cliffords then have to wait for.
 fn transpile_best(n_qubits: usize, gates: &[QasmGate]) -> (Vec<TransItem>, i32) {
-    let mut best: Option<(Vec<TransItem>, i32, usize)> = None;
+    let mut best: Option<(Vec<TransItem>, i32, f64)> = None;
     for max_weight in CANDIDATE_WEIGHTS {
         let items = transpile_full(n_qubits, gates, max_weight, true);
-        let depth = predicted_depth(&items, n_qubits);
-        println!("  candidate max_width {:<3} predicted depth {}", max_weight, depth);
+        let plain = predicted_depth(&items, n_qubits);
+        let depth = failure_aware_depth(&items, n_qubits, max_weight);
+        println!(
+            "  candidate max_width {:<3} predicted depth {} ({:.1} with failures)",
+            max_weight, plain, depth
+        );
         if best.as_ref().is_none_or(|(_, _, d)| depth < *d) {
             best = Some((items, max_weight, depth));
         }
     }
     let (items, weight, depth) = best.expect("at least one candidate");
-    println!("Selected max_width {} (predicted depth {})", weight, depth);
+    println!("Selected max_width {} (predicted depth {:.1} with failures)", weight, depth);
     (items, weight)
 }
 
-fn write_trans(output_path: &str, items: &[TransItem]) -> io::Result<(usize, usize)> {
+/// Writes the products, after a `# max-weight N` header (0: no limit) that tells the
+/// scheduler how far T-failure corrections may widen a product.
+fn write_trans(
+    output_path: &str, items: &[TransItem], max_weight: i32,
+) -> io::Result<(usize, usize)> {
     let file = File::create(output_path)?;
     let mut writer = BufWriter::new(file);
+    writeln!(writer, "# max-weight {}", max_weight)?;
     let mut n_ts = 0usize;
     let mut n_cliffords = 0usize;
 
@@ -928,16 +988,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Gate set: {}", gate_names.iter().cloned().collect::<Vec<_>>().join(", "));
 
     if args.auto {
-        println!("Weight selection: auto (lowest predicted depth across candidates)");
+        println!("Weight selection: auto (lowest failure-aware predicted depth, weight 1 or none)");
     } else {
         println!("Weight selection: fixed (max weight {})", args.max_width);
     }
 
     let _tableau_timer = Timer::new("tableau");
-    let items = if args.auto {
-        transpile_best(n_qubits, &gates).0
+    let (items, weight) = if args.auto {
+        transpile_best(n_qubits, &gates)
     } else {
-        transpile_full(n_qubits, &gates, args.max_width, args.defer_trailing)
+        (transpile_full(n_qubits, &gates, args.max_width, args.defer_trailing), args.max_width)
     };
     drop(_tableau_timer);
 
@@ -994,7 +1054,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.output_file
     };
 
-    let (n_ts, n_cliffords_written) = write_trans(&output_path, &items)?;
+    let (n_ts, n_cliffords_written) = write_trans(&output_path, &items, weight)?;
     println!("Wrote transpiled circuit to {}", output_path);
     println!("Wrote {} T gates and {} Cliffords", n_ts, n_cliffords_written);
 
@@ -1460,19 +1520,30 @@ mod tests {
 
     #[test]
     fn transpile_best_never_loses_to_any_candidate() {
-        // Selection is by predicted depth, so the chosen transpilation is at least as shallow as
-        // every candidate weight — including 0, the never-flush policy that is optimal on
-        // circuits where emitting Cliffords never pays.
+        // Selection is by failure-aware predicted depth, so the chosen transpilation is at least
+        // as shallow by it as every candidate weight, including 0, the never-flush policy.
         let mut gates = vec![QasmGate::Clifford2Q { gate: Gate2Q::CX, control: 0, target: 1 }];
         for _ in 0..8 {
             gates.push(QasmGate::T { qubit: 1 });
         }
-        let (best, _) = transpile_best(2, &gates);
-        let best_depth = predicted_depth(&best, 2);
+        let (best, bw) = transpile_best(2, &gates);
+        let best_depth = failure_aware_depth(&best, 2, bw);
         for w in CANDIDATE_WEIGHTS {
             let candidate = transpile_full(2, &gates, w, true);
-            assert!(best_depth <= predicted_depth(&candidate, 2), "lost to max_width {}", w);
+            assert!(
+                best_depth <= failure_aware_depth(&candidate, 2, w),
+                "lost to max_width {}",
+                w
+            );
         }
+    }
+
+    #[test]
+    fn transpile_best_picks_weight_one_on_a_tie() {
+        // T gates alone, one per qubit: every weight transpiles them the same.
+        let gates: Vec<QasmGate> = (0..4).map(|q| QasmGate::T { qubit: q }).collect();
+        let (_, w) = transpile_best(4, &gates);
+        assert_eq!(w, 1);
     }
 
     #[test]

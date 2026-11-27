@@ -1,10 +1,10 @@
 use clap::Parser;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
 
 mod astar;
 mod circuit;
 mod cultivation;
+#[allow(dead_code)]
+mod frame;
 mod node;
 mod pauliproduct;
 mod scheduler;
@@ -46,6 +46,14 @@ struct Args {
     /// fit a column and stops being legible.
     #[arg(long, value_name = "START:END", value_parser = parse_layer_range)]
     plot_qubits: Option<(usize, usize)>,
+    /// Write <CIRCUIT_STEM>.trace: the layout and every product's patches per
+    /// lcycle, for independent checking by data_processing/check_schedule.py.
+    #[arg(long)]
+    trace: bool,
+    /// Write <CIRCUIT_STEM>.cycle_times: the wall-clock time of each logical
+    /// cycle's scheduling in ns, one per line, for worst-cycle analysis.
+    #[arg(long)]
+    cycle_times: bool,
     /// Log scheduler actions to <CIRCUIT_FNAME>.sched_trace. Only populated in debug
     /// builds: the debug_sched!/info_sched! call sites are compiled out entirely in
     /// release builds, so a release build still creates the file but leaves it empty.
@@ -74,6 +82,12 @@ struct Args {
     /// Record normalized cultivation-time distribution to <CIRCUIT_FNAME>.cultivation_dist
     #[arg(short = 'C', long)]
     record_cultivation_dist: bool,
+    /// The weight limit the circuit was transpiled with (0: none). A T gate or
+    /// measurement absorbs T-failure corrections, widening onto other qubits, up to
+    /// this weight. Default: the circuit's `# max-weight N` header, else N from a
+    /// `.transN` file name, else none
+    #[arg(long)]
+    max_weight: Option<usize>,
     #[arg(
         short,
         long,
@@ -150,6 +164,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let n_qubits = topo_graph.n_qubits;
     let n_magic_qubits = topo_graph.n_magic_qubits;
+    // Taken from the input circuit, before scheduling adds correction gates to it,
+    // so it is the same bound circuit_stats reports and doesn't vary with the seed.
+    let est = circuit.estimate_layer_volume(n_magic_qubits, n_qubits, args.common.magic_state_lambda);
     let mut sched = Scheduler::new(
         circuit,
         topo_graph,
@@ -162,7 +179,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.record_cultivation_dist,
     );
 
+    let (max_weight, source) = sched.input.circuit.resolve_max_weight(args.max_weight);
+    sched.max_weight = max_weight;
+    println!("Max weight: {} (from {})", max_weight, source);
+
+    if args.trace {
+        sched.enable_trace(&format!(
+            "{}.trace",
+            std::path::Path::new(&circuit_fname).file_stem().unwrap().to_string_lossy()
+        ))?;
+    }
+    if args.cycle_times {
+        sched.enable_cycle_times();
+    }
     let (tot_lcycles, n_scheduled) = sched.sched_circuit()?;
+    if args.cycle_times {
+        let stem =
+            std::path::Path::new(&circuit_fname).file_stem().unwrap().to_string_lossy().to_string();
+        sched.write_cycle_times(&format!("{}.cycle_times", stem))?;
+        #[cfg(not(feature = "diagnostics"))]
+        sched.print_cycle_time_summary();
+    }
     assert!(n_scheduled >= n_products);
     let volume = n_qubits * tot_lcycles;
     println!("Scheduled {} in {} logical cycles, volume {}", n_scheduled, tot_lcycles, volume);
@@ -177,14 +214,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Parallelism: {:.3}x", n_scheduled as f64 / tot_lcycles as f64);
 
-    let mut rng = StdRng::seed_from_u64(args.common.rseed);
-    let est = sched.input.circuit.estimate_layer_volume(
-        n_magic_qubits,
-        n_qubits,
-        args.common.magic_state_lambda,
-        args.common.no_t_failures,
-        &mut rng,
-    );
     let max_parallelism_estimate = (n_products + est.n_t_gates / 2) as f64 / est.lmin as f64;
     println!("Max parallelism estimate: {:.3}", max_parallelism_estimate);
     println!("Volume estimate: {}", est.vmin);

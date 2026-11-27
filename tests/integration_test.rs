@@ -636,8 +636,9 @@ fn transpile_output_file_is_non_empty() {
     assert!(meta.len() > 0, "transpile produced an empty output file");
 }
 
-/// Every non-empty line in the `.trans` output must start with `+` or `-`
-/// and end with a gate-type marker like `<T>`, `<M>`, `<CX>`, etc.
+/// The `.trans` output opens with a `# max-weight N` header, and every other
+/// non-empty line starts with `+` or `-` and ends with a gate-type marker like
+/// `<T>`, `<M>`, `<CX>`, etc.
 #[test]
 fn transpile_output_lines_have_trans_format() {
     let tmp = TempDir::new().unwrap();
@@ -649,7 +650,8 @@ fn transpile_output_lines_have_trans_format() {
     );
     assert!(ok, "transpile failed; stderr:\n{}", stderr);
     let contents = std::fs::read_to_string(&out).unwrap();
-    for line in contents.lines().filter(|l| !l.trim().is_empty()) {
+    assert_eq!(contents.lines().next(), Some("# max-weight 0"), "header names the weight limit");
+    for line in contents.lines().skip(1).filter(|l| !l.trim().is_empty()) {
         assert!(
             line.starts_with('+') || line.starts_with('-'),
             "trans line does not start with +/-: {:?}",
@@ -1010,6 +1012,42 @@ fn puremagic_scheduling_efficiency_value_is_in_range() {
     assert!(value <= 1.0, "normalized scheduling efficiency must be <= 1.0, got {}", value);
 }
 
+/// The volume estimate's depth term -- the circuit's dependency depth without T
+/// failures -- is a hard lower bound on the scheduled cycles. (The estimate's
+/// other term, the Clifford-only layers plus the magic-supply time, is an
+/// approximation: on this small circuit bus routing overlaps the two and beats
+/// it.) Checked for both routings and several seeds.
+#[test]
+fn puremagic_cycles_are_never_below_the_depth_bound() {
+    let tmp = TempDir::new().unwrap();
+    let circuit = fixture("mixed_8q.trans");
+    let after = |stdout: &str, prefix: &str| -> u64 {
+        let line = stdout.lines().find(|l| l.contains(prefix)).expect(prefix);
+        let tail = &line[line.find(prefix).unwrap() + prefix.len()..];
+        tail.split_whitespace().next().unwrap().parse().unwrap()
+    };
+    build_binaries();
+    let stats = Command::new(bin_path("circuit_stats"))
+        .args(["--circuit", circuit.to_str().unwrap()])
+        .output()
+        .expect("failed to spawn circuit_stats");
+    assert!(stats.status.success());
+    let depth = after(&String::from_utf8_lossy(&stats.stdout), "no T failures): ");
+    assert!(depth > 0);
+    for routing in [&[][..], &["-u"][..]] {
+        for seed in ["1", "2", "3", "4"] {
+            let mut args = vec!["--circuit", circuit.to_str().unwrap(), "-r", seed];
+            args.extend_from_slice(routing);
+            let (ok, stdout, stderr) = run_puremagic(&args, tmp.path());
+            assert!(ok, "puremagic failed; stderr:\n{}", stderr);
+            // "Scheduled <n> in <cycles> logical cycles, volume <v>"
+            let line = stdout.lines().find(|l| l.starts_with("Scheduled ")).expect("Scheduled");
+            let cycles: u64 = line.split_whitespace().nth(3).unwrap().parse().unwrap();
+            assert!(cycles >= depth, "{:?} seed {}: {} cycles, depth {}", routing, seed, cycles, depth);
+        }
+    }
+}
+
 // ── puremagic: seed variation ─────────────────────────────────────────────────
 
 /// Different rseeds must (with overwhelming probability) produce different total
@@ -1150,4 +1188,45 @@ fn puremagic_all_products_scheduled_despite_t_gate_failures() {
         "expected 'Scheduled N in ...' with N >= 6 in stdout even with T gate failures, got:\n{}",
         stdout
     );
+}
+
+// ── schedule validity: independent checker over the trace ─────────────────────
+
+/// Schedules a mixed fixture (T gates on X, Y and Z, S, SX, CX and measurements)
+/// with `--trace` in both layouts and several seeds, and requires
+/// `data_processing/check_schedule.py` to pass. The seeds vary which T gates
+/// fail, so the corrections they inject, including those about Y, are covered.
+/// The debug binary runs, so the scheduler's own debug assertions are on too.
+/// Skipped when python3 is not available.
+#[test]
+fn traced_schedules_pass_the_independent_checker() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("python3 not found; skipping");
+        return;
+    }
+    let checker =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("data_processing").join("check_schedule.py");
+    let circuit = fixture("mixed_8q.trans");
+    for layout in [&[][..], &["-u"][..]] {
+        for seed in ["1", "2", "3", "4", "5"] {
+            let tmp = TempDir::new().unwrap();
+            let mut args = vec!["--circuit", circuit.to_str().unwrap(), "--trace", "-r", seed];
+            args.extend_from_slice(layout);
+            let (ok, _stdout, stderr) = run_puremagic(&args, tmp.path());
+            assert!(ok, "puremagic failed ({:?} seed {}); stderr:\n{}", layout, seed, stderr);
+            let out = Command::new("python3")
+                .arg(&checker)
+                .arg(tmp.path().join("mixed_8q.trace"))
+                .output()
+                .expect("failed to run check_schedule.py");
+            assert!(
+                out.status.success(),
+                "checker failed ({:?} seed {}):\n{}{}",
+                layout,
+                seed,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
 }

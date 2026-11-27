@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """
-FLASQ Lower Bound Calculator for Clifford+T circuits in OpenQASM 2 format.
+FLASQ cost-model calculator for Clifford+T circuits in OpenQASM 2 format.
 
 Implements Algorithm 1 from:
-  Beverland et al., "FLASQ: FLuid Allocation of Surface code Qubits",
-  arXiv:2511.08508 (2025).
+  Huggins et al., "The FLuid Allocation of Surface code Qubits (FLASQ) cost
+  model for early fault-tolerant quantum algorithms", arXiv:2511.08508 (2025).
 
 The FLASQ model estimates the spacetime volume of a quantum circuit on a 2D
 surface code architecture by treating ancilla space as a "fluid" resource that
-can be freely rearranged between gates.  It produces a lower bound on the
-spacetime volume achievable by any concrete scheduler.
+can be freely rearranged between gates. It gives two estimates, not bounds: a
+conservative one with padded gate costs and a 1.5x allowance for packing
+cultivation, and an optimistic one with tighter gate costs. A well-packed
+concrete schedule is expected to land between them, but may fall on either
+side. (The file name and the output header keep "lower bound" for the
+scripts that parse them.)
+
+The cultivation volume per T state defaults to FLASQ's own definition,
+evaluated by cultivation_model.py for the protocol the scheduler uses:
+Gidney et al.'s expected volume of the qubits in use. --whole-patch instead
+charges what PureMagic pays, a whole patch for the mean cultivation time,
+with no packing allowance since a dedicated patch needs none. The difference
+between the two isolates the cost of dedicating patches to cultivation.
 
 Key quantities (all in units of "blocks" = logical_qubit × logical_timestep):
   V   : total fluid ancilla volume  = sum of per-gate ancilla volumes
@@ -30,7 +41,10 @@ Usage
                     The FLASQ paper uses 10 µs; at d=17 and 1 µs/cycle that is ~0.6 timesteps,
                     rounded to 1. It appears in the T-gate cost and sets the reaction-limited
                     runtime floor L >= t_react * D.
-  --vcult FLOAT     Cultivation volume in blocks (default: 26.0, ~d=17 regime)
+  --vcult FLOAT     Cultivation volume in blocks (default: FLASQ's definition
+                    from cultivation_model.py at --distance)
+  --distance INT    Code distance for the default --vcult (default: 17)
+  --whole-patch     Charge a whole patch for the mean cultivation time instead
   --model {conservative,optimistic}  Gate cost model (default: conservative)
   --verbose         Print per-gate breakdown
 
@@ -404,6 +418,7 @@ def gate_ancilla_volume(
     vol_cultivate: float,
     t_react: float,
     p_wrong: float = 0.0,
+    cult_mult: Optional[float] = None,
 ) -> Tuple[float, float]:
     """
     Return (ancilla_volume, measurement_depth) for a single gate.
@@ -438,7 +453,8 @@ def gate_ancilla_volume(
         return S_COST[model], 0.0
 
     if gate in ("T", "Tdg"):
-        vol_t = CULT_MULT[model] * vol_cultivate + t_react + T_BASE[model]
+        mult = CULT_MULT[model] if cult_mult is None else cult_mult
+        vol_t = mult * vol_cultivate + t_react + T_BASE[model]
         # Wrong-state correction: with probability p_wrong an S gate is applied
         # on the data qubit to convert T† → T (or T → T†).  The S gate adds
         # S_COST ancilla volume and, assuming it takes one logical cycle on the
@@ -572,6 +588,7 @@ def flasq(
     model: str,
     p_wrong: float = 0.0,
     verbose: bool = False,
+    cult_mult: Optional[float] = None,
 ) -> Dict:
     """
     Apply the FLASQ model to a parsed circuit.
@@ -603,7 +620,9 @@ def flasq(
         print("-" * 52)
 
     for gate, qubits in gates:
-        av, md = gate_ancilla_volume(gate, qubits, layout, model, vol_cultivate, t_react, p_wrong)
+        av, md = gate_ancilla_volume(
+            gate, qubits, layout, model, vol_cultivate, t_react, p_wrong, cult_mult
+        )
         V += av
         if gate in ("T", "Tdg"):
             M += 1
@@ -642,7 +661,7 @@ def flasq(
         "M": M,
         "n_tot": n_tot,
         "vol_cultivate": vol_cultivate,
-        "vol_cultivate_eff": CULT_MULT[model] * vol_cultivate,
+        "vol_cultivate_eff": (CULT_MULT[model] if cult_mult is None else cult_mult) * vol_cultivate,
         "t_react": t_react,
         "p_wrong": p_wrong,
         "model": model,
@@ -657,7 +676,8 @@ def flasq(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute the FLASQ spacetime-volume lower bound for a Clifford+T circuit."
+        description="Compute the FLASQ conservative and optimistic spacetime-volume "
+        "estimates for a Clifford+T circuit."
     )
     parser.add_argument("qasm_file", help="Path to OpenQASM 2 circuit file")
     parser.add_argument(
@@ -677,12 +697,38 @@ def main():
     parser.add_argument(
         "--vcult",
         type=float,
-        default=26.0,
+        default=None,
         help=(
             "Spacetime volume to cultivate one T state, in blocks "
             "(logical_qubit × logical_timestep). "
-            "Default 26 corresponds roughly to d=17 surface code at ~1e-3 physical error rate. "
+            "Default: FLASQ's definition, the expected volume of the qubits in use, from "
+            "cultivation_model.py at --distance (5.63 at d=17 for the d1=5, G=104 protocol), "
+            "or with --whole-patch the mean cultivation time (37.24 at d=17, "
+            "18.76 with --starts 4). "
             "Set to 0 to ignore cultivation overhead."
+        ),
+    )
+    parser.add_argument(
+        "--distance",
+        type=int,
+        default=17,
+        help="Code distance for the default --vcult (default: 17).",
+    )
+    parser.add_argument(
+        "--starts",
+        type=int,
+        default=1,
+        help=(
+            "Parallel cultivation starts per patch for --whole-patch, one per corner "
+            "(cultivation_model.py --starts). FLASQ's own volume is unaffected (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--whole-patch",
+        action="store_true",
+        help=(
+            "Charge cultivation as PureMagic does: a whole patch for the mean cultivation "
+            "time per T state, in both models, with no 1.5x packing allowance."
         ),
     )
     parser.add_argument(
@@ -713,6 +759,18 @@ def main():
     )
     args = parser.parse_args()
 
+    cult_mult = 1.0 if args.whole_patch else None
+    if args.vcult is None:
+        import os
+
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import cultivation_model
+
+        r = cultivation_model.derive(
+            d=args.distance, starts=args.starts if args.whole_patch else 1
+        )
+        args.vcult = r["whole_patch_blocks"] if args.whole_patch else r["flasq_vcult_blocks"]
+
     with open(args.qasm_file) as f:
         text = f.read()
 
@@ -734,6 +792,7 @@ def main():
         model="conservative",
         p_wrong=args.pwrong,
         verbose=args.verbose,
+        cult_mult=cult_mult,
     )
     ro = flasq(
         n_qubits=n_qubits,
@@ -744,6 +803,7 @@ def main():
         model="optimistic",
         p_wrong=args.pwrong,
         verbose=False,
+        cult_mult=cult_mult,
     )
 
     W = 14  # column width for model-dependent values

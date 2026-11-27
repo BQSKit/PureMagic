@@ -40,6 +40,16 @@ them into `puremagic`'s `--magic-state-lambda` and `--cultivation-floor`: at
 counts as one surface code round (the default), or 62.12 and 2.44 when every
 circuit timestep counts and a surface code round is 6 of them.
 
+- **`parallel_starts.csv`**: the mean rounds per delivered state when a patch
+  runs four starts, one at each corner, and an escape discards the other
+  three. The escape grows the color code into a `d2=15` grafted code from one
+  of its corners, which fills most of a `d=17` patch, so a start can escape
+  only from near a patch corner. Simulated per gap cutoff in lockstep rounds
+  on the curve and acceptance above, 2e5 cold starts each. Written by
+  [`parallel_cultivation.py`](../../data_processing/parallel_cultivation.py)
+  `--write-table`, and read by `cultivation_model.py --starts 4`: 18.76
+  logical cycles at `d=17`, `G=104`, with the floor unchanged.
+
 The release's `code.zip` and `circuits.zip` are gitignored. The two scripts
 above run from inside the unpacked `code.zip`. Re-fetch it from the DOI if
 needed.

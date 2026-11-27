@@ -1,0 +1,7 @@
+d1,gap_cutoff,starts,mode,samples,seed,mean_rounds,stderr_rounds,median_rounds
+5,0,4,discard,200000,1,68.463,0.107,54.0
+5,53,4,discard,200000,1,72.393,0.116,56.0
+5,70,4,discard,200000,1,83.260,0.142,64.0
+5,90,4,discard,200000,1,148.895,0.292,109.0
+5,104,4,discard,200000,1,318.961,0.675,226.0
+5,116,4,discard,200000,1,723.833,1.578,507.0
