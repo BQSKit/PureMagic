@@ -791,6 +791,14 @@ def main():
         "--ylabel", default=None, metavar="LABEL", help="Override the left y-axis label."
     )
     parser.add_argument("--ylim", default=None, metavar="MIN,MAX")
+    parser.add_argument(
+        "--axes-x",
+        default=None,
+        metavar="LEFT,RIGHT",
+        help="Pin the plot area's left and right edges, in inches from the figure's "
+        "left edge, so that separately saved panels stacked in a document line up "
+        "(constrained layout otherwise sizes each margin to its own tick labels).",
+    )
     parser.add_argument("--y2lim", default=None, metavar="MIN,MAX")
     parser.add_argument(
         "--label-data-qubits", dest="label_data_qubits", action="store_true", default=False
@@ -2280,6 +2288,16 @@ def main():
     if ax2 is not None and args.y2lim:
         ax2.set_ylim(*map(float, args.y2lim.split(",", 1)))
 
+    if args.axes_x:
+        left, right = (float(v) for v in args.axes_x.split(",", 1))
+        fig = ax.figure
+        fig.canvas.draw()  # let constrained layout place the axes vertically
+        pos = ax.get_position()
+        fig.set_layout_engine("none")
+        width = fig.get_figwidth()
+        ax.set_position([left / width, pos.y0, (right - left) / width, pos.height])
+        # Put the y label at the same distance from the figure edge in every panel.
+        ax.yaxis.set_label_coords((0.1 - left) / (right - left), 0.5)
     # No tight_layout and no bbox_inches="tight": both change the output's
     # width, so the figure would stop being exactly one column and
     # \columnwidth would rescale it -- shrinking the fonts again. Constrained
