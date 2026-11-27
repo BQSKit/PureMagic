@@ -21,6 +21,11 @@ of this process -- the Figure 15 caption defines expected qubit-rounds as the
 integral of survival times activated qubits, divided by the final survival
 rate -- so the mean is theirs; the distribution around it is what the data
 release does not contain, and what the exponential assumption supplies.
+
+With --starts K > 1 the patch runs K attempts in parallel, one at each corner,
+and an escape discards the others (parallel_cultivation.py). That has no
+closed form, so the distribution is the histogram of the same lockstep
+simulation, --samples cold starts. The floor is still one whole attempt.
 """
 
 import argparse
@@ -93,6 +98,11 @@ def main():
     ap.add_argument("--tmax-rounds", type=int, default=20000,
                     help="PMF support; the default captures the mass to 1e-6")
     ap.add_argument("--xmax", type=float, default=120.0, help="x limit, lcycles")
+    ap.add_argument("-k", "--starts", type=int, default=1,
+                    help="parallel starts per patch, simulated with discard (default 1)")
+    ap.add_argument("-n", "--samples", type=int, default=200000,
+                    help="cold starts simulated when --starts > 1")
+    ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--figsize", default=f"{COLUMN_IN},3.4")
     ap.add_argument("-o", "--output",
                     default=os.path.join(HERE, "cultivation_cdf.png"))
@@ -105,7 +115,19 @@ def main():
         import cultivation_model
         args.p_accept = cultivation_model.acceptance(len(survival))[0]
 
-    f, n_attempt = exact_pmf(survival, args.p_accept, args.tmax_rounds)
+    if args.starts > 1:
+        import numpy as np
+        import parallel_cultivation as pc
+        cond = pc.conditional(survival)
+        t = pc.cold_start(cond, args.p_accept / survival[-1], pc.escape_round(),
+                          args.starts, "discard", args.samples, args.seed)
+        counts = np.bincount(t.astype(np.int64), minlength=args.tmax_rounds + 1)
+        f = list(counts[: args.tmax_rounds + 1] / len(t))
+        n_attempt = len(survival)
+        exact_label = f"Simulated ({args.starts} starts)"
+    else:
+        f, n_attempt = exact_pmf(survival, args.p_accept, args.tmax_rounds)
+        exact_label = "Exact (renewal)"
     F = cdf_from_pmf(f)
     mass = F[-1]
     if mass < 0.999:
@@ -149,7 +171,7 @@ def main():
 
     # (a) the distributions themselves. They agree closely, which is the point:
     # the residual panel below is what resolves the difference.
-    ax.plot(xs, ex, color=C_EXACT, lw=1.8, zorder=3, label="Exact (renewal)")
+    ax.plot(xs, ex, color=C_EXACT, lw=1.8, zorder=3, label=exact_label)
     ax.plot(xs, ey, color=C_EXP, lw=1.4, ls="--", zorder=2, label="Exponential")
     ax.plot(xs, sy, color=C_SHIFT, lw=1.4, ls=":", zorder=2,
             label=f"Shifted exp. ($F={floor:.2f}$)")
@@ -171,13 +193,20 @@ def main():
              color=C_SHIFT, lw=1.4, ls=":", zorder=2)
 
     axr.set_xlabel("Cultivation time (logical cycles)")
-    axr.set_ylabel("Model $-$ exact (pp)")
+    axr.set_ylabel("Model $-$ simulated (pp)" if args.starts > 1 else "Model $-$ exact (pp)")
     axr.set_xlim(0, args.xmax)
     axr.grid(alpha=0.25, lw=0.5)
     axr.set_axisbelow(True)
     for side in ("top", "right"):
         axr.spines[side].set_visible(False)
 
+    dev_e = [(m - e) * 100 for m, e in zip(ey, ex)]
+    dev_s = [(v - e) * 100 for v, e in zip(sy, ex)]
+    beyond = [i for i, x in enumerate(xs) if x >= 2 * floor]
+    print(f"max |exp - exact| {max(map(abs, dev_e)):.2f} pp, "
+          f"max |shifted - exact| {max(map(abs, dev_s)):.2f} pp, "
+          f"beyond 2F {max(abs(dev_s[i]) for i in beyond):.2f} pp, "
+          f"beyond 10 lcycles {max(abs(dev_s[i]) for i, x in enumerate(xs) if x >= 10):.2f} pp")
     fig.align_ylabels((ax, axr))
     fig.savefig(args.output)
     print(f"wrote {args.output}")
